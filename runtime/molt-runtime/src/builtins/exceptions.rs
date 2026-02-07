@@ -94,7 +94,7 @@ impl<T> ExceptionSentinel for Option<T> {
 }
 
 thread_local! {
-    pub(crate) static EXCEPTION_STACK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static EXCEPTION_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
     pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -106,6 +106,9 @@ thread_local! {
 
 static STOPASYNC_BT_PRINTED: AtomicBool = AtomicBool::new(false);
 static TB_LASTI_NAME: AtomicU64 = AtomicU64::new(0);
+static F_BACK_NAME: AtomicU64 = AtomicU64::new(0);
+static F_GLOBALS_NAME: AtomicU64 = AtomicU64::new(0);
+static FILE_NAME: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn debug_exception_flow() -> bool {
@@ -732,8 +735,9 @@ pub(crate) fn exception_context_fallback_pop() {
 }
 
 pub(crate) fn exception_stack_push() {
+    let handler_frame_index = FRAME_STACK.with(|stack| stack.borrow().len().saturating_sub(1));
     EXCEPTION_STACK.with(|stack| {
-        stack.borrow_mut().push(0);
+        stack.borrow_mut().push(handler_frame_index);
     });
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         stack.borrow_mut().push(MoltObject::none().bits());
@@ -832,7 +836,7 @@ pub(crate) fn exception_stack_set_depth(_py: &PyToken<'_>, target: usize) {
             stack.pop();
         }
         while stack.len() < target {
-            stack.push(1);
+            stack.push(0);
         }
     });
     exception_context_align_depth(_py, target);
@@ -892,7 +896,7 @@ pub(crate) fn task_exception_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
-pub(crate) fn task_exception_handler_stack_take(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<u8> {
+pub(crate) fn task_exception_handler_stack_take(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<usize> {
     task_exception_handler_stacks(_py)
         .lock()
         .unwrap()
@@ -900,7 +904,11 @@ pub(crate) fn task_exception_handler_stack_take(_py: &PyToken<'_>, ptr: *mut u8)
         .unwrap_or_default()
 }
 
-pub(crate) fn task_exception_handler_stack_store(_py: &PyToken<'_>, ptr: *mut u8, stack: Vec<u8>) {
+pub(crate) fn task_exception_handler_stack_store(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    stack: Vec<usize>,
+) {
     task_exception_handler_stacks(_py)
         .lock()
         .unwrap()
@@ -1040,21 +1048,28 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         }
     } else if !obj_from_bits(trace_bits).is_none() {
         // Preserve an existing traceback instead of rebuilding on re-raise.
-    } else if let Some(new_bits) = frame_stack_trace_bits(_py) {
-        if new_bits != trace_bits {
-            if !obj_from_bits(trace_bits).is_none() {
-                dec_ref_bits(_py, trace_bits);
+    } else {
+        let handler_frame_index = EXCEPTION_STACK.with(|stack| stack.borrow().last().copied());
+        let cause_bits = unsafe { exception_cause_bits(ptr) };
+        let include_caller_frame = !obj_from_bits(cause_bits).is_none();
+        if let Some(new_bits) =
+            frame_stack_trace_bits(_py, handler_frame_index, include_caller_frame)
+        {
+            if new_bits != trace_bits {
+                if !obj_from_bits(trace_bits).is_none() {
+                    dec_ref_bits(_py, trace_bits);
+                }
+                unsafe {
+                    *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = new_bits;
+                }
+            } else {
+                dec_ref_bits(_py, new_bits);
             }
+        } else if !obj_from_bits(trace_bits).is_none() {
+            dec_ref_bits(_py, trace_bits);
             unsafe {
-                *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = new_bits;
+                *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
             }
-        } else {
-            dec_ref_bits(_py, new_bits);
-        }
-    } else if !obj_from_bits(trace_bits).is_none() {
-        dec_ref_bits(_py, trace_bits);
-        unsafe {
-            *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
         }
     }
     if let Some(task_key) = task_key {
@@ -1365,7 +1380,7 @@ fn ensure_exception_in_builtins(_py: &PyToken<'_>, name: &str, class_bits: u64) 
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let existing = unsafe { dict_get_in_place_fast_str(_py, dict_ptr, name_bits) };
-    let needs_set = existing.map_or(true, |bits| bits != class_bits);
+    let needs_set = existing != Some(class_bits);
     if needs_set {
         unsafe {
             dict_set_in_place(_py, dict_ptr, name_bits, class_bits);
@@ -3079,8 +3094,133 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     });
 }
 
-unsafe fn alloc_frame_obj(_py: &PyToken<'_>, code_bits: u64, line: i64) -> Option<u64> {
-    // TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): add full frame fields (f_back, f_globals, f_locals) and keep f_lasti/f_lineno live-updated.
+#[derive(Clone, Copy)]
+struct FrameField {
+    bits: u64,
+    owned: bool,
+}
+
+unsafe fn alloc_empty_dict_field(_py: &PyToken<'_>) -> Option<FrameField> {
+    let ptr = alloc_dict_with_pairs(_py, &[]);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(FrameField {
+            bits: MoltObject::from_ptr(ptr).bits(),
+            owned: true,
+        })
+    }
+}
+
+unsafe fn frame_line_from_entry(entry: FrameEntry) -> Option<i64> {
+    if entry.code_bits == 0 {
+        return None;
+    }
+    let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() else {
+        return None;
+    };
+    if object_type_id(code_ptr) != TYPE_ID_CODE {
+        return None;
+    }
+    let mut line = entry.line;
+    if line <= 0 {
+        line = code_firstlineno(code_ptr);
+    }
+    Some(line)
+}
+
+unsafe fn code_is_module(code_bits: u64) -> bool {
+    let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+        return false;
+    };
+    if object_type_id(code_ptr) != TYPE_ID_CODE {
+        return false;
+    }
+    let name_bits = code_name_bits(code_ptr);
+    string_obj_to_owned(obj_from_bits(name_bits)).is_some_and(|name| name == "<module>")
+}
+
+unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Option<FrameField> {
+    let mut filename: Option<String> = None;
+    if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+        if object_type_id(code_ptr) == TYPE_ID_CODE {
+            let filename_bits = code_filename_bits(code_ptr);
+            filename = string_obj_to_owned(obj_from_bits(filename_bits));
+        }
+    }
+    let (module_bits, main_bits) = {
+        let cache = runtime_state(_py).module_cache.lock().unwrap();
+        (
+            cache.values().copied().collect::<Vec<u64>>(),
+            cache.get("__main__").copied(),
+        )
+    };
+    if let Some(filename) = filename {
+        let file_name_bits = intern_static_name(_py, &FILE_NAME, b"__file__");
+        for module_bits in &module_bits {
+            let Some(module_ptr) = obj_from_bits(*module_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                continue;
+            }
+            let dict_bits = module_dict_bits(module_ptr);
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                continue;
+            }
+            let Some(file_bits) = dict_get_in_place(_py, dict_ptr, file_name_bits) else {
+                continue;
+            };
+            if string_obj_to_owned(obj_from_bits(file_bits)).is_some_and(|value| value == filename)
+            {
+                return Some(FrameField {
+                    bits: dict_bits,
+                    owned: false,
+                });
+            }
+        }
+    }
+    if let Some(main_bits) = main_bits {
+        if let Some(module_ptr) = obj_from_bits(main_bits).as_ptr() {
+            if object_type_id(module_ptr) == TYPE_ID_MODULE {
+                let dict_bits = module_dict_bits(module_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        return Some(FrameField {
+                            bits: dict_bits,
+                            owned: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    alloc_empty_dict_field(_py)
+}
+
+unsafe fn frame_locals_field_for_code(
+    _py: &PyToken<'_>,
+    code_bits: u64,
+    globals: FrameField,
+) -> Option<FrameField> {
+    if code_is_module(code_bits) {
+        return Some(FrameField {
+            bits: globals.bits,
+            owned: false,
+        });
+    }
+    alloc_empty_dict_field(_py)
+}
+
+unsafe fn alloc_frame_obj(
+    _py: &PyToken<'_>,
+    code_bits: u64,
+    line: i64,
+    back_bits: u64,
+) -> Option<u64> {
     let builtins = builtin_classes(_py);
     let class_obj = obj_from_bits(builtins.frame);
     let class_ptr = class_obj.as_ptr()?;
@@ -3094,6 +3234,12 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, code_bits: u64, line: i64) -> Optio
         intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
     let f_lasti_bits =
         intern_static_name(_py, &runtime_state(_py).interned.f_lasti_name, b"f_lasti");
+    let f_back_bits = intern_static_name(_py, &F_BACK_NAME, b"f_back");
+    let f_globals_bits = intern_static_name(_py, &F_GLOBALS_NAME, b"f_globals");
+    let f_locals_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.f_locals_name, b"f_locals");
+    let globals = frame_globals_field_for_code(_py, code_bits)?;
+    let locals = frame_locals_field_for_code(_py, code_bits, globals)?;
     let line_bits = MoltObject::from_int(line).bits();
     let lasti_bits = MoltObject::from_int(-1).bits();
     let dict_ptr = alloc_dict_with_pairs(
@@ -3105,8 +3251,20 @@ unsafe fn alloc_frame_obj(_py: &PyToken<'_>, code_bits: u64, line: i64) -> Optio
             line_bits,
             f_lasti_bits,
             lasti_bits,
+            f_back_bits,
+            back_bits,
+            f_globals_bits,
+            globals.bits,
+            f_locals_bits,
+            locals.bits,
         ],
     );
+    if globals.owned {
+        dec_ref_bits(_py, globals.bits);
+    }
+    if locals.owned && locals.bits != globals.bits {
+        dec_ref_bits(_py, locals.bits);
+    }
     if dict_ptr.is_null() {
         dec_ref_bits(_py, frame_bits);
         return None;
@@ -3233,44 +3391,75 @@ unsafe fn alloc_traceback_obj(
     Some(tb_bits)
 }
 
-pub(crate) fn frame_stack_trace_bits(_py: &PyToken<'_>) -> Option<u64> {
+unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option<Vec<(u64, i64)>> {
+    let mut out: Vec<(u64, i64)> = Vec::with_capacity(entries.len());
+    let mut back_bits = MoltObject::none().bits();
+    for entry in entries {
+        let Some(line) = frame_line_from_entry(*entry) else {
+            continue;
+        };
+        let frame_bits = match alloc_frame_obj(_py, entry.code_bits, line, back_bits) {
+            Some(bits) => bits,
+            None => {
+                for (bits, _) in out {
+                    dec_ref_bits(_py, bits);
+                }
+                return None;
+            }
+        };
+        back_bits = frame_bits;
+        out.push((frame_bits, line));
+    }
+    Some(out)
+}
+
+pub(crate) fn frame_stack_trace_bits(
+    _py: &PyToken<'_>,
+    handler_frame_index: Option<usize>,
+    include_caller_frame: bool,
+) -> Option<u64> {
     FRAME_STACK.with(|stack| {
         let stack = stack.borrow();
         if stack.is_empty() {
             return None;
         }
+        let start = handler_frame_index
+            .map(|idx| {
+                if include_caller_frame {
+                    idx.saturating_sub(1)
+                } else {
+                    idx
+                }
+            })
+            .unwrap_or(0)
+            .min(stack.len());
+        let active = stack[start..].to_vec();
+        if active.is_empty() {
+            return None;
+        }
+        let frames = unsafe {
+            match build_frame_chain(_py, &active) {
+                Some(frames) => frames,
+                None => return None,
+            }
+        };
+        if frames.is_empty() {
+            return None;
+        }
         let mut next_bits = MoltObject::none().bits();
         let mut built_any = false;
         let mut frames_built: u64 = 0;
-        for entry in stack.iter().rev() {
-            if entry.code_bits == 0 {
-                continue;
-            }
-            let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() else {
-                continue;
-            };
+        for (frame_bits, line) in frames.iter().rev().copied() {
             unsafe {
-                if object_type_id(code_ptr) != TYPE_ID_CODE {
-                    continue;
-                }
-                let mut line = entry.line;
-                if line <= 0 {
-                    line = code_firstlineno(code_ptr);
-                }
-                let Some(frame_bits) = alloc_frame_obj(_py, entry.code_bits, line) else {
-                    if !obj_from_bits(next_bits).is_none() {
-                        dec_ref_bits(_py, next_bits);
-                    }
-                    return None;
-                };
                 let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
-                    dec_ref_bits(_py, frame_bits);
                     if !obj_from_bits(next_bits).is_none() {
                         dec_ref_bits(_py, next_bits);
                     }
+                    for (bits, _) in frames.iter().copied() {
+                        dec_ref_bits(_py, bits);
+                    }
                     return None;
                 };
-                dec_ref_bits(_py, frame_bits);
                 if !obj_from_bits(next_bits).is_none() {
                     dec_ref_bits(_py, next_bits);
                 }
@@ -3278,6 +3467,9 @@ pub(crate) fn frame_stack_trace_bits(_py: &PyToken<'_>) -> Option<u64> {
                 built_any = true;
                 frames_built += 1;
             }
+        }
+        for (bits, _) in frames.iter().copied() {
+            dec_ref_bits(_py, bits);
         }
         if !built_any || obj_from_bits(next_bits).is_none() {
             if !obj_from_bits(next_bits).is_none() {
@@ -3304,31 +3496,29 @@ pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "ValueError", "depth must be >= 0");
         }
         let depth = depth as usize;
-        let entry = FRAME_STACK.with(|stack| {
+        let entries = FRAME_STACK.with(|stack| {
             let stack = stack.borrow();
             if depth >= stack.len() {
                 None
             } else {
-                Some(stack[stack.len() - 1 - depth])
+                Some(stack[..=stack.len() - 1 - depth].to_vec())
             }
         });
-        let Some(entry) = entry else {
+        let Some(entries) = entries else {
             return MoltObject::none().bits();
         };
-        if entry.code_bits == 0 {
-            return MoltObject::none().bits();
-        }
         unsafe {
-            let mut line = entry.line;
-            if line <= 0 {
-                if let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() {
-                    if object_type_id(code_ptr) == TYPE_ID_CODE {
-                        line = code_firstlineno(code_ptr);
+            if let Some(frames) = build_frame_chain(_py, &entries) {
+                if let Some((frame_bits, _)) = frames.last().copied() {
+                    inc_ref_bits(_py, frame_bits);
+                    for (bits, _) in frames {
+                        dec_ref_bits(_py, bits);
                     }
+                    return frame_bits;
                 }
-            }
-            if let Some(frame_bits) = alloc_frame_obj(_py, entry.code_bits, line) {
-                return frame_bits;
+                for (bits, _) in frames {
+                    dec_ref_bits(_py, bits);
+                }
             }
         }
         MoltObject::none().bits()

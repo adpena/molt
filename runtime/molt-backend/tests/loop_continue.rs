@@ -90,6 +90,7 @@ fn loop_continue_in_if_compiles() {
             params: Vec::new(),
             ops,
         }],
+        profile: None,
     };
 
     let result = std::panic::catch_unwind(|| {

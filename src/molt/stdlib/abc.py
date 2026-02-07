@@ -20,7 +20,10 @@ from _abc import (
     _reset_caches,
 )
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap", globals())
+_MOLT_ABC_UPDATE_ABSTRACTMETHODS = _require_intrinsic(
+    "molt_abc_update_abstractmethods", globals()
+)
 
 classmethod = _builtins.classmethod
 staticmethod = _builtins.staticmethod
@@ -104,24 +107,6 @@ class abstractproperty(property):
     __isabstractmethod__ = True
 
 
-def _is_abstract_method(value):
-    if getattr(value, "__isabstractmethod__", False):
-        return True
-    func = getattr(value, "__func__", None)
-    if func is not None and getattr(func, "__isabstractmethod__", False):
-        return True
-    if isinstance(value, property):
-        fget = getattr(value, "fget", None)
-        fset = getattr(value, "fset", None)
-        fdel = getattr(value, "fdel", None)
-        for accessor in (fget, fset, fdel):
-            if accessor is not None and getattr(
-                accessor, "__isabstractmethod__", False
-            ):
-                return True
-    return False
-
-
 class ABCMeta(type):
     """Metaclass for defining Abstract Base Classes (ABCs).
 
@@ -199,26 +184,10 @@ def update_abstractmethods(cls):
 
     If cls is not an instance of ABCMeta, does nothing.
     """
-    if not hasattr(cls, "__abstractmethods__"):
-        # We check for __abstractmethods__ here because cls might by a C
-        # implementation or a python implementation (especially during
-        # testing), and we want to handle both cases.
-        return cls
-
-    abstracts = set()
-    # Check the existing abstract methods of the parents, keep only the ones
-    # that are not implemented.
-    for scls in cls.__bases__:
-        for name in getattr(scls, "__abstractmethods__", ()):
-            value = getattr(cls, name, None)
-            if _is_abstract_method(value):
-                abstracts.add(name)
-    # Also add any other newly added abstract methods.
-    for name, value in cls.__dict__.items():
-        if _is_abstract_method(value):
-            abstracts.add(name)
-    cls.__abstractmethods__ = frozenset(abstracts)
-    return cls
+    updated = _MOLT_ABC_UPDATE_ABSTRACTMETHODS(cls)
+    if updated is None:
+        raise RuntimeError("molt_abc_update_abstractmethods returned invalid value")
+    return updated
 
 
 class ABC(metaclass=ABCMeta):

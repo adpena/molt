@@ -23,6 +23,9 @@ line-length = 88
 target-version = "py313"
 extend-exclude = ["third_party", "tests/differential"]
 
+[tool.ty.src]
+exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["third_party", ".git", ".venv", "dist", "build", "logs"]

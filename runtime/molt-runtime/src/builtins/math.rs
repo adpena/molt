@@ -10,7 +10,7 @@ use crate::{
     raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, to_i64, type_of_bits,
     MoltObject, TYPE_ID_TUPLE,
 };
-use num_bigint::{BigInt, BigUint, ToBigUint};
+use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
@@ -377,7 +377,7 @@ fn coerce_real(_py: &PyToken<'_>, val_bits: u64) -> Option<RealValue> {
                     return Some(RealValue::IntCoerced(i));
                 }
                 if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = unsafe { bigint_ref(big_ptr) }.clone();
+                    let big = bigint_ref(big_ptr).clone();
                     dec_ref_bits(_py, res_bits);
                     return Some(RealValue::BigIntCoerced(big));
                 }
@@ -450,7 +450,7 @@ fn coerce_real_named(_py: &PyToken<'_>, val_bits: u64, name: &str) -> Option<Rea
                     return Some(RealValue::IntCoerced(i));
                 }
                 if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = unsafe { bigint_ref(big_ptr) }.clone();
+                    let big = bigint_ref(big_ptr).clone();
                     dec_ref_bits(_py, res_bits);
                     return Some(RealValue::BigIntCoerced(big));
                 }
@@ -582,7 +582,7 @@ fn isqrt_biguint(value: &BigUint) -> BigUint {
     }
     let bits = value.bits();
     let mut low = BigUint::zero();
-    let mut high = BigUint::one() << ((bits + 1) / 2);
+    let mut high = BigUint::one() << bits.div_ceil(2);
     let one = BigUint::one();
     while &low + &one < high {
         let mid = (&low + &high) >> 1;
@@ -972,7 +972,7 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
         if f.is_nan() {
             return MoltObject::from_float(f).bits();
         }
-        if f < -1.0 || f > 1.0 {
+        if !(-1.0..=1.0).contains(&f) {
             let rendered = render_float(_py, f);
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
@@ -1014,7 +1014,7 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
         if f.is_nan() {
             return MoltObject::from_float(f).bits();
         }
-        if f < -1.0 || f > 1.0 {
+        if !(-1.0..=1.0).contains(&f) {
             let rendered = render_float(_py, f);
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
@@ -1916,7 +1916,7 @@ pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
             return MoltObject::from_int(1).bits();
         }
         let n_minus_k = &n_val - &k_val;
-        let mut k_val = if n_minus_k < k_val { n_minus_k } else { k_val };
+        let k_val = if n_minus_k < k_val { n_minus_k } else { k_val };
         if let (Some(n_u64), Some(k_u64)) = (n_val.to_u64(), k_val.to_u64()) {
             let mut result = BigInt::one();
             let start = n_u64 - k_u64;

@@ -28,7 +28,7 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                if val < -1 || val > 9 {
+                if !(-1..=9).contains(&val) {
                     return raise_exception::<u64>(
                         _py,
                         "ValueError",

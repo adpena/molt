@@ -11,6 +11,7 @@ import string as _string
 import sys as _sys
 import time as _time
 import traceback as _traceback
+import warnings as _warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -1031,24 +1032,20 @@ def _showwarning(
 
 def captureWarnings(capture: bool) -> None:
     global _warnings_showwarning
-    try:
-        import warnings
-    except Exception:
-        return None
     if capture:
         if _warnings_showwarning is None:
-            _warnings_showwarning = warnings.showwarning
-            setattr(cast(Any, warnings), "showwarning", _showwarning)
+            _warnings_showwarning = _warnings.showwarning
+            setattr(cast(Any, _warnings), "showwarning", _showwarning)
         try:
-            _set_warning_capture_streams(warnings, getLogger("py.warnings"))
+            _set_warning_capture_streams(_warnings, getLogger("py.warnings"))
         except Exception:
             pass
     else:
         if _warnings_showwarning is not None:
-            setattr(cast(Any, warnings), "showwarning", _warnings_showwarning)
+            setattr(cast(Any, _warnings), "showwarning", _warnings_showwarning)
             _warnings_showwarning = None
         try:
-            if hasattr(warnings, "_molt_capture_streams"):
-                delattr(cast(Any, warnings), "_molt_capture_streams")
+            if hasattr(_warnings, "_molt_capture_streams"):
+                delattr(cast(Any, _warnings), "_molt_capture_streams")
         except Exception:
             pass

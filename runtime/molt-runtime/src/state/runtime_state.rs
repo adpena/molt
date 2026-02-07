@@ -7,9 +7,6 @@ use std::time::Instant;
 
 use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
-#[cfg(not(target_arch = "wasm32"))]
-use libc;
-
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::IoPoller;
@@ -104,6 +101,23 @@ pub(crate) struct WeakRefEntry {
     pub(crate) callback_bits: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct WeakKeyDictEntry {
+    pub(crate) key_ref_bits: u64,
+    pub(crate) value_bits: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct WeakValueDictEntry {
+    pub(crate) key_bits: u64,
+    pub(crate) value_ref_bits: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct WeakSetEntry {
+    pub(crate) item_ref_bits: u64,
+}
+
 pub(crate) struct WeakRefRegistry {
     pub(crate) by_ref: HashMap<PtrSlot, WeakRefEntry>,
     pub(crate) by_target: HashMap<PtrSlot, Vec<PtrSlot>>,
@@ -154,7 +168,7 @@ pub(crate) struct RuntimeState {
     pub(crate) last_exception: Mutex<Option<PtrSlot>>,
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
-    pub(crate) argv: Mutex<Vec<String>>,
+    pub(crate) argv: Mutex<Vec<Vec<u8>>>,
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
     pub(crate) sys_version: Mutex<Option<String>>,
     pub(crate) object_pool: Mutex<Vec<Vec<PtrSlot>>>,
@@ -177,7 +191,12 @@ pub(crate) struct RuntimeState {
     pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
-    pub(crate) task_exception_handler_stacks: Mutex<HashMap<PtrSlot, Vec<u8>>>,
+    pub(crate) asyncio_running_loops: Mutex<HashMap<u64, u64>>,
+    pub(crate) asyncio_event_loops: Mutex<HashMap<u64, u64>>,
+    pub(crate) asyncio_event_loop_policy: Mutex<u64>,
+    pub(crate) asyncio_tasks: Mutex<HashMap<u64, u64>>,
+    pub(crate) asyncio_event_waiters: Mutex<HashMap<u64, Vec<u64>>>,
+    pub(crate) task_exception_handler_stacks: Mutex<HashMap<PtrSlot, Vec<usize>>>,
     pub(crate) task_exception_stacks: Mutex<HashMap<PtrSlot, Vec<u64>>>,
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_exception_baselines: Mutex<HashMap<PtrSlot, usize>>,
@@ -189,6 +208,11 @@ pub(crate) struct RuntimeState {
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
+    pub(crate) weakref_finalizers: Mutex<Vec<u64>>,
+    pub(crate) weakkeydicts: Mutex<HashMap<PtrSlot, Vec<WeakKeyDictEntry>>>,
+    pub(crate) weakvaluedicts: Mutex<HashMap<PtrSlot, Vec<WeakValueDictEntry>>>,
+    pub(crate) weaksets: Mutex<HashMap<PtrSlot, Vec<WeakSetEntry>>>,
+    pub(crate) abc_invalidation_counter: AtomicU64,
     pub(crate) asyncgen_registry: Mutex<HashSet<PtrSlot>>,
     pub(crate) fn_ptr_code: Mutex<HashMap<u64, u64>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -236,6 +260,11 @@ impl RuntimeState {
             task_tokens: Mutex::new(HashMap::new()),
             task_tokens_by_id: Mutex::new(HashMap::new()),
             task_cancel_messages: Mutex::new(HashMap::new()),
+            asyncio_running_loops: Mutex::new(HashMap::new()),
+            asyncio_event_loops: Mutex::new(HashMap::new()),
+            asyncio_event_loop_policy: Mutex::new(MoltObject::none().bits()),
+            asyncio_tasks: Mutex::new(HashMap::new()),
+            asyncio_event_waiters: Mutex::new(HashMap::new()),
             task_exception_handler_stacks: Mutex::new(HashMap::new()),
             task_exception_stacks: Mutex::new(HashMap::new()),
             task_exception_depths: Mutex::new(HashMap::new()),
@@ -251,6 +280,11 @@ impl RuntimeState {
             asyncgen_locals: Mutex::new(HashMap::new()),
             gen_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
+            weakref_finalizers: Mutex::new(Vec::new()),
+            weakkeydicts: Mutex::new(HashMap::new()),
+            weakvaluedicts: Mutex::new(HashMap::new()),
+            weaksets: Mutex::new(HashMap::new()),
+            abc_invalidation_counter: AtomicU64::new(0),
             asyncgen_registry: Mutex::new(HashSet::new()),
             fn_ptr_code: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]

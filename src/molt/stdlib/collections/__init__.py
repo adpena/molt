@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+import sys as _sys
 
-try:
-    from typing import TYPE_CHECKING
-except Exception:
-    TYPE_CHECKING = False
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any, Iterable, Iterator, cast
@@ -274,8 +272,6 @@ def namedtuple(
 
     if module is None:
         try:
-            import sys as _sys
-
             module = _sys._getframe(1).f_globals.get("__name__", "__main__")
         except Exception:
             module = "__main__"

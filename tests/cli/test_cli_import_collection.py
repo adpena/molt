@@ -47,11 +47,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
 
 def test_collect_imports_can_skip_nested_imports() -> None:
     tree = ast.parse(
-        "import os\n"
-        "def f() -> None:\n"
-        "    import warnings\n"
-        "class C:\n"
-        "    import re\n"
+        "import os\ndef f() -> None:\n    import warnings\nclass C:\n    import re\n"
     )
     nested = cli._collect_imports(tree)
     top_level_only = cli._collect_imports(tree, include_nested=False)
@@ -71,3 +67,17 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     assert "warnings" not in graph
     assert "re" not in graph
     assert "dataclasses" not in graph
+
+
+def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
+    script = tmp_path / "outside_script.py"
+    script.write_text("print('ok')\n")
+    stdlib_root = cli._stdlib_root_path()
+    roots = [ROOT.resolve(), (ROOT / "src").resolve()]
+    assert cli._module_name_from_path(script, roots, stdlib_root) == "outside_script"
+
+
+def test_expand_module_chain_ignores_invalid_module_names() -> None:
+    assert cli._expand_module_chain("pkg.sub") == ["pkg", "pkg.sub"]
+    assert cli._expand_module_chain("") == []
+    assert cli._expand_module_chain("/.Volumes.bad.mod") == []

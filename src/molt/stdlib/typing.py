@@ -21,21 +21,6 @@ _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new", globals()
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param", globals())
 
 
-_abc: ModuleType
-try:
-    import _collections_abc as _abc_mod_raw
-except Exception as exc:
-    raise RuntimeError(
-        "typing requires intrinsic-lowered _collections_abc support"
-    ) from exc
-
-_abc = _typing_cast(ModuleType, _abc_mod_raw)
-if getattr(_abc, "__name__", None) == "_abc":
-    raise RuntimeError("typing requires _collections_abc, not _abc")
-for _required in ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable"):
-    if getattr(_abc, _required, None) is None:
-        raise RuntimeError(f"typing missing _collections_abc.{_required}")
-
 TYPE_CHECKING = False
 
 __all__ = [
@@ -173,6 +158,36 @@ class _SpecialGenericAlias(_TypingBase):
         return _GenericAlias(self.__origin__, params, self._name)
 
 
+class _LazySpecialGenericAlias(_TypingBase):
+    __slots__ = ("_origin_name", "_name", "_origin_cache")
+
+    def __init__(self, origin_name: str, name: str) -> None:
+        self._origin_name = origin_name
+        self._name = name
+        self._origin_cache = None
+
+    def _origin(self) -> object:
+        if self._origin_cache is None:
+            abc_mod = _load_collections_abc()
+            origin = getattr(abc_mod, self._origin_name, None)
+            if origin is None:
+                raise RuntimeError(
+                    f"typing missing _collections_abc.{self._origin_name}"
+                )
+            self._origin_cache = origin
+        return self._origin_cache
+
+    @property
+    def __origin__(self) -> object:
+        return self._origin()
+
+    def __repr__(self) -> str:
+        return f"typing.{self._name}"
+
+    def __getitem__(self, params: object) -> "_GenericAlias":
+        return _GenericAlias(self._origin(), params, self._name)
+
+
 class _GenericAlias(_TypingBase):
     __slots__ = ("__origin__", "__args__", "_name")
 
@@ -283,7 +298,7 @@ class _CallableAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__", "_arglist", "_return")
 
     def __init__(self, arglist: object, ret: object) -> None:
-        self.__origin__ = getattr(_abc, "Callable")
+        self.__origin__ = getattr(_load_collections_abc(), "Callable")
         self._arglist = arglist
         self._return = ret
         if arglist is Ellipsis:
@@ -392,10 +407,27 @@ NotRequired = _SpecialForm(
     "NotRequired", lambda params: _GenericAlias(NotRequired, params, "NotRequired")
 )
 
-Awaitable = _SpecialGenericAlias(_abc.Awaitable, "Awaitable")
-Iterable = _SpecialGenericAlias(_abc.Iterable, "Iterable")
-Iterator = _SpecialGenericAlias(_abc.Iterator, "Iterator")
-MutableMapping = _SpecialGenericAlias(_abc.MutableMapping, "MutableMapping")
+
+def _load_collections_abc() -> ModuleType:
+    cached = globals().get("_ABC_CACHE")
+    if isinstance(cached, ModuleType):
+        return cached
+    import _collections_abc as abc_mod_raw
+
+    abc_mod = _typing_cast(ModuleType, abc_mod_raw)
+    if getattr(abc_mod, "__name__", None) == "_abc":
+        raise RuntimeError("typing requires _collections_abc, not _abc")
+    for required in ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable"):
+        if getattr(abc_mod, required, None) is None:
+            raise RuntimeError(f"typing missing _collections_abc.{required}")
+    globals()["_ABC_CACHE"] = abc_mod
+    return abc_mod
+
+
+Awaitable = _LazySpecialGenericAlias("Awaitable", "Awaitable")
+Iterable = _LazySpecialGenericAlias("Iterable", "Iterable")
+Iterator = _LazySpecialGenericAlias("Iterator", "Iterator")
+MutableMapping = _LazySpecialGenericAlias("MutableMapping", "MutableMapping")
 
 _types_mod = _sys.modules.get("types")
 if _types_mod is not None:
@@ -800,7 +832,7 @@ def get_origin(tp: object) -> object | None:
     if isinstance(tp, _ConcatenateAlias):
         return Concatenate
     if isinstance(tp, _CallableAlias):
-        return getattr(_abc, "Callable")
+        return getattr(_load_collections_abc(), "Callable")
     if _UnionType is not None and isinstance(tp, _UnionType):
         return _UnionType
     return getattr(tp, "__origin__", None)

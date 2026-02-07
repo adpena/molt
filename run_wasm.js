@@ -271,6 +271,8 @@ const EADDRINUSE = errnoValue('EADDRINUSE', 98);
 const ECONNRESET = errnoValue('ECONNRESET', 104);
 const ECONNREFUSED = errnoValue('ECONNREFUSED', 111);
 const ENOPROTOOPT = errnoValue('ENOPROTOOPT', 92);
+const EOPNOTSUPP = errnoValue('EOPNOTSUPP', errnoValue('ENOTSUP', 95));
+const EISCONN = errnoValue('EISCONN', 106);
 const IO_EVENT_READ = 1;
 const IO_EVENT_WRITE = 1 << 1;
 const IO_EVENT_ERROR = 1 << 2;
@@ -842,6 +844,32 @@ class DbWorkerClient {
     });
   }
 
+  close() {
+    if (this.dead && !this.worker) {
+      return Promise.resolve();
+    }
+    this.dead = true;
+    this._failAll('db host worker shutting down');
+    if (this.port) {
+      try {
+        this.port.close();
+      } catch (err) {
+        // Best effort.
+      }
+      this.port = null;
+    }
+    const worker = this.worker;
+    this.worker = null;
+    if (!worker || typeof worker.terminate !== 'function') {
+      return Promise.resolve();
+    }
+    try {
+      return Promise.resolve(worker.terminate()).catch(() => {});
+    } catch (err) {
+      return Promise.resolve();
+    }
+  }
+
   send(entry, payload, timeoutMs, streamHandle, tokenId) {
     if (this.dead || !this.worker) {
       throw new Error('db host worker unavailable');
@@ -1058,6 +1086,8 @@ const TCP_NODELAY = 1;
 const SHUT_RD = 0;
 const SHUT_WR = 1;
 const MSG_PEEK = 2;
+const MSG_TRUNC = 0x20;
+const I64_MIN = -(1n << 63n);
 
 const writeBytes = (ptr, bytes) => {
   if (!wasmMemory) return false;
@@ -1213,6 +1243,106 @@ const encodeSockaddr = (addr) => {
   throw new Error('unsupported address family');
 };
 
+const EMPTY_ANCILLARY_PAYLOAD = (() => {
+  const out = Buffer.alloc(4);
+  out.writeUInt32LE(0, 0);
+  return out;
+})();
+
+const decodeAncillaryPayload = (payload) => {
+  const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
+  if (bytes.length < 4) {
+    throw new Error('ancillary payload too short');
+  }
+  const count = bytes.readUInt32LE(0);
+  let offset = 4;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    if (offset + 12 > bytes.length) {
+      throw new Error('ancillary payload truncated');
+    }
+    const level = bytes.readInt32LE(offset);
+    offset += 4;
+    const kind = bytes.readInt32LE(offset);
+    offset += 4;
+    const dataLen = bytes.readUInt32LE(offset);
+    offset += 4;
+    const end = offset + dataLen;
+    if (end > bytes.length) {
+      throw new Error('ancillary payload truncated');
+    }
+    out.push({ level, kind, data: bytes.subarray(offset, end) });
+    offset = end;
+  }
+  if (offset !== bytes.length) {
+    throw new Error('ancillary payload trailing bytes');
+  }
+  return out;
+};
+
+const encodeAncillaryPayload = (items) => {
+  const list = Array.isArray(items) ? items : [];
+  let total = 4;
+  for (const item of list) {
+    const data = Buffer.isBuffer(item.data) ? item.data : Buffer.from(item.data || []);
+    total += 12 + data.length;
+  }
+  const out = Buffer.alloc(total);
+  out.writeUInt32LE(list.length, 0);
+  let offset = 4;
+  for (const item of list) {
+    const data = Buffer.isBuffer(item.data) ? item.data : Buffer.from(item.data || []);
+    out.writeInt32LE(item.level | 0, offset);
+    offset += 4;
+    out.writeInt32LE(item.kind | 0, offset);
+    offset += 4;
+    out.writeUInt32LE(data.length, offset);
+    offset += 4;
+    data.copy(out, offset);
+    offset += data.length;
+  }
+  return out;
+};
+
+const encodeRecvmsgExtra = (addrBytes, ancillaryPayload) => {
+  const addr = Buffer.isBuffer(addrBytes) ? addrBytes : Buffer.from(addrBytes || []);
+  const anc = Buffer.isBuffer(ancillaryPayload)
+    ? ancillaryPayload
+    : Buffer.from(ancillaryPayload || []);
+  const out = Buffer.alloc(8 + addr.length + anc.length);
+  out.writeUInt32LE(addr.length, 0);
+  addr.copy(out, 4);
+  out.writeUInt32LE(anc.length, 4 + addr.length);
+  anc.copy(out, 8 + addr.length);
+  return out;
+};
+
+const decodeRecvmsgExtra = (extra) => {
+  const bytes = Buffer.isBuffer(extra) ? extra : Buffer.from(extra || []);
+  if (bytes.length < 8) {
+    throw new Error('recvmsg payload too short');
+  }
+  const addrLen = bytes.readUInt32LE(0);
+  const addrStart = 4;
+  const addrEnd = addrStart + addrLen;
+  if (addrEnd + 4 > bytes.length) {
+    throw new Error('recvmsg payload truncated');
+  }
+  const ancLen = bytes.readUInt32LE(addrEnd);
+  const ancStart = addrEnd + 4;
+  const ancEnd = ancStart + ancLen;
+  if (ancEnd > bytes.length) {
+    throw new Error('recvmsg payload truncated');
+  }
+  if (ancEnd !== bytes.length) {
+    throw new Error('recvmsg payload trailing bytes');
+  }
+  return {
+    addr: bytes.subarray(addrStart, addrEnd),
+    ancillary: bytes.subarray(ancStart, ancEnd),
+  };
+};
+
 const mapSocketError = (err) => {
   if (!err) return EINVAL;
   if (typeof err.errno === 'number') {
@@ -1235,6 +1365,11 @@ const mapSocketError = (err) => {
       return ETIMEDOUT;
     case 'ENOTCONN':
       return ENOTCONN;
+    case 'EISCONN':
+      return EISCONN;
+    case 'ENOTSUP':
+    case 'EOPNOTSUPP':
+      return EOPNOTSUPP;
     case 'EPIPE':
       return EPIPE;
     default:
@@ -1380,6 +1515,15 @@ const socketWorkerMain = () => {
     }
   };
 
+  const drainWaiters = (entry, readyMask = IO_EVENT_ERROR) => {
+    if (!entry.waiters.length) return;
+    const waiters = entry.waiters.splice(0);
+    for (const waiter of waiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(readyMask);
+    }
+  };
+
   const pollReady = (entry, events) => {
     let ready = 0;
     if (entry.error) {
@@ -1485,6 +1629,8 @@ const socketWorkerMain = () => {
         connectPending: false,
         connectError: null,
         listening: true,
+        ancillarySegments: [],
+        ancillaryPeer: null,
       };
       attachTcpHandlers(child);
       const handle = allocHandle(child);
@@ -1552,6 +1698,101 @@ const socketWorkerMain = () => {
     return Buffer.concat(chunks);
   };
 
+  const cloneAncillaryItems = (items) =>
+    (Array.isArray(items) ? items : []).map((item) => ({
+      level: item.level | 0,
+      kind: item.kind | 0,
+      data: Buffer.isBuffer(item.data) ? Buffer.from(item.data) : Buffer.from(item.data || []),
+    }));
+
+  const appendStreamAncillarySegment = (entry, bytes, items) => {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0) return false;
+    if (!Array.isArray(entry.ancillarySegments)) {
+      entry.ancillarySegments = [];
+    }
+    const normalized = cloneAncillaryItems(items);
+    const last = entry.ancillarySegments[entry.ancillarySegments.length - 1];
+    if (
+      last &&
+      !last.delivered &&
+      last.items.length === 0 &&
+      normalized.length === 0
+    ) {
+      last.remaining += n;
+      return true;
+    }
+    entry.ancillarySegments.push({
+      remaining: n,
+      items: normalized,
+      delivered: false,
+    });
+    return true;
+  };
+
+  const recordPeerStreamWrite = (entry, bytes, ancillaryItems) => {
+    const normalized = cloneAncillaryItems(ancillaryItems);
+    if (normalized.length > 0) {
+      if (!Number.isFinite(bytes) || Number(bytes) <= 0) {
+        return false;
+      }
+      if (!entry.ancillaryPeer || entry.ancillaryPeer.closed) {
+        return false;
+      }
+    }
+    const peer = entry.ancillaryPeer;
+    if (!peer || peer.closed) return true;
+    return appendStreamAncillarySegment(peer, bytes, normalized);
+  };
+
+  const canTransportPeerAncillary = (entry, bytes, ancillaryItems) => {
+    const normalized = cloneAncillaryItems(ancillaryItems);
+    if (normalized.length === 0) return true;
+    if (!Number.isFinite(bytes) || Number(bytes) <= 0) return false;
+    return !!(entry.ancillaryPeer && !entry.ancillaryPeer.closed);
+  };
+
+  const consumeStreamAncillary = (entry, consumedBytes, collect) => {
+    let remaining = Math.trunc(Number(consumedBytes));
+    if (!Number.isFinite(remaining) || remaining <= 0) return [];
+    if (!Array.isArray(entry.ancillarySegments) || entry.ancillarySegments.length === 0) {
+      return [];
+    }
+    const out = [];
+    while (remaining > 0 && entry.ancillarySegments.length) {
+      const segment = entry.ancillarySegments[0];
+      const step = Math.min(remaining, segment.remaining);
+      if (step > 0 && segment.items.length > 0 && !segment.delivered) {
+        if (collect) out.push(...cloneAncillaryItems(segment.items));
+        segment.delivered = true;
+      }
+      segment.remaining -= step;
+      remaining -= step;
+      if (segment.remaining <= 0) {
+        entry.ancillarySegments.shift();
+      }
+    }
+    return out;
+  };
+
+  const previewStreamAncillary = (entry, consumedBytes) => {
+    let remaining = Math.trunc(Number(consumedBytes));
+    if (!Number.isFinite(remaining) || remaining <= 0) return [];
+    if (!Array.isArray(entry.ancillarySegments) || entry.ancillarySegments.length === 0) {
+      return [];
+    }
+    const out = [];
+    for (const segment of entry.ancillarySegments) {
+      if (remaining <= 0) break;
+      const step = Math.min(remaining, segment.remaining);
+      if (step > 0 && segment.items.length > 0 && !segment.delivered) {
+        out.push(...cloneAncillaryItems(segment.items));
+      }
+      remaining -= step;
+    }
+    return out;
+  };
+
   const awaitReady = (entry, events, timeoutMs) =>
     new Promise((resolve) => {
       const ready = pollReady(entry, events);
@@ -1614,6 +1855,8 @@ const socketWorkerMain = () => {
             broadcast: false,
             recvBuf: null,
             sendBuf: null,
+            ancillarySegments: [],
+            ancillaryPeer: null,
           };
           attachUdpHandlers(entry);
           const handle = allocHandle(entry);
@@ -1654,6 +1897,8 @@ const socketWorkerMain = () => {
           broadcast: false,
           recvBuf: null,
           sendBuf: null,
+          ancillarySegments: [],
+          ancillaryPeer: null,
         };
         attachTcpHandlers(entry);
         const handle = allocHandle(entry);
@@ -1665,12 +1910,19 @@ const socketWorkerMain = () => {
         if (!entry) return { status: -EBADF };
         entry.refCount -= 1;
         if (entry.refCount > 0) return { status: 0 };
+        entry.closed = true;
+        entry.ended = true;
+        drainWaiters(entry, IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE);
         if (entry.kind === 'server') {
           entry.server.close();
         } else if (entry.socket) {
           entry.socket.destroy();
         }
-        entry.closed = true;
+        if (entry.ancillaryPeer && entry.ancillaryPeer.ancillaryPeer === entry) {
+          entry.ancillaryPeer.ancillaryPeer = null;
+        }
+        entry.ancillaryPeer = null;
+        entry.ancillarySegments = [];
         return { status: 0 };
       }
       case 'clone': {
@@ -1836,6 +2088,9 @@ const socketWorkerMain = () => {
           return { status: -EWOULDBLOCK };
         }
         const data = readFromQueue(entry.readQueue, size, peek);
+        if (!peek && data.length > 0) {
+          consumeStreamAncillary(entry, data.length, false);
+        }
         return { status: data.length, data };
       }
       case 'send': {
@@ -1855,6 +2110,9 @@ const socketWorkerMain = () => {
         try {
           const ok = entry.socket.write(payload);
           if (!ok) entry.backpressure = true;
+          if (payload.length > 0) {
+            recordPeerStreamWrite(entry, payload.length, []);
+          }
           return { status: payload.length };
         } catch (err) {
           return { status: -mapSocketError(err) };
@@ -1880,6 +2138,68 @@ const socketWorkerMain = () => {
               else resolve();
             });
           });
+          return { status: payload.length };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'sendmsg': {
+        const { handle, payload, flags, addr, ancillary } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        let ancillaryItems;
+        try {
+          ancillaryItems = decodeAncillaryPayload(ancillary);
+        } catch {
+          return { status: -EINVAL };
+        }
+        if (entry.kind === 'udp') {
+          if (ancillaryItems.length > 0) {
+            return { status: -EOPNOTSUPP };
+          }
+          if (addr && addr.length) {
+            let decoded;
+            try {
+              decoded = decodeSockaddr(addr);
+            } catch {
+              return { status: -EAFNOSUPPORT };
+            }
+            try {
+              await new Promise((resolve, reject) => {
+                entry.socket.send(payload, decoded.port, decoded.host, (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                });
+              });
+              return { status: payload.length };
+            } catch (err) {
+              return { status: -mapSocketError(err) };
+            }
+          }
+          if (!entry.connected) return { status: -ENOTCONN };
+          try {
+            entry.socket.send(payload);
+            return { status: payload.length };
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        }
+        if (addr && addr.length) {
+          return { status: -EISCONN };
+        }
+        if (ancillaryItems.length > 0 && !canTransportPeerAncillary(entry, payload.length, ancillaryItems)) {
+          return { status: -EOPNOTSUPP };
+        }
+        if (entry.backpressure) return { status: -EWOULDBLOCK };
+        try {
+          const ok = entry.socket.write(payload);
+          if (!ok) entry.backpressure = true;
+          if (payload.length > 0) {
+            recordPeerStreamWrite(entry, payload.length, ancillaryItems);
+          }
+          if ((flags & MSG_PEEK) !== 0) {
+            // MSG_PEEK is ignored for sendmsg on this host bridge.
+          }
           return { status: payload.length };
         } catch (err) {
           return { status: -mapSocketError(err) };
@@ -1919,6 +2239,9 @@ const socketWorkerMain = () => {
           return { status: -EWOULDBLOCK };
         }
         const data = readFromQueue(entry.readQueue, size, peek);
+        if (!peek && data.length > 0) {
+          consumeStreamAncillary(entry, data.length, false);
+        }
         let addrBytes = Buffer.alloc(0);
         try {
           addrBytes = encodeSockaddr({
@@ -1931,6 +2254,90 @@ const socketWorkerMain = () => {
           addrBytes = Buffer.alloc(0);
         }
         return { status: data.length, data, extra: addrBytes };
+      }
+      case 'recvmsg': {
+        const { handle, size, flags } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const peek = (flags & MSG_PEEK) !== 0;
+        if (entry.kind === 'udp') {
+          const ancillaryPayload = EMPTY_ANCILLARY_PAYLOAD;
+          if (!entry.recvQueue.length) {
+            if (entry.closed) {
+              return {
+                status: 0,
+                data: Buffer.alloc(0),
+                extra: encodeRecvmsgExtra(Buffer.alloc(0), ancillaryPayload),
+                handle1: 0n,
+              };
+            }
+            return { status: -EWOULDBLOCK };
+          }
+          const packet = entry.recvQueue[0];
+          const data = packet.data.subarray(0, size);
+          let msgFlags = 0;
+          if (packet.data.length > size) {
+            msgFlags |= MSG_TRUNC;
+          }
+          if (!peek) {
+            if (data.length === packet.data.length) {
+              entry.recvQueue.shift();
+            } else {
+              entry.recvQueue[0] = {
+                data: packet.data.subarray(data.length),
+                addr: packet.addr,
+              };
+            }
+          }
+          let addrBytes = Buffer.alloc(0);
+          try {
+            addrBytes = encodeSockaddr(packet.addr);
+          } catch {
+            addrBytes = Buffer.alloc(0);
+          }
+          return {
+            status: data.length,
+            data,
+            extra: encodeRecvmsgExtra(addrBytes, ancillaryPayload),
+            handle1: BigInt(msgFlags),
+          };
+        }
+        if (!entry.readQueue.length) {
+          if (entry.ended) {
+            return {
+              status: 0,
+              data: Buffer.alloc(0),
+              extra: encodeRecvmsgExtra(Buffer.alloc(0), EMPTY_ANCILLARY_PAYLOAD),
+              handle1: 0n,
+            };
+          }
+          return { status: -EWOULDBLOCK };
+        }
+        const data = readFromQueue(entry.readQueue, size, peek);
+        const ancillaryItems = peek
+          ? previewStreamAncillary(entry, data.length)
+          : consumeStreamAncillary(entry, data.length, true);
+        const ancillaryPayload =
+          ancillaryItems.length > 0
+            ? encodeAncillaryPayload(ancillaryItems)
+            : EMPTY_ANCILLARY_PAYLOAD;
+        let addrBytes = Buffer.alloc(0);
+        try {
+          addrBytes = encodeSockaddr({
+            family: entry.socket.remoteFamily === 'IPv6' ? AF_INET6 : AF_INET,
+            host: entry.socket.remoteAddress,
+            port: entry.socket.remotePort || 0,
+            scopeId: entry.socket.remoteScopeid || 0,
+          });
+        } catch {
+          addrBytes = Buffer.alloc(0);
+        }
+        return {
+          status: data.length,
+          data,
+          extra: encodeRecvmsgExtra(addrBytes, ancillaryPayload),
+          handle1: 0n,
+        };
       }
       case 'shutdown': {
         const { handle, how } = request;
@@ -2107,12 +2514,19 @@ const socketWorkerMain = () => {
         if (!entry) return { status: -EBADF };
         entry.refCount -= 1;
         if (entry.refCount > 0) return { status: 0 };
+        entry.closed = true;
+        entry.ended = true;
+        drainWaiters(entry, IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE);
         if (entry.kind === 'server') {
           entry.server.close();
         } else if (entry.socket) {
           entry.socket.destroy();
         }
-        entry.closed = true;
+        if (entry.ancillaryPeer && entry.ancillaryPeer.ancillaryPeer === entry) {
+          entry.ancillaryPeer.ancillaryPeer = null;
+        }
+        entry.ancillaryPeer = null;
+        entry.ancillarySegments = [];
         return { status: 0 };
       }
       case 'socketpair': {
@@ -2166,6 +2580,8 @@ const socketWorkerMain = () => {
           broadcast: false,
           recvBuf: null,
           sendBuf: null,
+          ancillarySegments: [],
+          ancillaryPeer: null,
         };
         attachTcpHandlers(clientEntry);
         const leftHandle = allocHandle(clientEntry);
@@ -2206,9 +2622,13 @@ const socketWorkerMain = () => {
           broadcast: false,
           recvBuf: null,
           sendBuf: null,
+          ancillarySegments: [],
+          ancillaryPeer: null,
         };
         attachTcpHandlers(serverEntry);
         const rightHandle = allocHandle(serverEntry);
+        clientEntry.ancillaryPeer = serverEntry;
+        serverEntry.ancillaryPeer = clientEntry;
         return { status: 0, handle1: leftHandle, handle2: rightHandle };
       }
       case 'getaddrinfo': {
@@ -2410,6 +2830,23 @@ class SocketWorkerClient {
     });
   }
 
+  close() {
+    if (this.dead && !this.worker) {
+      return Promise.resolve();
+    }
+    this.dead = true;
+    const worker = this.worker;
+    this.worker = null;
+    if (!worker || typeof worker.terminate !== 'function') {
+      return Promise.resolve();
+    }
+    try {
+      return Promise.resolve(worker.terminate()).catch(() => {});
+    } catch (err) {
+      return Promise.resolve();
+    }
+  }
+
   call(op, request, dataCap, timeoutMs) {
     if (this.dead) {
       throw new Error('socket host worker unavailable');
@@ -2471,6 +2908,19 @@ const socketCall = (op, request, dataCap, timeoutMs) => {
       handle1: 0n,
       handle2: 0n,
     };
+  }
+};
+
+const shutdownHostWorkers = async () => {
+  const socketClient = socketWorkerClient;
+  socketWorkerClient = null;
+  const dbClient = dbWorkerClient;
+  dbWorkerClient = null;
+  const tasks = [];
+  if (socketClient) tasks.push(socketClient.close());
+  if (dbClient) tasks.push(dbClient.close());
+  if (tasks.length) {
+    await Promise.all(tasks);
   }
 };
 
@@ -2559,6 +3009,28 @@ const socketHostSendTo = (handle, bufPtr, bufLen, flags, addrPtr, addrLen) => {
   return res.status;
 };
 
+const socketHostSendMsg = (
+  handle,
+  bufPtr,
+  bufLen,
+  flags,
+  addrPtr,
+  addrLen,
+  ancPtr,
+  ancLen,
+) => {
+  if (!wasmMemory) return -ENOSYS;
+  const payload = readBytes(bufPtr, bufLen);
+  const addr = addrLen ? readBytes(addrPtr, addrLen) : Buffer.alloc(0);
+  const ancillary = ancLen ? readBytes(ancPtr, ancLen) : EMPTY_ANCILLARY_PAYLOAD;
+  const res = socketCall(
+    'sendmsg',
+    { handle: Number(handle), payload, flags, addr, ancillary },
+    0,
+  );
+  return res.status;
+};
+
 const socketHostRecvFrom = (handle, bufPtr, bufLen, flags, addrPtr, addrCap, outLenPtr) => {
   if (!wasmMemory) return -ENOSYS;
   const res = socketCall(
@@ -2575,6 +3047,53 @@ const socketHostRecvFrom = (handle, bufPtr, bufLen, flags, addrPtr, addrCap, out
     }
     if (!writeBytes(addrPtr, res.extra)) return -EINVAL;
     if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+  }
+  return res.status;
+};
+
+const socketHostRecvMsg = (
+  handle,
+  bufPtr,
+  bufLen,
+  flags,
+  addrPtr,
+  addrCap,
+  outAddrLenPtr,
+  ancPtr,
+  ancCap,
+  outAncLenPtr,
+  outMsgFlagsPtr,
+) => {
+  if (!wasmMemory) return -ENOSYS;
+  const cap =
+    Number(bufLen || 0) +
+    Number(addrCap || 0) +
+    Number(ancCap || 0) +
+    32;
+  const res = socketCall(
+    'recvmsg',
+    { handle: Number(handle), size: Number(bufLen), flags },
+    cap,
+  );
+  if (res.status < 0) return res.status;
+  if (!writeBytes(bufPtr, res.data)) return -EINVAL;
+  let decoded;
+  try {
+    decoded = decodeRecvmsgExtra(res.extra);
+  } catch {
+    return -EINVAL;
+  }
+  const addrLen = decoded.addr.length;
+  const ancLen = decoded.ancillary.length;
+  if (outAddrLenPtr) writeU32(Number(outAddrLenPtr), addrLen);
+  if (outAncLenPtr) writeU32(Number(outAncLenPtr), ancLen);
+  if (addrLen > Number(addrCap) || ancLen > Number(ancCap)) {
+    return -ENOMEM;
+  }
+  if (addrLen > 0 && !writeBytes(addrPtr, decoded.addr)) return -EINVAL;
+  if (ancLen > 0 && !writeBytes(ancPtr, decoded.ancillary)) return -EINVAL;
+  if (outMsgFlagsPtr) {
+    writeI32(Number(outMsgFlagsPtr), Number(res.handle1) | 0);
   }
   return res.status;
 };
@@ -2654,6 +3173,68 @@ const osCloseHost = (fd) => {
   } catch (err) {
     return -mapSocketError(err);
   }
+};
+
+const toFiniteUnixSeconds = (raw) => {
+  const value = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return value;
+};
+
+const tzNameForDate = (date) => {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(date);
+    const tzPart = parts.find((part) => part.type === 'timeZoneName');
+    if (tzPart && tzPart.value) return tzPart.value;
+  } catch {
+    // fall through
+  }
+  return 'UTC';
+};
+
+const tzProfileForYear = (year) => {
+  const jan = new Date(year, 0, 1, 12, 0, 0);
+  const jul = new Date(year, 6, 1, 12, 0, 0);
+  const janOffset = jan.getTimezoneOffset();
+  const julOffset = jul.getTimezoneOffset();
+  const stdDate = janOffset >= julOffset ? jan : jul;
+  const dstDate = janOffset >= julOffset ? jul : jan;
+  const stdName = tzNameForDate(stdDate);
+  const dstName = janOffset === julOffset ? stdName : tzNameForDate(dstDate);
+  return {
+    stdOffsetSeconds: Math.trunc(Math.max(janOffset, julOffset) * 60),
+    stdName,
+    dstName,
+  };
+};
+
+const timeTimezoneHost = () => {
+  const profile = tzProfileForYear(new Date().getFullYear());
+  return BigInt(profile.stdOffsetSeconds);
+};
+
+const timeLocalOffsetHost = (secsRaw) => {
+  const secs = toFiniteUnixSeconds(secsRaw);
+  if (secs === null) return I64_MIN;
+  const date = new Date(secs * 1000);
+  if (!Number.isFinite(date.getTime())) return I64_MIN;
+  return BigInt(Math.trunc(date.getTimezoneOffset() * 60));
+};
+
+const timeTznameHost = (whichRaw, bufPtr, bufCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  if (!outLenPtr) return -EINVAL;
+  const which = typeof whichRaw === 'bigint' ? Number(whichRaw) : Number(whichRaw);
+  if (!Number.isFinite(which) || (which !== 0 && which !== 1)) return -EINVAL;
+  const profile = tzProfileForYear(new Date().getFullYear());
+  const label = which === 0 ? profile.stdName : profile.dstName;
+  const data = Buffer.from(label, 'utf8');
+  writeU32(Number(outLenPtr), data.length);
+  const cap = Number(bufCap);
+  if (!Number.isFinite(cap) || cap < 0) return -EINVAL;
+  if (data.length > cap) return -ENOMEM;
+  if (data.length > 0 && !writeBytes(bufPtr, data)) return -EINVAL;
+  return 0;
 };
 
 const socketHostSocketpair = (family, sockType, proto, outLeftPtr, outRightPtr) => {
@@ -3527,6 +4108,9 @@ const runDirectLink = async () => {
     molt_db_host_poll: dbHostPoll,
     molt_getpid_host: () =>
       BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0),
+    molt_time_timezone_host: timeTimezoneHost,
+    molt_time_local_offset_host: timeLocalOffsetHost,
+    molt_time_tzname_host: timeTznameHost,
     molt_os_close_host: osCloseHost,
     molt_socket_new_host: socketHostNew,
     molt_socket_close_host: socketHostClose,
@@ -3539,7 +4123,9 @@ const runDirectLink = async () => {
     molt_socket_recv_host: socketHostRecv,
     molt_socket_send_host: socketHostSend,
     molt_socket_sendto_host: socketHostSendTo,
+    molt_socket_sendmsg_host: socketHostSendMsg,
     molt_socket_recvfrom_host: socketHostRecvFrom,
+    molt_socket_recvmsg_host: socketHostRecvMsg,
     molt_socket_shutdown_host: socketHostShutdown,
     molt_socket_getsockname_host: socketHostGetsockname,
     molt_socket_getpeername_host: socketHostGetpeername,
@@ -3677,6 +4263,9 @@ const runLinked = async () => {
   importObject.env.molt_db_host_poll = dbHostPoll;
   importObject.env.molt_getpid_host = () =>
     BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
+  importObject.env.molt_time_timezone_host = timeTimezoneHost;
+  importObject.env.molt_time_local_offset_host = timeLocalOffsetHost;
+  importObject.env.molt_time_tzname_host = timeTznameHost;
   importObject.env.molt_os_close_host = osCloseHost;
   importObject.env.molt_socket_new_host = socketHostNew;
   importObject.env.molt_socket_close_host = socketHostClose;
@@ -3689,7 +4278,9 @@ const runLinked = async () => {
   importObject.env.molt_socket_recv_host = socketHostRecv;
   importObject.env.molt_socket_send_host = socketHostSend;
   importObject.env.molt_socket_sendto_host = socketHostSendTo;
+  importObject.env.molt_socket_sendmsg_host = socketHostSendMsg;
   importObject.env.molt_socket_recvfrom_host = socketHostRecvFrom;
+  importObject.env.molt_socket_recvmsg_host = socketHostRecvMsg;
   importObject.env.molt_socket_shutdown_host = socketHostShutdown;
   importObject.env.molt_socket_getsockname_host = socketHostGetsockname;
   importObject.env.molt_socket_getpeername_host = socketHostGetpeername;
@@ -3758,7 +4349,6 @@ const runMain = async () => {
     linkedPath = wasmPath;
     linkedBuffer = wasmBuffer;
   }
-  // TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops.
   runtimeCallIndirectNames = runtimeImportsDesc.funcImports
     .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
     .map((entry) => entry.name);
@@ -3768,49 +4358,71 @@ const runMain = async () => {
   const preferLinked =
     preferLinkedEnv === undefined ||
     !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
-  const useLinked =
-    inputHasRuntimeImports ||
-    process.env.MOLT_WASM_LINKED === '1' ||
-    (preferLinked && linkedBuffer);
+  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
+  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
+  const directLinkRequestedByEnv =
+    directLinkEnv !== undefined &&
+    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
+  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
+  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
+  if (directLinkRequested && !canDirectLink) {
+    throw new Error(
+      'Direct-link mode is unavailable for this wasm artifact. Use linked output or rebuild with shared env.memory/env.__indirect_function_table imports.'
+    );
+  }
+  // Safety-first policy: default to linked execution. Direct-linking is opt-in
+  // and only allowed when the artifact advertises the shared memory/table ABI.
+  const useLinked = forceLinked || !directLinkRequested;
   const runner = useLinked ? runLinked : runDirectLink;
   traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
   if (traceRun) {
     console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
   }
-  await runner();
-  traceMark('runMain:runner_completed');
-  if (traceRun) {
-    console.error('[molt wasm] runner completed');
-  }
-  if (wasiExitCode !== null && wasiExitCode !== 0) {
-    traceMark(`runMain:exit_wasi:${wasiExitCode}`);
+  try {
+    await runner();
+    traceMark('runMain:runner_completed');
     if (traceRun) {
-      console.error(`[molt wasm] exiting with wasi code ${wasiExitCode}`);
+      console.error('[molt wasm] runner completed');
     }
-    process.exit(wasiExitCode);
+    if (wasiExitCode !== null && wasiExitCode !== 0) {
+      traceMark(`runMain:exit_wasi:${wasiExitCode}`);
+      if (traceRun) {
+        console.error(`[molt wasm] exiting with wasi code ${wasiExitCode}`);
+      }
+      return wasiExitCode;
+    }
+    return 0;
+  } finally {
+    await shutdownHostWorkers();
   }
 };
 
 if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
-  runMain().catch((err) => {
-    traceMark('runMain:catch');
-    traceMark(`runMain:catch_err:${formatTraceError(err).replaceAll('\n', '\\n')}`);
-    if (traceRun) {
-      console.error('[molt wasm] runMain rejected');
-    }
-    if (isWasiExitSymbol(err)) {
-      traceMark(`runMain:catch_wasi_symbol:${wasiExitCode === null ? 0 : wasiExitCode}`);
-      if (traceRun) {
-        console.error(
-          `[molt wasm] caught wasi exit symbol, code=${wasiExitCode === null ? 0 : wasiExitCode}`
-        );
+  runMain()
+    .then((exitCode) => {
+      if (exitCode !== 0) {
+        process.exit(exitCode);
       }
-      process.exit(wasiExitCode === null ? 0 : wasiExitCode);
-      return;
-    }
-    traceMark('runMain:catch_non_wasi');
-    console.error(err);
-    traceMark('runMain:exit_1');
-    process.exit(1);
-  });
+    })
+    .catch((err) => {
+      traceMark('runMain:catch');
+      traceMark(`runMain:catch_err:${formatTraceError(err).replaceAll('\n', '\\n')}`);
+      if (traceRun) {
+        console.error('[molt wasm] runMain rejected');
+      }
+      if (isWasiExitSymbol(err)) {
+        traceMark(`runMain:catch_wasi_symbol:${wasiExitCode === null ? 0 : wasiExitCode}`);
+        if (traceRun) {
+          console.error(
+            `[molt wasm] caught wasi exit symbol, code=${wasiExitCode === null ? 0 : wasiExitCode}`
+          );
+        }
+        process.exit(wasiExitCode === null ? 0 : wasiExitCode);
+        return;
+      }
+      traceMark('runMain:catch_non_wasi');
+      console.error(err);
+      traceMark('runMain:exit_1');
+      process.exit(1);
+    });
 }

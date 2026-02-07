@@ -9,12 +9,36 @@ use crate::{
 };
 
 #[cfg(target_arch = "wasm32")]
+use crate::MoltObject;
+#[cfg(target_arch = "wasm32")]
 use crate::{
     molt_call_indirect0, molt_call_indirect1, molt_call_indirect10, molt_call_indirect11,
     molt_call_indirect12, molt_call_indirect13, molt_call_indirect2, molt_call_indirect3,
     molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
     molt_call_indirect8, molt_call_indirect9,
 };
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
+    const VOID_INTRINSICS: [&str; 9] = [
+        "molt_email_message_drop",
+        "molt_process_drop",
+        "molt_stream_reader_drop",
+        "molt_stream_close",
+        "molt_stream_drop",
+        "molt_ws_close",
+        "molt_ws_drop",
+        "molt_socket_reader_drop",
+        "molt_socket_drop",
+    ];
+    for name in VOID_INTRINSICS {
+        if crate::intrinsics::resolve_symbol(name) == Some(fn_ptr) {
+            return true;
+        }
+    }
+    false
+}
 
 unsafe fn raise_call_arity_mismatch(
     _py: &PyToken<'_>,
@@ -50,6 +74,19 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     let closure_bits = function_closure_bits(func_ptr);
     #[cfg(target_arch = "wasm32")]
     let tramp_ptr = function_trampoline_ptr(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let debug_enabled = std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1");
+    #[cfg(target_arch = "wasm32")]
+    let debug_name = if debug_enabled {
+        let name_bits = function_name_bits(_py, func_ptr);
+        if name_bits != 0 {
+            string_obj_to_owned(obj_from_bits(name_bits))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let code_bits = ensure_function_code_bits(_py, func_ptr);
     if !recursion_guard_enter() {
         return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -58,12 +95,21 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     let res = if closure_bits != 0 {
         #[cfg(target_arch = "wasm32")]
         {
-            if tramp_ptr == 0 && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1") {
-                eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
-            }
             if tramp_ptr != 0 {
+                if debug_enabled {
+                    eprintln!(
+                        "molt wasm call1 indirect2: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
+                        debug_name.as_deref().unwrap_or("<unnamed>"),
+                    );
+                }
                 molt_call_indirect2(fn_ptr, closure_bits, arg0_bits) as u64
             } else {
+                if debug_enabled {
+                    eprintln!(
+                        "molt wasm call1 direct2: name={} fn=0x{fn_ptr:x}",
+                        debug_name.as_deref().unwrap_or("<unnamed>"),
+                    );
+                }
                 let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(closure_bits, arg0_bits) as u64
             }
@@ -76,14 +122,29 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     } else {
         #[cfg(target_arch = "wasm32")]
         {
-            if tramp_ptr == 0 && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1") {
-                eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
-            }
             if tramp_ptr != 0 {
+                if debug_enabled {
+                    eprintln!(
+                        "molt wasm call1 indirect1: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
+                        debug_name.as_deref().unwrap_or("<unnamed>"),
+                    );
+                }
                 molt_call_indirect1(fn_ptr, arg0_bits) as u64
             } else {
-                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits) as u64
+                if debug_enabled {
+                    eprintln!(
+                        "molt wasm call1 direct1: name={} fn=0x{fn_ptr:x}",
+                        debug_name.as_deref().unwrap_or("<unnamed>"),
+                    );
+                }
+                if is_void_wasm_call1_target(fn_ptr) {
+                    let func: extern "C" fn(u64) = std::mem::transmute(fn_ptr as usize);
+                    func(arg0_bits);
+                    MoltObject::none().bits()
+                } else {
+                    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                    func(arg0_bits) as u64
+                }
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1484,6 +1545,17 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
 }
 
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let func_obj = obj_from_bits(func_bits);
+        if let Some(func_ptr) = func_obj.as_ptr() {
+            if object_type_id(func_ptr) == TYPE_ID_FUNCTION
+                && function_trampoline_ptr(func_ptr) != 0
+            {
+                return call_function_obj_trampoline(_py, func_bits, args);
+            }
+        }
+    }
     if function_needs_task_trampoline(_py, func_bits) {
         return call_function_obj_trampoline(_py, func_bits, args);
     }

@@ -27,22 +27,44 @@ use crate::builtins::{
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
-    asyncgen_running_bits, bound_method_func_bits, bound_method_self_bits,
+    asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop,
+    asyncio_gather_poll_fn_addr, asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr,
+    asyncio_ready_runner_task_drop, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_server_accept_loop_task_drop, asyncio_sock_accept_poll_fn_addr,
+    asyncio_sock_accept_task_drop, asyncio_sock_connect_poll_fn_addr,
+    asyncio_sock_connect_task_drop, asyncio_sock_recv_into_poll_fn_addr,
+    asyncio_sock_recv_into_task_drop, asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
+    asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_into_task_drop,
+    asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_recvfrom_task_drop,
+    asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendall_task_drop,
+    asyncio_sock_sendto_poll_fn_addr, asyncio_sock_sendto_task_drop,
+    asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_read_task_drop,
+    asyncio_socket_reader_readline_poll_fn_addr, asyncio_socket_reader_readline_task_drop,
+    asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_read_task_drop,
+    asyncio_stream_reader_readline_poll_fn_addr, asyncio_stream_reader_readline_task_drop,
+    asyncio_stream_send_all_poll_fn_addr, asyncio_stream_send_all_task_drop,
+    asyncio_timer_handle_poll_fn_addr, asyncio_timer_handle_task_drop,
+    asyncio_wait_for_poll_fn_addr, asyncio_wait_for_task_drop, asyncio_wait_poll_fn_addr,
+    asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
     builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
     call_iter_callable_bits, call_iter_sentinel_bits, callargs_ptr, classmethod_func_bits,
     code_filename_bits, code_linetable_bits, code_name_bits, code_varnames_bits,
-    context_payload_bits, dict_order_ptr, dict_table_ptr, dict_view_dict_bits,
-    enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_cause_bits,
-    exception_class_bits, exception_context_bits, exception_kind_bits, exception_msg_bits,
-    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
-    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
-    function_code_bits, function_dict_bits, generator_exception_stack_drop,
-    generic_alias_args_bits, generic_alias_origin_bits, io_wait_poll_fn_addr,
-    io_wait_release_socket, issubclass_bits, iter_target_bits, map_func_bits, map_iters_ptr,
-    module_dict_bits, module_name_bits, process_poll_fn_addr, profile_hit, property_del_bits,
-    property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
-    reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
-    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
+    context_payload_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_enter_context_task_drop,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
+    contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
+    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_order_ptr,
+    dict_table_ptr, dict_view_dict_bits, enumerate_index_bits, enumerate_target_bits,
+    exception_args_bits, exception_cause_bits, exception_class_bits, exception_context_bits,
+    exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
+    exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
+    function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
+    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
+    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_target_bits, map_func_bits,
+    map_iters_ptr, module_dict_bits, module_name_bits, process_poll_fn_addr, profile_hit,
+    property_del_bits, property_get_bits, property_set_bits, range_start_bits, range_step_bits,
+    range_stop_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
+    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
     task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits, utf8_cache_remove,
     weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits, PyToken,
     ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
@@ -1275,7 +1297,55 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             TYPE_ID_OBJECT => {
                 let poll_fn = header.poll_fn;
-                if poll_fn == thread_poll_fn_addr() {
+                if poll_fn == asyncio_wait_for_poll_fn_addr() {
+                    asyncio_wait_for_task_drop(py, ptr);
+                } else if poll_fn == asyncio_wait_poll_fn_addr() {
+                    asyncio_wait_task_drop(py, ptr);
+                } else if poll_fn == asyncio_gather_poll_fn_addr() {
+                    asyncio_gather_task_drop(py, ptr);
+                } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
+                    asyncio_timer_handle_task_drop(py, ptr);
+                } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
+                    asyncio_fd_watcher_task_drop(py, ptr);
+                } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
+                    asyncio_server_accept_loop_task_drop(py, ptr);
+                } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
+                    asyncio_ready_runner_task_drop(py, ptr);
+                } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
+                    contextlib_asyncgen_enter_task_drop(py, ptr);
+                } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
+                    contextlib_asyncgen_exit_task_drop(py, ptr);
+                } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
+                    contextlib_async_exitstack_exit_task_drop(py, ptr);
+                } else if poll_fn == contextlib_async_exitstack_enter_context_poll_fn_addr() {
+                    contextlib_async_exitstack_enter_context_task_drop(py, ptr);
+                } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
+                    asyncio_socket_reader_read_task_drop(py, ptr);
+                } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
+                    asyncio_socket_reader_readline_task_drop(py, ptr);
+                } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
+                    asyncio_stream_reader_read_task_drop(py, ptr);
+                } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
+                    asyncio_stream_reader_readline_task_drop(py, ptr);
+                } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
+                    asyncio_stream_send_all_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
+                    asyncio_sock_recv_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
+                    asyncio_sock_connect_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
+                    asyncio_sock_accept_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
+                    asyncio_sock_recv_into_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
+                    asyncio_sock_sendall_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
+                    asyncio_sock_recvfrom_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
+                    asyncio_sock_recvfrom_into_task_drop(py, ptr);
+                } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
+                    asyncio_sock_sendto_task_drop(py, ptr);
+                } else if poll_fn == thread_poll_fn_addr() {
                     #[cfg(not(target_arch = "wasm32"))]
                     thread_task_drop(py, ptr);
                 } else if poll_fn == process_poll_fn_addr() {

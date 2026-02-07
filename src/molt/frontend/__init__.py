@@ -1182,7 +1182,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
         self.func_symbol_names[symbol] = "<module_chunk>"
         self._register_code_symbol(symbol)
-        self.funcs_map[symbol] = {"params": [_MOLT_MODULE_CHUNK_PARAM], "ops": []}
+        self.funcs_map[symbol] = FuncInfo(params=[_MOLT_MODULE_CHUNK_PARAM], ops=[])
         self.module_chunk_symbols.append(symbol)
         return symbol
 
@@ -10484,7 +10484,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "methods": methods,
                 "pending_methods": pending_methods,
                 "needs_classcell": needs_classcell,
-                "custom_metaclass": has_metaclass_kw or inherits_custom_meta,
+                "custom_metaclass": has_metaclass_kw
+                or inherits_custom_meta
+                or dynamic_build,
             }
         else:
             fields: dict[str, int] = {}
@@ -10615,7 +10617,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 dynamic=dynamic,
                 static=is_static,
                 needs_classcell=needs_classcell,
-                custom_metaclass=has_metaclass_kw or inherits_custom_meta,
+                custom_metaclass=has_metaclass_kw
+                or inherits_custom_meta
+                or dynamic_build,
             )
 
         method_names = {
@@ -12385,10 +12389,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         class_scope[item.name] = res
                         self.locals[item.name] = res
-                        if (
-                            item.name in methods
-                            and methods[item.name]["descriptor"] == "property"
-                        ):
+                        # Keep the canonical method binding in sync so later
+                        # class finalization does not overwrite descriptor
+                        # updates (e.g. @name.setter / @name.deleter) with the
+                        # original pre-update descriptor value.
+                        if item.name in methods:
                             methods[item.name]["attr"] = res
                         else:
                             class_attr_values[item.name] = res
@@ -17252,28 +17257,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return self._emit_type_error_value(
                         "map() must have at least two arguments"
                     )
-                func_val = self.visit(node.args[0])
-                if func_val is None:
-                    raise NotImplementedError("Unsupported map function")
-                iter_vals: list[MoltValue] = []
-                for expr in node.args[1:]:
-                    iter_val = self.visit(expr)
-                    if iter_val is None:
-                        raise NotImplementedError("Unsupported map iterable")
-                    iter_vals.append(iter_val)
                 callee = self._emit_builtin_function(func_id)
-                iterables_tuple = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iterables_tuple)
-                )
                 res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC",
-                        args=[callee, func_val, iterables_tuple],
-                        result=res,
-                    )
-                )
+                callargs = self._emit_call_args_builder(node)
+                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
                 return res
             if func_id == "zip":
                 if (
@@ -17287,27 +17274,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
                     )
                     return res
-                iter_vals: list[MoltValue] = []
-                for expr in node.args:
-                    iter_val = self.visit(expr)
-                    if iter_val is None:
-                        raise NotImplementedError("Unsupported zip iterable")
-                    iter_vals.append(iter_val)
                 callee = self._emit_builtin_function(func_id)
-                iterables_tuple = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iterables_tuple)
-                )
-                strict_val = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=strict_val))
                 res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC",
-                        args=[callee, iterables_tuple, strict_val],
-                        result=res,
-                    )
-                )
+                callargs = self._emit_call_args_builder(node)
+                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
                 return res
             if func_id in {"min", "max"}:
                 if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
@@ -20574,6 +20544,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.control_flow_depth -= 1
             self.context_depth -= 1
         self.try_end_labels.pop()
+        # End the protected body region before issuing the normal __exit__ call.
+        # If __exit__ itself raises, it should propagate directly rather than
+        # re-entering the with-exception cleanup path and double-consuming context.
+        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
         none_exit = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exit))
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
@@ -22644,17 +22618,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 scope.finalbody, None, popped_scopes=popped_scopes
                             )
                             self.active_exceptions = prior_active
-            if self.context_depth > 0:
-                if none_exc is None:
-                    none_exc = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exc))
-                self.emit(
-                    MoltOp(
-                        kind="CONTEXT_UNWIND",
-                        args=[none_exc],
-                        result=MoltValue("none"),
-                    )
-                )
+            # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
+            # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
             self._emit_restore_exception_stack_depth(exit_baseline=False)
             self._emit_raise_if_pending()
             closed = MoltValue(self.next_var(), type_hint="bool")
@@ -22724,17 +22689,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             scope.finalbody, None, popped_scopes=popped_scopes
                         )
                         self.active_exceptions = prior_active
-        if self.context_depth > 0:
-            if none_exc is None:
-                none_exc = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exc))
-            self.emit(
-                MoltOp(
-                    kind="CONTEXT_UNWIND",
-                    args=[none_exc],
-                    result=MoltValue("none"),
-                )
-            )
+        # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
+        # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
         self._emit_restore_exception_stack_depth(exit_baseline=False)
         self._emit_raise_if_pending()
         self._emit_return_value(val)

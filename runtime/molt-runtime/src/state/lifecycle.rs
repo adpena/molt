@@ -101,8 +101,16 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_exception_state(_py);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
+    trace_shutdown("run_weakref_finalizers");
+    crate::object::weakref::weakref_run_atexit_finalizers(_py);
+    trace_shutdown("clear_weakref_containers");
+    crate::object::weakref::weakref_clear_container_state(_py);
+    trace_shutdown("flush_stdio_post_finalizers");
+    flush_stdio_handles(_py, state);
     trace_shutdown("clear_module_cache");
     clear_module_cache(_py, state);
+    trace_shutdown("flush_stdio_post_modules");
+    flush_stdio_handles(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
     trace_shutdown("builtin_classes_shutdown");
@@ -332,6 +340,59 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     {
         let mut guard = state.cancel_tokens.lock().unwrap();
         *guard = default_cancel_tokens();
+    }
+    let running_loop_bits = {
+        let mut guard = state.asyncio_running_loops.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        old.into_values().collect::<Vec<_>>()
+    };
+    for bits in running_loop_bits {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    let event_loop_bits = {
+        let mut guard = state.asyncio_event_loops.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        old.into_values().collect::<Vec<_>>()
+    };
+    for bits in event_loop_bits {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    let event_loop_policy_bits = {
+        let mut guard = state.asyncio_event_loop_policy.lock().unwrap();
+        let bits = *guard;
+        *guard = MoltObject::none().bits();
+        bits
+    };
+    if event_loop_policy_bits != 0 && !obj_from_bits(event_loop_policy_bits).is_none() {
+        dec_ref_bits(_py, event_loop_policy_bits);
+    }
+    let task_bits = {
+        let mut guard = state.asyncio_tasks.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        old.into_values().collect::<Vec<_>>()
+    };
+    for bits in task_bits {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    let event_waiter_bits = {
+        let mut guard = state.asyncio_event_waiters.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        let mut bits = Vec::new();
+        for waiters in old.into_values() {
+            bits.extend(waiters);
+        }
+        bits
+    };
+    for bits in event_waiter_bits {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
     }
     NEXT_CANCEL_TOKEN_ID.store(2, AtomicOrdering::SeqCst);
 }
@@ -572,6 +633,7 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.molt_bind_kind,
         &state.interned.defaults_name,
         &state.interned.kwdefaults_name,
+        &state.interned.abstractmethods_name,
         &state.interned.lt_name,
         &state.interned.le_name,
         &state.interned.gt_name,

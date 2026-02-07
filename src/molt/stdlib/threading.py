@@ -1,16 +1,17 @@
 """Capability-gated threading for Molt."""
 
+# Threading behavior in this module is runtime-intrinsic-backed; parity gaps are
+# tracked in docs/spec/STATUS.md and the stdlib compatibility matrix.
+
 from __future__ import annotations
 
-from typing import Any, Callable, cast
-import struct
 import sys
-import traceback as _traceback
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+Any = object  # type: ignore[assignment]
+Callable = object  # type: ignore[assignment]
 
-_MOLT_THREAD_SPAWN = _require_intrinsic("molt_thread_spawn", globals())
+
 _MOLT_THREAD_JOIN = _require_intrinsic("molt_thread_join", globals())
 _MOLT_THREAD_IS_ALIVE = _require_intrinsic("molt_thread_is_alive", globals())
 _MOLT_THREAD_IDENT = _require_intrinsic("molt_thread_ident", globals())
@@ -19,7 +20,32 @@ _MOLT_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", glo
 _MOLT_THREAD_CURRENT_NATIVE_ID = _require_intrinsic(
     "molt_thread_current_native_id", globals()
 )
+_MOLT_THREAD_SPAWN_SHARED = _require_intrinsic("molt_thread_spawn_shared", globals())
 _MOLT_THREAD_DROP = _require_intrinsic("molt_thread_drop", globals())
+_MOLT_THREAD_STACK_SIZE_GET = _require_intrinsic(
+    "molt_thread_stack_size_get", globals()
+)
+_MOLT_THREAD_STACK_SIZE_SET = _require_intrinsic(
+    "molt_thread_stack_size_set", globals()
+)
+_MOLT_THREAD_REGISTRY_SET_MAIN = _require_intrinsic(
+    "molt_thread_registry_set_main", globals()
+)
+_MOLT_THREAD_REGISTRY_REGISTER = _require_intrinsic(
+    "molt_thread_registry_register", globals()
+)
+_MOLT_THREAD_REGISTRY_FORGET = _require_intrinsic(
+    "molt_thread_registry_forget", globals()
+)
+_MOLT_THREAD_REGISTRY_SNAPSHOT = _require_intrinsic(
+    "molt_thread_registry_snapshot", globals()
+)
+_MOLT_THREAD_REGISTRY_CURRENT = _require_intrinsic(
+    "molt_thread_registry_current", globals()
+)
+_MOLT_THREAD_REGISTRY_ACTIVE_COUNT = _require_intrinsic(
+    "molt_thread_registry_active_count", globals()
+)
 _MOLT_LOCK_NEW = _require_intrinsic("molt_lock_new", globals())
 _MOLT_LOCK_ACQUIRE = _require_intrinsic("molt_lock_acquire", globals())
 _MOLT_LOCK_RELEASE = _require_intrinsic("molt_lock_release", globals())
@@ -29,17 +55,39 @@ _MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
 _MOLT_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
 _MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
 _MOLT_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
+_MOLT_RLOCK_IS_OWNED = _require_intrinsic("molt_rlock_is_owned", globals())
+_MOLT_RLOCK_RELEASE_SAVE = _require_intrinsic("molt_rlock_release_save", globals())
+_MOLT_RLOCK_ACQUIRE_RESTORE = _require_intrinsic(
+    "molt_rlock_acquire_restore", globals()
+)
 _MOLT_RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+_MOLT_CONDITION_NEW = _require_intrinsic("molt_condition_new", globals())
+_MOLT_CONDITION_WAIT = _require_intrinsic("molt_condition_wait", globals())
+_MOLT_CONDITION_WAIT_FOR = _require_intrinsic("molt_condition_wait_for", globals())
+_MOLT_CONDITION_NOTIFY = _require_intrinsic("molt_condition_notify", globals())
+_MOLT_CONDITION_DROP = _require_intrinsic("molt_condition_drop", globals())
+_MOLT_EVENT_NEW = _require_intrinsic("molt_event_new", globals())
+_MOLT_EVENT_SET = _require_intrinsic("molt_event_set", globals())
+_MOLT_EVENT_CLEAR = _require_intrinsic("molt_event_clear", globals())
+_MOLT_EVENT_IS_SET = _require_intrinsic("molt_event_is_set", globals())
+_MOLT_EVENT_WAIT = _require_intrinsic("molt_event_wait", globals())
+_MOLT_EVENT_DROP = _require_intrinsic("molt_event_drop", globals())
+_MOLT_SEMAPHORE_NEW = _require_intrinsic("molt_semaphore_new", globals())
+_MOLT_SEMAPHORE_ACQUIRE = _require_intrinsic("molt_semaphore_acquire", globals())
+_MOLT_SEMAPHORE_RELEASE = _require_intrinsic("molt_semaphore_release", globals())
+_MOLT_SEMAPHORE_DROP = _require_intrinsic("molt_semaphore_drop", globals())
+_MOLT_BARRIER_NEW = _require_intrinsic("molt_barrier_new", globals())
+_MOLT_BARRIER_WAIT = _require_intrinsic("molt_barrier_wait", globals())
+_MOLT_BARRIER_ABORT = _require_intrinsic("molt_barrier_abort", globals())
+_MOLT_BARRIER_RESET = _require_intrinsic("molt_barrier_reset", globals())
+_MOLT_BARRIER_PARTIES = _require_intrinsic("molt_barrier_parties", globals())
+_MOLT_BARRIER_N_WAITING = _require_intrinsic("molt_barrier_n_waiting", globals())
+_MOLT_BARRIER_BROKEN = _require_intrinsic("molt_barrier_broken", globals())
+_MOLT_BARRIER_DROP = _require_intrinsic("molt_barrier_drop", globals())
+_MOLT_LOCAL_NEW = _require_intrinsic("molt_local_new", globals())
+_MOLT_LOCAL_GET_DICT = _require_intrinsic("molt_local_get_dict", globals())
+_MOLT_LOCAL_DROP = _require_intrinsic("molt_local_drop", globals())
 _MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set", globals())
-_MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
-_MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic", globals())
-_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
-_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
-_MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
-_MOLT_GETCWD = _require_intrinsic("molt_getcwd", globals())
-_MOLT_OS_NAME = _require_intrinsic("molt_os_name", globals())
 
 
 def _require_callable(value: object, name: str) -> Callable[..., object]:
@@ -49,41 +97,28 @@ def _require_callable(value: object, name: str) -> Callable[..., object]:
 
 
 def _expect_int(value: object) -> int:
-    return int(cast(int, value))
-
-
-def _env_get_str(name: str, default: str = "") -> str:
-    value = _MOLT_ENV_GET(name, default)
-    if value is None:
-        return default
-    return str(value)
-
-
-def _thread_sleep(delay: float) -> None:
-    fut = _MOLT_ASYNC_SLEEP(float(delay), None)
-    _MOLT_BLOCK_ON(fut)
-
-
-def _thread_monotonic() -> float:
-    return float(_MOLT_TIME_MONOTONIC())
-
-
-def _path_sep() -> str:
-    name = str(_MOLT_OS_NAME())
-    return "\\" if name == "nt" else "/"
+    return int(value)
 
 
 _HAVE_INTRINSICS = all(
     callable(fn)
     for fn in (
-        _MOLT_THREAD_SPAWN,
         _MOLT_THREAD_JOIN,
         _MOLT_THREAD_IS_ALIVE,
         _MOLT_THREAD_IDENT,
         _MOLT_THREAD_NATIVE_ID,
         _MOLT_THREAD_CURRENT_IDENT,
         _MOLT_THREAD_CURRENT_NATIVE_ID,
+        _MOLT_THREAD_SPAWN_SHARED,
         _MOLT_THREAD_DROP,
+        _MOLT_THREAD_STACK_SIZE_GET,
+        _MOLT_THREAD_STACK_SIZE_SET,
+        _MOLT_THREAD_REGISTRY_SET_MAIN,
+        _MOLT_THREAD_REGISTRY_REGISTER,
+        _MOLT_THREAD_REGISTRY_FORGET,
+        _MOLT_THREAD_REGISTRY_SNAPSHOT,
+        _MOLT_THREAD_REGISTRY_CURRENT,
+        _MOLT_THREAD_REGISTRY_ACTIVE_COUNT,
         _MOLT_LOCK_NEW,
         _MOLT_LOCK_ACQUIRE,
         _MOLT_LOCK_RELEASE,
@@ -93,7 +128,36 @@ _HAVE_INTRINSICS = all(
         _MOLT_RLOCK_ACQUIRE,
         _MOLT_RLOCK_RELEASE,
         _MOLT_RLOCK_LOCKED,
+        _MOLT_RLOCK_IS_OWNED,
+        _MOLT_RLOCK_RELEASE_SAVE,
+        _MOLT_RLOCK_ACQUIRE_RESTORE,
         _MOLT_RLOCK_DROP,
+        _MOLT_CONDITION_NEW,
+        _MOLT_CONDITION_WAIT,
+        _MOLT_CONDITION_WAIT_FOR,
+        _MOLT_CONDITION_NOTIFY,
+        _MOLT_CONDITION_DROP,
+        _MOLT_EVENT_NEW,
+        _MOLT_EVENT_SET,
+        _MOLT_EVENT_CLEAR,
+        _MOLT_EVENT_IS_SET,
+        _MOLT_EVENT_WAIT,
+        _MOLT_EVENT_DROP,
+        _MOLT_SEMAPHORE_NEW,
+        _MOLT_SEMAPHORE_ACQUIRE,
+        _MOLT_SEMAPHORE_RELEASE,
+        _MOLT_SEMAPHORE_DROP,
+        _MOLT_BARRIER_NEW,
+        _MOLT_BARRIER_WAIT,
+        _MOLT_BARRIER_ABORT,
+        _MOLT_BARRIER_RESET,
+        _MOLT_BARRIER_PARTIES,
+        _MOLT_BARRIER_N_WAITING,
+        _MOLT_BARRIER_BROKEN,
+        _MOLT_BARRIER_DROP,
+        _MOLT_LOCAL_NEW,
+        _MOLT_LOCAL_GET_DICT,
+        _MOLT_LOCAL_DROP,
     )
 )
 
@@ -142,7 +206,6 @@ else:
         "activeCount",
     ]
 
-    _thread_spawn = _require_callable(_MOLT_THREAD_SPAWN, "molt_thread_spawn")
     _thread_join = _require_callable(_MOLT_THREAD_JOIN, "molt_thread_join")
     _thread_is_alive = _require_callable(_MOLT_THREAD_IS_ALIVE, "molt_thread_is_alive")
     _thread_ident = _require_callable(_MOLT_THREAD_IDENT, "molt_thread_ident")
@@ -155,7 +218,31 @@ else:
     _thread_current_native_id = _require_callable(
         _MOLT_THREAD_CURRENT_NATIVE_ID, "molt_thread_current_native_id"
     )
+    _thread_spawn_shared = _require_callable(
+        _MOLT_THREAD_SPAWN_SHARED, "molt_thread_spawn_shared"
+    )
     _thread_drop = _require_callable(_MOLT_THREAD_DROP, "molt_thread_drop")
+    _thread_stack_size_get = _require_callable(
+        _MOLT_THREAD_STACK_SIZE_GET, "molt_thread_stack_size_get"
+    )
+    _thread_stack_size_set = _require_callable(
+        _MOLT_THREAD_STACK_SIZE_SET, "molt_thread_stack_size_set"
+    )
+    _thread_registry_set_main = _require_callable(
+        _MOLT_THREAD_REGISTRY_SET_MAIN, "molt_thread_registry_set_main"
+    )
+    _thread_registry_register = _require_callable(
+        _MOLT_THREAD_REGISTRY_REGISTER, "molt_thread_registry_register"
+    )
+    _thread_registry_forget = _require_callable(
+        _MOLT_THREAD_REGISTRY_FORGET, "molt_thread_registry_forget"
+    )
+    _thread_registry_snapshot = _require_callable(
+        _MOLT_THREAD_REGISTRY_SNAPSHOT, "molt_thread_registry_snapshot"
+    )
+    _thread_registry_current = _require_callable(
+        _MOLT_THREAD_REGISTRY_CURRENT, "molt_thread_registry_current"
+    )
     _lock_new = _require_callable(_MOLT_LOCK_NEW, "molt_lock_new")
     _lock_acquire = _require_callable(_MOLT_LOCK_ACQUIRE, "molt_lock_acquire")
     _lock_release = _require_callable(_MOLT_LOCK_RELEASE, "molt_lock_release")
@@ -165,56 +252,57 @@ else:
     _rlock_acquire = _require_callable(_MOLT_RLOCK_ACQUIRE, "molt_rlock_acquire")
     _rlock_release = _require_callable(_MOLT_RLOCK_RELEASE, "molt_rlock_release")
     _rlock_locked = _require_callable(_MOLT_RLOCK_LOCKED, "molt_rlock_locked")
+    _rlock_is_owned = _require_callable(_MOLT_RLOCK_IS_OWNED, "molt_rlock_is_owned")
+    _rlock_release_save = _require_callable(
+        _MOLT_RLOCK_RELEASE_SAVE, "molt_rlock_release_save"
+    )
+    _rlock_acquire_restore = _require_callable(
+        _MOLT_RLOCK_ACQUIRE_RESTORE, "molt_rlock_acquire_restore"
+    )
     _rlock_drop = _require_callable(_MOLT_RLOCK_DROP, "molt_rlock_drop")
-
-    _TAG_NONE = 0x00
-    _TAG_FALSE = 0x01
-    _TAG_TRUE = 0x02
-    _TAG_INT = 0x03
-    _TAG_FLOAT = 0x04
-    _TAG_BYTES = 0x05
-    _TAG_STR = 0x06
-    _TAG_LIST = 0x07
-    _TAG_TUPLE = 0x08
-    _TAG_DICT = 0x09
-    _TAG_SET = 0x0A
-    _TAG_FROZENSET = 0x0B
-
-    _MAX_DEPTH = 64
+    _condition_new = _require_callable(_MOLT_CONDITION_NEW, "molt_condition_new")
+    _condition_wait = _require_callable(_MOLT_CONDITION_WAIT, "molt_condition_wait")
+    _condition_wait_for = _require_callable(
+        _MOLT_CONDITION_WAIT_FOR, "molt_condition_wait_for"
+    )
+    _condition_notify = _require_callable(
+        _MOLT_CONDITION_NOTIFY, "molt_condition_notify"
+    )
+    _condition_drop = _require_callable(_MOLT_CONDITION_DROP, "molt_condition_drop")
+    _event_new = _require_callable(_MOLT_EVENT_NEW, "molt_event_new")
+    _event_set = _require_callable(_MOLT_EVENT_SET, "molt_event_set")
+    _event_clear = _require_callable(_MOLT_EVENT_CLEAR, "molt_event_clear")
+    _event_is_set = _require_callable(_MOLT_EVENT_IS_SET, "molt_event_is_set")
+    _event_wait = _require_callable(_MOLT_EVENT_WAIT, "molt_event_wait")
+    _event_drop = _require_callable(_MOLT_EVENT_DROP, "molt_event_drop")
+    _semaphore_new = _require_callable(_MOLT_SEMAPHORE_NEW, "molt_semaphore_new")
+    _semaphore_acquire = _require_callable(
+        _MOLT_SEMAPHORE_ACQUIRE, "molt_semaphore_acquire"
+    )
+    _semaphore_release = _require_callable(
+        _MOLT_SEMAPHORE_RELEASE, "molt_semaphore_release"
+    )
+    _semaphore_drop = _require_callable(_MOLT_SEMAPHORE_DROP, "molt_semaphore_drop")
+    _barrier_new = _require_callable(_MOLT_BARRIER_NEW, "molt_barrier_new")
+    _barrier_wait = _require_callable(_MOLT_BARRIER_WAIT, "molt_barrier_wait")
+    _barrier_abort = _require_callable(_MOLT_BARRIER_ABORT, "molt_barrier_abort")
+    _barrier_reset = _require_callable(_MOLT_BARRIER_RESET, "molt_barrier_reset")
+    _barrier_parties = _require_callable(_MOLT_BARRIER_PARTIES, "molt_barrier_parties")
+    _barrier_n_waiting = _require_callable(
+        _MOLT_BARRIER_N_WAITING, "molt_barrier_n_waiting"
+    )
+    _barrier_broken = _require_callable(_MOLT_BARRIER_BROKEN, "molt_barrier_broken")
+    _barrier_drop = _require_callable(_MOLT_BARRIER_DROP, "molt_barrier_drop")
+    _local_new = _require_callable(_MOLT_LOCAL_NEW, "molt_local_new")
+    _local_get_dict = _require_callable(_MOLT_LOCAL_GET_DICT, "molt_local_get_dict")
+    _local_drop = _require_callable(_MOLT_LOCAL_DROP, "molt_local_drop")
 
     _THREAD_COUNTER = 0
     _THREAD_TOKEN_COUNTER = 0
-    _TIMER_TOKEN_COUNTER = 0
-    _THREADS: list["Thread"] = []
     _MAIN_THREAD: "Thread" | None = None
-    _THREAD_BY_IDENT: dict[int, "Thread"] = {}
-    _THREAD_BY_TOKEN: dict[int, "Thread"] = {}
-    _TIMER_BY_TOKEN: dict[int, "Timer"] = {}
-    _THREAD_SHARED_PAYLOADS: dict[
-        int, tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]
-    ] = {}
-
-    def _shared_runtime_enabled() -> bool:
-        explicit = _env_get_str("MOLT_THREAD_SHARED", "").strip().lower()
-        if explicit in {"0", "false", "no", "off"}:
-            return False
-        if explicit in {"1", "true", "yes", "on"}:
-            return True
-        isolated = _env_get_str("MOLT_THREAD_ISOLATED", "").strip().lower()
-        if isolated in {"1", "true", "yes", "on"}:
-            return False
-        if bool(_MOLT_CAPABILITIES_TRUSTED()):
-            return True
-        if bool(_MOLT_CAPABILITIES_HAS("thread.shared")):
-            return True
-        # Default to shared-runtime semantics for CPython-compatible threading.
-        return True
-
-    _THREAD_SHARED_RUNTIME = _shared_runtime_enabled()
 
     _TRACE_HOOK: Callable[[Any, str, Any], Any] | None = None
     _PROFILE_HOOK: Callable[[Any, str, Any], Any] | None = None
-    _STACK_SIZE = 0
     _NO_CONTEXT = object()
 
     class ExceptHookArgs:
@@ -231,9 +319,11 @@ else:
             self.thread = thread
 
     def _default_excepthook(args: ExceptHookArgs) -> None:
-        print_exception = getattr(_traceback, "print_exception", None)
+        print_exception = getattr(sys, "__excepthook__", None)
         if not callable(print_exception):
-            raise RuntimeError("traceback.print_exception unavailable")
+            print_exception = getattr(sys, "excepthook", None)
+        if not callable(print_exception):
+            raise RuntimeError("sys.excepthook unavailable")
         print(f"Exception in thread {args.thread.name}:", file=sys.stderr)
         print_exception(args.exc_type, args.exc_value, args.exc_traceback)
 
@@ -254,18 +344,14 @@ else:
         return _PROFILE_HOOK
 
     def stack_size(size: int | None = None) -> int:
-        global _STACK_SIZE
         if size is None:
-            return _STACK_SIZE
-        try:
-            new_size = int(size)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("size must be 0 or a positive integer") from exc
-        if new_size < 0:
-            raise ValueError("size must be 0 or a positive integer")
-        prev = _STACK_SIZE
-        _STACK_SIZE = new_size
-        return prev
+            return int(_thread_stack_size_get())
+        if not isinstance(size, int):
+            raise TypeError(
+                f"'{type(size).__name__}' object cannot be interpreted as an integer"
+            )
+        new_size = int(size)
+        return int(_thread_stack_size_set(new_size))
 
     def _next_thread_name() -> str:
         global _THREAD_COUNTER
@@ -276,323 +362,6 @@ else:
         global _THREAD_TOKEN_COUNTER
         _THREAD_TOKEN_COUNTER += 1
         return _THREAD_TOKEN_COUNTER
-
-    def _next_timer_token() -> int:
-        global _TIMER_TOKEN_COUNTER
-        _TIMER_TOKEN_COUNTER += 1
-        return _TIMER_TOKEN_COUNTER
-
-    def _encode_varint(value: int, out: bytearray) -> None:
-        while True:
-            byte = value & 0x7F
-            value >>= 7
-            if value:
-                out.append(byte | 0x80)
-            else:
-                out.append(byte)
-                break
-
-    def _decode_varint(data: bytes, idx: int) -> tuple[int, int]:
-        shift = 0
-        value = 0
-        while True:
-            if idx >= len(data):
-                raise ValueError("truncated varint")
-            byte = data[idx]
-            idx += 1
-            value |= (byte & 0x7F) << shift
-            if byte & 0x80 == 0:
-                return value, idx
-            shift += 7
-            if shift > 10_000:
-                raise ValueError("varint too large")
-
-    def _encode_int(value: int, out: bytearray) -> None:
-        if value < 0:
-            out.append(1)
-            _encode_varint(-value, out)
-        else:
-            out.append(0)
-            _encode_varint(value, out)
-
-    def _decode_int(data: bytes, idx: int) -> tuple[int, int]:
-        if idx >= len(data):
-            raise ValueError("truncated int")
-        sign = data[idx]
-        idx += 1
-        magnitude, idx = _decode_varint(data, idx)
-        return (-magnitude if sign else magnitude), idx
-
-    def _encode_bytes(value: bytes, out: bytearray) -> None:
-        _encode_varint(len(value), out)
-        out.extend(value)
-
-    def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
-        length, idx = _decode_varint(data, idx)
-        end = idx + length
-        if end > len(data):
-            raise ValueError("truncated bytes")
-        return data[idx:end], end
-
-    def _encode_value(value: Any, out: bytearray, depth: int) -> None:
-        if depth > _MAX_DEPTH:
-            raise ValueError("object too deep")
-        if value is None:
-            out.append(_TAG_NONE)
-            return
-        if value is False:
-            out.append(_TAG_FALSE)
-            return
-        if value is True:
-            out.append(_TAG_TRUE)
-            return
-        if isinstance(value, int):
-            out.append(_TAG_INT)
-            _encode_int(value, out)
-            return
-        if isinstance(value, float):
-            out.append(_TAG_FLOAT)
-            out.extend(struct.pack("<d", value))
-            return
-        if isinstance(value, bytes):
-            out.append(_TAG_BYTES)
-            _encode_bytes(value, out)
-            return
-        if isinstance(value, bytearray):
-            out.append(_TAG_BYTES)
-            _encode_bytes(bytes(value), out)
-            return
-        if isinstance(value, str):
-            out.append(_TAG_STR)
-            _encode_bytes(value.encode("utf-8"), out)
-            return
-        if isinstance(value, list):
-            out.append(_TAG_LIST)
-            _encode_varint(len(value), out)
-            for item in value:
-                _encode_value(item, out, depth + 1)
-            return
-        if isinstance(value, tuple):
-            out.append(_TAG_TUPLE)
-            _encode_varint(len(value), out)
-            for item in value:
-                _encode_value(item, out, depth + 1)
-            return
-        if isinstance(value, dict):
-            out.append(_TAG_DICT)
-            _encode_varint(len(value), out)
-            for key, item in value.items():
-                _encode_value(key, out, depth + 1)
-                _encode_value(item, out, depth + 1)
-            return
-        if isinstance(value, set):
-            out.append(_TAG_SET)
-            items = sorted(value, key=repr)
-            _encode_varint(len(items), out)
-            for item in items:
-                _encode_value(item, out, depth + 1)
-            return
-        if isinstance(value, frozenset):
-            out.append(_TAG_FROZENSET)
-            items = sorted(value, key=repr)
-            _encode_varint(len(items), out)
-            for item in items:
-                _encode_value(item, out, depth + 1)
-            return
-        raise TypeError(f"cannot serialize {type(value).__name__}")
-
-    def _decode_value(data: bytes, idx: int, depth: int) -> tuple[Any, int]:
-        if depth > _MAX_DEPTH:
-            raise ValueError("object too deep")
-        if idx >= len(data):
-            raise ValueError("truncated payload")
-        tag = data[idx]
-        idx += 1
-        if tag == _TAG_NONE:
-            return None, idx
-        if tag == _TAG_FALSE:
-            return False, idx
-        if tag == _TAG_TRUE:
-            return True, idx
-        if tag == _TAG_INT:
-            value, idx = _decode_int(data, idx)
-            return value, idx
-        if tag == _TAG_FLOAT:
-            end = idx + 8
-            if end > len(data):
-                raise ValueError("truncated float")
-            return struct.unpack("<d", data[idx:end])[0], end
-        if tag == _TAG_BYTES:
-            value, idx = _decode_bytes(data, idx)
-            return value, idx
-        if tag == _TAG_STR:
-            raw, idx = _decode_bytes(data, idx)
-            return raw.decode("utf-8"), idx
-        if tag == _TAG_LIST:
-            length, idx = _decode_varint(data, idx)
-            items: list[Any] = []
-            for _ in range(length):
-                item, idx = _decode_value(data, idx, depth + 1)
-                items.append(item)
-            return items, idx
-        if tag == _TAG_TUPLE:
-            length, idx = _decode_varint(data, idx)
-            items: list[Any] = []
-            for _ in range(length):
-                item, idx = _decode_value(data, idx, depth + 1)
-                items.append(item)
-            return tuple(items), idx
-        if tag == _TAG_DICT:
-            length, idx = _decode_varint(data, idx)
-            out: dict[Any, Any] = {}
-            for _ in range(length):
-                key, idx = _decode_value(data, idx, depth + 1)
-                value, idx = _decode_value(data, idx, depth + 1)
-                out[key] = value
-            return out, idx
-        if tag == _TAG_SET:
-            length, idx = _decode_varint(data, idx)
-            items: list[Any] = []
-            for _ in range(length):
-                item, idx = _decode_value(data, idx, depth + 1)
-                items.append(item)
-            return set(items), idx
-        if tag == _TAG_FROZENSET:
-            length, idx = _decode_varint(data, idx)
-            items: list[Any] = []
-            for _ in range(length):
-                item, idx = _decode_value(data, idx, depth + 1)
-                items.append(item)
-            return frozenset(items), idx
-        raise ValueError(f"unsupported tag {tag}")
-
-    def _encode_payload(payload: Any) -> bytes:
-        out = bytearray()
-        _encode_value(payload, out, 0)
-        return bytes(out)
-
-    def _decode_payload(data: bytes) -> Any:
-        value, idx = _decode_value(data, 0, 0)
-        if idx != len(data):
-            raise ValueError("trailing payload data")
-        return value
-
-    def _resolve_entry_module_name() -> str:
-        main_mod = sys.modules.get("__main__")
-        if main_mod is None:
-            return "__main__"
-        for name, mod in sys.modules.items():
-            if name != "__main__" and mod is main_mod:
-                return name
-        spec = getattr(main_mod, "__spec__", None)
-        spec_name = getattr(spec, "name", None) if spec is not None else None
-        if isinstance(spec_name, str) and spec_name:
-            return spec_name
-        main_path = getattr(main_mod, "__file__", None)
-        if isinstance(main_path, str) and main_path:
-            resolved = _module_name_from_path(main_path)
-            if resolved is not None:
-                return resolved
-        return "__main__"
-
-    def _module_name_from_path(path: str) -> str | None:
-        sep = _path_sep()
-
-        def _abspath_str(value: str) -> str:
-            return str(_MOLT_PATH_ABSPATH(value))
-
-        try:
-            abs_path = _abspath_str(path)
-        except Exception:
-            return None
-        roots = list(sys.path)
-        if "" in roots:
-            try:
-                roots[roots.index("")] = str(_MOLT_GETCWD())
-            except Exception:
-                pass
-        for root in roots:
-            if not root:
-                continue
-            try:
-                root_abs = _abspath_str(str(root))
-            except Exception:
-                continue
-            if abs_path == root_abs:
-                continue
-            prefix = root_abs.rstrip(sep) + sep
-            if not abs_path.startswith(prefix):
-                continue
-            rel = abs_path[len(prefix) :]
-            if rel.startswith(".."):
-                continue
-            if rel.endswith(".py"):
-                rel = rel[:-3]
-            parts = [p for p in rel.split(sep) if p]
-            if not parts:
-                continue
-            if parts[-1] == "__init__":
-                parts = parts[:-1]
-            if not parts:
-                continue
-            return ".".join(parts)
-        return None
-
-    def _resolve_target(
-        target: Callable[..., Any] | None,
-    ) -> tuple[str | None, str | None]:
-        if target is None:
-            return None, None
-        if not callable(target):
-            raise TypeError("thread target must be callable")
-        if _THREAD_SHARED_RUNTIME:
-            return None, None
-        module = getattr(target, "__module__", None)
-        qualname = getattr(target, "__qualname__", None)
-        if module == "__main__":
-            if not _THREAD_SHARED_RUNTIME:
-                resolved = _resolve_entry_module_name()
-                if resolved != "__main__":
-                    module = resolved
-        elif _THREAD_SHARED_RUNTIME:
-            main_mod = sys.modules.get("__main__")
-            main_file = (
-                getattr(main_mod, "__file__", None) if main_mod is not None else None
-            )
-            code = getattr(target, "__code__", None)
-            target_file = (
-                getattr(code, "co_filename", None) if code is not None else None
-            )
-            if isinstance(main_file, str) and isinstance(target_file, str):
-                try:
-                    if str(_MOLT_PATH_ABSPATH(main_file)) == str(
-                        _MOLT_PATH_ABSPATH(target_file)
-                    ):
-                        module = "__main__"
-                except Exception:
-                    if main_file == target_file:
-                        module = "__main__"
-            if module != "__main__" and main_mod is not None and module is not None:
-                sys.modules.setdefault(str(module), main_mod)
-        if not isinstance(module, str) or not isinstance(qualname, str):
-            raise TypeError("thread target must be a module-level callable")
-        if "<locals>" in qualname:
-            raise TypeError("thread target must be a module-level callable")
-        return module, qualname
-
-    def _resolve_qualname(module: str, qualname: str) -> Callable[..., Any]:
-        if module == "__main__" and _THREAD_SHARED_RUNTIME:
-            mod = sys.modules.get("__main__")
-            if mod is None:
-                raise ModuleNotFoundError("module '__main__' not found")
-        else:
-            mod = __import__(module, fromlist=["*"])
-        obj: Any = mod
-        for part in qualname.split("."):
-            obj = getattr(obj, part)
-        if not callable(obj):
-            raise TypeError("thread target is not callable")
-        return obj
 
     def get_ident() -> int:
         return _expect_int(_thread_current_ident())
@@ -628,6 +397,37 @@ else:
                 _default_excepthook(args)
             except Exception:
                 pass
+
+    def _parse_registry_record(
+        record: Any,
+    ) -> tuple[str, bool, int | None, int | None, bool, bool]:
+        if not isinstance(record, tuple) or len(record) != 6:
+            raise RuntimeError("invalid thread registry record")
+        name, daemon, ident, native_id, alive, is_main = record
+        parsed_name = str(name)
+        parsed_daemon = bool(daemon)
+        parsed_ident = None if ident is None else int(ident)
+        parsed_native_id = None if native_id is None else int(native_id)
+        parsed_alive = bool(alive)
+        parsed_is_main = bool(is_main)
+        return (
+            parsed_name,
+            parsed_daemon,
+            parsed_ident,
+            parsed_native_id,
+            parsed_alive,
+            parsed_is_main,
+        )
+
+    def _thread_from_registry_record(record: Any) -> "Thread":
+        name, daemon, ident, native_id, alive, _is_main = _parse_registry_record(record)
+        thread = Thread(target=None, name=name, daemon=daemon)
+        thread._started = bool(alive)
+        thread._synthetic_alive = bool(alive)
+        thread._ident_cache = ident
+        thread._native_id_cache = native_id
+        thread._handle = None
+        return thread
 
     class Lock:
         def __init__(self) -> None:
@@ -697,8 +497,6 @@ else:
     class RLock:
         def __init__(self) -> None:
             self._handle: Any | None = _rlock_new()
-            self._owner: int | None = None
-            self._count = 0
 
         def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
             if timeout is None:
@@ -720,44 +518,30 @@ else:
                 _check_timeout_max(timeout_val)
             if self._handle is None:
                 raise RuntimeError("rlock is not initialized")
-            acquired = bool(_rlock_acquire(self._handle, bool(blocking), timeout_val))
-            if acquired:
-                ident = get_ident()
-                if self._owner == ident:
-                    self._count += 1
-                else:
-                    self._owner = ident
-                    self._count = 1
-            return acquired
+            return bool(_rlock_acquire(self._handle, bool(blocking), timeout_val))
 
         def release(self) -> None:
             if self._handle is None:
                 raise RuntimeError("rlock is not initialized")
-            if self._owner != get_ident():
-                raise RuntimeError("cannot release un-acquired lock")
             _rlock_release(self._handle)
-            if self._count > 0:
-                self._count -= 1
-            if self._count == 0:
-                self._owner = None
 
         def _is_owned(self) -> bool:
-            return self._owner == get_ident()
+            if self._handle is None:
+                return False
+            return bool(_rlock_is_owned(self._handle))
 
         def _release_save(self) -> int:
-            if self._owner != get_ident():
-                raise RuntimeError("cannot release un-acquired lock")
-            count = self._count
-            for _ in range(count):
-                self.release()
-            return count
+            if self._handle is None:
+                raise RuntimeError("rlock is not initialized")
+            return int(_rlock_release_save(self._handle))
 
         def _acquire_restore(self, count: int | None) -> None:
-            if not count:
-                self.acquire()
+            if self._handle is None:
+                raise RuntimeError("rlock is not initialized")
+            if count is None:
+                _rlock_acquire_restore(self._handle, 1)
                 return
-            for _ in range(count):
-                self.acquire()
+            _rlock_acquire_restore(self._handle, int(count))
 
         def __enter__(self) -> RLock:
             self.acquire()
@@ -783,7 +567,7 @@ else:
             if lock is None:
                 lock = RLock()
             self._lock = lock
-            self._waiters: list[dict[str, bool]] = []
+            self._handle: Any | None = _condition_new()
 
         def acquire(self, *args: Any, **kwargs: Any) -> bool:
             return bool(self._lock.acquire(*args, **kwargs))
@@ -834,118 +618,70 @@ else:
                         f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
                     ) from exc
                 if timeout_val < 0.0:
-                    raise ValueError("timeout value must be a non-negative number")
+                    timeout_val = 0.0
                 _check_timeout_max(timeout_val)
-            waiter: dict[str, bool] = {"ready": False}
-            self._waiters.append(waiter)
+            if self._handle is None:
+                raise RuntimeError("condition is not initialized")
             saved = self._release_save()
             try:
-                if timeout_val is None:
-                    while not waiter["ready"]:
-                        _thread_sleep(0.001)
-                    return True
-                if timeout_val == 0.0:
-                    ok = waiter["ready"]
-                    if not ok and waiter in self._waiters:
-                        self._waiters.remove(waiter)
-                    return ok
-                deadline = _thread_monotonic() + timeout_val
-                while True:
-                    ok = waiter["ready"]
-                    if ok:
-                        return True
-                    remaining = deadline - _thread_monotonic()
-                    if remaining <= 0:
-                        if waiter in self._waiters:
-                            self._waiters.remove(waiter)
-                        return False
-                    _thread_sleep(min(remaining, 0.05))
+                return bool(_condition_wait(self._handle, timeout_val))
             finally:
                 self._acquire_restore(saved)
 
         def wait_for(
             self, predicate: Callable[[], bool], timeout: float | None = None
         ) -> bool:
-            end = None if timeout is None else _thread_monotonic() + float(timeout)
-            result = predicate()
-            while not result:
-                if end is None:
-                    self.wait(None)
-                else:
-                    remaining = end - _thread_monotonic()
-                    if remaining <= 0:
-                        break
-                    self.wait(remaining)
-                result = predicate()
-            return result
+            timeout_val = None if timeout is None else float(timeout)
+            return bool(_condition_wait_for(self, predicate, timeout_val))
 
         def notify(self, n: int = 1) -> None:
             if not self._is_owned():
                 raise RuntimeError("cannot notify on un-acquired lock")
+            if self._handle is None:
+                raise RuntimeError("condition is not initialized")
             if n <= 0:
                 return
-            for _ in range(min(n, len(self._waiters))):
-                waiter = self._waiters.pop(0)
-                waiter["ready"] = True
+            _condition_notify(self._handle, int(n))
 
         def notify_all(self) -> None:
-            self.notify(len(self._waiters))
+            self.notify(1 << 30)
 
         notifyAll = notify_all
 
+        def _drop(self) -> None:
+            if self._handle is None:
+                return
+            _condition_drop(self._handle)
+            self._handle = None
+
+        def __del__(self) -> None:
+            if getattr(self, "_handle", None) is None:
+                return
+            self._drop()
+
     class Event:
         def __init__(self) -> None:
-            self._cond = Condition(Lock())
-            self._flag = False
+            self._handle: Any | None = _event_new()
 
         def is_set(self) -> bool:
-            return self._flag
+            if self._handle is None:
+                return False
+            return bool(_event_is_set(self._handle))
 
         def set(self) -> None:
-            with self._cond:
-                self._flag = True
-                self._cond.notify_all()
+            if self._handle is None:
+                raise RuntimeError("event is not initialized")
+            _event_set(self._handle)
 
         def clear(self) -> None:
-            with self._cond:
-                self._flag = False
+            if self._handle is None:
+                raise RuntimeError("event is not initialized")
+            _event_clear(self._handle)
 
         def wait(self, timeout: float | None = None) -> bool:
-            if timeout is None:
-                while True:
-                    with self._cond:
-                        if self._flag:
-                            return True
-                    _thread_sleep(0.001)
-            try:
-                timeout_val = float(timeout)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                ) from exc
-            if timeout_val < 0.0:
-                raise ValueError("timeout value must be a non-negative number")
-            _check_timeout_max(timeout_val)
-            deadline = _thread_monotonic() + timeout_val
-            while True:
-                with self._cond:
-                    if self._flag:
-                        return True
-                remaining = deadline - _thread_monotonic()
-                if remaining <= 0:
-                    return False
-                _thread_sleep(min(remaining, 0.001))
-
-        isSet = is_set
-
-    class Semaphore:
-        def __init__(self, value: int = 1) -> None:
-            if value < 0:
-                raise ValueError("semaphore initial value must be >= 0")
-            self._value = int(value)
-            self._cond = Condition(Lock())
-
-        def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+            if self._handle is None:
+                raise RuntimeError("event is not initialized")
+            timeout_val: float | None
             if timeout is None:
                 timeout_val = None
             else:
@@ -956,36 +692,57 @@ else:
                         f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
                     ) from exc
                 if timeout_val < 0.0:
-                    raise ValueError("timeout value must be a non-negative number")
+                    timeout_val = 0.0
                 _check_timeout_max(timeout_val)
+            return bool(_event_wait(self._handle, timeout_val))
+
+        isSet = is_set
+
+        def _drop(self) -> None:
+            if self._handle is None:
+                return
+            _event_drop(self._handle)
+            self._handle = None
+
+        def __del__(self) -> None:
+            if getattr(self, "_handle", None) is None:
+                return
+            self._drop()
+
+    class Semaphore:
+        def __init__(self, value: int = 1) -> None:
+            if value < 0:
+                raise ValueError("semaphore initial value must be >= 0")
+            self._handle: Any | None = _semaphore_new(int(value), False)
+
+        def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+            if self._handle is None:
+                raise RuntimeError("semaphore is not initialized")
+            if timeout is None:
+                timeout_val = None
+            else:
+                try:
+                    timeout_val = float(timeout)
+                except (TypeError, ValueError) as exc:
+                    raise TypeError(
+                        f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
+                    ) from exc
             if not blocking:
-                if timeout_val not in (None, 0.0):
-                    raise ValueError("can't specify a timeout for a non-blocking call")
+                if timeout_val is not None:
+                    raise ValueError("can't specify timeout for non-blocking acquire")
                 timeout_val = 0.0
-            with self._cond:
-                if timeout_val == 0.0:
-                    if self._value > 0:
-                        self._value -= 1
-                        return True
-                    return False
-                end = None if timeout_val is None else _thread_monotonic() + timeout_val
-                while self._value <= 0:
-                    if end is None:
-                        self._cond.wait()
-                    else:
-                        remaining = end - _thread_monotonic()
-                        if remaining <= 0:
-                            return False
-                        self._cond.wait(remaining)
-                self._value -= 1
-                return True
+            elif timeout_val is not None:
+                if timeout_val < 0.0:
+                    timeout_val = 0.0
+                _check_timeout_max(timeout_val)
+            return bool(_semaphore_acquire(self._handle, bool(blocking), timeout_val))
 
         def release(self, n: int = 1) -> None:
+            if self._handle is None:
+                raise RuntimeError("semaphore is not initialized")
             if n < 1:
                 raise ValueError("semaphore release count must be >= 1")
-            with self._cond:
-                self._value += n
-                self._cond.notify(n)
+            _semaphore_release(self._handle, int(n))
 
         def __enter__(self) -> Semaphore:
             self.acquire()
@@ -995,22 +752,22 @@ else:
             self.release()
             return False
 
+        def _drop(self) -> None:
+            if self._handle is None:
+                return
+            _semaphore_drop(self._handle)
+            self._handle = None
+
+        def __del__(self) -> None:
+            if getattr(self, "_handle", None) is None:
+                return
+            self._drop()
+
     class BoundedSemaphore(Semaphore):
         def __init__(self, value: int = 1) -> None:
-            super().__init__(value)
-            self._initial = int(value)
-
-        def release(self, n: int = 1) -> None:
-            if n < 1:
-                raise ValueError("semaphore release count must be >= 1")
-            self._cond.acquire()
-            try:
-                if self._value + n > self._initial:
-                    raise ValueError("Semaphore released too many times")
-                self._value += n
-                self._cond.notify(n)
-            finally:
-                self._cond.release()
+            if value < 0:
+                raise ValueError("semaphore initial value must be >= 0")
+            self._handle: Any | None = _semaphore_new(int(value), True)
 
     class BrokenBarrierError(RuntimeError):
         pass
@@ -1025,97 +782,90 @@ else:
             parties = int(parties)
             if parties <= 0:
                 raise ValueError("barrier parties must be greater than zero")
-            self._parties = parties
             self._action = action
-            self._timeout = timeout
-            self._cond = Condition(Lock())
-            self._count = 0
-            self._generation = 0
-            self._broken = False
-
-        @property
-        def parties(self) -> int:
-            return self._parties
-
-        @property
-        def n_waiting(self) -> int:
-            return self._count
-
-        @property
-        def broken(self) -> bool:
-            return self._broken
-
-        def abort(self) -> None:
-            with self._cond:
-                self._break()
-
-        def reset(self) -> None:
-            with self._cond:
-                if self._count > 0:
-                    self._break()
-                self._broken = False
-                self._next_generation()
-
-        def wait(self, timeout: float | None = None) -> int:
+            timeout_val: float | None
             if timeout is None:
-                timeout_val = self._timeout
+                timeout_val = None
             else:
                 timeout_val = float(timeout)
                 if timeout_val < 0.0:
                     timeout_val = 0.0
-            with self._cond:
-                if self._broken:
-                    raise BrokenBarrierError
-                gen = self._generation
-                index = self._count
-                self._count += 1
-                if self._count == self._parties:
-                    if self._action is not None:
-                        try:
-                            self._action()
-                        except Exception:
-                            self._break()
-                            raise
-                    self._next_generation()
-                    return index
-                end = None if timeout_val is None else _thread_monotonic() + timeout_val
-                while True:
-                    if end is None:
-                        self._cond.wait()
-                    else:
-                        remaining = end - _thread_monotonic()
-                        if remaining <= 0:
-                            self._break()
-                            raise BrokenBarrierError
-                        self._cond.wait(remaining)
-                    if self._broken:
-                        raise BrokenBarrierError
-                    if gen != self._generation:
-                        return index
+                _check_timeout_max(timeout_val)
+            self._handle: Any | None = _barrier_new(parties, timeout_val)
 
-        def _break(self) -> None:
-            self._broken = True
-            self._cond.notify_all()
+        @property
+        def parties(self) -> int:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            return int(_barrier_parties(self._handle))
 
-        def _next_generation(self) -> None:
-            self._count = 0
-            self._generation += 1
-            self._cond.notify_all()
+        @property
+        def n_waiting(self) -> int:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            return int(_barrier_n_waiting(self._handle))
+
+        @property
+        def broken(self) -> bool:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            return bool(_barrier_broken(self._handle))
+
+        def abort(self) -> None:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            _barrier_abort(self._handle)
+
+        def reset(self) -> None:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            _barrier_reset(self._handle)
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._handle is None:
+                raise RuntimeError("barrier is not initialized")
+            timeout_val: float | None
+            if timeout is None:
+                timeout_val = None
+            else:
+                timeout_val = float(timeout)
+                if timeout_val < 0.0:
+                    timeout_val = 0.0
+                _check_timeout_max(timeout_val)
+            try:
+                index = int(_barrier_wait(self._handle, timeout_val))
+            except RuntimeError as exc:
+                if "broken barrier" in str(exc):
+                    raise BrokenBarrierError from None
+                raise
+            if self._action is not None and index == self.parties - 1:
+                try:
+                    self._action()
+                except Exception:
+                    self.abort()
+                    raise
+            return index
+
+        def _drop(self) -> None:
+            if self._handle is None:
+                return
+            _barrier_drop(self._handle)
+            self._handle = None
+
+        def __del__(self) -> None:
+            if getattr(self, "_handle", None) is None:
+                return
+            self._drop()
 
     class local:
         def __init__(self) -> None:
-            object.__setattr__(self, "_storage", {})
+            object.__setattr__(self, "_handle", _local_new())
 
         def _get_dict(self) -> dict[str, Any]:
-            storage: dict[int, dict[str, Any]] = object.__getattribute__(
-                self, "_storage"
-            )
-            ident = get_ident()
-            slot = storage.get(ident)
-            if slot is None:
-                slot = {}
-                storage[ident] = slot
-            return slot
+            handle = object.__getattribute__(self, "_handle")
+            if handle is None:
+                raise RuntimeError("thread-local storage is not initialized")
+            return _local_get_dict(handle)
 
         @property
         def __dict__(self) -> dict[str, Any]:
@@ -1129,7 +879,7 @@ else:
                 raise AttributeError(name) from exc
 
         def __setattr__(self, name: str, value: Any) -> None:
-            if name == "_storage":
+            if name == "_handle":
                 object.__setattr__(self, name, value)
                 return
             data = self._get_dict()
@@ -1140,6 +890,19 @@ else:
             if name not in data:
                 raise AttributeError(name)
             del data[name]
+
+        def _drop(self) -> None:
+            handle = object.__getattribute__(self, "_handle")
+            if handle is None:
+                return
+            _local_drop(handle)
+            object.__setattr__(self, "_handle", None)
+
+        def __del__(self) -> None:
+            try:
+                self._drop()
+            except Exception:
+                pass
 
     class Thread:
         def __init__(
@@ -1166,10 +929,11 @@ else:
             self._started = False
             self._ident_cache: int | None = None
             self._native_id_cache: int | None = None
+            self._synthetic_alive: bool | None = None
             self._token: int | None = None
             if daemon is not None:
                 self._daemon = bool(daemon)
-            elif _MAIN_THREAD is None and not _THREAD_BY_IDENT:
+            elif _MAIN_THREAD is None:
                 self._daemon = False
             else:
                 self._daemon = current_thread().daemon
@@ -1231,59 +995,31 @@ else:
             if not self._started:
                 return False
             if self._handle is None:
-                ident = self._ident_cache
-                if ident is None:
-                    return False
-                return _THREAD_BY_IDENT.get(ident) is self
+                return bool(self._synthetic_alive)
             return bool(_thread_is_alive(self._handle))
 
         def start(self) -> None:
             if self._started:
                 raise RuntimeError("threads can only be started once")
-            module, qualname = _resolve_target(self._target)
             token = _next_thread_token()
             self._token = token
-            _THREAD_BY_TOKEN[token] = self
-            if _THREAD_SHARED_RUNTIME and self._target is not None:
-                _THREAD_SHARED_PAYLOADS[token] = (
-                    self._target,
-                    self._args,
-                    self._kwargs,
-                )
-            payload_args = self._args
-            payload_kwargs = self._kwargs
-            if _THREAD_SHARED_RUNTIME:
-                payload_args = ()
-                payload_kwargs = {}
-            payload = (
-                token,
-                module,
-                qualname,
-                payload_args,
-                payload_kwargs,
-                self._name,
-                self._daemon,
-            )
-            try:
-                blob = _encode_payload(payload)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    "thread payload must be serializable "
-                    "(None/bool/int/float/bytes/str/list/tuple/dict/set/frozenset); "
-                    f"{exc}"
-                ) from exc
-            handle = _thread_spawn(blob)
+            handle = _thread_spawn_shared(token, self._bootstrap, (), {})
             self._handle = handle
             self._started = True
+            self._synthetic_alive = True
+            _thread_registry_register(self._handle, token, self._name, self._daemon)
             ident = _thread_ident(self._handle)
             if ident is not None:
-                _register_thread_ident(self, _expect_int(ident))
-            _THREADS.append(self)
+                self._ident_cache = _expect_int(ident)
+            native = _thread_native_id(self._handle)
+            if native is not None:
+                self._native_id_cache = _expect_int(native)
 
         def join(self, timeout: float | None = None) -> None:
             if not self._started:
                 raise RuntimeError("cannot join thread before it is started")
-            if self is current_thread():
+            ident = self.ident
+            if ident is not None and ident == get_ident():
                 raise RuntimeError("cannot join current thread")
             if self._handle is None:
                 return None
@@ -1297,7 +1033,7 @@ else:
                     f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
                 ) from exc
             if timeout_val < 0.0:
-                raise ValueError("timeout value must be a non-negative number")
+                timeout_val = 0.0
             _check_timeout_max(timeout_val)
             _thread_join(self._handle, timeout_val)
 
@@ -1306,11 +1042,24 @@ else:
                 return None
             self._target(*self._args, **self._kwargs)
 
+        def _bootstrap(self) -> None:
+            try:
+                _invoke_thread_hooks()
+                self.run()
+            except BaseException as exc:
+                _call_excepthook(self, exc)
+            finally:
+                self._synthetic_alive = False
+
         def _drop(self) -> None:
+            if self._token is not None:
+                _thread_registry_forget(self._token)
             if self._handle is None:
+                self._synthetic_alive = False
                 return
             _thread_drop(self._handle)
             self._handle = None
+            self._synthetic_alive = False
 
         def __del__(self) -> None:
             if getattr(self, "_handle", None) is None:
@@ -1329,28 +1078,6 @@ else:
         def setName(self, name: str) -> None:
             self.name = name
 
-    def _timer_worker(
-        token: int,
-        interval: float,
-        module: str,
-        qualname: str,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> None:
-        timer = _TIMER_BY_TOKEN.pop(token, None)
-        if timer is not None:
-            if not timer.finished.wait(timer.interval):
-                timer.function(*timer.args, **timer.kwargs)
-            timer.finished.set()
-            return
-        _thread_sleep(float(interval))
-        target = _resolve_qualname(str(module), str(qualname))
-        if not isinstance(args, tuple):
-            args = tuple(args)
-        if not isinstance(kwargs, dict):
-            kwargs = dict(kwargs)
-        target(*args, **kwargs)
-
     class Timer(Thread):
         def __init__(
             self,
@@ -1365,41 +1092,47 @@ else:
             self.args = tuple(args) if args else ()
             self.kwargs = dict(kwargs) if kwargs else {}
             self.finished = Event()
-            self._timer_token: int | None = None
 
         def cancel(self) -> None:
             self.finished.set()
-
-        def start(self) -> None:
-            module, qualname = _resolve_target(self.function)
-            token = _next_timer_token()
-            self._timer_token = token
-            _TIMER_BY_TOKEN[token] = self
-            self._target = _timer_worker
-            self._args = (
-                token,
-                self.interval,
-                module,
-                qualname,
-                self.args,
-                self.kwargs,
-            )
-            self._kwargs = {}
-            super().start()
 
         def run(self) -> None:
             if not self.finished.wait(self.interval):
                 self.function(*self.args, **self.kwargs)
             self.finished.set()
 
+    def _registry_current_record() -> (
+        tuple[str, bool, int | None, int | None, bool, bool]
+    ):
+        record = _thread_registry_current()
+        if record is None:
+            return ("MainThread", False, get_ident(), get_native_id(), True, True)
+        return _parse_registry_record(record)
+
+    def _registry_snapshot_records() -> (
+        list[tuple[str, bool, int | None, int | None, bool, bool]]
+    ):
+        records = _thread_registry_snapshot()
+        if not isinstance(records, list):
+            raise RuntimeError("invalid thread registry snapshot")
+        return [_parse_registry_record(record) for record in records]
+
     def current_thread() -> Thread:
-        ident = get_ident()
-        thread = _THREAD_BY_IDENT.get(ident)
-        if thread is not None:
+        name, daemon, ident, native_id, alive, is_main = _registry_current_record()
+        if is_main:
+            thread = (
+                _MAIN_THREAD if _MAIN_THREAD is not None else _bootstrap_main_thread()
+            )
+            thread._name = name
+            thread._daemon = daemon
+            thread._started = bool(alive)
+            thread._synthetic_alive = bool(alive)
+            thread._ident_cache = ident
+            thread._native_id_cache = native_id
             return thread
-        if _MAIN_THREAD is not None:
-            return _MAIN_THREAD
-        return _bootstrap_main_thread()
+        return _thread_from_registry_record(
+            (name, daemon, ident, native_id, alive, is_main)
+        )
 
     def main_thread() -> Thread:
         if _MAIN_THREAD is None:
@@ -1407,14 +1140,28 @@ else:
         return _MAIN_THREAD
 
     def enumerate() -> list[Thread]:
-        active = [t for t in _THREADS if t.is_alive()]
-        cur = current_thread()
-        if cur not in active:
-            active.insert(0, cur)
-        return list(active)
+        out: list[Thread] = []
+        for record in _registry_snapshot_records():
+            name, daemon, ident, native_id, alive, is_main = record
+            if not alive:
+                continue
+            if is_main:
+                thread = main_thread()
+                thread._name = name
+                thread._daemon = daemon
+                thread._started = True
+                thread._synthetic_alive = True
+                thread._ident_cache = ident
+                thread._native_id_cache = native_id
+                out.append(thread)
+                continue
+            out.append(_thread_from_registry_record(record))
+        if not out:
+            out.append(main_thread())
+        return out
 
     def active_count() -> int:
-        return len(enumerate())
+        return int(_MOLT_THREAD_REGISTRY_ACTIVE_COUNT())
 
     currentThread = current_thread
     activeCount = active_count
@@ -1425,73 +1172,11 @@ else:
         global _MAIN_THREAD
         thread = Thread(target=None, name="MainThread", daemon=False)
         thread._started = True
-        _register_thread_ident(thread, get_ident(), get_native_id())
+        thread._synthetic_alive = True
+        thread._ident_cache = get_ident()
+        thread._native_id_cache = get_native_id()
+        _thread_registry_set_main(thread._name, thread._daemon)
         _MAIN_THREAD = thread
         return thread
-
-    def _register_thread_ident(
-        thread: Thread, ident: int, native_id: int | None = None
-    ) -> None:
-        thread._ident_cache = ident
-        if native_id is None:
-            native_id = get_native_id()
-        thread._native_id_cache = native_id
-        _THREAD_BY_IDENT[ident] = thread
-
-    def _molt_thread_run(payload: bytes) -> None:
-        decoded = _decode_payload(payload)
-        if not isinstance(decoded, tuple) or len(decoded) not in (6, 7):
-            raise TypeError("invalid thread payload")
-        token: int | None
-        if len(decoded) == 7:
-            token, module, qualname, args, kwargs, name, daemon = decoded
-        else:
-            token = None
-            module, qualname, args, kwargs, name, daemon = decoded
-        ident = get_ident()
-        thread = _THREAD_BY_TOKEN.pop(token, None) if token is not None else None
-        created = False
-        if thread is None:
-            thread = Thread(target=None, name=str(name) if name is not None else None)
-            created = True
-        thread._started = True
-        if name is not None:
-            thread._name = str(name)
-        if daemon is not None:
-            thread._daemon = bool(daemon)
-        _register_thread_ident(thread, ident, get_native_id())
-        if created:
-            _THREADS.append(thread)
-        entry = None
-        if _THREAD_SHARED_RUNTIME and token is not None:
-            entry = _THREAD_SHARED_PAYLOADS.pop(token, None)
-        try:
-            _invoke_thread_hooks()
-            if module is None or qualname is None:
-                if thread is not None:
-                    if (
-                        entry is not None
-                        and thread._target is None
-                        and type(thread) is Thread
-                    ):
-                        target, args, kwargs = entry
-                        target(*args, **kwargs)
-                    else:
-                        thread.run()
-                elif entry is not None:
-                    target, args, kwargs = entry
-                    target(*args, **kwargs)
-                return None
-            if not isinstance(args, tuple):
-                raise TypeError("thread args must be a tuple")
-            if not isinstance(kwargs, dict):
-                raise TypeError("thread kwargs must be a dict")
-            target = _resolve_qualname(str(module), str(qualname))
-            target(*args, **kwargs)
-        except BaseException as exc:
-            _call_excepthook(thread, exc)
-        finally:
-            if thread is not _MAIN_THREAD:
-                _THREAD_BY_IDENT.pop(ident, None)
 
     _bootstrap_main_thread()

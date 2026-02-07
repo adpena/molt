@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cc::Build;
@@ -190,8 +190,8 @@ for lo, hi in ranges:
 }
 
 fn build_libmpdec(
-    manifest_dir: &PathBuf,
-    out_dir: &PathBuf,
+    manifest_dir: &Path,
+    out_dir: &Path,
     target_env: &str,
     target_ptr_width: &str,
     target_arch: &str,
@@ -298,7 +298,7 @@ fn build_libmpdec(
                  or install wasi-libc (Homebrew) so wasm32-wasip1 builds can compile."
             );
         };
-        build.flag(&format!("--sysroot={}", sysroot.display()));
+        build.flag(format!("--sysroot={}", sysroot.display()));
         let lib_path = sysroot.join("lib").join("wasm32-wasip1");
         println!("cargo:rustc-link-search=native={}", lib_path.display());
         println!("cargo:rustc-link-lib=wasi-emulated-signal");

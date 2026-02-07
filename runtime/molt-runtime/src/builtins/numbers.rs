@@ -39,9 +39,7 @@ fn is_int_subclass_bits(class_bits: u64) -> bool {
     if class_bits == int_bits {
         return true;
     }
-    class_mro_vec(class_bits)
-        .iter()
-        .any(|&bits| bits == int_bits)
+    class_mro_vec(class_bits).contains(&int_bits)
 }
 
 pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {

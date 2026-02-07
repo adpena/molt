@@ -285,9 +285,7 @@ def main() -> int:
         "--allow-status",
         action="append",
         default=[],
-        help=(
-            "Allowed audit status (repeatable). Default is " "`intrinsic-backed` only."
-        ),
+        help=("Allowed audit status (repeatable). Default is `intrinsic-backed` only."),
     )
     args = parser.parse_args()
 

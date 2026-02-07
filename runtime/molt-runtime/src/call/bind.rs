@@ -163,6 +163,18 @@ unsafe fn call_type_with_builder(
             return bits;
         }
     }
+    let abstract_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.abstractmethods_name,
+        b"__abstractmethods__",
+    );
+    if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, call_ptr, abstract_name_bits) {
+        if !obj_from_bits(abstract_bits).is_none() && is_truthy(_py, obj_from_bits(abstract_bits)) {
+            let class_name = class_name_for_error(class_bits);
+            let msg = format!("Can't instantiate abstract class {class_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+    }
     if is_builtin_class_bits(_py, class_bits) {
         if class_bits == builtins.dict {
             let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
@@ -517,6 +529,47 @@ unsafe fn build_class_from_args(
         bases_vec.push(builtins.object);
     }
 
+    let mut winner_bits = metaclass_bits;
+    for base_bits in bases_vec.iter().copied() {
+        let base_meta_bits = type_of_bits(_py, base_bits);
+        if issubclass_bits(winner_bits, base_meta_bits) {
+            continue;
+        }
+        if issubclass_bits(base_meta_bits, winner_bits) {
+            winner_bits = base_meta_bits;
+            continue;
+        }
+        if bases_owned {
+            dec_ref_bits(_py, bases_tuple_bits);
+        }
+        return raise_exception::<_>(
+            _py,
+            "TypeError",
+            "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
+        );
+    }
+
+    if winner_bits != metaclass_bits {
+        let builder_bits = molt_callargs_new((3 + kw_names.len()) as u64, kw_names.len() as u64);
+        if builder_bits == 0 {
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let _ = molt_callargs_push_pos(builder_bits, name_bits);
+        let _ = molt_callargs_push_pos(builder_bits, bases_tuple_bits);
+        let _ = molt_callargs_push_pos(builder_bits, namespace_bits);
+        for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
+            let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
+        }
+        let class_bits = molt_call_bind(winner_bits, builder_bits);
+        if bases_owned {
+            dec_ref_bits(_py, bases_tuple_bits);
+        }
+        return class_bits;
+    }
+
     let class_ptr = alloc_class_obj(_py, name_bits);
     if class_ptr.is_null() {
         if bases_owned {
@@ -857,7 +910,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied()) {
                         if let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits) {
                             let (name_bits, file_bits) =
-                                unsafe { (code_name_bits(code_ptr), code_filename_bits(code_ptr)) };
+                                (code_name_bits(code_ptr), code_filename_bits(code_ptr));
                             let name = string_obj_to_owned(obj_from_bits(name_bits))
                                 .unwrap_or_else(|| "<code>".to_string());
                             let file = string_obj_to_owned(obj_from_bits(file_bits))

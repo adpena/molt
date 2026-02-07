@@ -123,6 +123,16 @@ PRIORITY_LOWERING_QUEUES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+CRITICAL_STRICT_IMPORT_ROOTS: tuple[str, ...] = (
+    "socket",
+    "threading",
+    "asyncio",
+    "pathlib",
+    "time",
+    "traceback",
+    "sys",
+    "os",
+)
 INTRINSIC_CALL_NAMES = {
     "load_intrinsic",
     "require_intrinsic",
@@ -133,6 +143,17 @@ INTRINSIC_CALL_NAMES = {
     "_intrinsic_require",
     "_require_intrinsic",
     "_require_callable_intrinsic",
+}
+STRICT_OPTIONAL_INTRINSIC_CALL_NAMES = {
+    "load_intrinsic",
+    "_load_intrinsic",
+    "require_optional_intrinsic",
+}
+STRICT_IMPORT_FALLBACK_EXCEPTIONS = {
+    "ImportError",
+    "ModuleNotFoundError",
+    "Exception",
+    "BaseException",
 }
 
 
@@ -245,6 +266,63 @@ def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
             if value.startswith("molt_"):
                 names.add(value)
     return tuple(sorted(names))
+
+
+def _exception_type_names(exc: ast.expr | None) -> set[str]:
+    if exc is None:
+        return {"BaseException"}
+    if isinstance(exc, ast.Name):
+        return {exc.id}
+    if isinstance(exc, ast.Attribute):
+        return {exc.attr}
+    if isinstance(exc, ast.Tuple):
+        names: set[str] = set()
+        for item in exc.elts:
+            names.update(_exception_type_names(item))
+        return names
+    return set()
+
+
+def _stmt_block_has_import(statements: list[ast.stmt]) -> bool:
+    for stmt in statements:
+        for node in ast.walk(stmt):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                return True
+    return False
+
+
+def _scan_strict_module_fallback_patterns(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return []
+
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node.func)
+        if name in STRICT_OPTIONAL_INTRINSIC_CALL_NAMES:
+            errors.append(
+                "Strict module cannot use optional intrinsic loaders; use require_intrinsic."
+            )
+            break
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        if not _stmt_block_has_import(node.body):
+            continue
+        for handler in node.handlers:
+            names = _exception_type_names(handler.type)
+            if names & STRICT_IMPORT_FALLBACK_EXCEPTIONS:
+                errors.append(
+                    "Strict module cannot use try/except import fallback paths."
+                )
+                break
+
+    return errors
 
 
 def _imports_from_ast(
@@ -367,7 +445,9 @@ def _build_stdlib_dep_graph(
     known_modules = set(modules)
     deps: dict[str, set[str]] = {}
     for module, audit in modules.items():
-        tree = ast.parse(audit.path.read_text(encoding="utf-8"), filename=str(audit.path))
+        tree = ast.parse(
+            audit.path.read_text(encoding="utf-8"), filename=str(audit.path)
+        )
         deps[module] = _imports_from_ast(
             tree=tree,
             current_module=module,
@@ -506,12 +586,30 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
             "- Gate rule: bootstrap modules must not be `python-only`.",
             "",
+            "## Critical Strict-Import Gate",
+            "- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.",
+            "- Critical roots: "
+            + ", ".join(f"`{name}`" for name in CRITICAL_STRICT_IMPORT_ROOTS),
+            "- Gate rule: for each listed root currently `intrinsic-backed`, every transitive stdlib import in its closure must also be `intrinsic-backed`.",
+            "- Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).",
+            "",
+            "## Intrinsic-Backed Fallback Gate",
+            "- Global rule: every `intrinsic-backed` module must avoid optional intrinsic loaders and try/except import fallback paths.",
+            "- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).",
+            "",
             "## TODO",
             "- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def _parse_module_list(raw: str) -> tuple[str, ...]:
+    out = [item.strip() for item in raw.split(",") if item.strip()]
+    if not out:
+        raise ValueError("module list cannot be empty")
+    return tuple(dict.fromkeys(out))
 
 
 def main() -> int:
@@ -528,6 +626,21 @@ def main() -> int:
         "--json-out",
         type=Path,
         help="Write machine-readable audit report JSON to this path.",
+    )
+    parser.add_argument(
+        "--allowlist-modules",
+        help=(
+            "Comma-separated stdlib modules to enforce strict transitive import closure "
+            "(only roots currently intrinsic-backed are checked)."
+        ),
+    )
+    parser.add_argument(
+        "--critical-allowlist",
+        action="store_true",
+        help=(
+            "Apply strict transitive import closure checks for critical modules: "
+            + ", ".join(CRITICAL_STRICT_IMPORT_ROOTS)
+        ),
     )
     args = parser.parse_args()
 
@@ -581,6 +694,49 @@ def main() -> int:
         if bad:
             dependency_violations.append((audit.module, audit.status, bad))
 
+    strict_roots: set[str] = set()
+    if args.allowlist_modules:
+        try:
+            strict_roots.update(_parse_module_list(args.allowlist_modules))
+        except ValueError as exc:
+            print(f"stdlib intrinsics lint failed: {exc}")
+            return 1
+    if args.critical_allowlist:
+        strict_roots.update(CRITICAL_STRICT_IMPORT_ROOTS)
+    unknown_strict_roots = sorted(
+        root for root in strict_roots if root not in modules_by_name
+    )
+    if unknown_strict_roots:
+        print("stdlib intrinsics lint failed: unknown strict-import modules requested")
+        for module in unknown_strict_roots:
+            print(f"- {module}")
+        return 1
+    non_intrinsic_backed = {
+        audit.module for audit in audits if audit.status != STATUS_INTRINSIC
+    }
+    strict_import_violations: list[tuple[str, tuple[str, ...]]] = []
+    for root in sorted(strict_roots):
+        root_status = modules_by_name[root].status
+        if root_status != STATUS_INTRINSIC:
+            continue
+        imported_closure = _closure({root}, dep_graph)
+        imported_closure.discard(root)
+        bad = tuple(sorted(imported_closure & non_intrinsic_backed))
+        if bad:
+            strict_import_violations.append((root, bad))
+    strict_fallback_violations: list[tuple[str, tuple[str, ...]]] = []
+    for root in sorted(strict_roots):
+        errors = _scan_strict_module_fallback_patterns(modules_by_name[root].path)
+        if errors:
+            strict_fallback_violations.append((root, tuple(errors)))
+    intrinsic_backed_fallback_violations: list[tuple[str, tuple[str, ...]]] = []
+    for audit in sorted(audits, key=lambda item: item.module):
+        if audit.status != STATUS_INTRINSIC:
+            continue
+        errors = _scan_strict_module_fallback_patterns(audit.path)
+        if errors:
+            intrinsic_backed_fallback_violations.append((audit.module, tuple(errors)))
+
     if failures:
         print("stdlib intrinsics lint failed:")
         for path, errors in failures:
@@ -612,6 +768,37 @@ def main() -> int:
             print(f"- {module} ({status}) depends on {joined}")
         return 1
 
+    if strict_import_violations:
+        print(
+            "stdlib intrinsics lint failed: strict-import allowlist violated "
+            "(intrinsic-backed roots imported non-intrinsic-backed stdlib modules)"
+        )
+        for root, bad in strict_import_violations:
+            joined = ", ".join(f"`{name}`" for name in bad)
+            print(f"- {root} imports {joined}")
+        return 1
+
+    if strict_fallback_violations:
+        print(
+            "stdlib intrinsics lint failed: strict-import roots used forbidden fallback patterns"
+        )
+        for root, errors in strict_fallback_violations:
+            print(f"- {root}")
+            for msg in errors:
+                print(f"  {msg}")
+        return 1
+
+    if intrinsic_backed_fallback_violations:
+        print(
+            "stdlib intrinsics lint failed: intrinsic-backed modules used forbidden "
+            "fallback patterns"
+        )
+        for module, errors in intrinsic_backed_fallback_violations:
+            print(f"- {module}")
+            for msg in errors:
+                print(f"  {msg}")
+        return 1
+
     generated_doc = _build_audit_doc(audits)
     if args.update_doc:
         AUDIT_DOC.write_text(generated_doc, encoding="utf-8")
@@ -628,7 +815,16 @@ def main() -> int:
             return 1
 
     if args.json_out is not None:
+        status_counts = {
+            STATUS_INTRINSIC: 0,
+            STATUS_INTRINSIC_PARTIAL: 0,
+            STATUS_PROBE_ONLY: 0,
+            STATUS_PYTHON_ONLY: 0,
+        }
+        for audit in audits:
+            status_counts[audit.status] += 1
         report = {
+            "status_counts": status_counts,
             "modules": [
                 {
                     "module": audit.module,
@@ -637,7 +833,23 @@ def main() -> int:
                     "intrinsics": list(audit.intrinsic_names),
                 }
                 for audit in sorted(audits, key=lambda a: a.module)
-            ]
+            ],
+            "strict_import_violations": [
+                {"module": root, "imports": list(bad)}
+                for root, bad in strict_import_violations
+            ],
+            "strict_fallback_violations": [
+                {"module": root, "errors": list(errors)}
+                for root, errors in strict_fallback_violations
+            ],
+            "intrinsic_backed_fallback_violations": [
+                {"module": module, "errors": list(errors)}
+                for module, errors in intrinsic_backed_fallback_violations
+            ],
+            "dependency_violations": [
+                {"module": module, "status": status, "imports": list(bad)}
+                for module, status, bad in dependency_violations
+            ],
         }
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(

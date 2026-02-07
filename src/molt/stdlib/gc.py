@@ -8,62 +8,82 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _require_intrinsic("molt_stdlib_probe", globals())
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement
-# the full gc module API and wire it to the runtime cycle collector once available.
+def _require_callable_intrinsic(name: str):
+    value = _require_intrinsic(name, globals())
+    if not callable(value):
+        raise RuntimeError(f"intrinsic unavailable: {name}")
+    return value
 
-_enabled = True
-_thresholds = (0, 0, 0)
-_debug_flags = 0
+
+_MOLT_GC_COLLECT = _require_callable_intrinsic("molt_gc_collect")
+_MOLT_GC_ENABLE = _require_callable_intrinsic("molt_gc_enable")
+_MOLT_GC_DISABLE = _require_callable_intrinsic("molt_gc_disable")
+_MOLT_GC_ISENABLED = _require_callable_intrinsic("molt_gc_isenabled")
+_MOLT_GC_SET_THRESHOLD = _require_callable_intrinsic("molt_gc_set_threshold")
+_MOLT_GC_GET_THRESHOLD = _require_callable_intrinsic("molt_gc_get_threshold")
+_MOLT_GC_SET_DEBUG = _require_callable_intrinsic("molt_gc_set_debug")
+_MOLT_GC_GET_DEBUG = _require_callable_intrinsic("molt_gc_get_debug")
+_MOLT_GC_GET_COUNT = _require_callable_intrinsic("molt_gc_get_count")
+
 garbage: list[object] = []
 
 
 def collect(generation: int = 2) -> int:
-    del generation
-    try:
-        import weakref as _weakref
-
-        hook = getattr(_weakref, "_gc_collect_hook", None)
-        if hook is not None:
-            hook()
-    except Exception:
-        pass
-    return 0
+    return int(_MOLT_GC_COLLECT(generation))
 
 
 def enable() -> None:
-    global _enabled
-    _enabled = True
+    _MOLT_GC_ENABLE()
+    return None
 
 
 def disable() -> None:
-    global _enabled
-    _enabled = False
+    _MOLT_GC_DISABLE()
+    return None
 
 
 def isenabled() -> bool:
-    return _enabled
+    return bool(_MOLT_GC_ISENABLED())
 
 
 def set_threshold(th0: int, th1: int = 0, th2: int = 0) -> None:
-    global _thresholds
-    _thresholds = (int(th0), int(th1), int(th2))
+    _MOLT_GC_SET_THRESHOLD(th0, th1, th2)
+    return None
 
 
 def get_threshold() -> tuple[int, int, int]:
-    return _thresholds
+    value = _MOLT_GC_GET_THRESHOLD()
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 3
+        and isinstance(value[0], int)
+        and isinstance(value[1], int)
+        and isinstance(value[2], int)
+    ):
+        return int(value[0]), int(value[1]), int(value[2])
+    raise RuntimeError("gc get_threshold intrinsic returned invalid value")
 
 
 def set_debug(flags: int) -> None:
-    global _debug_flags
-    _debug_flags = int(flags)
+    _MOLT_GC_SET_DEBUG(flags)
+    return None
 
 
 def get_debug() -> int:
-    return _debug_flags
+    return int(_MOLT_GC_GET_DEBUG())
 
 
 def get_count() -> tuple[int, int, int]:
-    return (0, 0, 0)
+    value = _MOLT_GC_GET_COUNT()
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 3
+        and isinstance(value[0], int)
+        and isinstance(value[1], int)
+        and isinstance(value[2], int)
+    ):
+        return int(value[0]), int(value[1]), int(value[2])
+    raise RuntimeError("gc get_count intrinsic returned invalid value")
 
 
 __all__ = [

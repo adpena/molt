@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from typing import Any
-
 import builtins as _builtins
+
+TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from typing import Any
+else:
+
+    class _TypingAlias:
+        __slots__ = ()
+
+        def __getitem__(self, _item):
+            return self
+
+    Any = object
+    Callable = _TypingAlias()
+    Iterable = _TypingAlias()
 
 
 def _parse_caps(raw: str) -> set[str]:

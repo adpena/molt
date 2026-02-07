@@ -1,196 +1,32 @@
-"""Minimal _abc shim for Molt."""
+"""Intrinsic-backed _abc shim for Molt."""
 
 from __future__ import annotations
 
-# Intrinsic-only stdlib guard.
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten
-# _abc parity once weakref/GC semantics are complete and ABC caching is validated.
+_bootstrap = _require_intrinsic("molt_abc_bootstrap", globals())
+data = _bootstrap()
+if not isinstance(data, dict):
+    raise RuntimeError("_abc intrinsics unavailable")
 
-from _weakrefset import WeakSet
-
-_require_intrinsic("molt_stdlib_probe", globals())
-
-
-_abc_invalidation_counter = 0
-
-
-def _is_abstract(value):
-    if getattr(value, "__isabstractmethod__", False):
-        return True
-    func = getattr(value, "__func__", None)
-    if func is not None and getattr(func, "__isabstractmethod__", False):
-        return True
-    if isinstance(value, property):
-        fget = getattr(value, "fget", None)
-        fset = getattr(value, "fset", None)
-        fdel = getattr(value, "fdel", None)
-        for accessor in (fget, fset, fdel):
-            if accessor is not None and getattr(
-                accessor, "__isabstractmethod__", False
-            ):
-                return True
-    return False
+get_cache_token = data["get_cache_token"]
+_abc_init = data["_abc_init"]
+_abc_register = data["_abc_register"]
+_abc_instancecheck = data["_abc_instancecheck"]
+_abc_subclasscheck = data["_abc_subclasscheck"]
+_get_dump = data["_get_dump"]
+_reset_registry = data["_reset_registry"]
+_reset_caches = data["_reset_caches"]
 
 
-def _call_subclasshook(cls, subclass):
-    hook = getattr(cls, "__subclasshook__", None)
-    if hook is None:
-        return NotImplemented
-    try:
-        return hook(subclass)
-    except TypeError as exc:
-        if "call arity mismatch" in str(exc):
-            return NotImplemented
-        raise
-
-
-def _get_subclasshook(cls):
-    def _hook(subclass):
-        return _call_subclasshook(cls, subclass)
-
-    return _hook
-
-
-def get_cache_token():
-    return _abc_invalidation_counter
-
-
-def _abc_init(cls):
-    abstracts = {name for name, value in cls.__dict__.items() if _is_abstract(value)}
-    for base in cls.__mro__[1:]:
-        for name in getattr(base, "__abstractmethods__", set()):
-            value = getattr(cls, name, None)
-            if _is_abstract(value):
-                abstracts.add(name)
-    cls.__abstractmethods__ = frozenset(abstracts)
-    cls._abc_registry = WeakSet()
-    cls._abc_cache = WeakSet()
-    cls._abc_negative_cache = WeakSet()
-    cls._abc_negative_cache_version = _abc_invalidation_counter
-
-
-def _abc_register(cls, subclass):
-    global _abc_invalidation_counter
-    if not isinstance(subclass, type):
-        raise TypeError("Can only register classes")
-    if _safe_issubclass(subclass, cls):
-        return subclass
-    if _safe_issubclass(cls, subclass):
-        raise RuntimeError("Refusing to create an inheritance cycle")
-    WeakSet.add(cls._abc_registry, subclass)
-    _abc_invalidation_counter += 1
-    return subclass
-
-
-def _abc_instancecheck(cls, instance):
-    subtype = type(instance)
-    if subtype in cls._abc_cache:
-        return True
-    if (
-        cls._abc_negative_cache_version == _abc_invalidation_counter
-        and subtype in cls._abc_negative_cache
-    ):
-        return False
-    return cls.__subclasscheck__(subtype)
-
-
-def _abc_subclasscheck(cls, subclass):
-    if not isinstance(subclass, type):
-        raise TypeError("issubclass() arg 1 must be a class")
-    if subclass in cls._abc_cache:
-        return True
-    if cls._abc_negative_cache_version < _abc_invalidation_counter:
-        cls._abc_negative_cache = WeakSet()
-        cls._abc_negative_cache_version = _abc_invalidation_counter
-    elif subclass in cls._abc_negative_cache:
-        return False
-    ok = _call_subclasshook(cls, subclass)
-    if ok is not NotImplemented:
-        if ok:
-            WeakSet.add(cls._abc_cache, subclass)
-        else:
-            WeakSet.add(cls._abc_negative_cache, subclass)
-        return bool(ok)
-    try:
-        if cls in _safe_mro(subclass):
-            WeakSet.add(cls._abc_cache, subclass)
-            return True
-    except TypeError as exc:
-        if "call arity mismatch" not in str(exc):
-            raise
-    for rcls in cls._abc_registry:
-        if _safe_issubclass(subclass, rcls):
-            WeakSet.add(cls._abc_cache, subclass)
-            return True
-    subclasses_func = getattr(type, "__subclasses__", None)
-    if callable(subclasses_func):
-        try:
-            subclasses = subclasses_func(cls)
-        except TypeError as exc:
-            if "call arity mismatch" not in str(exc):
-                raise
-            subclasses = ()
-    else:
-        subclasses = ()
-    for scls in subclasses:
-        if _safe_issubclass(subclass, scls):
-            WeakSet.add(cls._abc_cache, subclass)
-            return True
-    WeakSet.add(cls._abc_negative_cache, subclass)
-    return False
-
-
-def _safe_issubclass(subclass, cls):
-    try:
-        return issubclass(subclass, cls)
-    except TypeError as exc:
-        if "call arity mismatch" not in str(exc):
-            raise
-        return _mro_contains(_safe_mro(subclass), cls)
-
-
-def _safe_mro(cls):
-    try:
-        mro = type.mro(cls)
-    except TypeError as exc:
-        if "call arity mismatch" in str(exc):
-            return ()
-        raise
-    except Exception:
-        try:
-            mro = cls.__mro__
-        except Exception:
-            return ()
-    if isinstance(mro, tuple):
-        return mro
-    if isinstance(mro, list):
-        return tuple(mro)
-    return ()
-
-
-def _mro_contains(mro, needle):
-    for base in mro:
-        if base is needle:
-            return True
-    return False
-
-
-def _get_dump(cls):
-    return (
-        cls._abc_registry,
-        cls._abc_cache,
-        cls._abc_negative_cache,
-        cls._abc_negative_cache_version,
-    )
-
-
-def _reset_registry(cls):
-    WeakSet.clear(cls._abc_registry)
-
-
-def _reset_caches(cls):
-    WeakSet.clear(cls._abc_cache)
-    WeakSet.clear(cls._abc_negative_cache)
+__all__ = [
+    "get_cache_token",
+    "_abc_init",
+    "_abc_register",
+    "_abc_instancecheck",
+    "_abc_subclasscheck",
+    "_get_dump",
+    "_reset_registry",
+    "_reset_caches",
+]

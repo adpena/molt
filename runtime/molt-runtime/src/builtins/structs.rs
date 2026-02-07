@@ -3,10 +3,6 @@ use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use std::mem::{align_of, size_of};
 
-// TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): expand struct
-// parity for remaining format codes (complex/UTF-8 helpers), exact error messages, and pack/unpack
-// buffer protocol parity.
-
 #[derive(Clone, Copy)]
 enum StructEndian {
     Native,
@@ -83,7 +79,7 @@ fn parse_format(text: &str) -> Result<(StructFormat, Vec<StructOp>), String> {
     let mut ops = Vec::new();
     let mut count: usize = 0;
     let mut count_set = false;
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if ch.is_ascii_digit() {
             let digit = (ch as u8 - b'0') as usize;
             count = count
@@ -373,7 +369,7 @@ fn align_output(out: &mut Vec<u8>, offset: &mut usize, align: usize) -> Result<(
     let aligned =
         align_up(*offset, align).ok_or_else(|| "total struct size too long".to_string())?;
     if aligned > *offset {
-        out.extend(std::iter::repeat(0u8).take(aligned - *offset));
+        out.extend(std::iter::repeat_n(0u8, aligned - *offset));
         *offset = aligned;
     }
     Ok(())
@@ -660,23 +656,290 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
 }
 
 unsafe fn memoryview_contiguous_bytes(ptr: *mut u8) -> Option<&'static [u8]> {
-    if !memoryview_is_c_contiguous_view(ptr) {
-        return None;
-    }
-    let owner_bits = memoryview_owner_bits(ptr);
-    let owner = obj_from_bits(owner_bits);
-    let owner_ptr = owner.as_ptr()?;
+    let (owner_ptr, base_offset, nbytes) = memoryview_contiguous_window(ptr, false)?;
     let base = bytes_like_slice_raw(owner_ptr)?;
-    let offset = memoryview_offset(ptr);
-    if offset < 0 {
+    Some(&base[base_offset..base_offset + nbytes])
+}
+
+unsafe fn memoryview_contiguous_window(
+    mut view_ptr: *mut u8,
+    writable: bool,
+) -> Option<(*mut u8, usize, usize)> {
+    const MAX_DEPTH: usize = 64;
+    if !memoryview_is_c_contiguous_view(view_ptr) {
         return None;
     }
-    let offset = offset as usize;
-    let nbytes = memoryview_nbytes(ptr);
-    if offset > base.len() || offset.saturating_add(nbytes) > base.len() {
+    if writable && memoryview_readonly(view_ptr) {
         return None;
     }
-    Some(&base[offset..offset + nbytes])
+    let nbytes = memoryview_nbytes(view_ptr);
+    let mut base_offset = 0usize;
+    for _ in 0..MAX_DEPTH {
+        if !memoryview_is_c_contiguous_view(view_ptr) {
+            return None;
+        }
+        if writable && memoryview_readonly(view_ptr) {
+            return None;
+        }
+        let rel_offset = memoryview_offset(view_ptr);
+        if rel_offset < 0 {
+            return None;
+        }
+        base_offset = base_offset.checked_add(rel_offset as usize)?;
+        let owner = obj_from_bits(memoryview_owner_bits(view_ptr));
+        let owner_ptr = owner.as_ptr()?;
+        let owner_type_id = object_type_id(owner_ptr);
+        if owner_type_id == TYPE_ID_MEMORYVIEW {
+            view_ptr = owner_ptr;
+            continue;
+        }
+        if writable && owner_type_id != TYPE_ID_BYTEARRAY {
+            return None;
+        }
+        let base = bytes_like_slice_raw(owner_ptr)?;
+        let end = base_offset.checked_add(nbytes)?;
+        if end > base.len() {
+            return None;
+        }
+        return Some((owner_ptr, base_offset, nbytes));
+    }
+    None
+}
+
+type StructIntrinsicError = (&'static str, String);
+
+fn struct_read_buffer_bytes(
+    _py: &PyToken<'_>,
+    buffer_obj: MoltObject,
+) -> Result<&'static [u8], StructIntrinsicError> {
+    let Some(buffer_ptr) = buffer_obj.as_ptr() else {
+        let type_label = type_name(_py, buffer_obj);
+        return Err((
+            "TypeError",
+            format!("a bytes-like object is required, not '{type_label}'"),
+        ));
+    };
+    let type_id = unsafe { object_type_id(buffer_ptr) };
+    let buf = if type_id == TYPE_ID_MEMORYVIEW {
+        if !unsafe { memoryview_is_c_contiguous_view(buffer_ptr) } {
+            return Err((
+                "BufferError",
+                "memoryview: underlying buffer is not C-contiguous".to_string(),
+            ));
+        }
+        unsafe { memoryview_contiguous_bytes(buffer_ptr) }
+    } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+        unsafe { bytes_like_slice_raw(buffer_ptr) }
+    } else {
+        None
+    };
+    let Some(buf) = buf else {
+        let type_label = type_name(_py, buffer_obj);
+        return Err((
+            "TypeError",
+            format!("a bytes-like object is required, not '{type_label}'"),
+        ));
+    };
+    Ok(buf)
+}
+
+fn struct_index_offset(_py: &PyToken<'_>, offset_bits: u64) -> Option<i64> {
+    let offset_obj = obj_from_bits(offset_bits);
+    let msg = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(_py, offset_obj)
+    );
+    let offset = index_i64_from_obj(_py, offset_bits, msg.as_str());
+    if exception_pending(_py) {
+        return None;
+    }
+    Some(offset)
+}
+
+fn struct_normalize_offset(raw_offset: i64, buf_len: usize) -> Option<usize> {
+    let mut start = i128::from(raw_offset);
+    if start < 0 {
+        start = start.checked_add(buf_len as i128)?;
+    }
+    usize::try_from(start).ok()
+}
+
+fn struct_unpack_values(
+    _py: &PyToken<'_>,
+    parsed: StructFormat,
+    ops: &[StructOp],
+    buf: &[u8],
+) -> Result<Vec<u64>, StructIntrinsicError> {
+    let expected_values = expected_value_count(ops);
+    let mut out: Vec<u64> = Vec::with_capacity(expected_values);
+    let mut offset = 0usize;
+    for op in ops {
+        match op.kind {
+            StructKind::Pad => {
+                let delta = op
+                    .count
+                    .checked_mul(op.size)
+                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                offset = offset
+                    .checked_add(delta)
+                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                if offset > buf.len() {
+                    return Err((
+                        "ValueError",
+                        "unpack requires a buffer of sufficient size".to_string(),
+                    ));
+                }
+            }
+            StructKind::Bytes | StructKind::Pascal => {
+                offset = align_up(offset, op.align)
+                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                let end = offset
+                    .checked_add(op.size)
+                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                if end > buf.len() {
+                    return Err((
+                        "ValueError",
+                        "unpack requires a buffer of sufficient size".to_string(),
+                    ));
+                }
+                let slice = &buf[offset..end];
+                let bytes = if matches!(op.kind, StructKind::Pascal) {
+                    if op.size == 0 {
+                        &[][..]
+                    } else {
+                        let len = std::cmp::min(slice[0] as usize, op.size.saturating_sub(1));
+                        &slice[1..1 + len]
+                    }
+                } else {
+                    slice
+                };
+                let ptr = alloc_bytes(_py, bytes);
+                if ptr.is_null() {
+                    return Err(("MemoryError", "allocation failed".to_string()));
+                }
+                out.push(MoltObject::from_ptr(ptr).bits());
+                offset = end;
+            }
+            StructKind::Char => {
+                for _ in 0..op.count {
+                    offset = align_up(offset, op.align)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    let end = offset
+                        .checked_add(1)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    if end > buf.len() {
+                        return Err((
+                            "ValueError",
+                            "unpack requires a buffer of sufficient size".to_string(),
+                        ));
+                    }
+                    let slice = &buf[offset..end];
+                    let ptr = alloc_bytes(_py, slice);
+                    if ptr.is_null() {
+                        return Err(("MemoryError", "allocation failed".to_string()));
+                    }
+                    out.push(MoltObject::from_ptr(ptr).bits());
+                    offset = end;
+                }
+            }
+            StructKind::Bool => {
+                for _ in 0..op.count {
+                    offset = align_up(offset, op.align)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    let end = offset
+                        .checked_add(1)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    if end > buf.len() {
+                        return Err((
+                            "ValueError",
+                            "unpack requires a buffer of sufficient size".to_string(),
+                        ));
+                    }
+                    let slice = &buf[offset..end];
+                    out.push(MoltObject::from_bool(slice[0] != 0).bits());
+                    offset = end;
+                }
+            }
+            StructKind::Int { signed } => {
+                for _ in 0..op.count {
+                    offset = align_up(offset, op.align)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    let end = offset
+                        .checked_add(op.size)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    if end > buf.len() {
+                        return Err((
+                            "ValueError",
+                            "unpack requires a buffer of sufficient size".to_string(),
+                        ));
+                    }
+                    let slice = &buf[offset..end];
+                    let bits = if signed {
+                        let val = read_signed(slice, parsed.endian, op.size)
+                            .map_err(|msg| ("OverflowError", msg))?;
+                        int_bits_from_i128(_py, val)
+                    } else {
+                        let val = read_unsigned(slice, parsed.endian, op.size)
+                            .map_err(|msg| ("OverflowError", msg))?;
+                        int_bits_from_i128(_py, val as i128)
+                    };
+                    out.push(bits);
+                    offset = end;
+                }
+            }
+            StructKind::Float => {
+                for _ in 0..op.count {
+                    offset = align_up(offset, op.align)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    let end = offset
+                        .checked_add(op.size)
+                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    if end > buf.len() {
+                        return Err((
+                            "ValueError",
+                            "unpack requires a buffer of sufficient size".to_string(),
+                        ));
+                    }
+                    let slice = &buf[offset..end];
+                    let val = match op.size {
+                        2 => {
+                            let mut buf2 = [0u8; 2];
+                            buf2.copy_from_slice(slice);
+                            let raw = match parsed.endian {
+                                StructEndian::Native => u16::from_ne_bytes(buf2),
+                                StructEndian::Little => u16::from_le_bytes(buf2),
+                                StructEndian::Big => u16::from_be_bytes(buf2),
+                            };
+                            f16_to_f64(raw)
+                        }
+                        4 => {
+                            let mut buf4 = [0u8; 4];
+                            buf4.copy_from_slice(slice);
+                            let raw = match parsed.endian {
+                                StructEndian::Native => f32::from_ne_bytes(buf4),
+                                StructEndian::Little => f32::from_le_bytes(buf4),
+                                StructEndian::Big => f32::from_be_bytes(buf4),
+                            };
+                            raw as f64
+                        }
+                        8 => {
+                            let mut buf8 = [0u8; 8];
+                            buf8.copy_from_slice(slice);
+                            match parsed.endian {
+                                StructEndian::Native => f64::from_ne_bytes(buf8),
+                                StructEndian::Little => f64::from_le_bytes(buf8),
+                                StructEndian::Big => f64::from_be_bytes(buf8),
+                            }
+                        }
+                        _ => return Err(("OverflowError", "unsupported float size".to_string())),
+                    };
+                    out.push(MoltObject::from_float(val).bits());
+                    offset = end;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[no_mangle]
@@ -737,7 +1000,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
         for op in ops {
             match op.kind {
                 StructKind::Pad => {
-                    out.extend(std::iter::repeat(0u8).take(op.count * op.size));
+                    out.extend(std::iter::repeat_n(0u8, op.count * op.size));
                     offset = match offset.checked_add(op.count * op.size) {
                         Some(val) => val,
                         None => {
@@ -975,9 +1238,9 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                 StructEndian::Big => (val as f32).to_be_bytes().to_vec(),
                             },
                             8 => match parsed.endian {
-                                StructEndian::Native => (val as f64).to_ne_bytes().to_vec(),
-                                StructEndian::Little => (val as f64).to_le_bytes().to_vec(),
-                                StructEndian::Big => (val as f64).to_be_bytes().to_vec(),
+                                StructEndian::Native => { val }.to_ne_bytes().to_vec(),
+                                StructEndian::Little => { val }.to_le_bytes().to_vec(),
+                                StructEndian::Big => { val }.to_be_bytes().to_vec(),
                             },
                             _ => {
                                 return raise_exception::<u64>(
@@ -1026,217 +1289,281 @@ pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 
             return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
         };
         let buffer_obj = obj_from_bits(buffer_bits);
-        let Some(buffer_ptr) = buffer_obj.as_ptr() else {
-            let type_label = type_name(_py, buffer_obj);
-            let msg = format!("a bytes-like object is required, not '{type_label}'");
-            return raise_exception::<u64>(_py, "TypeError", msg.as_str());
-        };
-        let type_id = unsafe { object_type_id(buffer_ptr) };
-        let buf = if type_id == TYPE_ID_MEMORYVIEW {
-            if !unsafe { memoryview_is_c_contiguous_view(buffer_ptr) } {
-                return raise_exception::<u64>(
-                    _py,
-                    "BufferError",
-                    "memoryview: underlying buffer is not C-contiguous",
-                );
-            }
-            unsafe { memoryview_contiguous_bytes(buffer_ptr) }
-        } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-            unsafe { bytes_like_slice_raw(buffer_ptr) }
-        } else {
-            None
-        };
-        let Some(buf) = buf else {
-            let type_label = type_name(_py, buffer_obj);
-            let msg = format!("a bytes-like object is required, not '{type_label}'");
-            return raise_exception::<u64>(_py, "TypeError", msg.as_str());
+        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
+            Ok(buf) => buf,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
         };
         if buf.len() != expected_size {
             let msg = format!("unpack requires a buffer of {expected_size} bytes");
             return raise_exception::<u64>(_py, "ValueError", msg.as_str());
         }
-        let expected_values = expected_value_count(&ops);
-        let mut out: Vec<u64> = Vec::with_capacity(expected_values);
-        let mut offset = 0usize;
-        for op in ops {
-            match op.kind {
-                StructKind::Pad => {
-                    offset = offset.saturating_add(op.count * op.size);
-                }
-                StructKind::Bytes | StructKind::Pascal => {
-                    offset = match align_up(offset, op.align) {
-                        Some(val) => val,
-                        None => {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            )
-                        }
-                    };
-                    let end = offset + op.size;
-                    if end > buf.len() {
-                        return raise_exception::<u64>(
-                            _py,
-                            "ValueError",
-                            "unpack requires a buffer of sufficient size",
-                        );
-                    }
-                    let slice = &buf[offset..end];
-                    let bytes = if matches!(op.kind, StructKind::Pascal) {
-                        if op.size == 0 {
-                            &[][..]
-                        } else {
-                            let len = std::cmp::min(slice[0] as usize, op.size.saturating_sub(1));
-                            &slice[1..1 + len]
-                        }
-                    } else {
-                        slice
-                    };
-                    let ptr = alloc_bytes(_py, bytes);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    out.push(MoltObject::from_ptr(ptr).bits());
-                    offset = end;
-                }
-                StructKind::Char => {
-                    for _ in 0..op.count {
-                        offset = match align_up(offset, op.align) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                )
-                            }
-                        };
-                        let end = offset + 1;
-                        let slice = &buf[offset..end];
-                        let ptr = alloc_bytes(_py, slice);
-                        if ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        out.push(MoltObject::from_ptr(ptr).bits());
-                        offset = end;
-                    }
-                }
-                StructKind::Bool => {
-                    for _ in 0..op.count {
-                        offset = match align_up(offset, op.align) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                )
-                            }
-                        };
-                        let end = offset + 1;
-                        let slice = &buf[offset..end];
-                        out.push(MoltObject::from_bool(slice[0] != 0).bits());
-                        offset = end;
-                    }
-                }
-                StructKind::Int { signed } => {
-                    for _ in 0..op.count {
-                        offset = match align_up(offset, op.align) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                )
-                            }
-                        };
-                        let end = offset + op.size;
-                        let slice = &buf[offset..end];
-                        let bits = if signed {
-                            let val = match read_signed(slice, parsed.endian, op.size) {
-                                Ok(val) => val,
-                                Err(msg) => {
-                                    return raise_exception::<u64>(_py, "OverflowError", &msg)
-                                }
-                            };
-                            int_bits_from_i128(_py, val)
-                        } else {
-                            let val = match read_unsigned(slice, parsed.endian, op.size) {
-                                Ok(val) => val,
-                                Err(msg) => {
-                                    return raise_exception::<u64>(_py, "OverflowError", &msg)
-                                }
-                            };
-                            int_bits_from_i128(_py, val as i128)
-                        };
-                        out.push(bits);
-                        offset = end;
-                    }
-                }
-                StructKind::Float => {
-                    for _ in 0..op.count {
-                        offset = match align_up(offset, op.align) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                )
-                            }
-                        };
-                        let end = offset + op.size;
-                        let slice = &buf[offset..end];
-                        let val = match op.size {
-                            2 => {
-                                let mut buf2 = [0u8; 2];
-                                buf2.copy_from_slice(slice);
-                                let raw = match parsed.endian {
-                                    StructEndian::Native => u16::from_ne_bytes(buf2),
-                                    StructEndian::Little => u16::from_le_bytes(buf2),
-                                    StructEndian::Big => u16::from_be_bytes(buf2),
-                                };
-                                f16_to_f64(raw)
-                            }
-                            4 => {
-                                let mut buf4 = [0u8; 4];
-                                buf4.copy_from_slice(slice);
-                                let raw = match parsed.endian {
-                                    StructEndian::Native => f32::from_ne_bytes(buf4),
-                                    StructEndian::Little => f32::from_le_bytes(buf4),
-                                    StructEndian::Big => f32::from_be_bytes(buf4),
-                                };
-                                raw as f64
-                            }
-                            8 => {
-                                let mut buf8 = [0u8; 8];
-                                buf8.copy_from_slice(slice);
-                                match parsed.endian {
-                                    StructEndian::Native => f64::from_ne_bytes(buf8),
-                                    StructEndian::Little => f64::from_le_bytes(buf8),
-                                    StructEndian::Big => f64::from_be_bytes(buf8),
-                                }
-                            }
-                            _ => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "unsupported float size",
-                                )
-                            }
-                        };
-                        out.push(MoltObject::from_float(val).bits());
-                        offset = end;
-                    }
-                }
-            }
-        }
+        let out = match struct_unpack_values(_py, parsed, &ops, buf) {
+            Ok(values) => values,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        };
         let tuple_ptr = alloc_tuple(_py, &out);
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let payload_obj = obj_from_bits(data_bits);
+        let payload_bytes = match struct_read_buffer_bytes(_py, payload_obj) {
+            Ok(buf) => buf,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        };
+        let payload = payload_bytes.to_vec();
+        let payload_len = payload.len();
+        let Some(raw_offset) = struct_index_offset(_py, offset_bits) else {
+            return MoltObject::none().bits();
+        };
+        let buffer_obj = obj_from_bits(buffer_bits);
+        let Some(buffer_ptr) = buffer_obj.as_ptr() else {
+            let msg = format!(
+                "argument must be read-write bytes-like object, not {}",
+                type_name(_py, buffer_obj)
+            );
+            return raise_exception::<u64>(_py, "TypeError", msg.as_str());
+        };
+        let type_id = unsafe { object_type_id(buffer_ptr) };
+        let no_space_pack_message = |offset: i64| -> String {
+            format!("no space to pack {payload_len} bytes at offset {offset}")
+        };
+        let out_of_range_message = |offset: i64, buf_len: usize| -> String {
+            format!("offset {offset} out of range for {buf_len}-byte buffer")
+        };
+        let requires_message = |offset: i64, start: usize, buf_len: usize| -> String {
+            format!(
+                "pack_into requires a buffer of at least {} bytes for packing {payload_len} bytes at offset {offset} (actual buffer size is {buf_len})",
+                start.saturating_add(payload_len)
+            )
+        };
+        if type_id == TYPE_ID_BYTEARRAY {
+            let buf = unsafe { bytearray_vec(buffer_ptr) };
+            let buf_len = buf.len();
+            let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
+                let msg = out_of_range_message(raw_offset, buf_len);
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            };
+            let Some(end) = start.checked_add(payload_len) else {
+                let msg = requires_message(raw_offset, start, buf_len);
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            };
+            if end > buf_len {
+                let msg = if raw_offset < 0 {
+                    no_space_pack_message(raw_offset)
+                } else {
+                    requires_message(raw_offset, start, buf_len)
+                };
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            }
+            if payload_len > 0 {
+                buf[start..end].copy_from_slice(&payload);
+            }
+            return MoltObject::none().bits();
+        }
+        if type_id == TYPE_ID_MEMORYVIEW {
+            if !unsafe { memoryview_is_c_contiguous_view(buffer_ptr) } {
+                let msg = format!(
+                    "argument must be read-write bytes-like object, not {}",
+                    type_name(_py, buffer_obj)
+                );
+                return raise_exception::<u64>(_py, "TypeError", msg.as_str());
+            }
+            if unsafe { memoryview_readonly(buffer_ptr) } {
+                let msg = format!(
+                    "argument must be read-write bytes-like object, not {}",
+                    type_name(_py, buffer_obj)
+                );
+                return raise_exception::<u64>(_py, "TypeError", msg.as_str());
+            }
+            let buf_len = unsafe { memoryview_nbytes(buffer_ptr) };
+            let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
+                let msg = out_of_range_message(raw_offset, buf_len);
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            };
+            let Some(end) = start.checked_add(payload_len) else {
+                let msg = requires_message(raw_offset, start, buf_len);
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            };
+            if end > buf_len {
+                let msg = if raw_offset < 0 {
+                    no_space_pack_message(raw_offset)
+                } else {
+                    requires_message(raw_offset, start, buf_len)
+                };
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            }
+            let Some((owner_ptr, owner_offset, owner_nbytes)) =
+                (unsafe { memoryview_contiguous_window(buffer_ptr, true) })
+            else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "argument must be read-write bytes-like object, not memoryview",
+                );
+            };
+            if owner_nbytes != buf_len {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "argument must be read-write bytes-like object, not memoryview",
+                );
+            }
+            let Some(start_abs) = owner_offset.checked_add(start) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "argument must be read-write bytes-like object, not memoryview",
+                );
+            };
+            let Some(end_abs) = start_abs.checked_add(payload_len) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "argument must be read-write bytes-like object, not memoryview",
+                );
+            };
+            let owner_buf = unsafe { bytearray_vec(owner_ptr) };
+            if end_abs > owner_buf.len() {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "argument must be read-write bytes-like object, not memoryview",
+                );
+            }
+            if payload_len > 0 {
+                owner_buf[start_abs..end_abs].copy_from_slice(&payload);
+            }
+            return MoltObject::none().bits();
+        }
+        let msg = format!(
+            "argument must be read-write bytes-like object, not {}",
+            type_name(_py, buffer_obj)
+        );
+        raise_exception::<u64>(_py, "TypeError", msg.as_str())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_struct_unpack_from(
+    format_bits: u64,
+    buffer_bits: u64,
+    offset_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let format_obj = obj_from_bits(format_bits);
+        let format = match format_obj_to_owned(_py, format_obj) {
+            Ok(format) => format,
+            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+        };
+        let (parsed, ops) = match parse_format(&format) {
+            Ok(parsed) => parsed,
+            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
+        };
+        let Some(size) = calc_size(&ops) else {
+            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
+        };
+        let buffer_obj = obj_from_bits(buffer_bits);
+        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
+            Ok(buf) => buf,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        };
+        let Some(raw_offset) = struct_index_offset(_py, offset_bits) else {
+            return MoltObject::none().bits();
+        };
+        let buf_len = buf.len();
+        let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
+            let msg = format!("offset {raw_offset} out of range for {buf_len}-byte buffer");
+            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+        };
+        let Some(end) = start.checked_add(size) else {
+            let msg = format!(
+                "unpack_from requires a buffer of at least {} bytes for unpacking {size} bytes at offset {raw_offset} (actual buffer size is {buf_len})",
+                start.saturating_add(size)
+            );
+            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+        };
+        if end > buf_len {
+            if raw_offset < 0 {
+                let msg = format!("not enough data to unpack {size} bytes at offset {raw_offset}");
+                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+            }
+            let msg = format!(
+                "unpack_from requires a buffer of at least {} bytes for unpacking {size} bytes at offset {raw_offset} (actual buffer size is {buf_len})",
+                start.saturating_add(size)
+            );
+            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+        }
+        let out = match struct_unpack_values(_py, parsed, &ops, &buf[start..end]) {
+            Ok(values) => values,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        };
+        let tuple_ptr = alloc_tuple(_py, &out);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let format_obj = obj_from_bits(format_bits);
+        let format = match format_obj_to_owned(_py, format_obj) {
+            Ok(format) => format,
+            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+        };
+        let (parsed, ops) = match parse_format(&format) {
+            Ok(parsed) => parsed,
+            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
+        };
+        let Some(size) = calc_size(&ops) else {
+            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
+        };
+        if size == 0 {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "cannot iteratively unpack with a struct of length 0",
+            );
+        }
+        let buffer_obj = obj_from_bits(buffer_bits);
+        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
+            Ok(buf) => buf,
+            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        };
+        if buf.len() % size != 0 {
+            let msg =
+                format!("iterative unpacking requires a buffer of a multiple of {size} bytes");
+            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
+        }
+        let tuple_count = buf.len() / size;
+        let mut tuples = Vec::with_capacity(tuple_count);
+        let mut offset = 0usize;
+        while offset < buf.len() {
+            let end = offset + size;
+            let values = match struct_unpack_values(_py, parsed, &ops, &buf[offset..end]) {
+                Ok(values) => values,
+                Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+            };
+            let tuple_ptr = alloc_tuple(_py, &values);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
+            offset = end;
+        }
+        let list_ptr = alloc_list(_py, &tuples);
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(list_ptr).bits()
     })
 }

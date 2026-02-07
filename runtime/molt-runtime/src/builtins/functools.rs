@@ -5,14 +5,14 @@ use molt_obj_model::MoltObject;
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
-    alloc_class_obj, alloc_function_obj, alloc_string, alloc_tuple, builtin_classes,
-    call_callable1, call_callable2, class_dict_bits, dec_ref_bits, dict_clear_in_place,
-    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
-    dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_truthy, molt_class_set_base, molt_getattr_builtin, molt_is_callable,
-    molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
-    string_obj_to_owned, to_i64, PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE,
+    alloc_class_obj, alloc_function_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
+    dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
+    inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, molt_class_set_base,
+    molt_getattr_builtin, molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
+    raise_not_iterable, seq_vec_ref, string_obj_to_owned, to_i64, PyToken, TYPE_ID_DICT,
+    TYPE_ID_TUPLE,
 };
 
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -42,9 +42,6 @@ static LRU_FACTORY_CALL_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_ITER_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_REPR_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_GETATTR_FN: AtomicU64 = AtomicU64::new(0);
-
-static WRAPS_CALL_FN: AtomicU64 = AtomicU64::new(0);
-static TOTAL_ORDERING_OP_FN: AtomicU64 = AtomicU64::new(0);
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
@@ -149,13 +146,13 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
     let call_bits = builtin_func_bits(
         _py,
         &PARTIAL_CALL_FN,
-        crate::molt_functools_partial_call as u64,
+        crate::molt_functools_partial_call as usize as u64,
         3,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &PARTIAL_REPR_FN,
-        crate::molt_functools_partial_repr as u64,
+        crate::molt_functools_partial_repr as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -216,37 +213,37 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let lt_bits = builtin_func_bits(
         _py,
         &CMPKEY_LT_FN,
-        crate::molt_functools_cmpkey_lt as u64,
+        crate::molt_functools_cmpkey_lt as usize as u64,
         2,
     );
     let le_bits = builtin_func_bits(
         _py,
         &CMPKEY_LE_FN,
-        crate::molt_functools_cmpkey_le as u64,
+        crate::molt_functools_cmpkey_le as usize as u64,
         2,
     );
     let gt_bits = builtin_func_bits(
         _py,
         &CMPKEY_GT_FN,
-        crate::molt_functools_cmpkey_gt as u64,
+        crate::molt_functools_cmpkey_gt as usize as u64,
         2,
     );
     let ge_bits = builtin_func_bits(
         _py,
         &CMPKEY_GE_FN,
-        crate::molt_functools_cmpkey_ge as u64,
+        crate::molt_functools_cmpkey_ge as usize as u64,
         2,
     );
     let eq_bits = builtin_func_bits(
         _py,
         &CMPKEY_EQ_FN,
-        crate::molt_functools_cmpkey_eq as u64,
+        crate::molt_functools_cmpkey_eq as usize as u64,
         2,
     );
     let ne_bits = builtin_func_bits(
         _py,
         &CMPKEY_NE_FN,
-        crate::molt_functools_cmpkey_ne as u64,
+        crate::molt_functools_cmpkey_ne as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__lt__", lt_bits);
@@ -260,23 +257,28 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
 
 fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = functools_class(_py, &LRU_WRAPPER_CLASS, "_LruCacheWrapper", 64);
-    let call_bits = builtin_func_bits(_py, &LRU_CALL_FN, crate::molt_functools_lru_call as u64, 3);
+    let call_bits = builtin_func_bits(
+        _py,
+        &LRU_CALL_FN,
+        crate::molt_functools_lru_call as usize as u64,
+        3,
+    );
     let info_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_INFO_FN,
-        crate::molt_functools_lru_cache_info as u64,
+        crate::molt_functools_lru_cache_info as usize as u64,
         1,
     );
     let clear_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_CLEAR_FN,
-        crate::molt_functools_lru_cache_clear as u64,
+        crate::molt_functools_lru_cache_clear as usize as u64,
         1,
     );
     let params_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_PARAMS_FN,
-        crate::molt_functools_lru_cache_params as u64,
+        crate::molt_functools_lru_cache_params as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -339,7 +341,7 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
     let call_bits = builtin_func_bits(
         _py,
         &LRU_FACTORY_CALL_FN,
-        crate::molt_functools_lru_factory_call as u64,
+        crate::molt_functools_lru_factory_call as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -351,19 +353,19 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
     let iter_bits = builtin_func_bits(
         _py,
         &CACHEINFO_ITER_FN,
-        crate::molt_functools_cacheinfo_iter as u64,
+        crate::molt_functools_cacheinfo_iter as usize as u64,
         1,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &CACHEINFO_REPR_FN,
-        crate::molt_functools_cacheinfo_repr as u64,
+        crate::molt_functools_cacheinfo_repr as usize as u64,
         1,
     );
     let getattr_bits = builtin_func_bits(
         _py,
         &CACHEINFO_GETATTR_FN,
-        crate::molt_functools_cacheinfo_getattr as u64,
+        crate::molt_functools_cacheinfo_getattr as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__iter__", iter_bits);
@@ -560,13 +562,11 @@ pub extern "C" fn molt_functools_partial_call(
                     }
                 }
                 copy_bits
+            } else if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
+                inc_ref_bits(_py, kwargs_bits);
+                kwargs_bits
             } else {
-                if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-                    inc_ref_bits(_py, kwargs_bits);
-                    kwargs_bits
-                } else {
-                    MoltObject::none().bits()
-                }
+                MoltObject::none().bits()
             };
         let builder_bits = crate::molt_callargs_new(pos.len() as u64, 0);
         if builder_bits == 0 {
@@ -585,13 +585,11 @@ pub extern "C" fn molt_functools_partial_call(
                         let order = dict_order(dict_ptr);
                         let mut idx = 0;
                         while idx + 1 < order.len() {
-                            unsafe {
-                                let _ = crate::molt_callargs_push_kw(
-                                    builder_bits,
-                                    order[idx],
-                                    order[idx + 1],
-                                );
-                            }
+                            let _ = crate::molt_callargs_push_kw(
+                                builder_bits,
+                                order[idx],
+                                order[idx + 1],
+                            );
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, merged_kwargs_bits);
                                 return MoltObject::none().bits();
@@ -747,7 +745,7 @@ pub extern "C" fn molt_functools_update_wrapper(
                         if let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() {
                             unsafe {
                                 if object_type_id(target_ptr) == TYPE_ID_DICT {
-                                    let order = dict_order(target_ptr);
+                                    let _order = dict_order(target_ptr);
                                     let source_ptr = obj_from_bits(source_bits).as_ptr();
                                     if let Some(source_ptr) = source_ptr {
                                         if object_type_id(source_ptr) == TYPE_ID_DICT {
@@ -764,11 +762,9 @@ pub extern "C" fn molt_functools_update_wrapper(
                                                         continue;
                                                     }
                                                 }
-                                                unsafe {
-                                                    dict_set_in_place(
-                                                        _py, target_ptr, key_bits, val_bits,
-                                                    )
-                                                };
+                                                dict_set_in_place(
+                                                    _py, target_ptr, key_bits, val_bits,
+                                                );
                                                 idx += 2;
                                             }
                                         }
@@ -806,7 +802,7 @@ pub extern "C" fn molt_functools_wraps(
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr = alloc_function_obj(_py, crate::molt_functools_wraps_call as u64, 1);
+        let func_ptr = alloc_function_obj(_py, crate::molt_functools_wraps_call as usize as u64, 1);
         if func_ptr.is_null() {
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
@@ -846,7 +842,8 @@ pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr = alloc_function_obj(_py, crate::molt_functools_cmp_key_func as u64, 1);
+        let func_ptr =
+            alloc_function_obj(_py, crate::molt_functools_cmp_key_func as usize as u64, 1);
         if func_ptr.is_null() {
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
@@ -901,11 +898,8 @@ fn cmpkey_compare(_py: &PyToken<'_>, self_bits: u64, other_bits: u64) -> Option<
     }
     let obj_bits = unsafe { cmpkey_obj_bits(self_ptr) };
     let cmp_bits = unsafe { cmpkey_cmp_bits(self_ptr) };
-    let res_bits = unsafe {
-        call_callable2(_py, cmp_bits, obj_bits, unsafe {
-            cmpkey_obj_bits(other_ptr)
-        })
-    };
+    let other_obj_bits = unsafe { cmpkey_obj_bits(other_ptr) };
+    let res_bits = unsafe { call_callable2(_py, cmp_bits, obj_bits, other_obj_bits) };
     if exception_pending(_py) {
         return Some(0);
     }
@@ -1100,8 +1094,11 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 continue;
             }
             let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
-            let func_ptr =
-                alloc_function_obj(_py, crate::molt_functools_total_ordering_op as u64, 2);
+            let func_ptr = alloc_function_obj(
+                _py,
+                crate::molt_functools_total_ordering_op as usize as u64,
+                2,
+            );
             if func_ptr.is_null() {
                 dec_ref_bits(_py, closure_bits);
                 continue;
@@ -1109,12 +1106,12 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
             unsafe { crate::function_set_closure_bits(_py, func_ptr, closure_bits) };
             dec_ref_bits(_py, closure_bits);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
-            let name_bits = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.name_name,
-                name.as_bytes(),
-            );
+            let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
+                dec_ref_bits(_py, func_bits);
+                continue;
+            };
             unsafe { dict_set_in_place(_py, dict_ptr, name_bits, func_bits) };
+            dec_ref_bits(_py, name_bits);
         }
         inc_ref_bits(_py, cls_bits);
         cls_bits
@@ -1167,9 +1164,7 @@ pub extern "C" fn molt_functools_total_ordering_op(
 fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     let pair_bits = crate::molt_iter_next(iter_bits);
     let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return None;
-    };
+    let pair_ptr = pair_obj.as_ptr()?;
     unsafe {
         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");

@@ -1,21 +1,34 @@
 """Minimal importlib.util helpers for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): support namespace packages, meta_path/path_hooks finders, extension modules, and zip/bytecode loaders.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): support namespace packages, custom meta_path/path_hooks finder execution, extension modules, and zip/bytecode loaders via intrinsic payloads.
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+from typing import TYPE_CHECKING, Any
 
 from types import ModuleType
 import sys
-import os
-import builtins
 
-from importlib.machinery import ModuleSpec, SourceFileLoader
 import importlib.machinery as machinery
 
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_CACHE_FROM_SOURCE = _require_intrinsic(
+    "molt_importlib_cache_from_source", globals()
+)
+_MOLT_IMPORTLIB_FIND_SPEC_PAYLOAD = _require_intrinsic(
+    "molt_importlib_find_spec_payload", globals()
+)
+_MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD = _require_intrinsic(
+    "molt_importlib_bootstrap_payload", globals()
+)
+_MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION_PAYLOAD = _require_intrinsic(
+    "molt_importlib_spec_from_file_location_payload", globals()
+)
 
 
 __all__ = [
@@ -27,8 +40,24 @@ __all__ = [
 ]
 
 
-_SPEC_CACHE: dict[tuple[str, tuple[str, ...], str | None], ModuleSpec | None] = {}
-_BUILTIN_MODULES = {"math"}
+_SPEC_CACHE: dict[
+    tuple[str, tuple[str, ...], int, int, int | None, int | None], ModuleSpec | None
+] = {}
+
+
+def _machinery_attr(name: str) -> Any:
+    value = getattr(machinery, name, None)
+    if value is None:
+        raise RuntimeError(f"importlib.machinery missing required attribute: {name}")
+    return value
+
+
+def _module_spec_cls():
+    return _machinery_attr("ModuleSpec")
+
+
+def _source_file_loader_cls():
+    return _machinery_attr("SourceFileLoader")
 
 
 def _molt_loader():
@@ -37,24 +66,17 @@ def _molt_loader():
         return loader
     cls = getattr(machinery, "MoltLoader", None)
     if cls is None:
-
-        class MoltLoader:
-            def __repr__(self) -> str:
-                return "<MoltLoader>"
-
-        loader = MoltLoader()
-    else:
-        loader = cls()
+        raise RuntimeError("importlib.machinery missing required attribute: MoltLoader")
+    loader = cls()
     setattr(machinery, "MOLT_LOADER", loader)
     return loader
 
 
 def _cache_from_source(path: str) -> str:
-    base = os.path.basename(path)
-    if base.endswith(".py"):
-        cache_dir = os.path.join(os.path.dirname(path), "__pycache__")
-        return os.path.join(cache_dir, f"{base}c")
-    return f"{path}c"
+    cached = _MOLT_IMPORTLIB_CACHE_FROM_SOURCE(path)
+    if not isinstance(cached, str):
+        raise RuntimeError("invalid importlib cache payload: str expected")
+    return cached
 
 
 def resolve_name(name: str, package: str | None) -> str:
@@ -79,46 +101,35 @@ def _path_snapshot() -> tuple[str, ...]:
         return ()
 
 
-def _stdlib_root() -> str | None:
-    file_path = globals().get("__file__")
-    if isinstance(file_path, str) and file_path:
-        return os.path.dirname(os.path.dirname(file_path))
+def _safe_len(value: object) -> int | None:
+    try:
+        return len(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _importlib_module_file() -> str | None:
+    module_file = globals().get("__file__")
+    if isinstance(module_file, str) and module_file:
+        return module_file
     return None
 
 
-def _stdlib_candidates(paths: tuple[str, ...]) -> list[str]:
-    candidates: list[str] = []
-    for base in paths:
-        if not base:
-            base = "."
-        candidate = os.path.join(base, "molt", "stdlib")
-        if candidate not in candidates:
-            candidates.append(candidate)
-    return candidates
-
-
-def _find_spec_via_import(fullname: str) -> ModuleSpec | None:
-    importer = getattr(builtins, "__import__", None)
-    if not callable(importer):
-        return None
-    modules = sys.modules
-    already_loaded = fullname in modules
-    try:
-        importer(fullname, {}, {}, ["_"], 0)
-    except Exception:
-        return None
-    module = modules.get(fullname)
-    spec = getattr(module, "__spec__", None) if module is not None else None
-    if spec is None:
-        origin = getattr(module, "__file__", None) if module is not None else None
-        loader = getattr(module, "__loader__", None) if module is not None else None
-        spec = ModuleSpec(fullname, loader, origin=origin, is_package=False)
-    if not already_loaded and fullname in modules:
-        try:
-            del modules[fullname]
-        except Exception:
-            pass
-    return spec
+def _search_paths_from_snapshot(snapshot: tuple[str, ...]) -> tuple[str, ...]:
+    payload = _MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD(snapshot, _importlib_module_file())
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib bootstrap payload: dict expected")
+    resolved = payload.get("resolved_search_paths")
+    if not isinstance(resolved, (list, tuple)):
+        raise RuntimeError("invalid importlib bootstrap payload: resolved_search_paths")
+    out: list[str] = []
+    for entry in resolved:
+        if not isinstance(entry, str):
+            raise RuntimeError(
+                "invalid importlib bootstrap payload: str entries expected"
+            )
+        out.append(entry)
+    return tuple(out)
 
 
 def _set_cached(spec: ModuleSpec) -> None:
@@ -128,52 +139,102 @@ def _set_cached(spec: ModuleSpec) -> None:
         spec.cached = _cache_from_source(spec.origin)
 
 
-def _find_spec_in_path(fullname: str, search_paths: list[str]) -> ModuleSpec | None:
-    parts = fullname.split(".")
-    current_paths = list(search_paths)
-    for idx, part in enumerate(parts):
-        is_last = idx == len(parts) - 1
-        found_pkg = False
-        next_paths: list[str] = []
-        for base in current_paths:
-            if not base:
-                base = "."
-            pkg_dir = os.path.join(base, part)
-            init_file = os.path.join(pkg_dir, "__init__.py")
-            if os.path.exists(init_file):
-                if is_last:
-                    loader = SourceFileLoader(fullname, init_file)
-                    spec = ModuleSpec(
-                        fullname, loader, origin=init_file, is_package=True
-                    )
-                    spec.submodule_search_locations = [pkg_dir]
-                    _set_cached(spec)
-                    return spec
-                next_paths = [pkg_dir]
-                found_pkg = True
-                break
-            mod_file = os.path.join(base, f"{part}.py")
-            if is_last and os.path.exists(mod_file):
-                loader = SourceFileLoader(fullname, mod_file)
-                spec = ModuleSpec(fullname, loader, origin=mod_file, is_package=False)
-                _set_cached(spec)
-                return spec
-        if found_pkg:
-            current_paths = next_paths
-            continue
+def _spec_from_file_location_payload(path: str) -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION_PAYLOAD(path)
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "invalid importlib spec_from_file_location payload: dict expected"
+        )
+    resolved_path = payload.get("path")
+    is_package = payload.get("is_package")
+    package_root = payload.get("package_root")
+    if not isinstance(resolved_path, str):
+        raise RuntimeError("invalid importlib spec_from_file_location payload: path")
+    if not isinstance(is_package, bool):
+        raise RuntimeError(
+            "invalid importlib spec_from_file_location payload: is_package"
+        )
+    if package_root is not None and not isinstance(package_root, str):
+        raise RuntimeError(
+            "invalid importlib spec_from_file_location payload: package_root"
+        )
+    return {
+        "path": resolved_path,
+        "is_package": is_package,
+        "package_root": package_root,
+    }
+
+
+def _find_spec_in_path(
+    fullname: str, search_paths: list[str], meta_path: Any, path_hooks: Any
+) -> ModuleSpec | None:
+    payload = _MOLT_IMPORTLIB_FIND_SPEC_PAYLOAD(
+        fullname,
+        search_paths,
+        _importlib_module_file(),
+        meta_path,
+        path_hooks,
+    )
+    if payload is None:
         return None
-    return None
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib find-spec payload: dict expected")
+    origin = payload.get("origin")
+    is_package = payload.get("is_package")
+    locations = payload.get("submodule_search_locations")
+    cached = payload.get("cached")
+    is_builtin = payload.get("is_builtin")
+    has_location = payload.get("has_location")
+    loader_kind = payload.get("loader_kind")
+    meta_path_count = payload.get("meta_path_count")
+    path_hooks_count = payload.get("path_hooks_count")
+    if origin is not None and not isinstance(origin, str):
+        raise RuntimeError("invalid importlib find-spec payload: origin")
+    if not isinstance(is_package, bool):
+        raise RuntimeError("invalid importlib find-spec payload: is_package")
+    if locations is not None:
+        if not isinstance(locations, list) or not all(
+            isinstance(entry, str) for entry in locations
+        ):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: submodule_search_locations"
+            )
+    if cached is not None and not isinstance(cached, str):
+        raise RuntimeError("invalid importlib find-spec payload: cached")
+    if not isinstance(is_builtin, bool):
+        raise RuntimeError("invalid importlib find-spec payload: is_builtin")
+    if not isinstance(has_location, bool):
+        raise RuntimeError("invalid importlib find-spec payload: has_location")
+    if not isinstance(loader_kind, str):
+        raise RuntimeError("invalid importlib find-spec payload: loader_kind")
+    if not isinstance(meta_path_count, int):
+        raise RuntimeError("invalid importlib find-spec payload: meta_path_count")
+    if not isinstance(path_hooks_count, int):
+        raise RuntimeError("invalid importlib find-spec payload: path_hooks_count")
+
+    if loader_kind == "builtin":
+        loader = _molt_loader()
+    elif loader_kind == "source":
+        if not isinstance(origin, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: source loader origin missing"
+            )
+        loader = _source_file_loader_cls()(fullname, origin)
+    else:
+        raise RuntimeError(f"unsupported importlib loader kind: {loader_kind}")
+
+    spec = _module_spec_cls()(fullname, loader, origin=origin, is_package=is_package)
+    if locations is not None:
+        spec.submodule_search_locations = list(locations)
+    spec.cached = cached
+    spec.has_location = has_location
+    if spec.cached is None and isinstance(spec.origin, str) and loader_kind == "source":
+        _set_cached(spec)
+    return spec
 
 
 def find_spec(name: str, package: str | None = None):
     resolved = resolve_name(name, package)
-    if resolved in _BUILTIN_MODULES:
-        spec = ModuleSpec(
-            resolved, loader=_molt_loader(), origin="built-in", is_package=False
-        )
-        spec.cached = None
-        spec.has_location = False
-        return spec
     modules = sys.modules
     existing = modules.get(resolved)
     if existing is not None:
@@ -182,22 +243,25 @@ def find_spec(name: str, package: str | None = None):
             return spec
         file_path = getattr(existing, "__file__", None)
         if isinstance(file_path, str):
-            return ModuleSpec(resolved, loader=None, origin=file_path, is_package=False)
-        return ModuleSpec(resolved, loader=None, origin=None, is_package=False)
+            return _module_spec_cls()(
+                resolved, loader=None, origin=file_path, is_package=False
+            )
+        return _module_spec_cls()(resolved, loader=None, origin=None, is_package=False)
     snapshot = _path_snapshot()
-    stdlib_root = _stdlib_root()
-    cache_key = (resolved, snapshot, stdlib_root)
+    search_paths = _search_paths_from_snapshot(snapshot)
+    meta_path = getattr(sys, "meta_path", ())
+    path_hooks = getattr(sys, "path_hooks", ())
+    cache_key = (
+        resolved,
+        search_paths,
+        id(meta_path),
+        id(path_hooks),
+        _safe_len(meta_path),
+        _safe_len(path_hooks),
+    )
     if cache_key in _SPEC_CACHE:
         return _SPEC_CACHE[cache_key]
-    search_paths = list(snapshot)
-    if stdlib_root and stdlib_root not in search_paths:
-        search_paths.append(stdlib_root)
-    for candidate in _stdlib_candidates(snapshot):
-        if candidate not in search_paths:
-            search_paths.append(candidate)
-    spec = _find_spec_in_path(resolved, search_paths)
-    if spec is None:
-        spec = _find_spec_via_import(resolved)
+    spec = _find_spec_in_path(resolved, list(search_paths), meta_path, path_hooks)
     _SPEC_CACHE[cache_key] = spec
     return spec
 
@@ -236,7 +300,7 @@ def spec_from_loader(
             is_package = bool(loader.is_package(name))
         except Exception:
             is_package = None
-    spec = ModuleSpec(name, loader, origin=origin, is_package=is_package)
+    spec = _module_spec_cls()(name, loader, origin=origin, is_package=is_package)
     _set_cached(spec)
     return spec
 
@@ -247,16 +311,21 @@ def spec_from_file_location(
     loader=None,
     submodule_search_locations=None,
 ):
-    path = str(location)
-    is_package = False
-    if submodule_search_locations is not None:
-        is_package = True
-    elif os.path.basename(path) == "__init__.py":
-        is_package = True
-        submodule_search_locations = [os.path.dirname(path)]
+    raw_path = str(location)
+    payload = _spec_from_file_location_payload(raw_path)
+    path = payload["path"]
+    inferred_is_package = bool(payload["is_package"])
+    inferred_package_root = payload["package_root"]
+    is_package = submodule_search_locations is not None or inferred_is_package
+    if submodule_search_locations is None and inferred_is_package:
+        if not isinstance(inferred_package_root, str):
+            raise RuntimeError(
+                "invalid importlib spec_from_file_location payload: package_root"
+            )
+        submodule_search_locations = [inferred_package_root]
     if loader is None:
-        loader = SourceFileLoader(name, path)
-    spec = ModuleSpec(name, loader, origin=path, is_package=is_package)
+        loader = _source_file_loader_cls()(name, path)
+    spec = _module_spec_cls()(name, loader, origin=path, is_package=is_package)
     if submodule_search_locations is not None:
         spec.submodule_search_locations = list(submodule_search_locations)
     _set_cached(spec)

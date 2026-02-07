@@ -1,6 +1,4 @@
-use crate::{
-    has_capability, is_trusted, raise_exception, string_obj_to_owned, MoltObject, PyToken,
-};
+use crate::{has_capability, is_trusted, raise_exception, string_obj_to_owned, MoltObject};
 
 #[no_mangle]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {

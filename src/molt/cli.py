@@ -1249,7 +1249,11 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
                 best_rel = candidate
         rel = best_rel
     if rel is None:
-        rel = resolved.with_suffix("")
+        # Paths outside known module roots should still compile deterministically as
+        # top-level modules instead of leaking absolute-path segments into module ids.
+        if resolved.name == "__init__.py":
+            return resolved.parent.name or "__init__"
+        return resolved.stem
     if rel.name == "__init__.py":
         rel = rel.parent
     else:
@@ -1260,7 +1264,12 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
 
 
 def _expand_module_chain(name: str) -> list[str]:
+    name = name.strip()
+    if not name:
+        return []
     parts = name.split(".")
+    if any(not part or not part.isidentifier() for part in parts):
+        return []
     return [".".join(parts[:idx]) for idx in range(1, len(parts) + 1)]
 
 
@@ -1588,7 +1597,9 @@ def _package_root_for_override(source_path: Path, package_name: str) -> Path | N
 
 
 def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
-    safe = name.replace(".", "_")
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", name.replace(".", "_")).strip("_")
+    if not safe:
+        safe = "root"
     stub_path = output_dir / f"namespace_{safe}.py"
     lines = [
         '"""Auto-generated namespace package stub for Molt."""',
@@ -1606,6 +1617,7 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
         "        pass",
         "",
     ]
+    stub_path.parent.mkdir(parents=True, exist_ok=True)
     stub_path.write_text("\n".join(lines))
     return stub_path
 

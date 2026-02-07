@@ -80,7 +80,7 @@ fn iter_self_bits(_py: &PyToken<'_>) -> u64 {
     builtin_func_bits(
         _py,
         &ITER_SELF_FN,
-        crate::molt_itertools_iter_self as u64,
+        crate::molt_itertools_iter_self as usize as u64,
         1,
     )
 }
@@ -420,7 +420,7 @@ fn chain_class(_py: &PyToken<'_>) -> u64 {
         "chain",
         24,
         &CHAIN_NEXT_FN,
-        crate::molt_itertools_chain_next as u64,
+        crate::molt_itertools_chain_next as usize as u64,
     )
 }
 
@@ -431,7 +431,7 @@ fn islice_class(_py: &PyToken<'_>) -> u64 {
         "islice",
         56,
         &ISLICE_NEXT_FN,
-        crate::molt_itertools_islice_next as u64,
+        crate::molt_itertools_islice_next as usize as u64,
     )
 }
 
@@ -442,7 +442,7 @@ fn repeat_class(_py: &PyToken<'_>) -> u64 {
         "repeat",
         24,
         &REPEAT_NEXT_FN,
-        crate::molt_itertools_repeat_next as u64,
+        crate::molt_itertools_repeat_next as usize as u64,
     )
 }
 
@@ -453,7 +453,7 @@ fn count_class(_py: &PyToken<'_>) -> u64 {
         "count",
         24,
         &COUNT_NEXT_FN,
-        crate::molt_itertools_count_next as u64,
+        crate::molt_itertools_count_next as usize as u64,
     )
 }
 
@@ -464,7 +464,7 @@ fn cycle_class(_py: &PyToken<'_>) -> u64 {
         "cycle",
         24,
         &CYCLE_NEXT_FN,
-        crate::molt_itertools_cycle_next as u64,
+        crate::molt_itertools_cycle_next as usize as u64,
     )
 }
 
@@ -475,7 +475,7 @@ fn accumulate_class(_py: &PyToken<'_>) -> u64 {
         "accumulate",
         48,
         &ACCUMULATE_NEXT_FN,
-        crate::molt_itertools_accumulate_next as u64,
+        crate::molt_itertools_accumulate_next as usize as u64,
     )
 }
 
@@ -486,7 +486,7 @@ fn pairwise_class(_py: &PyToken<'_>) -> u64 {
         "pairwise",
         32,
         &PAIRWISE_NEXT_FN,
-        crate::molt_itertools_pairwise_next as u64,
+        crate::molt_itertools_pairwise_next as usize as u64,
     )
 }
 
@@ -497,7 +497,7 @@ fn groupby_class(_py: &PyToken<'_>) -> u64 {
         "groupby",
         56,
         &GROUPBY_NEXT_FN,
-        crate::molt_itertools_groupby_next as u64,
+        crate::molt_itertools_groupby_next as usize as u64,
     )
 }
 
@@ -508,7 +508,7 @@ fn groupby_iter_class(_py: &PyToken<'_>) -> u64 {
         "groupby_iterator",
         24,
         &GROUPBY_ITER_NEXT_FN,
-        crate::molt_itertools_groupby_iter_next as u64,
+        crate::molt_itertools_groupby_iter_next as usize as u64,
     )
 }
 
@@ -519,16 +519,14 @@ fn tee_iter_class(_py: &PyToken<'_>) -> u64 {
         "tee",
         24,
         &TEE_NEXT_FN,
-        crate::molt_itertools_tee_next as u64,
+        crate::molt_itertools_tee_next as usize as u64,
     )
 }
 
 fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     let pair_bits = molt_iter_next(iter_bits);
     let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return None;
-    };
+    let pair_ptr = pair_obj.as_ptr()?;
     unsafe {
         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
@@ -651,7 +649,7 @@ pub extern "C" fn molt_itertools_islice(
 
         let mut start = 0i64;
         let mut stop = 0i64;
-        let mut has_stop = false;
+        let has_stop: bool;
         if stop_only {
             if start_obj.is_none() {
                 has_stop = false;
@@ -936,9 +934,9 @@ pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
             if values.is_empty() {
                 return raise_exception::<u64>(_py, "StopIteration", "");
             }
-            let idx = unsafe { cycle_index(self_ptr) } as usize % values.len();
+            let idx = cycle_index(self_ptr) as usize % values.len();
             let val_bits = values[idx];
-            unsafe { cycle_set_index(self_ptr, (idx + 1) as i64) };
+            cycle_set_index(self_ptr, (idx + 1) as i64);
             inc_ref_bits(_py, val_bits);
             val_bits
         }
@@ -993,9 +991,8 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
         let func_bits = unsafe { accumulate_func_bits(self_ptr) };
         let initial_bits = unsafe { accumulate_initial_bits(self_ptr) };
         let missing = kwd_mark_bits(_py);
-        let mut started = unsafe { accumulate_started(self_ptr) } != 0;
+        let started = unsafe { accumulate_started(self_ptr) } != 0;
         if !started {
-            started = true;
             unsafe { accumulate_set_started(self_ptr, 1) };
             if initial_bits != 0 && initial_bits != missing {
                 unsafe { accumulate_set_total_bits(self_ptr, initial_bits) };
@@ -1066,7 +1063,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { pairwise_iter_bits(self_ptr) };
-        let mut started = unsafe { pairwise_started(self_ptr) } != 0;
+        let started = unsafe { pairwise_started(self_ptr) } != 0;
         let mut prev_bits = unsafe { pairwise_prev_bits(self_ptr) };
         if !started {
             let Some((val_bits, done)) = iter_next_pair(_py, iter_bits) else {
@@ -1076,7 +1073,6 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "StopIteration", "");
             }
             prev_bits = val_bits;
-            started = true;
             unsafe {
                 pairwise_set_prev_bits(self_ptr, prev_bits);
                 pairwise_set_started(self_ptr, 1);
@@ -1238,7 +1234,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
         let pool = unsafe { seq_vec_ref(pool_ptr) };
         let n = pool.len();
-        let mut r = if obj_from_bits(r_bits).is_none() {
+        let r = if obj_from_bits(r_bits).is_none() {
             n as i64
         } else {
             let val = index_i64_from_obj(_py, r_bits, "r must be an integer");
@@ -1290,7 +1286,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
             return MoltObject::none().bits();
         }
         out.push(MoltObject::from_ptr(tuple_ptr).bits());
-        while n > 0 {
+        loop {
             let mut idx = r_usize;
             let mut advanced = false;
             while idx > 0 {
@@ -1697,7 +1693,7 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "StopIteration", "");
         }
         let data = unsafe { &mut *data_ptr };
-        let mut idx = unsafe { tee_index(self_ptr) } as usize;
+        let idx = unsafe { tee_index(self_ptr) } as usize;
         if idx < data.values.len() {
             let val_bits = data.values[idx];
             unsafe { tee_set_index(self_ptr, (idx + 1) as i64) };

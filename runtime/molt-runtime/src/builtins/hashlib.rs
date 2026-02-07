@@ -31,6 +31,7 @@ pub(crate) enum HashKind {
 #[derive(Clone)]
 pub(crate) struct HashHandle {
     pub(crate) kind: HashKind,
+    #[allow(dead_code)]
     pub(crate) name: &'static str,
     pub(crate) digest_size: usize,
     pub(crate) block_size: usize,
@@ -50,6 +51,7 @@ impl HashHandle {
 #[derive(Debug)]
 pub(crate) enum HashError {
     XofLengthMissing,
+    #[allow(dead_code)]
     XofLengthNegative,
 }
 
@@ -207,7 +209,7 @@ fn bytes_like_required(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<&'st
     Err(raise_exception::<u64>(_py, "TypeError", &msg))
 }
 
-fn int_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<i64, u64> {
+fn int_from_bits(_py: &PyToken<'_>, bits: u64, _name: &str) -> Result<i64, u64> {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let msg = format!("'{type_name}' object cannot be interpreted as an integer");
@@ -218,7 +220,7 @@ fn int_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<i64, u64> {
     Ok(val)
 }
 
-fn bigint_from_bits(_py: &PyToken<'_>, bits: u64, name: &str, overflow: &str) -> Result<i64, u64> {
+fn bigint_from_bits(_py: &PyToken<'_>, bits: u64, _name: &str, overflow: &str) -> Result<i64, u64> {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let msg = format!("'{type_name}' object cannot be interpreted as an integer");
@@ -870,7 +872,7 @@ pub extern "C" fn molt_scrypt(
             Ok(val) => val,
             Err(bits) => return bits,
         };
-        if maxmem < 0 || maxmem > 2_147_483_647 {
+        if !(0..=2_147_483_647).contains(&maxmem) {
             return raise_exception::<u64>(
                 _py,
                 "ValueError",

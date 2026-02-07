@@ -5,7 +5,9 @@ use crate::*;
 pub(crate) struct HmacHandle {
     inner: HashHandle,
     outer: HashHandle,
+    #[allow(dead_code)]
     digest_size: usize,
+    #[allow(dead_code)]
     block_size: usize,
 }
 

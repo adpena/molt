@@ -6,8 +6,6 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import sys as _sys
-
 
 __all__ = [
     "AGEN_CLOSED",
@@ -36,6 +34,7 @@ __all__ = [
     "isawaitable",
     "isfunction",
     "ismodule",
+    "iscoroutine",
     "iscoroutinefunction",
     "isasyncgenfunction",
     "isgeneratorfunction",
@@ -61,6 +60,35 @@ CORO_CLOSED = "CORO_CLOSED"
 
 _MOLT_ASYNCGEN_LOCALS = _require_intrinsic("molt_asyncgen_locals", globals())
 _MOLT_GEN_LOCALS = _require_intrinsic("molt_gen_locals", globals())
+_MOLT_INSPECT_CLEANDOC = _require_intrinsic("molt_inspect_cleandoc", globals())
+_MOLT_INSPECT_CURRENTFRAME = _require_intrinsic("molt_inspect_currentframe", globals())
+_MOLT_INSPECT_GETDOC = _require_intrinsic("molt_inspect_getdoc", globals())
+_MOLT_INSPECT_ISFUNCTION = _require_intrinsic("molt_inspect_isfunction", globals())
+_MOLT_INSPECT_ISCLASS = _require_intrinsic("molt_inspect_isclass", globals())
+_MOLT_INSPECT_ISMODULE = _require_intrinsic("molt_inspect_ismodule", globals())
+_MOLT_INSPECT_ISCOROUTINE = _require_intrinsic("molt_inspect_iscoroutine", globals())
+_MOLT_INSPECT_ISCOROUTINEFUNCTION = _require_intrinsic(
+    "molt_inspect_iscoroutinefunction", globals()
+)
+_MOLT_INSPECT_ISASYNCGENFUNCTION = _require_intrinsic(
+    "molt_inspect_isasyncgenfunction", globals()
+)
+_MOLT_INSPECT_ISGENERATORFUNCTION = _require_intrinsic(
+    "molt_inspect_isgeneratorfunction", globals()
+)
+_MOLT_INSPECT_ISAWAITABLE = _require_intrinsic("molt_inspect_isawaitable", globals())
+_MOLT_INSPECT_GETGENERATORSTATE = _require_intrinsic(
+    "molt_inspect_getgeneratorstate", globals()
+)
+_MOLT_INSPECT_GETASYNCGENSTATE = _require_intrinsic(
+    "molt_inspect_getasyncgenstate", globals()
+)
+_MOLT_INSPECT_GETCOROUTINESTATE = _require_intrinsic(
+    "molt_inspect_getcoroutinestate", globals()
+)
+_MOLT_INSPECT_SIGNATURE_DATA = _require_intrinsic(
+    "molt_inspect_signature_data", globals()
+)
 
 
 class _Empty:
@@ -143,6 +171,8 @@ class Signature:
             elif saw_posonly and not posonly_done:
                 parts.append("/")
                 posonly_done = True
+            if param.kind == Parameter.VAR_POSITIONAL:
+                saw_kwonly = True
             if param.kind == Parameter.KEYWORD_ONLY and not saw_kwonly:
                 parts.append("*")
                 saw_kwonly = True
@@ -153,176 +183,82 @@ class Signature:
 
 
 def cleandoc(doc: str | None) -> str:
-    if not doc:
-        return ""
-    lines = _expandtabs(doc).splitlines()
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines:
-        return ""
-    indent = None
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped:
-            continue
-        margin = len(line) - len(stripped)
-        if indent is None or margin < indent:
-            indent = margin
-    if indent is None:
-        indent = 0
-    trimmed = [line[indent:] for line in lines]
-    return "\n".join(trimmed)
-
-
-def _expandtabs(text: str, tabsize: int = 8) -> str:
-    parts: list[str] = []
-    col = 0
-    for ch in text:
-        if ch == "\t":
-            spaces = tabsize - (col % tabsize)
-            parts.append(" " * spaces)
-            col += spaces
-        elif ch in "\r\n":
-            parts.append(ch)
-            col = 0
-        else:
-            parts.append(ch)
-            col += 1
-    return "".join(parts)
+    return _MOLT_INSPECT_CLEANDOC(doc)
 
 
 def currentframe() -> object | None:
-    if hasattr(_sys, "_getframe"):
-        try:
-            return _sys._getframe(1)
-        except Exception:
-            return None
-    return None
+    return _MOLT_INSPECT_CURRENTFRAME()
 
 
 def getdoc(obj: Any) -> str | None:
-    doc = getattr(obj, "__doc__", None)
-    if doc is None:
-        return None
-    return cleandoc(doc)
+    return _MOLT_INSPECT_GETDOC(obj)
 
 
 def isfunction(obj: Any) -> bool:
-    return hasattr(obj, "__code__") or hasattr(obj, "__molt_arg_names__")
+    return _MOLT_INSPECT_ISFUNCTION(obj)
 
 
 def isclass(obj: Any) -> bool:
-    return hasattr(obj, "__mro__")
+    return _MOLT_INSPECT_ISCLASS(obj)
 
 
 def ismodule(obj: Any) -> bool:
-    return hasattr(obj, "__dict__") and hasattr(obj, "__name__")
+    return _MOLT_INSPECT_ISMODULE(obj)
+
+
+def iscoroutine(obj: Any) -> bool:
+    return _MOLT_INSPECT_ISCOROUTINE(obj)
 
 
 def iscoroutinefunction(obj: Any) -> bool:
-    if getattr(obj, "__molt_is_coroutine__", False):
-        return True
-    flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
-    return bool(flags & 0x80)
+    return _MOLT_INSPECT_ISCOROUTINEFUNCTION(obj)
 
 
 def isasyncgenfunction(obj: Any) -> bool:
-    if getattr(obj, "__molt_is_async_generator__", False):
-        return True
-    flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
-    return bool(flags & 0x200)
+    return _MOLT_INSPECT_ISASYNCGENFUNCTION(obj)
 
 
 def isgeneratorfunction(obj: Any) -> bool:
-    if getattr(obj, "__molt_is_generator__", False):
-        return True
-    flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
-    return bool(flags & 0x20)
+    return _MOLT_INSPECT_ISGENERATORFUNCTION(obj)
 
 
 def isawaitable(obj: Any) -> bool:
-    if getattr(obj, "__molt_is_coroutine__", False):
-        return True
-    if hasattr(obj, "__await__"):
-        return True
-    flags = getattr(getattr(obj, "gi_code", None), "co_flags", 0)
-    return bool(flags & 0x100)
+    return _MOLT_INSPECT_ISAWAITABLE(obj)
 
 
 def getgeneratorstate(gen: Any) -> str:
-    if getattr(gen, "gi_running", False):
-        return GEN_RUNNING
-    frame = getattr(gen, "gi_frame", None)
-    if frame is None:
-        return GEN_CLOSED
-    lasti = getattr(frame, "f_lasti", -1)
-    if lasti == -1:
-        return GEN_CREATED
-    return GEN_SUSPENDED
+    return _MOLT_INSPECT_GETGENERATORSTATE(gen)
 
 
 def getasyncgenstate(agen: Any) -> str:
-    if getattr(agen, "ag_running", False):
-        return AGEN_RUNNING
-    frame = getattr(agen, "ag_frame", None)
-    if frame is None:
-        return AGEN_CLOSED
-    lasti = getattr(frame, "f_lasti", -1)
-    if lasti == -1:
-        return AGEN_CREATED
-    return AGEN_SUSPENDED
+    return _MOLT_INSPECT_GETASYNCGENSTATE(agen)
 
 
 def getgeneratorlocals(gen: Any) -> dict[str, Any]:
-    if callable(_MOLT_GEN_LOCALS):
-        return _MOLT_GEN_LOCALS(gen)
-    if not hasattr(gen, "gi_frame"):
-        raise TypeError("expected generator")
-    frame = getattr(gen, "gi_frame", None)
-    if frame is None:
-        return {}
-    return getattr(frame, "f_locals", {}) or {}
+    return _MOLT_GEN_LOCALS(gen)
 
 
 def getasyncgenlocals(agen: Any) -> dict[str, Any]:
-    if callable(_MOLT_ASYNCGEN_LOCALS):
-        return _MOLT_ASYNCGEN_LOCALS(agen)
-    if not hasattr(agen, "ag_frame"):
-        raise TypeError("expected async generator")
-    frame = getattr(agen, "ag_frame", None)
-    if frame is None:
-        return {}
-    return getattr(frame, "f_locals", {}) or {}
+    return _MOLT_ASYNCGEN_LOCALS(agen)
 
 
 def getcoroutinestate(coro: Any) -> str:
-    if getattr(coro, "cr_running", False):
-        return CORO_RUNNING
-    frame = getattr(coro, "cr_frame", None)
-    if frame is None:
-        if getattr(coro, "gi_running", False):
-            return CORO_RUNNING
-        frame = getattr(coro, "gi_frame", None)
-    if frame is None:
-        return CORO_CLOSED
-    lasti = getattr(frame, "f_lasti", -1)
-    if lasti == -1:
-        return CORO_CREATED
-    return CORO_SUSPENDED
+    return _MOLT_INSPECT_GETCOROUTINESTATE(coro)
 
 
-def _signature_from_molt(obj: Any) -> Signature | None:
-    arg_names = getattr(obj, "__molt_arg_names__", None)
-    if arg_names is None:
+def _signature_from_intrinsic(obj: Any) -> Signature | None:
+    payload = _MOLT_INSPECT_SIGNATURE_DATA(obj)
+    if payload is None:
         return None
-    posonly = getattr(obj, "__molt_posonly__", 0) or 0
-    kwonly_names = getattr(obj, "__molt_kwonly_names__", None) or ()
-    vararg = getattr(obj, "__molt_vararg__", None)
-    varkw = getattr(obj, "__molt_varkw__", None)
-    defaults = getattr(obj, "__defaults__", None) or ()
-    kwdefaults = getattr(obj, "__kwdefaults__", None)
+    (
+        arg_names,
+        posonly,
+        kwonly_names,
+        vararg,
+        varkw,
+        defaults,
+        kwdefaults,
+    ) = payload
     if kwdefaults is None:
         kwdefaults = {}
     params: list[Parameter] = []
@@ -347,63 +283,13 @@ def _signature_from_molt(obj: Any) -> Signature | None:
     return Signature(params)
 
 
-def _signature_from_code(obj: Any) -> Signature | None:
-    code = getattr(obj, "__code__", None)
-    if code is None:
-        return None
-    posonly = getattr(code, "co_posonlyargcount", 0)
-    argcount = getattr(code, "co_argcount", 0)
-    kwonly = getattr(code, "co_kwonlyargcount", 0)
-    varnames = list(getattr(code, "co_varnames", ()))
-    defaults = getattr(obj, "__defaults__", ()) or ()
-    kwdefaults = getattr(obj, "__kwdefaults__", {}) or {}
-    flags = getattr(code, "co_flags", 0)
-
-    params: list[Parameter] = []
-    total_pos = argcount
-    pos_names = varnames[:total_pos]
-    pos_defaults_start = total_pos - len(defaults)
-    idx = 0
-    for name in pos_names:
-        if idx < posonly:
-            kind = Parameter.POSITIONAL_ONLY
-        else:
-            kind = Parameter.POSITIONAL_OR_KEYWORD
-        default = _empty
-        if idx >= pos_defaults_start:
-            default = defaults[idx - pos_defaults_start]
-        params.append(Parameter(name, kind, default))
-        idx += 1
-
-    var_pos = bool(flags & 0x04)
-    var_kw = bool(flags & 0x08)
-    offset = total_pos
-    if var_pos:
-        params.append(Parameter(varnames[offset], Parameter.VAR_POSITIONAL))
-        offset += 1
-
-    kw_names = varnames[offset : offset + kwonly]
-    for name in kw_names:
-        default = kwdefaults.get(name, _empty)
-        params.append(Parameter(name, Parameter.KEYWORD_ONLY, default))
-    offset += kwonly
-
-    if var_kw:
-        params.append(Parameter(varnames[offset], Parameter.VAR_KEYWORD))
-
-    return Signature(params)
-
-
 def signature(obj: Any) -> Signature:
     sig = getattr(obj, "__signature__", None)
     if isinstance(sig, Signature):
         return sig
     if sig is not None:
         return sig
-    molt_sig = _signature_from_molt(obj)
-    if molt_sig is not None:
-        return molt_sig
-    code_sig = _signature_from_code(obj)
-    if code_sig is not None:
-        return code_sig
+    intrinsic_sig = _signature_from_intrinsic(obj)
+    if intrinsic_sig is not None:
+        return intrinsic_sig
     raise TypeError("inspect.signature cannot introspect this object")

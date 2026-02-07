@@ -183,9 +183,7 @@ def _mp_debug(message: str) -> None:
     if not _mp_debug_enabled():
         return
     try:
-        import sys as _sys
-
-        print(message, file=_sys.stderr)
+        print(message, file=sys.stderr)
     except Exception:
         pass
 

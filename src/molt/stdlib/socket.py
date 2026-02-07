@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import errno
-import os as _os
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -49,45 +48,59 @@ class herror(OSError):
     pass
 
 
-def _load_intrinsic(name: str) -> Any | None:
-    return _require_intrinsic(name, globals())
-
-
-_molt_socket_constants = _load_intrinsic("molt_socket_constants")
-_molt_socket_has_ipv6 = _load_intrinsic("molt_socket_has_ipv6")
-_molt_socket_new = _load_intrinsic("molt_socket_new")
-_molt_socket_close = _load_intrinsic("molt_socket_close")
-_molt_socket_drop = _load_intrinsic("molt_socket_drop")
-_molt_socket_fileno = _load_intrinsic("molt_socket_fileno")
-_molt_socket_gettimeout = _load_intrinsic("molt_socket_gettimeout")
-_molt_socket_settimeout = _load_intrinsic("molt_socket_settimeout")
-_molt_socket_setblocking = _load_intrinsic("molt_socket_setblocking")
-_molt_socket_getblocking = _load_intrinsic("molt_socket_getblocking")
-_molt_socket_bind = _load_intrinsic("molt_socket_bind")
-_molt_socket_listen = _load_intrinsic("molt_socket_listen")
-_molt_socket_accept = _load_intrinsic("molt_socket_accept")
-_molt_socket_connect = _load_intrinsic("molt_socket_connect")
-_molt_socket_connect_ex = _load_intrinsic("molt_socket_connect_ex")
-_molt_socket_recv = _load_intrinsic("molt_socket_recv")
-_molt_socket_recv_into = _load_intrinsic("molt_socket_recv_into")
-_molt_socket_send = _load_intrinsic("molt_socket_send")
-_molt_socket_sendall = _load_intrinsic("molt_socket_sendall")
-_molt_socket_sendto = _load_intrinsic("molt_socket_sendto")
-_molt_socket_recvfrom = _load_intrinsic("molt_socket_recvfrom")
-_molt_socket_shutdown = _load_intrinsic("molt_socket_shutdown")
-_molt_socket_getsockname = _load_intrinsic("molt_socket_getsockname")
-_molt_socket_getpeername = _load_intrinsic("molt_socket_getpeername")
-_molt_socket_setsockopt = _load_intrinsic("molt_socket_setsockopt")
-_molt_socket_getsockopt = _load_intrinsic("molt_socket_getsockopt")
-_molt_socket_detach = _load_intrinsic("molt_socket_detach")
-_molt_socketpair = _load_intrinsic("molt_socketpair")
-_molt_socket_getaddrinfo = _load_intrinsic("molt_socket_getaddrinfo")
-_molt_socket_getnameinfo = _load_intrinsic("molt_socket_getnameinfo")
-_molt_socket_gethostname = _load_intrinsic("molt_socket_gethostname")
-_molt_socket_getservbyname = _load_intrinsic("molt_socket_getservbyname")
-_molt_socket_getservbyport = _load_intrinsic("molt_socket_getservbyport")
-_molt_socket_inet_pton = _load_intrinsic("molt_socket_inet_pton")
-_molt_socket_inet_ntop = _load_intrinsic("molt_socket_inet_ntop")
+_molt_socket_constants = _require_intrinsic("molt_socket_constants", globals())
+_molt_socket_has_ipv6 = _require_intrinsic("molt_socket_has_ipv6", globals())
+_molt_socket_new = _require_intrinsic("molt_socket_new", globals())
+_molt_socket_close = _require_intrinsic("molt_socket_close", globals())
+_molt_socket_drop = _require_intrinsic("molt_socket_drop", globals())
+_molt_socket_clone = _require_intrinsic("molt_socket_clone", globals())
+_molt_os_dup = _require_intrinsic("molt_os_dup", globals())
+_molt_os_close = _require_intrinsic("molt_os_close", globals())
+_molt_os_get_inheritable = _require_intrinsic("molt_os_get_inheritable", globals())
+_molt_os_set_inheritable = _require_intrinsic("molt_os_set_inheritable", globals())
+_molt_socket_fileno = _require_intrinsic("molt_socket_fileno", globals())
+_molt_socket_gettimeout = _require_intrinsic("molt_socket_gettimeout", globals())
+_molt_socket_settimeout = _require_intrinsic("molt_socket_settimeout", globals())
+_molt_socket_setblocking = _require_intrinsic("molt_socket_setblocking", globals())
+_molt_socket_getblocking = _require_intrinsic("molt_socket_getblocking", globals())
+_molt_socket_bind = _require_intrinsic("molt_socket_bind", globals())
+_molt_socket_listen = _require_intrinsic("molt_socket_listen", globals())
+_molt_socket_accept = _require_intrinsic("molt_socket_accept", globals())
+_molt_socket_connect = _require_intrinsic("molt_socket_connect", globals())
+_molt_socket_connect_ex = _require_intrinsic("molt_socket_connect_ex", globals())
+_molt_socket_recv = _require_intrinsic("molt_socket_recv", globals())
+_molt_socket_recv_into = _require_intrinsic("molt_socket_recv_into", globals())
+_molt_socket_send = _require_intrinsic("molt_socket_send", globals())
+_molt_socket_sendall = _require_intrinsic("molt_socket_sendall", globals())
+_molt_socket_sendto = _require_intrinsic("molt_socket_sendto", globals())
+_molt_socket_recvfrom = _require_intrinsic("molt_socket_recvfrom", globals())
+_molt_socket_sendmsg = _require_intrinsic("molt_socket_sendmsg", globals())
+_molt_socket_recvmsg = _require_intrinsic("molt_socket_recvmsg", globals())
+_molt_socket_recvmsg_into = _require_intrinsic("molt_socket_recvmsg_into", globals())
+_molt_socket_shutdown = _require_intrinsic("molt_socket_shutdown", globals())
+_molt_socket_reader_new = _require_intrinsic("molt_socket_reader_new", globals())
+_molt_socket_reader_read = _require_intrinsic("molt_socket_reader_read", globals())
+_molt_socket_reader_readline = _require_intrinsic(
+    "molt_socket_reader_readline", globals()
+)
+_molt_socket_reader_readline_limit = _require_intrinsic(
+    "molt_socket_reader_readline_limit", globals()
+)
+_molt_socket_reader_drop = _require_intrinsic("molt_socket_reader_drop", globals())
+_molt_socket_getsockname = _require_intrinsic("molt_socket_getsockname", globals())
+_molt_socket_getpeername = _require_intrinsic("molt_socket_getpeername", globals())
+_molt_socket_setsockopt = _require_intrinsic("molt_socket_setsockopt", globals())
+_molt_socket_getsockopt = _require_intrinsic("molt_socket_getsockopt", globals())
+_molt_socket_detach = _require_intrinsic("molt_socket_detach", globals())
+_molt_socketpair = _require_intrinsic("molt_socketpair", globals())
+_molt_socket_getaddrinfo = _require_intrinsic("molt_socket_getaddrinfo", globals())
+_molt_socket_getnameinfo = _require_intrinsic("molt_socket_getnameinfo", globals())
+_molt_socket_gethostname = _require_intrinsic("molt_socket_gethostname", globals())
+_molt_socket_gethostbyname = _require_intrinsic("molt_socket_gethostbyname", globals())
+_molt_socket_getservbyname = _require_intrinsic("molt_socket_getservbyname", globals())
+_molt_socket_getservbyport = _require_intrinsic("molt_socket_getservbyport", globals())
+_molt_socket_inet_pton = _require_intrinsic("molt_socket_inet_pton", globals())
+_molt_socket_inet_ntop = _require_intrinsic("molt_socket_inet_ntop", globals())
 
 
 def _init_constants() -> dict[str, int]:
@@ -120,9 +133,23 @@ def getdefaulttimeout() -> float | None:
     return _DEFAULT_TIMEOUT
 
 
+def _coerce_timeout(timeout: float | None) -> float | None:
+    if timeout is None:
+        return None
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
+        ) from exc
+    if value < 0.0:
+        raise ValueError("Timeout value out of range")
+    return value
+
+
 def setdefaulttimeout(timeout: float | None) -> None:
     global _DEFAULT_TIMEOUT
-    _DEFAULT_TIMEOUT = timeout
+    _DEFAULT_TIMEOUT = _coerce_timeout(timeout)
 
 
 def _map_gaierror(exc: OSError) -> gaierror:
@@ -133,6 +160,16 @@ def _require_socket_intrinsic(fn: Any | None, name: str) -> Any:
     if fn is None:
         raise RuntimeError(f"socket intrinsic missing: {name}")
     return fn
+
+
+def _socket_from_handle(family: int, type: int, proto: int, handle: Any) -> "socket":
+    sock = socket.__new__(socket)
+    sock.family = family
+    sock.type = type
+    sock.proto = proto
+    sock._timeout = None
+    sock._handle = handle
+    return sock
 
 
 class _SocketFile:
@@ -155,13 +192,23 @@ class _SocketFile:
         self._newline = newline
         self._buffering = buffering
         self._closed = False
-        self._read_buf: bytearray = bytearray()
+        self._reader: Any | None = None
+        if self._readable:
+            handle = self._sock._require_handle()
+            self._reader = _require_socket_intrinsic(
+                _molt_socket_reader_new, "molt_socket_reader_new"
+            )(handle)
 
     @property
     def closed(self) -> bool:
         return self._closed
 
     def close(self) -> None:
+        if self._reader is not None:
+            _require_socket_intrinsic(
+                _molt_socket_reader_drop, "molt_socket_reader_drop"
+            )(self._reader)
+            self._reader = None
         self._closed = True
 
     def flush(self) -> None:
@@ -180,6 +227,17 @@ class _SocketFile:
         if not self._writable:
             raise OSError("File not open for writing")
 
+    def _require_reader(self) -> Any:
+        reader = self._reader
+        if reader is None:
+            raise RuntimeError("socket reader is not initialized")
+        return reader
+
+    def _coerce_size(self, size: int | None) -> int:
+        if size is None:
+            return -1
+        return int(size)
+
     def _coerce_bytes(self, data: Any) -> bytes:
         if self._binary:
             if isinstance(data, (bytes, bytearray, memoryview)):
@@ -191,11 +249,26 @@ class _SocketFile:
             raise TypeError(f"write() argument must be str, not {name}")
         return data.encode(self._encoding, self._errors)
 
-    def _recv(self, size: int) -> bytes:
-        handle = self._sock._require_handle()
-        return _require_socket_intrinsic(_molt_socket_recv, "recv")(
-            handle, int(size), 0
-        )
+    def _reader_read(self, size: int) -> bytes:
+        data = _require_socket_intrinsic(
+            _molt_socket_reader_read, "molt_socket_reader_read"
+        )(self._require_reader(), int(size))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return bytes(data)
+        raise RuntimeError("socket reader intrinsic returned invalid value")
+
+    def _reader_readline(self, size: int) -> bytes:
+        if size < 0:
+            data = _require_socket_intrinsic(
+                _molt_socket_reader_readline, "molt_socket_reader_readline"
+            )(self._require_reader())
+        else:
+            data = _require_socket_intrinsic(
+                _molt_socket_reader_readline_limit, "molt_socket_reader_readline_limit"
+            )(self._require_reader(), int(size))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return bytes(data)
+        raise RuntimeError("socket reader intrinsic returned invalid value")
 
     def _sendall(self, payload: bytes) -> None:
         handle = self._sock._require_handle()
@@ -211,25 +284,7 @@ class _SocketFile:
     def read(self, size: int | None = -1) -> bytes | str:
         self._ensure_open()
         self._ensure_readable()
-        if size is None:
-            size = -1
-        if size < 0:
-            chunks = [bytes(self._read_buf)]
-            self._read_buf.clear()
-            while True:
-                chunk = self._recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            data = b"".join(chunks)
-        else:
-            while len(self._read_buf) < size:
-                chunk = self._recv(4096)
-                if not chunk:
-                    break
-                self._read_buf.extend(chunk)
-            data = bytes(self._read_buf[:size])
-            del self._read_buf[:size]
+        data = self._reader_read(self._coerce_size(size))
         if self._binary:
             return data
         return data.decode(self._encoding, self._errors)
@@ -237,27 +292,7 @@ class _SocketFile:
     def readline(self, size: int | None = -1) -> bytes | str:
         self._ensure_open()
         self._ensure_readable()
-        if size is None:
-            size = -1
-        while True:
-            idx = self._read_buf.find(b"\n")
-            if idx != -1:
-                end = idx + 1
-                if size >= 0:
-                    end = min(end, size)
-                data = bytes(self._read_buf[:end])
-                del self._read_buf[:end]
-                break
-            if size >= 0 and len(self._read_buf) >= size:
-                data = bytes(self._read_buf[:size])
-                del self._read_buf[:size]
-                break
-            chunk = self._recv(4096)
-            if not chunk:
-                data = bytes(self._read_buf)
-                self._read_buf.clear()
-                break
-            self._read_buf.extend(chunk)
+        data = self._reader_readline(self._coerce_size(size))
         if self._binary:
             return data
         return data.decode(self._encoding, self._errors)
@@ -287,10 +322,7 @@ class socket:
             family, type, proto, fileno
         )
         if _DEFAULT_TIMEOUT is not None:
-            try:
-                self.settimeout(_DEFAULT_TIMEOUT)
-            except Exception:
-                pass
+            self.settimeout(_DEFAULT_TIMEOUT)
 
     def __repr__(self) -> str:
         return f"<socket fd={self.fileno()}>"
@@ -338,9 +370,10 @@ class socket:
         )
 
     def settimeout(self, timeout: float | None) -> None:
-        self._timeout = timeout
+        timeout_val = _coerce_timeout(timeout)
+        self._timeout = timeout_val
         _require_socket_intrinsic(_molt_socket_settimeout, "settimeout")(
-            self._require_handle(), timeout
+            self._require_handle(), timeout_val
         )
 
     def setblocking(self, flag: bool) -> None:
@@ -369,12 +402,7 @@ class socket:
         handle, addr = _require_socket_intrinsic(_molt_socket_accept, "accept")(
             self._require_handle()
         )
-        sock = socket.__new__(socket)
-        sock.family = self.family
-        sock.type = self.type
-        sock.proto = self.proto
-        sock._timeout = None
-        sock._handle = handle
+        sock = _socket_from_handle(self.family, self.type, self.proto, handle)
         return sock, addr
 
     def connect(self, addr: Any) -> None:
@@ -438,6 +466,33 @@ class socket:
             self._require_handle(), int(bufsize), int(flags)
         )
 
+    def sendmsg(
+        self,
+        buffers: Any,
+        ancdata: Any = (),
+        flags: int = 0,
+        address: Any = None,
+    ) -> int:
+        return int(
+            _require_socket_intrinsic(_molt_socket_sendmsg, "sendmsg")(
+                self._require_handle(), buffers, ancdata, int(flags), address
+            )
+        )
+
+    def recvmsg(
+        self, bufsize: int, ancbufsize: int = 0, flags: int = 0
+    ) -> tuple[bytes, list[tuple[int, int, bytes]], int, Any]:
+        return _require_socket_intrinsic(_molt_socket_recvmsg, "recvmsg")(
+            self._require_handle(), int(bufsize), int(ancbufsize), int(flags)
+        )
+
+    def recvmsg_into(
+        self, buffers: Any, ancbufsize: int = 0, flags: int = 0
+    ) -> tuple[int, list[tuple[int, int, bytes]], int, Any]:
+        return _require_socket_intrinsic(_molt_socket_recvmsg_into, "recvmsg_into")(
+            self._require_handle(), buffers, int(ancbufsize), int(flags)
+        )
+
     def shutdown(self, how: int) -> None:
         _require_socket_intrinsic(_molt_socket_shutdown, "shutdown")(
             self._require_handle(), int(how)
@@ -469,21 +524,22 @@ class socket:
         )
 
     def get_inheritable(self) -> bool:
-        return bool(_os.get_inheritable(self.fileno()))
+        return bool(
+            _require_socket_intrinsic(
+                _molt_os_get_inheritable, "molt_os_get_inheritable"
+            )(self.fileno())
+        )
 
     def set_inheritable(self, inheritable: bool) -> None:
-        _os.set_inheritable(self.fileno(), bool(inheritable))
+        _require_socket_intrinsic(_molt_os_set_inheritable, "molt_os_set_inheritable")(
+            self.fileno(), bool(inheritable)
+        )
 
     def dup(self) -> "socket":
-        fd = _os.dup(self.fileno())
-        try:
-            return socket(self.family, self.type, self.proto, fileno=fd)
-        except Exception:
-            try:
-                _os.close(fd)
-            except Exception:
-                pass
-            raise
+        handle = _require_socket_intrinsic(_molt_socket_clone, "clone")(
+            self._require_handle()
+        )
+        return _socket_from_handle(self.family, self.type, self.proto, handle)
 
     def makefile(
         self,
@@ -504,12 +560,15 @@ class socket:
 
 
 def fromfd(fd: int, family: int, type: int, proto: int = 0) -> socket:
-    duped = _os.dup(fd)
+    duped = int(_require_socket_intrinsic(_molt_os_dup, "molt_os_dup")(int(fd)))
     try:
-        return socket(family, type, proto, fileno=duped)
+        handle = _require_socket_intrinsic(_molt_socket_new, "new")(
+            int(family), int(type), int(proto), duped
+        )
+        return _socket_from_handle(int(family), int(type), int(proto), handle)
     except Exception:
         try:
-            _os.close(duped)
+            _require_socket_intrinsic(_molt_os_close, "molt_os_close")(duped)
         except Exception:
             pass
         raise
@@ -529,19 +588,11 @@ def socketpair(
     fam = default_family if family is None else family
     sock_type = _CONSTANTS.get("SOCK_STREAM", 1) if type is None else type
     proto_val = 0 if proto is None else proto
-    left = socket.__new__(socket)
-    right = socket.__new__(socket)
-    for sock, handle in ((left, left_handle), (right, right_handle)):
-        sock.family = fam
-        sock.type = sock_type
-        sock.proto = proto_val
-        sock._timeout = None
-        sock._handle = handle
+    left = _socket_from_handle(fam, sock_type, proto_val, left_handle)
+    right = _socket_from_handle(fam, sock_type, proto_val, right_handle)
+    for sock in (left, right):
         if _DEFAULT_TIMEOUT is not None:
-            try:
-                sock.settimeout(_DEFAULT_TIMEOUT)
-            except Exception:
-                pass
+            sock.settimeout(_DEFAULT_TIMEOUT)
     return left, right
 
 
@@ -579,15 +630,9 @@ def gethostname() -> str:
 
 
 def gethostbyname(hostname: str) -> str:
-    info = getaddrinfo(hostname, None, _CONSTANTS.get("AF_INET", 2), 0, 0, 0)
-    for _af, _socktype, _proto, _canon, sa in info:
-        if isinstance(sa, tuple) and sa:
-            return sa[0]
-    if info:
-        sa = info[0][4]
-        if isinstance(sa, tuple) and sa:
-            return sa[0]
-    raise gaierror(_CONSTANTS.get("EAI_NONAME", 0), "gethostbyname failed")
+    return _require_socket_intrinsic(_molt_socket_gethostbyname, "gethostbyname")(
+        hostname
+    )
 
 
 def gethostbyaddr(hostname: str) -> tuple[str, list[str], list[str]]:

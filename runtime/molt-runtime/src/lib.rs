@@ -17,6 +17,21 @@ macro_rules! fn_addr {
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// Unit-test builds link the runtime crate directly without compiler-emitted
+// isolate entrypoints. Provide test-only fallbacks so lib-test linking remains
+// reliable while production binaries keep using generated symbols.
+#[cfg(test)]
+#[no_mangle]
+pub extern "C" fn molt_isolate_bootstrap() -> u64 {
+    molt_obj_model::MoltObject::none().bits()
+}
+
+#[cfg(test)]
+#[no_mangle]
+pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
+    molt_obj_model::MoltObject::none().bits()
+}
+
 mod async_rt;
 mod builtins;
 mod call;
@@ -34,8 +49,15 @@ mod utils;
 pub(crate) use crate::async_rt::*;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
+    molt_barrier_abort, molt_barrier_broken, molt_barrier_drop, molt_barrier_n_waiting,
+    molt_barrier_new, molt_barrier_parties, molt_barrier_reset, molt_barrier_wait,
+    molt_condition_drop, molt_condition_new, molt_condition_notify, molt_condition_wait,
+    molt_condition_wait_for, molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new,
+    molt_event_set, molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new,
     molt_lock_acquire, molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release,
-    molt_rlock_acquire, molt_rlock_drop, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
+    molt_rlock_acquire, molt_rlock_acquire_restore, molt_rlock_drop, molt_rlock_is_owned,
+    molt_rlock_locked, molt_rlock_new, molt_rlock_release, molt_rlock_release_save,
+    molt_semaphore_acquire, molt_semaphore_drop, molt_semaphore_new, molt_semaphore_release,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::concurrency::{
@@ -66,10 +88,23 @@ pub(crate) use crate::async_rt::sockets::{
 };
 pub use crate::async_rt::threads::*;
 pub(crate) use crate::async_rt::{
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
-    io_wait_poll_fn_addr, molt_block_on, poll_future_with_task_stack, process_poll_fn_addr,
-    resolve_task_ptr, thread_poll_fn_addr,
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
+    asyncio_fd_watcher_poll_fn_addr, asyncio_gather_poll_fn_addr,
+    asyncio_ready_runner_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
+    asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
+    asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_poll_fn_addr,
+    asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
+    asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
+    asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
+    asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
+    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, call_poll_fn,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
+    contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, molt_block_on,
+    poll_future_with_task_stack, process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
 };
+pub use crate::builtins::abc::*;
 pub(crate) use crate::builtins::attr::{
     apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
     attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
@@ -100,6 +135,11 @@ pub use crate::builtins::containers_alloc::{
 };
 pub use crate::builtins::context::*;
 pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_unwind};
+pub use crate::builtins::contextlib::*;
+pub(crate) use crate::builtins::contextlib::{
+    contextlib_async_exitstack_enter_context_task_drop, contextlib_async_exitstack_exit_task_drop,
+    contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
+};
 pub use crate::builtins::decimal::*;
 pub(crate) use crate::builtins::exceptions::{
     alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_state,
@@ -134,6 +174,7 @@ pub use crate::builtins::functions::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::hashlib::*;
 pub use crate::builtins::hmac::*;
+pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
     close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
@@ -154,6 +195,7 @@ pub(crate) use crate::builtins::numbers::{
 };
 pub use crate::builtins::operator::*;
 pub use crate::builtins::platform::*;
+pub use crate::builtins::select::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -184,7 +226,7 @@ pub(crate) use crate::call::dispatch::{
 };
 pub(crate) use crate::call::function::{
     call_function_obj0, call_function_obj1, call_function_obj2, call_function_obj3,
-    call_function_obj4, call_function_obj_vec, refresh_function_task_trampoline_cache,
+    call_function_obj_vec, refresh_function_task_trampoline_cache,
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
@@ -244,8 +286,17 @@ pub(crate) use crate::object::ops::{
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
-    molt_weakref_collect, molt_weakref_drop, molt_weakref_get, molt_weakref_peek,
-    molt_weakref_register,
+    molt_weakkeydict_clear, molt_weakkeydict_contains, molt_weakkeydict_del, molt_weakkeydict_get,
+    molt_weakkeydict_items, molt_weakkeydict_keyrefs, molt_weakkeydict_len,
+    molt_weakkeydict_popitem, molt_weakkeydict_set, molt_weakref_collect, molt_weakref_count,
+    molt_weakref_drop, molt_weakref_finalize_track, molt_weakref_finalize_untrack,
+    molt_weakref_find_nocallback, molt_weakref_get, molt_weakref_peek, molt_weakref_refs,
+    molt_weakref_register, molt_weakset_add, molt_weakset_clear, molt_weakset_contains,
+    molt_weakset_discard, molt_weakset_items, molt_weakset_len, molt_weakset_pop,
+    molt_weakset_remove, molt_weakvaluedict_clear, molt_weakvaluedict_contains,
+    molt_weakvaluedict_del, molt_weakvaluedict_get, molt_weakvaluedict_items,
+    molt_weakvaluedict_len, molt_weakvaluedict_popitem, molt_weakvaluedict_set,
+    molt_weakvaluedict_valuerefs,
 };
 pub(crate) use crate::object::{
     alloc_object, alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr,
@@ -425,6 +476,17 @@ extern "C" {
     fn molt_db_host_poll() -> i32;
     #[link_name = "molt_getpid_host"]
     fn molt_getpid_host() -> i64;
+    #[link_name = "molt_time_timezone_host"]
+    pub(crate) fn molt_time_timezone_host() -> i64;
+    #[link_name = "molt_time_local_offset_host"]
+    pub(crate) fn molt_time_local_offset_host(secs: i64) -> i64;
+    #[link_name = "molt_time_tzname_host"]
+    pub(crate) fn molt_time_tzname_host(
+        which: i32,
+        buf_ptr: u32,
+        buf_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
     #[link_name = "molt_os_close_host"]
     pub(crate) fn molt_os_close_host(fd: i64) -> i32;
     #[link_name = "molt_socket_new_host"]
@@ -464,6 +526,17 @@ extern "C" {
         addr_ptr: u32,
         addr_len: u32,
     ) -> i32;
+    #[link_name = "molt_socket_sendmsg_host"]
+    pub(crate) fn molt_socket_sendmsg_host(
+        handle: i64,
+        buf_ptr: u32,
+        buf_len: u32,
+        flags: i32,
+        addr_ptr: u32,
+        addr_len: u32,
+        anc_ptr: u32,
+        anc_len: u32,
+    ) -> i32;
     #[link_name = "molt_socket_recvfrom_host"]
     pub(crate) fn molt_socket_recvfrom_host(
         handle: i64,
@@ -473,6 +546,20 @@ extern "C" {
         addr_ptr: u32,
         addr_cap: u32,
         out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_recvmsg_host"]
+    pub(crate) fn molt_socket_recvmsg_host(
+        handle: i64,
+        buf_ptr: u32,
+        buf_len: u32,
+        flags: i32,
+        addr_ptr: u32,
+        addr_cap: u32,
+        out_addr_len_ptr: u32,
+        anc_ptr: u32,
+        anc_cap: u32,
+        out_anc_len_ptr: u32,
+        out_msg_flags_ptr: u32,
     ) -> i32;
     #[link_name = "molt_socket_shutdown_host"]
     pub(crate) fn molt_socket_shutdown_host(handle: i64, how: i32) -> i32;
