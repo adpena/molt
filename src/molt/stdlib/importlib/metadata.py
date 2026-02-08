@@ -161,15 +161,10 @@ class EntryPoints:
     def groups(self) -> set[str]:
         return {entry.group for entry in self}
 
-    def select(
-        self, *, group: str | None = None, name: str | None = None
-    ) -> "EntryPoints":
-        items = [
-            ep
-            for ep in self
-            if (group is None or ep.group == group)
-            and (name is None or ep.name == name)
-        ]
+    def select(self, **params) -> "EntryPoints":
+        items = list(self._entries)
+        for attr, expected in params.items():
+            items = [ep for ep in items if getattr(ep, attr) == expected]
         return EntryPoints(items)
 
 
@@ -406,18 +401,23 @@ def version(name: str) -> str:
 
 def entry_points(**params) -> EntryPoints:
     _ensure_fs_read()
-    group = params.pop("group", None)
-    name = params.pop("name", None)
-    if params:
-        key = next(iter(params))
-        raise TypeError(f"entry_points() got an unexpected keyword argument {key!r}")
-    if group is not None and not isinstance(group, str):
-        raise TypeError("entry_points() 'group' parameter must be str")
-    if name is not None and not isinstance(name, str):
-        raise TypeError("entry_points() 'name' parameter must be str")
+    group = params.get("group")
+    name = params.get("name")
+    use_runtime_filter = (
+        set(params).issubset({"group", "name"})
+        and (group is None or isinstance(group, str))
+        and (name is None or isinstance(name, str))
+    )
     snapshot = _resolved_search_paths(_path_snapshot())
+    payload_group = group if use_runtime_filter else None
+    payload_name = name if use_runtime_filter else None
     items = [
         EntryPoint(name, value, group)
-        for name, value, group in _entry_points_payload(snapshot, group, name)
+        for name, value, group in _entry_points_payload(
+            snapshot, payload_group, payload_name
+        )
     ]
-    return EntryPoints(items)
+    entry_points_obj = EntryPoints(items)
+    if params:
+        return entry_points_obj.select(**params)
+    return entry_points_obj

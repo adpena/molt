@@ -20,9 +20,14 @@ _MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb", globa
 _MOLT_TRACEBACK_FORMAT_STACK = _require_intrinsic(
     "molt_traceback_format_stack", globals()
 )
-_MOLT_TRACEBACK_EXCEPTION_COMPONENTS = _require_intrinsic(
-    "molt_traceback_exception_components", globals()
+_MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb", globals())
+_MOLT_TRACEBACK_EXCEPTION_CHAIN_PAYLOAD = _require_intrinsic(
+    "molt_traceback_exception_chain_payload", globals()
 )
+_MOLT_TRACEBACK_EXCEPTION_SUPPRESS_CONTEXT = _require_intrinsic(
+    "molt_traceback_exception_suppress_context", globals()
+)
+_MOLT_GETFRAME = _require_intrinsic("molt_getframe", globals())
 
 
 __all__ = [
@@ -129,35 +134,62 @@ def _payload_frames(source: Any, limit: int | None) -> list[FrameSummary]:
     return _payload_to_frames(payload, "traceback payload intrinsic")
 
 
-def _exception_components_payload(
+def _exception_chain_payload(
     exc: BaseException, limit: int | None
-) -> tuple[list[Any], Any, Any, bool]:
-    payload = _MOLT_TRACEBACK_EXCEPTION_COMPONENTS(exc, limit)
-    if not isinstance(payload, (tuple, list)) or len(payload) != 4:
+) -> list[tuple[BaseException, list[Any], bool, int | None, int | None]]:
+    payload = _MOLT_TRACEBACK_EXCEPTION_CHAIN_PAYLOAD(exc, limit)
+    if not isinstance(payload, list):
         raise RuntimeError(
-            "traceback exception components intrinsic returned invalid value"
+            "traceback exception chain payload intrinsic returned invalid value"
         )
-    frames_payload = payload[0]
-    cause = payload[1]
-    context = payload[2]
-    suppress_context = payload[3]
-    if not isinstance(frames_payload, list):
-        raise RuntimeError(
-            "traceback exception components intrinsic returned invalid frames payload"
+    count = len(payload)
+    out: list[tuple[BaseException, list[Any], bool, int | None, int | None]] = []
+    for entry in payload:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 5:
+            raise RuntimeError(
+                "traceback exception chain payload intrinsic returned invalid entry"
+            )
+        value, frames_payload, suppress_context, cause_index, context_index = entry
+        if not isinstance(value, BaseException):
+            raise RuntimeError(
+                "traceback exception chain payload intrinsic returned invalid exception"
+            )
+        if not isinstance(frames_payload, list):
+            raise RuntimeError(
+                "traceback exception chain payload intrinsic returned invalid frames"
+            )
+        if not isinstance(suppress_context, bool):
+            raise RuntimeError(
+                "traceback exception chain payload intrinsic returned invalid suppress flag"
+            )
+        if cause_index is not None:
+            if (
+                not isinstance(cause_index, int)
+                or cause_index < 0
+                or cause_index >= count
+            ):
+                raise RuntimeError(
+                    "traceback exception chain payload intrinsic returned invalid cause index"
+                )
+        if context_index is not None:
+            if (
+                not isinstance(context_index, int)
+                or context_index < 0
+                or context_index >= count
+            ):
+                raise RuntimeError(
+                    "traceback exception chain payload intrinsic returned invalid context index"
+                )
+        out.append(
+            (
+                value,
+                frames_payload,
+                suppress_context,
+                cause_index,
+                context_index,
+            )
         )
-    if cause is not None and not isinstance(cause, BaseException):
-        raise RuntimeError(
-            "traceback exception components intrinsic returned invalid cause payload"
-        )
-    if context is not None and not isinstance(context, BaseException):
-        raise RuntimeError(
-            "traceback exception components intrinsic returned invalid context payload"
-        )
-    if not isinstance(suppress_context, bool):
-        raise RuntimeError(
-            "traceback exception components intrinsic returned invalid suppress flag"
-        )
-    return frames_payload, cause, context, suppress_context
+    return out
 
 
 class StackSummary:
@@ -204,7 +236,15 @@ class TracebackException:
         self._exc = exc
         self.__cause__: TracebackException | None = None
         self.__context__: TracebackException | None = None
-        self.__suppress_context__ = bool(getattr(exc, "__suppress_context__", False))
+        if exc is None:
+            self.__suppress_context__ = False
+        else:
+            suppress = _MOLT_TRACEBACK_EXCEPTION_SUPPRESS_CONTEXT(exc)
+            if not isinstance(suppress, bool):
+                raise RuntimeError(
+                    "traceback suppress-context intrinsic returned invalid value"
+                )
+            self.__suppress_context__ = suppress
 
     @classmethod
     def from_exception(
@@ -215,32 +255,35 @@ class TracebackException:
         capture_locals: bool = False,
     ) -> "TracebackException":
         del lookup_lines, capture_locals
-        seen: set[int] = set()
-
-        def _convert(current: BaseException) -> TracebackException:
-            key = id(current)
-            if key in seen:
-                return cls(current, StackSummary([]))
-            seen.add(key)
-            frames_payload, cause, context, suppress_context = (
-                _exception_components_payload(current, limit)
-            )
+        chain = _exception_chain_payload(exc, limit)
+        if not chain:
+            return cls(exc, StackSummary([]))
+        nodes: list[TracebackException] = []
+        links: list[tuple[int | None, int | None]] = []
+        for (
+            current,
+            frames_payload,
+            suppress_context,
+            cause_index,
+            context_index,
+        ) in chain:
             stack = StackSummary(
                 _payload_to_frames(
-                    frames_payload, "traceback exception components intrinsic"
+                    frames_payload, "traceback exception chain payload intrinsic"
                 ),
                 source=frames_payload,
                 limit=None,
             )
             current_exc = cls(current, stack)
-            if cause is not None:
-                current_exc.__cause__ = _convert(cause)
-            if context is not None:
-                current_exc.__context__ = _convert(context)
             current_exc.__suppress_context__ = suppress_context
-            return current_exc
-
-        return _convert(exc)
+            nodes.append(current_exc)
+            links.append((cause_index, context_index))
+        for current_exc, (cause_index, context_index) in zip(nodes, links):
+            if cause_index is not None:
+                current_exc.__cause__ = nodes[cause_index]
+            if context_index is not None:
+                current_exc.__context__ = nodes[context_index]
+        return nodes[0]
 
     def format(self, *, chain: bool = True) -> list[str]:
         if self._exc is None:
@@ -262,9 +305,9 @@ def format_tb(tb: Any, limit: int | None = None) -> list[str]:
 
 
 def extract_tb(tb: Any, limit: int | None = None) -> StackSummary:
-    payload = _MOLT_TRACEBACK_PAYLOAD(tb, limit)
+    payload = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
     return StackSummary(
-        _payload_to_frames(payload, "traceback payload intrinsic"),
+        _payload_to_frames(payload, "traceback extract tb intrinsic"),
         source=payload,
         limit=None,
     )
@@ -278,10 +321,9 @@ def format_list(extracted_list: list[Any]) -> list[str]:
 
 def extract_stack(f: Any | None = None, limit: int | None = None) -> StackSummary:
     if f is None:
-        getter = getattr(sys, "_getframe", None)
-        if not callable(getter):
+        f = _MOLT_GETFRAME(1)
+        if f is None:
             raise RuntimeError("sys._getframe is unavailable")
-        f = getter(1)
     return StackSummary.extract(f, limit)
 
 
@@ -327,10 +369,9 @@ def print_stack(
     f: Any | None = None, limit: int | None = None, file: Any | None = None
 ) -> None:
     if f is None:
-        getter = getattr(sys, "_getframe", None)
-        if not callable(getter):
+        f = _MOLT_GETFRAME(1)
+        if f is None:
             raise RuntimeError("sys._getframe is unavailable")
-        f = getter(1)
     out = "".join(format_stack(f, limit))
     if file is not None and hasattr(file, "write"):
         file.write(out)

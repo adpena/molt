@@ -12,15 +12,19 @@ __all__ = [
     "blake2s",
     "compare_digest",
     "file_digest",
+    "md4",
     "md5",
     "new",
     "pbkdf2_hmac",
+    "ripemd160",
     "scrypt",
     "sha1",
     "sha224",
     "sha256",
     "sha384",
     "sha512",
+    "sha512_224",
+    "sha512_256",
     "sha3_224",
     "sha3_256",
     "sha3_384",
@@ -42,12 +46,16 @@ _molt_pbkdf2_hmac = _require_intrinsic("molt_pbkdf2_hmac", globals())
 _molt_scrypt = _require_intrinsic("molt_scrypt", globals())
 
 _HASH_INFO: dict[str, tuple[int, int, bool]] = {
+    "md4": (16, 64, False),
     "md5": (16, 64, False),
+    "ripemd160": (20, 64, False),
     "sha1": (20, 64, False),
     "sha224": (28, 64, False),
     "sha256": (32, 64, False),
     "sha384": (48, 128, False),
     "sha512": (64, 128, False),
+    "sha512_224": (28, 128, False),
+    "sha512_256": (32, 128, False),
     "sha3_224": (28, 144, False),
     "sha3_256": (32, 136, False),
     "sha3_384": (48, 104, False),
@@ -58,14 +66,19 @@ _HASH_INFO: dict[str, tuple[int, int, bool]] = {
     "blake2s": (32, 64, False),
 }
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): add optional OpenSSL algorithms (sha512_224/sha512_256, ripemd160, md4) once Rust intrinsics land.
-
 _ALIASES = {
+    "ripemd-160": "ripemd160",
     "sha-1": "sha1",
     "sha-224": "sha224",
     "sha-256": "sha256",
     "sha-384": "sha384",
     "sha-512": "sha512",
+    "sha-512/224": "sha512_224",
+    "sha512/224": "sha512_224",
+    "sha512-224": "sha512_224",
+    "sha-512/256": "sha512_256",
+    "sha512/256": "sha512_256",
+    "sha512-256": "sha512_256",
     "sha3-224": "sha3_224",
     "sha3-256": "sha3_256",
     "sha3-384": "sha3_384",
@@ -168,7 +181,24 @@ class _Hash:
             pass
 
 
-algorithms_guaranteed = set(_HASH_INFO.keys())
+_GUARANTEED_ALGORITHMS = {
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512",
+    "sha3_224",
+    "sha3_256",
+    "sha3_384",
+    "sha3_512",
+    "shake_128",
+    "shake_256",
+    "blake2b",
+    "blake2s",
+}
+
+algorithms_guaranteed = set(_GUARANTEED_ALGORITHMS)
 algorithms_available = set(_HASH_INFO.keys())
 
 
@@ -192,8 +222,16 @@ def __get_builtin_constructor(name: str) -> Callable[..., _Hash]:
     return constructor
 
 
+def md4(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
+    return new("md4", data, usedforsecurity=usedforsecurity)
+
+
 def md5(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
     return new("md5", data, usedforsecurity=usedforsecurity)
+
+
+def ripemd160(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
+    return new("ripemd160", data, usedforsecurity=usedforsecurity)
 
 
 def sha1(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
@@ -214,6 +252,14 @@ def sha384(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
 
 def sha512(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
     return new("sha512", data, usedforsecurity=usedforsecurity)
+
+
+def sha512_224(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
+    return new("sha512_224", data, usedforsecurity=usedforsecurity)
+
+
+def sha512_256(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
+    return new("sha512_256", data, usedforsecurity=usedforsecurity)
 
 
 def sha3_224(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
@@ -369,12 +415,16 @@ def compare_digest(a: Any, b: Any) -> bool:
 
 
 _CONSTRUCTORS: dict[str, Callable[..., _Hash]] = {
+    "md4": md4,
     "md5": md5,
+    "ripemd160": ripemd160,
     "sha1": sha1,
     "sha224": sha224,
     "sha256": sha256,
     "sha384": sha384,
     "sha512": sha512,
+    "sha512_224": sha512_224,
+    "sha512_256": sha512_256,
     "sha3_224": sha3_224,
     "sha3_256": sha3_256,
     "sha3_384": sha3_384,

@@ -1,17 +1,23 @@
-"""Byte-compilation utilities.
-
-This is a minimal, deterministic subset that validates source availability.
-"""
+"""Intrinsic-backed compileall subset for Molt."""
 
 from __future__ import annotations
 
-import os
 import sys
+
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["compile_file", "compile_dir", "compile_path"]
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement pyc generation, invalidation modes, and full compileall/py_compile parity.
+_MOLT_COMPILEALL_COMPILE_FILE = _require_intrinsic(
+    "molt_compileall_compile_file", globals()
+)
+_MOLT_COMPILEALL_COMPILE_DIR = _require_intrinsic(
+    "molt_compileall_compile_dir", globals()
+)
+_MOLT_COMPILEALL_COMPILE_PATH = _require_intrinsic(
+    "molt_compileall_compile_path", globals()
+)
 
 
 def compile_file(
@@ -33,6 +39,7 @@ def compile_file(
         ddir,
         force,
         rx,
+        quiet,
         legacy,
         optimize,
         invalidation_mode,
@@ -41,12 +48,7 @@ def compile_file(
         limit_sl_dest,
         worker,
     )
-    try:
-        with open(fullname, "rb") as handle:
-            handle.read(1)
-    except OSError:
-        return False
-    return True
+    return bool(_MOLT_COMPILEALL_COMPILE_FILE(fullname))
 
 
 def compile_dir(
@@ -69,6 +71,7 @@ def compile_dir(
         ddir,
         force,
         rx,
+        quiet,
         legacy,
         optimize,
         workers,
@@ -77,33 +80,7 @@ def compile_dir(
         prependdir,
         limit_sl_dest,
     )
-    try:
-        entries = os.listdir(dir)
-    except OSError:
-        return False
-
-    success = True
-    for entry in entries:
-        if entry == "__pycache__":
-            continue
-        full = _path_join(dir, entry)
-        if entry.endswith(".py"):
-            if not compile_file(full, quiet=quiet):
-                success = False
-            continue
-        if maxlevels <= 0:
-            continue
-        try:
-            os.listdir(full)
-        except OSError:
-            continue
-        if not compile_dir(
-            full,
-            maxlevels=maxlevels - 1,
-            quiet=quiet,
-        ):
-            success = False
-    return success
+    return bool(_MOLT_COMPILEALL_COMPILE_DIR(dir, int(maxlevels)))
 
 
 def compile_path(
@@ -112,19 +89,5 @@ def compile_path(
     quiet: int = 0,
     **_kwargs,
 ) -> bool:
-    success = True
-    for entry in sys.path:
-        if skip_curdir and entry in ("", "."):
-            continue
-        if not compile_dir(entry, maxlevels=maxlevels, quiet=quiet):
-            success = False
-    return success
-
-
-def _path_join(base: str, name: str) -> str:
-    if not base:
-        return name
-    sep = os.sep
-    if base.endswith(sep):
-        return base + name
-    return base + sep + name
+    del quiet
+    return bool(_MOLT_COMPILEALL_COMPILE_PATH(sys.path, skip_curdir, int(maxlevels)))

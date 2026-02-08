@@ -701,14 +701,12 @@ def runtime_checkable(cls):
 
 @runtime_checkable
 class SupportsIndex(Protocol):
-    def __index__(self) -> int:
-        raise NotImplementedError
+    def __index__(self) -> int: ...
 
 
 @runtime_checkable
 class SupportsInt(Protocol):
-    def __int__(self) -> int:
-        raise NotImplementedError
+    def __int__(self) -> int: ...
 
 
 class NamedTuple(tuple):

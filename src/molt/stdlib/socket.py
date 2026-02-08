@@ -1,6 +1,6 @@
 """Capability-gated socket module for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full socket module surface (sendmsg/recvmsg, ancillary data, timeouts, and error subclasses) with CPython parity.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full socket module surface (sendmsg/recvmsg ancillary edge cases, timeout nuance parity, and remaining low-level option/errno behavior) with CPython parity.
 
 from __future__ import annotations
 
@@ -97,6 +97,8 @@ _molt_socket_getaddrinfo = _require_intrinsic("molt_socket_getaddrinfo", globals
 _molt_socket_getnameinfo = _require_intrinsic("molt_socket_getnameinfo", globals())
 _molt_socket_gethostname = _require_intrinsic("molt_socket_gethostname", globals())
 _molt_socket_gethostbyname = _require_intrinsic("molt_socket_gethostbyname", globals())
+_molt_socket_gethostbyaddr = _require_intrinsic("molt_socket_gethostbyaddr", globals())
+_molt_socket_getfqdn = _require_intrinsic("molt_socket_getfqdn", globals())
 _molt_socket_getservbyname = _require_intrinsic("molt_socket_getservbyname", globals())
 _molt_socket_getservbyport = _require_intrinsic("molt_socket_getservbyport", globals())
 _molt_socket_inet_pton = _require_intrinsic("molt_socket_inet_pton", globals())
@@ -154,6 +156,10 @@ def setdefaulttimeout(timeout: float | None) -> None:
 
 def _map_gaierror(exc: OSError) -> gaierror:
     return gaierror(exc.errno or 0, str(exc))
+
+
+def _map_herror(exc: OSError) -> herror:
+    return herror(exc.errno or 0, str(exc))
 
 
 def _require_socket_intrinsic(fn: Any | None, name: str) -> Any:
@@ -630,30 +636,34 @@ def gethostname() -> str:
 
 
 def gethostbyname(hostname: str) -> str:
-    return _require_socket_intrinsic(_molt_socket_gethostbyname, "gethostbyname")(
-        hostname
-    )
+    try:
+        return _require_socket_intrinsic(_molt_socket_gethostbyname, "gethostbyname")(
+            hostname
+        )
+    except OSError as exc:
+        if exc.errno in _EAI_CODES:
+            raise _map_gaierror(exc) from None
+        raise
 
 
 def gethostbyaddr(hostname: str) -> tuple[str, list[str], list[str]]:
     try:
-        host, _serv = getnameinfo((hostname, 0), 0)
-    except Exception:
-        host = hostname
-    return host, [], [hostname]
+        return _require_socket_intrinsic(_molt_socket_gethostbyaddr, "gethostbyaddr")(
+            hostname
+        )
+    except OSError as exc:
+        if exc.errno in _EAI_CODES:
+            raise _map_gaierror(exc) from None
+        raise _map_herror(exc) from None
 
 
 def getfqdn(name: str | None = None) -> str:
-    target = name or ""
-    if not target or target == "0.0.0.0":
-        try:
-            target = gethostname()
-        except Exception:
-            return ""
     try:
-        return gethostbyaddr(target)[0]
-    except Exception:
-        return target
+        return _require_socket_intrinsic(_molt_socket_getfqdn, "getfqdn")(name)
+    except OSError as exc:
+        if exc.errno in _EAI_CODES:
+            raise _map_gaierror(exc) from None
+        raise
 
 
 def getservbyname(name: str, proto: str | None = None) -> int:

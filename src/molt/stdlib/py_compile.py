@@ -1,17 +1,17 @@
-"""Minimal py_compile stub for deterministic environments."""
+"""Intrinsic-backed py_compile subset for Molt."""
 
 from __future__ import annotations
 
-import os
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["PyCompileError", "compile"]
 
 
+_MOLT_PY_COMPILE_COMPILE = _require_intrinsic("molt_py_compile_compile", globals())
+
+
 class PyCompileError(Exception):
     pass
-
-
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement full py_compile parity (pyc headers, invalidation modes, optimize levels).
 
 
 def compile(
@@ -26,22 +26,11 @@ def compile(
 ) -> str:
     del dfile, optimize, invalidation_mode, quiet
     try:
-        with open(file, "rb") as handle:
-            handle.read(1)
+        out = _MOLT_PY_COMPILE_COMPILE(file, cfile)
     except OSError as exc:
         if doraise:
-            raise PyCompileError(str(exc))
+            raise PyCompileError(str(exc)) from exc
         return ""
-
-    if cfile is None:
-        cfile = file + "c"
-
-    try:
-        with open(cfile, "wb") as handle:
-            handle.write(b"")
-    except OSError as exc:
-        if doraise:
-            raise PyCompileError(str(exc))
-        return ""
-
-    return os.path.abspath(cfile)
+    if not isinstance(out, str):
+        raise RuntimeError("py_compile.compile intrinsic returned invalid value")
+    return out

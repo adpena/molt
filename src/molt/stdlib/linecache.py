@@ -16,6 +16,9 @@ _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
 _MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
+_MOLT_LINECACHE_LOADER_GET_SOURCE = _require_intrinsic(
+    "molt_linecache_loader_get_source", globals()
+)
 
 
 __all__ = ["getline", "clearcache", "checkcache", "lazycache"]
@@ -157,7 +160,7 @@ def updatecache(filename: str, module_globals: dict | None = None) -> list[str]:
         if lazycache(filename, module_globals):
             try:
                 data = cache[filename][0]()
-            except (ImportError, OSError):
+            except OSError:
                 pass
             else:
                 if data is None:
@@ -249,8 +252,9 @@ def lazycache(filename: str, module_globals: dict | None) -> bool:
 
         if name and get_source:
 
-            def get_lines(name=name, *args, **kwargs):
-                return get_source(name, *args, **kwargs)
+            def get_lines(name=name, loader=loader, *args, **kwargs):
+                del args, kwargs
+                return _MOLT_LINECACHE_LOADER_GET_SOURCE(loader, name)
 
             cache[filename] = (get_lines,)
             return True

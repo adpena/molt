@@ -279,6 +279,18 @@ def _diff_retry_oom_default() -> bool:
     return True
 
 
+def _diff_allow_rustc_wrapper() -> bool:
+    raw = os.environ.get("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _diff_build_profile() -> str:
+    raw = os.environ.get("MOLT_DIFF_BUILD_PROFILE", "").strip().lower()
+    if raw in {"dev", "release"}:
+        return raw
+    return "dev"
+
+
 def _parse_float_env(name: str) -> float | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -522,11 +534,11 @@ def _open_log_file(path: Path | None):
         handle.close()
 
 
-def _diff_worker(file_path: str, python_exe: str) -> dict[str, str]:
+def _diff_worker(file_path: str, python_exe: str, build_profile: str) -> dict[str, str]:
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     with contextlib.redirect_stdout(buffer_out), contextlib.redirect_stderr(buffer_err):
-        status = diff_test(file_path, python_exe)
+        status = diff_test(file_path, python_exe, build_profile=build_profile)
     return {
         "path": file_path,
         "status": status,
@@ -549,13 +561,15 @@ class _TeeStream(io.TextIOBase):
             handle.flush()
 
 
-def _diff_run_single(file_path: str, python_exe: str) -> dict[str, str]:
+def _diff_run_single(
+    file_path: str, python_exe: str, build_profile: str
+) -> dict[str, str]:
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     out_stream = _TeeStream(sys.stdout, buffer_out)
     err_stream = _TeeStream(sys.stderr, buffer_err)
     with contextlib.redirect_stdout(out_stream), contextlib.redirect_stderr(err_stream):
-        status = diff_test(file_path, python_exe)
+        status = diff_test(file_path, python_exe, build_profile=build_profile)
     return {
         "path": file_path,
         "status": status,
@@ -704,15 +718,17 @@ def run_cpython(file_path, python_exe=sys.executable):
     return result.stdout, result.stderr, result.returncode
 
 
-def run_molt(file_path):
-    return _run_molt(file_path, build_only=False)
+def run_molt(file_path: str, build_profile: str):
+    return _run_molt(file_path, build_only=False, build_profile=build_profile)
 
 
-def run_molt_build_only(file_path: str) -> tuple[str, str, int]:
-    return _run_molt(file_path, build_only=True)
+def run_molt_build_only(file_path: str, build_profile: str) -> tuple[str, str, int]:
+    return _run_molt(file_path, build_only=True, build_profile=build_profile)
 
 
-def _run_molt(file_path: str, *, build_only: bool) -> tuple[str | None, str, int]:
+def _run_molt(
+    file_path: str, *, build_only: bool, build_profile: str
+) -> tuple[str | None, str, int]:
     _apply_memory_limit()
     output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
     cache_root = output_root / "cache"
@@ -740,6 +756,13 @@ def _run_molt(file_path: str, *, build_only: bool) -> tuple[str | None, str, int
     env["TMPDIR"] = str(tmp_root)
     env["TEMP"] = str(tmp_root)
     env["TMP"] = str(tmp_root)
+    # Keep wrappers disabled by default for reproducibility; opt in explicitly
+    # when the host wrapper cache is known-good for this environment.
+    if not _diff_allow_rustc_wrapper():
+        env.pop("RUSTC_WRAPPER", None)
+        env.pop("CARGO_BUILD_RUSTC_WRAPPER", None)
+        env.setdefault("SCCACHE_DISABLE", "1")
+        env.setdefault("MOLT_USE_SCCACHE", "0")
     env.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
     if "MOLT_TRUSTED" not in env and _diff_trusted_default():
         env["MOLT_TRUSTED"] = "1"
@@ -759,6 +782,8 @@ def _run_molt(file_path: str, *, build_only: bool) -> tuple[str | None, str, int
             "molt.cli",
             "build",
             file_path,
+            "--profile",
+            build_profile,
             "--out-dir",
             str(output_root),
             "--output",
@@ -973,7 +998,7 @@ def _print_rss_top(run_id: str, limit: int) -> None:
         )
 
 
-def diff_test(file_path, python_exe=sys.executable):
+def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
     meta = _collect_meta(file_path)
     python_version = _python_exe_version(python_exe)
     host_tags = _host_platform_tags()
@@ -1001,7 +1026,7 @@ def diff_test(file_path, python_exe=sys.executable):
     ):
         print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
         return "skip"
-    molt_out, molt_err, molt_ret = run_molt(file_path)
+    molt_out, molt_err, molt_ret = run_molt(file_path, build_profile)
     if _should_retry_oom(molt_ret, molt_err):
         print(f"[OOM] {file_path}")
         return "oom"
@@ -1047,6 +1072,7 @@ def diff_test(file_path, python_exe=sys.executable):
 def run_diff(
     target: Path | Sequence[Path],
     python_exe: str,
+    build_profile: str = "dev",
     *,
     jobs: int | None = None,
     log_dir: Path | None = None,
@@ -1075,14 +1101,16 @@ def run_diff(
             shared_cache = str(_diff_root() / "molt_cache")
             os.environ["MOLT_CACHE"] = shared_cache
         for file_path in test_files:
-            _out, err, rc = run_molt_build_only(str(file_path))
+            _out, err, rc = run_molt_build_only(str(file_path), build_profile)
             if rc != 0:
                 print(f"[WARM-CACHE FAIL] {file_path}: {err.strip()}")
     if jobs <= 1:
         with _open_log_file(log_file) as log_handle:
             with _open_log_file(log_aggregate) as aggregate_handle:
                 for file_path in test_files:
-                    payload = _diff_run_single(str(file_path), python_exe)
+                    payload = _diff_run_single(
+                        str(file_path), python_exe, build_profile
+                    )
                     path = payload["path"]
                     status = payload["status"]
                     results.append((path, status))
@@ -1116,9 +1144,9 @@ def run_diff(
                     max_workers=jobs
                 ) as executor:
                     futures = {
-                        executor.submit(_diff_worker, str(file_path), python_exe): str(
-                            file_path
-                        )
+                        executor.submit(
+                            _diff_worker, str(file_path), python_exe, build_profile
+                        ): str(file_path)
                         for file_path in test_files
                     }
                     for future in concurrent.futures.as_completed(futures):
@@ -1171,7 +1199,7 @@ def run_diff(
                 echo=True,
             )
         for path in oom_paths:
-            retry_payload = _diff_run_single(path, python_exe)
+            retry_payload = _diff_run_single(path, python_exe, build_profile)
             status_by_path[path] = retry_payload["status"]
             outputs[path] = retry_payload
     discovered = len(status_by_path)
@@ -1221,6 +1249,7 @@ def run_diff(
             "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0,
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
             "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
+            "build_profile": build_profile,
             "warm_cache": warm_cache,
             "retry_oom": retry_oom,
         },
@@ -1270,6 +1299,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--python-version", help="Python version to test against (e.g. 3.13)"
+    )
+    parser.add_argument(
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help=(
+            "Build profile forwarded to `molt build` for the Molt side "
+            "(default: MOLT_DIFF_BUILD_PROFILE or dev)."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -1333,6 +1371,7 @@ if __name__ == "__main__":
     python_exe = sys.executable
     if args.python_version:
         python_exe = f"python{args.python_version}"
+    build_profile = args.build_profile or _diff_build_profile()
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
     log_file = Path(args.log_file).expanduser() if args.log_file else None
@@ -1353,6 +1392,7 @@ if __name__ == "__main__":
         summary = run_diff(
             targets,
             python_exe,
+            build_profile=build_profile,
             jobs=args.jobs,
             log_dir=log_dir,
             log_file=log_file,
@@ -1371,6 +1411,7 @@ if __name__ == "__main__":
     summary = run_diff(
         Path("temp_test.py"),
         python_exe,
+        build_profile=build_profile,
         jobs=args.jobs,
         log_dir=log_dir,
         log_file=log_file,

@@ -14,7 +14,7 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
@@ -3129,9 +3129,7 @@ unsafe fn rich_compare_type_method(
         Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
         _ => return None,
     };
-    let Some(method_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits) else {
-        return None;
-    };
+    let method_bits = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits)?;
     let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
         if exception_changed() {
             return Some(CompareBoolOutcome::Error);
@@ -3186,9 +3184,7 @@ unsafe fn rich_compare_type_method_value(
         Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
         _ => return None,
     };
-    let Some(method_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits) else {
-        return None;
-    };
+    let method_bits = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits)?;
     let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
         if exception_changed() {
             return Some(CompareValueOutcome::Error);
@@ -3363,7 +3359,7 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
             CompareValueOutcome::NotComparable => {}
         }
 
-        MoltObject::from_bool(a != b).bits()
+        MoltObject::from_bool(!obj_eq(_py, lhs, rhs)).bits()
     })
 }
 
@@ -8470,6 +8466,23 @@ pub extern "C" fn molt_time_mktime(time_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_time_timegm(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match parse_mktime_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        let days = days_from_civil(parts.year, parts.month, parts.day);
+        let seconds = days
+            .saturating_mul(86_400)
+            .saturating_add((parts.hour as i64).saturating_mul(3600))
+            .saturating_add((parts.minute as i64).saturating_mul(60))
+            .saturating_add(parts.second as i64);
+        MoltObject::from_float(seconds as f64).bits()
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
@@ -8673,22 +8686,96 @@ fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) 
     String::new()
 }
 
+fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
+    if line.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let mut start = 0usize;
+    while start < chars.len() && chars[start].is_whitespace() {
+        start += 1;
+    }
+    let mut end = chars.len();
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if end <= start {
+        return None;
+    }
+    Some((start as i64, end as i64))
+}
+
 fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
     if line.is_empty() {
         return (0, 0);
     }
-    let stripped = line.trim_start();
-    let indent = line
-        .chars()
-        .count()
-        .saturating_sub(stripped.chars().count()) as i64;
-    let col = if stripped.starts_with("return ") {
-        indent + "return ".chars().count() as i64
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return (0, 0);
+    }
+    let mut start = 0usize;
+    while start < chars.len() && chars[start].is_whitespace() {
+        start += 1;
+    }
+    if start >= chars.len() {
+        return (0, 0);
+    }
+    let mut end = chars.len();
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let trimmed: String = chars[start..end].iter().collect();
+    let mut highlighted_start = start;
+    if let Some(rest) = trimmed
+        .strip_prefix("return ")
+        .or_else(|| trimmed.strip_prefix("raise "))
+        .or_else(|| trimmed.strip_prefix("yield "))
+        .or_else(|| trimmed.strip_prefix("await "))
+        .or_else(|| trimmed.strip_prefix("assert "))
+    {
+        highlighted_start = end.saturating_sub(rest.chars().count());
+        while highlighted_start < end && chars[highlighted_start].is_whitespace() {
+            highlighted_start += 1;
+        }
     } else {
-        indent
-    };
-    let end = line.chars().count() as i64;
-    (col, end.max(col))
+        let trimmed_chars: Vec<char> = trimmed.chars().collect();
+        for idx in 0..trimmed_chars.len() {
+            if trimmed_chars[idx] != '=' {
+                continue;
+            }
+            let prev = if idx > 0 {
+                Some(trimmed_chars[idx - 1])
+            } else {
+                None
+            };
+            let next = if idx + 1 < trimmed_chars.len() {
+                Some(trimmed_chars[idx + 1])
+            } else {
+                None
+            };
+            if matches!(prev, Some('=' | '!' | '<' | '>' | ':')) || matches!(next, Some('=')) {
+                continue;
+            }
+            let mut rhs_start = start + idx + 1;
+            while rhs_start < end && chars[rhs_start].is_whitespace() {
+                rhs_start += 1;
+            }
+            if rhs_start < end {
+                highlighted_start = rhs_start;
+            }
+            break;
+        }
+    }
+    let col = highlighted_start as i64;
+    let end_col = end.max(highlighted_start) as i64;
+    if end_col <= col {
+        (col, col + 1)
+    } else {
+        (col, end_col)
+    }
 }
 
 fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
@@ -8708,20 +8795,68 @@ fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno:
     if end_colno > text_len {
         end_colno = text_len;
     }
-    let mut width = end_colno - colno;
-    if width <= 0 {
-        width = 1;
+    let Some((trim_start, trim_end)) = traceback_line_trim_bounds(line) else {
+        return String::new();
+    };
+    if colno < trim_start {
+        colno = trim_start;
     }
+    if end_colno > trim_end {
+        end_colno = trim_end;
+    }
+    if end_colno <= colno {
+        return String::new();
+    }
+    let width = end_colno - colno;
+    let col_usize = colno as usize;
     let mut out = String::with_capacity((4 + colno + width + 1) as usize);
     out.push_str("    ");
-    for _ in 0..colno {
-        out.push(' ');
+    for ch in line.chars().take(col_usize) {
+        if ch == '\t' {
+            out.push('\t');
+        } else {
+            out.push(' ');
+        }
     }
     for _ in 0..width {
         out.push('^');
     }
     out.push('\n');
     out
+}
+
+#[cfg(test)]
+mod traceback_format_tests {
+    use super::{traceback_format_caret_line_native, traceback_infer_column_offsets};
+
+    #[test]
+    fn infer_column_offsets_prefers_rhs_for_assignment() {
+        let (col, end_col) = traceback_infer_column_offsets("total = left + right   ");
+        assert_eq!(col, 8);
+        assert!(end_col > col);
+    }
+
+    #[test]
+    fn infer_column_offsets_skips_return_keyword() {
+        let (col, end_col) = traceback_infer_column_offsets("    return value");
+        assert_eq!(col, 11);
+        assert_eq!(end_col, 16);
+    }
+
+    #[test]
+    fn caret_line_preserves_tabs_for_alignment() {
+        let line = "\titem = source";
+        let caret = traceback_format_caret_line_native(line, 1, 5);
+        assert!(caret.starts_with("    \t"));
+        assert!(caret.contains("^^^^"));
+    }
+
+    #[test]
+    fn caret_line_omits_invalid_ranges() {
+        let line = "value = source";
+        assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
+        assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
+    }
 }
 
 fn traceback_format_exception_only_line(
@@ -8821,7 +8956,7 @@ fn traceback_append_exception_single_lines(
     if !obj_from_bits(tb_bits).is_none() {
         out.push("Traceback (most recent call last):\n".to_string());
         let payload = traceback_payload_from_source(_py, tb_bits, limit);
-        out.extend(traceback_payload_to_formatted_lines(&payload));
+        out.extend(traceback_payload_to_formatted_lines(_py, &payload));
     }
     out.push(traceback_format_exception_only_line(
         _py,
@@ -8830,6 +8965,7 @@ fn traceback_append_exception_single_lines(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn traceback_append_exception_chain_lines(
     _py: &PyToken<'_>,
     exc_type_bits: u64,
@@ -8961,6 +9097,15 @@ struct TracebackPayloadFrame {
     end_colno: i64,
     name: String,
     line: String,
+}
+
+#[derive(Clone)]
+struct TracebackExceptionChainNode {
+    value_bits: u64,
+    frames: Vec<TracebackPayloadFrame>,
+    suppress_context: bool,
+    cause_index: Option<usize>,
+    context_index: Option<usize>,
 }
 
 fn traceback_split_molt_symbol(name: &str) -> (String, String) {
@@ -9112,14 +9257,19 @@ fn traceback_payload_from_entry(
                     let filename = format_obj_str(_py, obj_from_bits(elems[0]));
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let end_lineno = to_i64(obj_from_bits(elems[2])).unwrap_or(lineno);
-                    let colno = to_i64(obj_from_bits(elems[3])).unwrap_or(0);
-                    let end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(colno.max(0));
+                    let mut colno = to_i64(obj_from_bits(elems[3])).unwrap_or(0);
+                    let mut end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(colno.max(0));
                     let name = format_obj_str(_py, obj_from_bits(elems[5]));
                     let line = if obj_from_bits(elems[6]).is_none() {
                         String::new()
                     } else {
                         format_obj_str(_py, obj_from_bits(elems[6]))
                     };
+                    if !line.is_empty() && (colno < 0 || end_colno <= colno) {
+                        let inferred = traceback_infer_column_offsets(&line);
+                        colno = inferred.0;
+                        end_colno = inferred.1;
+                    }
                     return Some(TracebackPayloadFrame {
                         filename,
                         lineno,
@@ -9248,6 +9398,11 @@ fn traceback_payload_from_entry(
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
                 {
                     end_colno = value;
+                }
+                if !line.is_empty() && (colno < 0 || end_colno <= colno) {
+                    let inferred = traceback_infer_column_offsets(&line);
+                    colno = inferred.0;
+                    end_colno = inferred.1;
                 }
                 let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
@@ -9410,21 +9565,87 @@ fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame
     }
 }
 
-fn traceback_payload_to_formatted_lines(payload: &[TracebackPayloadFrame]) -> Vec<String> {
+fn traceback_payload_frame_source_lines(
+    _py: &PyToken<'_>,
+    frame: &TracebackPayloadFrame,
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if frame.line.is_empty() {
+        return lines;
+    }
+
+    let span_end = frame.end_lineno.max(frame.lineno);
+    if span_end <= frame.lineno || frame.lineno <= 0 || (span_end - frame.lineno) > 64 {
+        lines.push(format!("    {}\n", frame.line));
+        let caret = traceback_format_caret_line_native(&frame.line, frame.colno, frame.end_colno);
+        if !caret.is_empty() {
+            lines.push(caret);
+        }
+        return lines;
+    }
+
+    for lineno in frame.lineno..=span_end {
+        let text = if lineno == frame.lineno {
+            frame.line.clone()
+        } else {
+            traceback_source_line_native(_py, &frame.filename, lineno)
+        };
+        if text.is_empty() {
+            continue;
+        }
+        lines.push(format!("    {}\n", text));
+
+        let text_len = text.chars().count() as i64;
+        if text_len <= 0 {
+            continue;
+        }
+        let (trim_start, trim_end) = traceback_line_trim_bounds(&text).unwrap_or((0, text_len));
+        let (start, end) = if lineno == frame.lineno {
+            let start = if frame.colno >= 0 {
+                frame.colno
+            } else {
+                trim_start
+            };
+            let end = if lineno == span_end {
+                if frame.end_colno > start {
+                    frame.end_colno
+                } else {
+                    trim_end
+                }
+            } else {
+                trim_end
+            };
+            (start, end)
+        } else if lineno == span_end {
+            let end = if frame.end_colno > trim_start {
+                frame.end_colno
+            } else {
+                trim_end
+            };
+            (trim_start, end)
+        } else {
+            (trim_start, trim_end)
+        };
+        let caret = traceback_format_caret_line_native(&text, start, end);
+        if !caret.is_empty() {
+            lines.push(caret);
+        }
+    }
+
+    lines
+}
+
+fn traceback_payload_to_formatted_lines(
+    _py: &PyToken<'_>,
+    payload: &[TracebackPayloadFrame],
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for frame in payload {
         lines.push(format!(
             "  File \"{}\", line {}, in {}\n",
             frame.filename, frame.lineno, frame.name
         ));
-        if !frame.line.is_empty() {
-            lines.push(format!("    {}\n", frame.line));
-            let caret =
-                traceback_format_caret_line_native(&frame.line, frame.colno, frame.end_colno);
-            if !caret.is_empty() {
-                lines.push(caret);
-            }
-        }
+        lines.extend(traceback_payload_frame_source_lines(_py, frame));
     }
     lines
 }
@@ -9484,6 +9705,171 @@ fn traceback_exception_components_payload(
     }
 }
 
+fn traceback_exception_chain_collect(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+    nodes: &mut Vec<TracebackExceptionChainNode>,
+    seen: &mut HashMap<u64, usize>,
+    depth: usize,
+) -> Result<usize, u64> {
+    if depth > 1024 {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "traceback exception chain recursion too deep",
+        ));
+    }
+    if let Some(index) = seen.get(&value_bits) {
+        return Ok(*index);
+    }
+    let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
+    };
+    unsafe {
+        if object_type_id(value_ptr) != TYPE_ID_EXCEPTION {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "value must be an exception instance",
+            ));
+        }
+    }
+    let tb_bits = traceback_exception_trace_bits(value_bits);
+    let frames = traceback_payload_from_source(_py, tb_bits, limit);
+    let (cause_bits, context_bits, suppress_context) = unsafe {
+        let cause = exception_cause_bits(value_ptr);
+        let context = exception_context_bits(value_ptr);
+        let suppress = is_truthy(_py, obj_from_bits(exception_suppress_bits(value_ptr)));
+        (cause, context, suppress)
+    };
+    let index = nodes.len();
+    seen.insert(value_bits, index);
+    nodes.push(TracebackExceptionChainNode {
+        value_bits,
+        frames,
+        suppress_context,
+        cause_index: None,
+        context_index: None,
+    });
+
+    if !obj_from_bits(cause_bits).is_none() {
+        let Some(cause_ptr) = obj_from_bits(cause_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "exception __cause__ must be an exception instance or None",
+            ));
+        };
+        unsafe {
+            if object_type_id(cause_ptr) != TYPE_ID_EXCEPTION {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "exception __cause__ must be an exception instance or None",
+                ));
+            }
+        }
+        let cause_index =
+            traceback_exception_chain_collect(_py, cause_bits, limit, nodes, seen, depth + 1)?;
+        nodes[index].cause_index = Some(cause_index);
+    }
+
+    if !suppress_context && !obj_from_bits(context_bits).is_none() {
+        let Some(context_ptr) = obj_from_bits(context_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "exception __context__ must be an exception instance or None",
+            ));
+        };
+        unsafe {
+            if object_type_id(context_ptr) != TYPE_ID_EXCEPTION {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "exception __context__ must be an exception instance or None",
+                ));
+            }
+        }
+        let context_index =
+            traceback_exception_chain_collect(_py, context_bits, limit, nodes, seen, depth + 1)?;
+        nodes[index].context_index = Some(context_index);
+    }
+
+    Ok(index)
+}
+
+fn traceback_exception_chain_payload_bits(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+) -> Result<u64, u64> {
+    let mut nodes: Vec<TracebackExceptionChainNode> = Vec::new();
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+    traceback_exception_chain_collect(_py, value_bits, limit, &mut nodes, &mut seen, 0)?;
+
+    let mut tuple_bits: Vec<u64> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let frames_bits = traceback_payload_to_list(_py, &node.frames);
+        if obj_from_bits(frames_bits).is_none() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        inc_ref_bits(_py, node.value_bits);
+        let suppress_bits = MoltObject::from_bool(node.suppress_context).bits();
+        let cause_bits = match node.cause_index {
+            Some(index) => int_bits_from_i64(_py, index as i64),
+            None => MoltObject::none().bits(),
+        };
+        let context_bits = match node.context_index {
+            Some(index) => int_bits_from_i64(_py, index as i64),
+            None => MoltObject::none().bits(),
+        };
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                node.value_bits,
+                frames_bits,
+                suppress_bits,
+                cause_bits,
+                context_bits,
+            ],
+        );
+        dec_ref_bits(_py, node.value_bits);
+        dec_ref_bits(_py, frames_bits);
+        if node.cause_index.is_some() {
+            dec_ref_bits(_py, cause_bits);
+        }
+        if node.context_index.is_some() {
+            dec_ref_bits(_py, context_bits);
+        }
+        if tuple_ptr.is_null() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        tuple_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+    }
+
+    let list_ptr = alloc_list(_py, tuple_bits.as_slice());
+    for bits in tuple_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(list_ptr).bits())
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn molt_traceback_payload(source_bits: u64, limit_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -9504,6 +9890,20 @@ pub extern "C" fn molt_traceback_exception_components(value_bits: u64, limit_bit
             Err(bits) => return bits,
         };
         match traceback_exception_components_payload(_py, value_bits, limit) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_exception_chain_payload(value_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        match traceback_exception_chain_payload_bits(_py, value_bits, limit) {
             Ok(bits) => bits,
             Err(err) => err,
         }
@@ -9646,7 +10046,7 @@ pub extern "C" fn molt_traceback_format_stack(source_bits: u64, limit_bits: u64)
             Err(bits) => return bits,
         };
         let payload = traceback_payload_from_source(_py, source_bits, limit);
-        let lines = traceback_payload_to_formatted_lines(&payload);
+        let lines = traceback_payload_to_formatted_lines(_py, &payload);
         traceback_lines_to_list(_py, &lines)
     })
 }
@@ -14308,9 +14708,7 @@ fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
 }
 
 fn utf8_char_width(first: u8) -> usize {
-    if first < 0x80 {
-        1
-    } else if first < 0xC0 {
+    if first < 0xC0 {
         1
     } else if first < 0xE0 {
         2
@@ -22065,13 +22463,10 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                         handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
                     continue;
                 }
-                let mut close = None;
-                for pos in (idx + 3)..bytes.len() {
-                    if bytes[pos] == b'}' {
-                        close = Some(pos);
-                        break;
-                    }
-                }
+                let close = bytes[idx + 3..]
+                    .iter()
+                    .position(|&ch| ch == b'}')
+                    .map(|offset| idx + 3 + offset);
                 let Some(close_idx) = close else {
                     let end = bytes.len() - 1;
                     let failure = DecodeFailure::Range {

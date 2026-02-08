@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import importlib as _importlib
+from _intrinsics import require_intrinsic as _require_intrinsic
 
-parse = _importlib.import_module("urllib.parse")
+_require_intrinsic("molt_urllib_urlsplit", globals())
 
-__all__ = ["parse"]
+__all__ = ["error", "parse", "request"]

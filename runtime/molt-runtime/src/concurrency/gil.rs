@@ -124,30 +124,53 @@ impl Drop for GilGuard {
 
 pub(crate) struct GilReleaseGuard {
     depth: usize,
+    had_runtime_guard: bool,
 }
 
 impl GilReleaseGuard {
     pub(crate) fn new() -> Self {
         let depth = match GIL_DEPTH.try_with(|d| d.get()) {
             Ok(depth) => depth,
-            Err(_) => return Self { depth: 0 },
+            Err(_) => {
+                return Self {
+                    depth: 0,
+                    had_runtime_guard: false,
+                };
+            }
         };
         if depth == 0 {
-            return Self { depth: 0 };
+            return Self {
+                depth: 0,
+                had_runtime_guard: false,
+            };
         }
         if GIL_DEPTH.try_with(|d| d.set(0)).is_err() {
-            return Self { depth: 0 };
+            return Self {
+                depth: 0,
+                had_runtime_guard: false,
+            };
         }
         let _ = GIL_GUARD.try_with(|slot| {
             let _ = slot.borrow_mut().take();
         });
-        Self { depth }
+        let had_runtime_guard = RUNTIME_GIL_GUARD
+            .try_with(|slot| slot.borrow_mut().take().is_some())
+            .unwrap_or(false);
+        Self {
+            depth,
+            had_runtime_guard,
+        }
     }
 }
 
 impl Drop for GilReleaseGuard {
     fn drop(&mut self) {
         if self.depth == 0 {
+            return;
+        }
+        if self.had_runtime_guard {
+            hold_runtime_gil(GilGuard::new());
+            let _ = GIL_DEPTH.try_with(|d| d.set(self.depth));
             return;
         }
         let guard = molt_gil().lock().unwrap();
@@ -246,6 +269,11 @@ where
 mod tests {
     use super::{gil_held, GilGuard};
     use crate::GIL_DEPTH;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn gil_depth_tracks_nesting() {
@@ -271,5 +299,38 @@ mod tests {
         let final_depth = GIL_DEPTH.with(|depth| depth.get());
         assert_eq!(final_depth, start);
         assert_eq!(gil_held(), start > 0);
+    }
+
+    #[test]
+    fn gil_release_guard_drops_runtime_lock_temporarily() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        super::release_runtime_gil();
+        GIL_DEPTH.with(|depth| depth.set(0));
+
+        super::hold_runtime_gil(GilGuard::new());
+        let release = super::GilReleaseGuard::new();
+
+        let acquired = Arc::new(AtomicBool::new(false));
+        let acquired_flag = Arc::clone(&acquired);
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < deadline {
+                if let Ok(lock) = super::molt_gil().try_lock() {
+                    acquired_flag.store(true, Ordering::SeqCst);
+                    drop(lock);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        worker.join().expect("worker should not panic");
+        assert!(
+            acquired.load(Ordering::SeqCst),
+            "runtime GIL lock should be available while GilReleaseGuard is active",
+        );
+
+        drop(release);
+        super::release_runtime_gil();
+        GIL_DEPTH.with(|depth| depth.set(0));
     }
 }

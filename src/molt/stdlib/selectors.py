@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import abc as _abc
 import math
 import select
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -80,19 +81,19 @@ class _SelectorMapping:
         return iter(self._selector._fd_to_key)
 
 
-class BaseSelector:
-    def register(self, fileobj, events, data=None):
-        raise NotImplementedError
+class BaseSelector(_abc.ABC):
+    @_abc.abstractmethod
+    def register(self, fileobj, events, data=None): ...
 
-    def unregister(self, fileobj):
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def unregister(self, fileobj): ...
 
     def modify(self, fileobj, events, data=None):
         self.unregister(fileobj)
         return self.register(fileobj, events, data)
 
-    def select(self, timeout=None):
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def select(self, timeout=None): ...
 
     def close(self) -> None:
         pass
@@ -106,8 +107,8 @@ class BaseSelector:
         except KeyError:
             raise KeyError(f"{fileobj!r} is not registered") from None
 
-    def get_map(self):
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def get_map(self): ...
 
     def __enter__(self):
         return self

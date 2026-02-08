@@ -7,6 +7,7 @@
 //! - Provenance registry locks live in `molt-obj-model` and are sharded; keep their
 //!   critical sections small and avoid taking them while holding the GIL for long paths.
 //! - Avoid blocking host I/O while holding the GIL; release or schedule work instead.
+#![cfg_attr(target_arch = "wasm32", allow(unused))]
 
 macro_rules! fn_addr {
     ($func:path) => {
@@ -103,6 +104,9 @@ pub(crate) use crate::async_rt::{
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, molt_block_on,
     poll_future_with_task_stack, process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
+};
+pub(crate) use crate::async_rt::{
+    molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
 pub(crate) use crate::builtins::attr::{

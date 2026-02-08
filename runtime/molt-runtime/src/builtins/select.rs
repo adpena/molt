@@ -227,10 +227,10 @@ fn parse_selector_timeout(_py: &crate::PyToken<'_>, timeout_bits: u64) -> Result
     Ok(Some(value))
 }
 
-fn selector_state_mut<'a>(
-    _py: &'a crate::PyToken<'_>,
+fn selector_state_mut_ptr(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
-) -> Result<&'a mut SelectorRegistry, u64> {
+) -> Result<*mut SelectorRegistry, u64> {
     let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
     if ptr.is_null() {
         return Err(raise_exception::<u64>(
@@ -247,7 +247,7 @@ fn selector_state_mut<'a>(
             "I/O operation on closed selector",
         ));
     }
-    Ok(selector)
+    Ok(ptr as *mut SelectorRegistry)
 }
 
 fn selector_state<'a>(
@@ -412,10 +412,11 @@ pub extern "C" fn molt_select_selector_register(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let selector = match selector_state_mut(_py, handle_bits) {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
         };
+        let selector = unsafe { &mut *selector_ptr };
         let events = match parse_selector_events(_py, events_bits) {
             Ok(events) => events,
             Err(err) => return err,
@@ -440,10 +441,11 @@ pub extern "C" fn molt_select_selector_register(
 #[no_mangle]
 pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let selector = match selector_state_mut(_py, handle_bits) {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
         };
+        let selector = unsafe { &mut *selector_ptr };
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "fd must be an integer");
         };
@@ -463,10 +465,11 @@ pub extern "C" fn molt_select_selector_modify(
     events_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let selector = match selector_state_mut(_py, handle_bits) {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
         };
+        let selector = unsafe { &mut *selector_ptr };
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "fd must be an integer");
         };

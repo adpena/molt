@@ -4,20 +4,26 @@ use crate::*;
 use blake2b_simd::{Params as Blake2bParams, State as Blake2bState};
 use blake2s_simd::{Params as Blake2sParams, State as Blake2sState};
 use digest::{Digest, ExtendableOutput, Update, XofReader};
+use md4::Md4;
 use md5::Md5;
 use num_traits::ToPrimitive;
+use ripemd::Ripemd160;
 use sha1::Sha1;
-use sha2::{Sha224, Sha256, Sha384, Sha512};
+use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512, Shake128, Shake256};
 
 #[derive(Clone)]
 pub(crate) enum HashKind {
+    Md4(Md4),
     Md5(Md5),
+    Ripemd160(Ripemd160),
     Sha1(Sha1),
     Sha224(Sha224),
     Sha256(Sha256),
     Sha384(Sha384),
     Sha512(Sha512),
+    Sha512_224(Sha512_224),
+    Sha512_256(Sha512_256),
     Sha3_224(Sha3_224),
     Sha3_256(Sha3_256),
     Sha3_384(Sha3_384),
@@ -58,7 +64,13 @@ pub(crate) enum HashError {
 impl HashKind {
     fn update(&mut self, data: &[u8]) {
         match self {
+            HashKind::Md4(hasher) => {
+                Digest::update(hasher, data);
+            }
             HashKind::Md5(hasher) => {
+                Digest::update(hasher, data);
+            }
+            HashKind::Ripemd160(hasher) => {
                 Digest::update(hasher, data);
             }
             HashKind::Sha1(hasher) => {
@@ -74,6 +86,12 @@ impl HashKind {
                 Digest::update(hasher, data);
             }
             HashKind::Sha512(hasher) => {
+                Digest::update(hasher, data);
+            }
+            HashKind::Sha512_224(hasher) => {
+                Digest::update(hasher, data);
+            }
+            HashKind::Sha512_256(hasher) => {
                 Digest::update(hasher, data);
             }
             HashKind::Sha3_224(hasher) => {
@@ -105,12 +123,16 @@ impl HashKind {
 
     fn finalize_bytes(self, length: Option<usize>) -> Result<Vec<u8>, HashError> {
         match self {
+            HashKind::Md4(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Md5(hasher) => Ok(hasher.finalize().to_vec()),
+            HashKind::Ripemd160(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha1(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha224(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha256(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha384(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha512(hasher) => Ok(hasher.finalize().to_vec()),
+            HashKind::Sha512_224(hasher) => Ok(hasher.finalize().to_vec()),
+            HashKind::Sha512_256(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha3_224(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha3_256(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha3_384(hasher) => Ok(hasher.finalize().to_vec()),
@@ -142,6 +164,9 @@ impl HashKind {
 pub(crate) fn normalize_hash_name(name: &str) -> String {
     let lower = name.trim().to_ascii_lowercase();
     match lower.as_str() {
+        "ripemd-160" => "ripemd160".to_string(),
+        "sha-512/224" | "sha512/224" | "sha512-224" => "sha512_224".to_string(),
+        "sha-512/256" | "sha512/256" | "sha512-256" => "sha512_256".to_string(),
         "sha-1" => "sha1".to_string(),
         "sha-224" => "sha224".to_string(),
         "sha-256" => "sha256".to_string(),
@@ -406,10 +431,24 @@ pub(crate) fn build_hash_handle(
 ) -> Result<HashHandle, u64> {
     let normalized = normalize_hash_name(name);
     match normalized.as_str() {
+        "md4" => Ok(HashHandle {
+            kind: HashKind::Md4(Md4::new()),
+            name: "md4",
+            digest_size: 16,
+            block_size: 64,
+            is_xof: false,
+        }),
         "md5" => Ok(HashHandle {
             kind: HashKind::Md5(Md5::new()),
             name: "md5",
             digest_size: 16,
+            block_size: 64,
+            is_xof: false,
+        }),
+        "ripemd160" => Ok(HashHandle {
+            kind: HashKind::Ripemd160(Ripemd160::new()),
+            name: "ripemd160",
+            digest_size: 20,
             block_size: 64,
             is_xof: false,
         }),
@@ -445,6 +484,20 @@ pub(crate) fn build_hash_handle(
             kind: HashKind::Sha512(Sha512::new()),
             name: "sha512",
             digest_size: 64,
+            block_size: 128,
+            is_xof: false,
+        }),
+        "sha512_224" => Ok(HashHandle {
+            kind: HashKind::Sha512_224(Sha512_224::new()),
+            name: "sha512_224",
+            digest_size: 28,
+            block_size: 128,
+            is_xof: false,
+        }),
+        "sha512_256" => Ok(HashHandle {
+            kind: HashKind::Sha512_256(Sha512_256::new()),
+            name: "sha512_256",
+            digest_size: 32,
             block_size: 128,
             is_xof: false,
         }),
@@ -683,12 +736,16 @@ pub extern "C" fn molt_hash_drop(handle_bits: u64) -> u64 {
 
 fn pbkdf2_digest_size(name: &str) -> Option<usize> {
     match name {
+        "md4" => Some(16),
         "md5" => Some(16),
+        "ripemd160" => Some(20),
         "sha1" => Some(20),
         "sha224" => Some(28),
         "sha256" => Some(32),
         "sha384" => Some(48),
         "sha512" => Some(64),
+        "sha512_224" => Some(28),
+        "sha512_256" => Some(32),
         "sha3_224" => Some(28),
         "sha3_256" => Some(32),
         "sha3_384" => Some(48),
@@ -794,12 +851,16 @@ pub extern "C" fn molt_pbkdf2_hmac(
         }
         out.resize(dklen, 0);
         match normalized.as_str() {
+            "md4" => pbkdf2::pbkdf2_hmac::<Md4>(password, salt, rounds, &mut out),
             "md5" => pbkdf2::pbkdf2_hmac::<Md5>(password, salt, rounds, &mut out),
+            "ripemd160" => pbkdf2::pbkdf2_hmac::<Ripemd160>(password, salt, rounds, &mut out),
             "sha1" => pbkdf2::pbkdf2_hmac::<Sha1>(password, salt, rounds, &mut out),
             "sha224" => pbkdf2::pbkdf2_hmac::<Sha224>(password, salt, rounds, &mut out),
             "sha256" => pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, rounds, &mut out),
             "sha384" => pbkdf2::pbkdf2_hmac::<Sha384>(password, salt, rounds, &mut out),
             "sha512" => pbkdf2::pbkdf2_hmac::<Sha512>(password, salt, rounds, &mut out),
+            "sha512_224" => pbkdf2::pbkdf2_hmac::<Sha512_224>(password, salt, rounds, &mut out),
+            "sha512_256" => pbkdf2::pbkdf2_hmac::<Sha512_256>(password, salt, rounds, &mut out),
             "sha3_224" => pbkdf2::pbkdf2_hmac::<Sha3_224>(password, salt, rounds, &mut out),
             "sha3_256" => pbkdf2::pbkdf2_hmac::<Sha3_256>(password, salt, rounds, &mut out),
             "sha3_384" => pbkdf2::pbkdf2_hmac::<Sha3_384>(password, salt, rounds, &mut out),

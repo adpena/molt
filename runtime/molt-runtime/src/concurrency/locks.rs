@@ -800,9 +800,7 @@ pub unsafe extern "C" fn molt_lock_acquire(
             Ok(val) => val,
             Err(bits) => return bits,
         };
-        let acquired = if !blocking {
-            lock.try_acquire()
-        } else if matches!(timeout, Some(t) if t == Duration::ZERO) {
+        let acquired = if !blocking || matches!(timeout, Some(t) if t == Duration::ZERO) {
             lock.try_acquire()
         } else if lock.try_acquire() {
             true
@@ -879,9 +877,7 @@ pub unsafe extern "C" fn molt_rlock_acquire(
             Ok(val) => val,
             Err(bits) => return bits,
         };
-        let acquired = if !blocking {
-            lock.try_acquire()
-        } else if matches!(timeout, Some(t) if t == Duration::ZERO) {
+        let acquired = if !blocking || matches!(timeout, Some(t) if t == Duration::ZERO) {
             lock.try_acquire()
         } else if lock.try_acquire() {
             true

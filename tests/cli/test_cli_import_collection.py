@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import molt.cli as cli
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,3 +82,56 @@ def test_expand_module_chain_ignores_invalid_module_names() -> None:
     assert cli._expand_module_chain("pkg.sub") == ["pkg", "pkg.sub"]
     assert cli._expand_module_chain("") == []
     assert cli._expand_module_chain("/.Volumes.bad.mod") == []
+
+
+def test_resolve_backend_profile_defaults_to_selected_build_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BACKEND_PROFILE", "")
+    profile, error = cli._resolve_backend_profile("dev")
+    assert profile == "dev"
+    assert error is None
+
+
+def test_resolve_backend_profile_env_override_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BACKEND_PROFILE", "release")
+    profile, error = cli._resolve_backend_profile("dev")
+    assert profile == "release"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_BACKEND_PROFILE", "invalid")
+    profile, error = cli._resolve_backend_profile("dev")
+    assert profile == "dev"
+    assert error == "Invalid MOLT_BACKEND_PROFILE value: invalid"
+
+
+def test_resolve_cargo_profile_name_defaults_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
+    profile, error = cli._resolve_cargo_profile_name("dev")
+    assert profile == "dev-fast"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "my-dev_1")
+    profile, error = cli._resolve_cargo_profile_name("dev")
+    assert profile == "my-dev_1"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "bad profile")
+    profile, error = cli._resolve_cargo_profile_name("dev")
+    assert profile == "dev"
+    assert error == "Invalid MOLT_DEV_CARGO_PROFILE value: bad profile"
+
+
+def test_backend_daemon_retryable_error_classification() -> None:
+    assert cli._backend_daemon_retryable_error("backend daemon returned empty response")
+    assert cli._backend_daemon_retryable_error("unsupported protocol version 9")
+    assert cli._backend_daemon_retryable_error(
+        "backend daemon connection failed: timeout"
+    )
+    assert not cli._backend_daemon_retryable_error(
+        "backend daemon failed to compile job"
+    )

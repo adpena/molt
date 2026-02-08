@@ -5,14 +5,16 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-import builtins as _builtins
 import os as _os
-import sys as _sys
 
 import importlib.machinery as machinery
 import importlib.util as util
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
+_MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
+    "molt_importlib_runtime_state_payload", globals()
+)
 
 
 __all__ = [
@@ -29,6 +31,16 @@ if "__path__" not in globals():
     _pkg_file = globals().get("__file__")
     if isinstance(_pkg_file, str):
         __path__ = [_os.path.dirname(_pkg_file)]
+
+
+def _runtime_modules() -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD()
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib runtime state payload: dict expected")
+    modules = payload.get("modules")
+    if not isinstance(modules, dict):
+        raise RuntimeError("invalid importlib runtime state payload: modules")
+    return modules
 
 
 def _resolve_name(name: str, package: str | None) -> str:
@@ -48,16 +60,15 @@ def _resolve_name(name: str, package: str | None) -> str:
 
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
-    modules = getattr(_sys, "modules", None)
-    if isinstance(modules, dict) and resolved in modules:
+    modules = _runtime_modules()
+    if resolved in modules:
         return modules[resolved]
-    importer = getattr(_builtins, "__import__", None)
-    if callable(importer):
-        mod = importer(resolved, {}, {}, ["_"], 0)
-        if isinstance(modules, dict) and resolved in modules:
-            return modules[resolved]
-        if mod is not None:
-            return mod
+    mod = _MOLT_MODULE_IMPORT(resolved)
+    modules = _runtime_modules()
+    if resolved in modules:
+        return modules[resolved]
+    if mod is not None:
+        return mod
     raise ImportError(f"No module named '{resolved}'")
 
 
@@ -80,8 +91,6 @@ def reload(module):
             return module
         if hasattr(spec.loader, "load_module"):
             return spec.loader.load_module(name)
-    try:
-        del _sys.modules[name]
-    except Exception:
-        pass
+    modules = _runtime_modules()
+    modules.pop(name, None)
     return import_module(name)

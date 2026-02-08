@@ -13,6 +13,7 @@ import posixpath
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -22,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, NamedTuple, cast
@@ -49,6 +51,10 @@ ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
 JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
+_LOCK_CHECK_CACHE_VERSION = 1
+_HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
+_HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
+_BACKEND_DAEMON_PROTOCOL_VERSION = 1
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -59,6 +65,7 @@ CAPABILITY_PROFILES: dict[str, list[str]] = {
     "random": ["random"],
 }
 CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 _SUPPORTED_PKG_ABI_MAJOR = 0
@@ -288,6 +295,7 @@ def _base_env(
         paths.extend([str(base / "src"), str(base)])
         paths.extend(str(path) for path in _vendor_roots(base))
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
+    env.setdefault("PYTHONHASHSEED", "0")
     if molt_root is not None:
         env.setdefault("MOLT_PROJECT_ROOT", str(molt_root))
     return env
@@ -2215,15 +2223,15 @@ def _rustc_version() -> str | None:
 def _runtime_fingerprint_path(
     project_root: Path,
     artifact: Path,
-    profile: BuildProfile,
+    cargo_profile: str,
     target_triple: str | None,
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    root = project_root / "target" / "runtime_fingerprints"
+    root = _build_state_root(project_root) / "runtime_fingerprints"
     artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
         :16
     ]
-    return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
+    return root / f"{artifact.name}.{cargo_profile}.{target}.{artifact_key}.fingerprint"
 
 
 def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
@@ -2246,12 +2254,12 @@ def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
 def _runtime_fingerprint(
     project_root: Path,
     *,
-    profile: BuildProfile,
+    cargo_profile: str,
     target_triple: str | None,
     rustflags: str,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
-    meta = f"profile:{profile}\ntarget:{target_triple or 'native'}\n"
+    meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += f"rustflags:{rustflags}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
@@ -2353,9 +2361,81 @@ def _check_lockfiles(
     return None
 
 
+def _lock_check_cache_path(project_root: Path, name: str) -> Path:
+    return project_root / "target" / "lock_checks" / f"{name}.json"
+
+
+def _lock_check_inputs(
+    project_root: Path, paths: list[Path]
+) -> dict[str, dict[str, int]] | None:
+    project_root_resolved = project_root.resolve()
+    payload: dict[str, dict[str, int]] = {}
+    for path in paths:
+        try:
+            stat = path.stat()
+            resolved = path.resolve()
+        except OSError:
+            return None
+        try:
+            key = str(resolved.relative_to(project_root_resolved))
+        except ValueError:
+            key = str(resolved)
+        payload[key] = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+    return {name: payload[name] for name in sorted(payload)}
+
+
+def _load_lock_check_cache(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _is_lock_check_cache_valid(
+    project_root: Path, name: str, inputs: dict[str, dict[str, int]] | None
+) -> bool:
+    if not inputs:
+        return False
+    payload = _load_lock_check_cache(_lock_check_cache_path(project_root, name))
+    if payload is None:
+        return False
+    if payload.get("version") != _LOCK_CHECK_CACHE_VERSION:
+        return False
+    if payload.get("ok") is not True:
+        return False
+    return payload.get("inputs") == inputs
+
+
+def _write_lock_check_cache(
+    project_root: Path, name: str, inputs: dict[str, dict[str, int]] | None
+) -> None:
+    if not inputs:
+        return
+    path = _lock_check_cache_path(project_root, name)
+    payload = {
+        "version": _LOCK_CHECK_CACHE_VERSION,
+        "ok": True,
+        "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "inputs": inputs,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    tmp_path.replace(path)
+
+
 def _verify_uv_lock(project_root: Path) -> str | None:
     if shutil.which("uv") is None:
         return "Deterministic builds require uv; install uv to validate uv.lock."
+    inputs = _lock_check_inputs(
+        project_root,
+        [project_root / "pyproject.toml", project_root / "uv.lock"],
+    )
+    if _is_lock_check_cache_valid(project_root, "uv", inputs):
+        return None
     try:
         result = subprocess.run(
             ["uv", "lock", "--check"],
@@ -2369,12 +2449,22 @@ def _verify_uv_lock(project_root: Path) -> str | None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "uv lock check failed"
         return f"uv.lock is out of date or invalid: {detail}"
+    _write_lock_check_cache(project_root, "uv", inputs)
     return None
 
 
 def _verify_cargo_lock(project_root: Path) -> str | None:
     if shutil.which("cargo") is None:
         return "Deterministic builds require cargo; install Rust toolchain to validate Cargo.lock."
+    cargo_inputs = sorted(
+        path
+        for path in project_root.rglob("Cargo.toml")
+        if "target" not in path.parts and ".git" not in path.parts
+    )
+    cargo_inputs.append(project_root / "Cargo.lock")
+    inputs = _lock_check_inputs(project_root, cargo_inputs)
+    if _is_lock_check_cache_valid(project_root, "cargo", inputs):
+        return None
     try:
         result = subprocess.run(
             ["cargo", "metadata", "--locked", "--format-version", "1"],
@@ -2388,7 +2478,114 @@ def _verify_cargo_lock(project_root: Path) -> str | None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "cargo metadata failed"
         return f"Cargo.lock is out of date or invalid: {detail}"
+    _write_lock_check_cache(project_root, "cargo", inputs)
     return None
+
+
+def _artifact_needs_rebuild(
+    artifact: Path,
+    fingerprint: dict[str, str | None] | None,
+    stored_fingerprint: dict[str, str | None] | None,
+) -> bool:
+    if not artifact.exists():
+        return True
+    if fingerprint is None or stored_fingerprint is None:
+        return True
+    if stored_fingerprint.get("hash") != fingerprint.get("hash"):
+        return True
+    rustc = fingerprint.get("rustc")
+    if rustc:
+        stored_rustc = stored_fingerprint.get("rustc")
+        return stored_rustc is None or stored_rustc != rustc
+    return False
+
+
+def _maybe_enable_sccache(env: dict[str, str]) -> None:
+    if env.get("RUSTC_WRAPPER"):
+        return
+    mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
+    if mode in {"0", "false", "no", "off"}:
+        return
+    sccache = shutil.which("sccache")
+    if sccache is None:
+        return
+    env["RUSTC_WRAPPER"] = sccache
+
+
+def _is_sccache_wrapper_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    stderr = result.stderr or ""
+    stdout = result.stdout or ""
+    combined = f"{stderr}\n{stdout}"
+    return "sccache: error:" in combined or (
+        "process didn't exit successfully" in combined and "sccache" in combined
+    )
+
+
+def _run_cargo_with_sccache_retry(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float | None,
+    json_output: bool,
+    label: str,
+) -> subprocess.CompletedProcess[str]:
+    build = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    wrapper = env.get("RUSTC_WRAPPER", "")
+    if (
+        build.returncode != 0
+        and wrapper
+        and Path(wrapper).name == "sccache"
+        and _is_sccache_wrapper_failure(build)
+    ):
+        retry_env = env.copy()
+        retry_env.pop("RUSTC_WRAPPER", None)
+        if not json_output:
+            print(
+                f"{label}: sccache wrapper failure detected; retrying without sccache.",
+                file=sys.stderr,
+            )
+        build = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=retry_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    return build
+
+
+@contextmanager
+def _build_lock(project_root: Path, name: str):
+    if os.name != "posix":
+        yield
+        return
+    try:
+        import fcntl  # type: ignore
+    except Exception:
+        yield
+        return
+    lock_dir = _build_state_root(project_root) / "build_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{name}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
 
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
@@ -3019,43 +3216,224 @@ def _backend_source_paths(project_root: Path) -> list[Path]:
     ]
 
 
-def _backend_bin_path(project_root: Path, profile: BuildProfile) -> Path:
-    profile_dir = _cargo_profile_dir(profile)
+def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
+    profile_dir = _cargo_profile_dir(cargo_profile)
     target_root = _cargo_target_root(project_root)
     exe_suffix = ".exe" if os.name == "nt" else ""
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
 
 
-def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
+def _resolve_backend_profile(
+    default_profile: BuildProfile,
+) -> tuple[BuildProfile, str | None]:
     raw = os.environ.get("MOLT_BACKEND_PROFILE")
     if not raw:
-        return "release", None
+        return default_profile, None
     value = raw.strip().lower()
     if value not in {"dev", "release"}:
-        return "release", f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
+        return default_profile, f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
     return cast(BuildProfile, value), None
+
+
+def _resolve_cargo_profile_name(
+    build_profile: BuildProfile,
+) -> tuple[str, str | None]:
+    env_var = (
+        "MOLT_DEV_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_CARGO_PROFILE"
+    )
+    raw = os.environ.get(env_var, "").strip()
+    default_profile = "dev-fast" if build_profile == "dev" else "release"
+    profile_name = raw or default_profile
+    if not _CARGO_PROFILE_NAME_RE.match(profile_name):
+        return build_profile, f"Invalid {env_var} value: {raw}"
+    return profile_name, None
+
+
+def _backend_daemon_enabled() -> bool:
+    if os.name != "posix":
+        return False
+    raw = os.environ.get("MOLT_BACKEND_DAEMON", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _backend_daemon_socket_path(project_root: Path, cargo_profile: str) -> Path:
+    root = _build_state_root(project_root) / "backend_daemon"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"molt-backend.{cargo_profile}.sock"
+
+
+def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
+    root = _build_state_root(project_root) / "backend_daemon"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"molt-backend.{cargo_profile}.log"
+
+
+def _backend_daemon_request(
+    socket_path: Path,
+    payload: dict[str, Any],
+    *,
+    timeout: float | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            if timeout is not None:
+                sock.settimeout(timeout)
+            sock.connect(str(socket_path))
+            data = json.dumps(payload, default=_json_ir_default).encode("utf-8") + b"\n"
+            sock.sendall(data)
+            sock.shutdown(socket.SHUT_WR)
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+    except OSError as exc:
+        return None, f"backend daemon connection failed: {exc}"
+    raw = b"".join(chunks).decode("utf-8", "replace").strip()
+    if not raw:
+        return None, "backend daemon returned empty response"
+    try:
+        response = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"backend daemon returned invalid JSON: {exc}"
+    if not isinstance(response, dict):
+        return None, "backend daemon returned non-object response"
+    return response, None
+
+
+def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
+    payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
+    response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
+    if err is not None or response is None:
+        return False
+    return bool(response.get("ok")) and bool(response.get("pong"))
+
+
+def _backend_daemon_retryable_error(error: str | None) -> bool:
+    if not error:
+        return False
+    lowered = error.lower()
+    return (
+        "connection failed" in lowered
+        or "empty response" in lowered
+        or "invalid json" in lowered
+        or "unsupported protocol version" in lowered
+        or "missing job results" in lowered
+        or "output is missing" in lowered
+    )
+
+
+def _start_backend_daemon(
+    backend_bin: Path,
+    socket_path: Path,
+    *,
+    cargo_profile: str,
+    project_root: Path,
+    startup_timeout: float | None,
+    json_output: bool,
+) -> bool:
+    try:
+        if socket_path.exists():
+            socket_path.unlink()
+    except OSError:
+        pass
+    log_path = _backend_daemon_log_path(project_root, cargo_profile)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log_file:
+            subprocess.Popen(
+                [str(backend_bin), "--daemon", "--socket", str(socket_path)],
+                cwd=project_root,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        if not json_output:
+            print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
+        return False
+    deadline = time.monotonic() + (startup_timeout if startup_timeout else 5.0)
+    while time.monotonic() < deadline:
+        if _backend_daemon_ping(socket_path, timeout=0.5):
+            return True
+        time.sleep(0.05)
+    if not json_output:
+        print("Backend daemon failed to become ready in time.", file=sys.stderr)
+    return False
+
+
+def _compile_with_backend_daemon(
+    socket_path: Path,
+    *,
+    ir: dict[str, Any],
+    backend_output: Path,
+    is_wasm: bool,
+    target_triple: str | None,
+    cache_key: str | None,
+    timeout: float | None,
+) -> tuple[bool, str | None]:
+    payload: dict[str, Any] = {
+        "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": [
+            {
+                "id": "job0",
+                "is_wasm": is_wasm,
+                "target_triple": target_triple,
+                "output": str(backend_output),
+                "cache_key": cache_key or "",
+                "ir": ir,
+            }
+        ],
+    }
+    response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
+    if err is not None:
+        return False, err
+    if response is None:
+        return False, "backend daemon returned no response"
+    if not bool(response.get("ok")):
+        error = response.get("error")
+        if isinstance(error, str) and error:
+            return False, error
+        return False, "backend daemon compile request failed"
+    jobs = response.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        return False, "backend daemon response missing job results"
+    first = jobs[0]
+    if not isinstance(first, dict):
+        return False, "backend daemon response had malformed job payload"
+    if not bool(first.get("ok")):
+        message = first.get("message")
+        if isinstance(message, str) and message:
+            return False, message
+        return False, "backend daemon failed to compile job"
+    if not backend_output.exists():
+        return False, "backend daemon reported success but output is missing"
+    return True, None
 
 
 def _backend_fingerprint_path(
     project_root: Path,
     artifact: Path,
-    profile: BuildProfile,
+    cargo_profile: str,
 ) -> Path:
-    root = project_root / "target" / "backend_fingerprints"
+    root = _build_state_root(project_root) / "backend_fingerprints"
     artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
         :16
     ]
-    return root / f"{artifact.name}.{profile}.{artifact_key}.fingerprint"
+    return root / f"{artifact.name}.{cargo_profile}.{artifact_key}.fingerprint"
 
 
 def _backend_fingerprint(
     project_root: Path,
     *,
-    profile: BuildProfile,
+    cargo_profile: str,
     rustflags: str,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
-    meta = f"profile:{profile}\n"
+    meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
@@ -3077,70 +3455,73 @@ def _ensure_backend_binary(
     *,
     cargo_timeout: float | None,
     json_output: bool,
-    profile: BuildProfile,
+    cargo_profile: str,
     project_root: Path,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     fingerprint = _backend_fingerprint(
         project_root,
-        profile=profile,
+        cargo_profile=cargo_profile,
         rustflags=rustflags,
     )
-    fingerprint_path = _backend_fingerprint_path(project_root, backend_bin, profile)
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
+    fingerprint_path = _backend_fingerprint_path(
+        project_root, backend_bin, cargo_profile
     )
-    needs_build = not backend_bin.exists()
-    if not needs_build:
-        if fingerprint is None or stored_fingerprint is None:
-            needs_build = True
-        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
-            needs_build = True
-        elif fingerprint.get("rustc"):
-            stored_rustc = stored_fingerprint.get("rustc")
-            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
-    if not needs_build:
-        return True
-    if not json_output:
-        print("Backend sources changed; rebuilding backend...")
-    cmd = ["cargo", "build", "--package", "molt-backend"]
-    if profile == "release":
-        cmd.append("--release")
-    try:
-        build = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=cargo_timeout,
+    lock_name = f"backend.{cargo_profile}"
+    with _build_lock(project_root, lock_name):
+        stored_fingerprint = (
+            _read_runtime_fingerprint(fingerprint_path)
+            if fingerprint_path.exists()
+            else None
         )
-    except subprocess.TimeoutExpired:
+        if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
+            return True
         if not json_output:
-            timeout_note = (
-                f"Backend build timed out after {cargo_timeout:.1f}s."
-                if cargo_timeout is not None
-                else "Backend build timed out."
-            )
-            print(timeout_note, file=sys.stderr)
-        return False
-    if build.returncode != 0:
-        if not json_output:
-            err = build.stderr.strip() or build.stdout.strip()
-            if err:
-                print(err, file=sys.stderr)
-        return False
-    if fingerprint is not None:
+            print("Backend sources changed; rebuilding backend...")
+        cmd = [
+            "cargo",
+            "build",
+            "--package",
+            "molt-backend",
+            "--profile",
+            cargo_profile,
+        ]
+        build_env = os.environ.copy()
+        _maybe_enable_sccache(build_env)
         try:
-            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
-        except OSError:
+            build = _run_cargo_with_sccache_retry(
+                cmd,
+                cwd=project_root,
+                env=build_env,
+                timeout=cargo_timeout,
+                json_output=json_output,
+                label="Backend build",
+            )
+        except subprocess.TimeoutExpired:
             if not json_output:
-                print(
-                    "Warning: failed to write backend fingerprint metadata.",
-                    file=sys.stderr,
+                timeout_note = (
+                    f"Backend build timed out after {cargo_timeout:.1f}s."
+                    if cargo_timeout is not None
+                    else "Backend build timed out."
                 )
+                print(timeout_note, file=sys.stderr)
+            return False
+        if build.returncode != 0:
+            if not json_output:
+                err = build.stderr.strip() or build.stdout.strip()
+                if err:
+                    print(err, file=sys.stderr)
+            return False
+        if fingerprint is not None:
+            try:
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Warning: failed to write backend fingerprint metadata.",
+                        file=sys.stderr,
+                    )
     return True
 
 
@@ -3148,76 +3529,70 @@ def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
     json_output: bool,
-    profile: BuildProfile,
+    cargo_profile: str,
     project_root: Path,
     cargo_timeout: float | None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     fingerprint = _runtime_fingerprint(
         project_root,
-        profile=profile,
+        cargo_profile=cargo_profile,
         target_triple=target_triple,
         rustflags=rustflags,
     )
     fingerprint_path = _runtime_fingerprint_path(
-        project_root, runtime_lib, profile, target_triple
+        project_root, runtime_lib, cargo_profile, target_triple
     )
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
-    )
-    needs_build = not runtime_lib.exists()
-    if not needs_build:
-        if fingerprint is None or stored_fingerprint is None:
-            needs_build = True
-        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
-            needs_build = True
-        elif fingerprint.get("rustc"):
-            stored_rustc = stored_fingerprint.get("rustc")
-            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
-    if not needs_build:
-        return True
-    if not json_output:
-        print("Runtime sources changed; rebuilding runtime...")
-    cmd = ["cargo", "build", "-p", "molt-runtime"]
-    if profile == "release":
-        cmd.append("--release")
-    if target_triple:
-        cmd.extend(["--target", target_triple])
-    try:
-        build = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=json_output,
-            text=json_output,
-            timeout=cargo_timeout,
+    lock_target = target_triple or "native"
+    lock_name = f"runtime.{cargo_profile}.{lock_target}"
+    with _build_lock(project_root, lock_name):
+        stored_fingerprint = (
+            _read_runtime_fingerprint(fingerprint_path)
+            if fingerprint_path.exists()
+            else None
         )
-    except subprocess.TimeoutExpired:
+        if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
+            return True
         if not json_output:
-            timeout_note = (
-                f"Runtime build timed out after {cargo_timeout:.1f}s."
-                if cargo_timeout is not None
-                else "Runtime build timed out."
+            print("Runtime sources changed; rebuilding runtime...")
+        cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
+        if target_triple:
+            cmd.extend(["--target", target_triple])
+        build_env = os.environ.copy()
+        _maybe_enable_sccache(build_env)
+        try:
+            build = _run_cargo_with_sccache_retry(
+                cmd,
+                cwd=project_root,
+                env=build_env,
+                timeout=cargo_timeout,
+                json_output=json_output,
+                label="Runtime build",
             )
-            print(timeout_note, file=sys.stderr)
-        return False
-    if build.returncode != 0:
-        if json_output:
+        except subprocess.TimeoutExpired:
+            if not json_output:
+                timeout_note = (
+                    f"Runtime build timed out after {cargo_timeout:.1f}s."
+                    if cargo_timeout is not None
+                    else "Runtime build timed out."
+                )
+                print(timeout_note, file=sys.stderr)
+            return False
+        if build.returncode != 0:
             err = build.stderr.strip() or build.stdout.strip()
             if err:
                 print(err, file=sys.stderr)
-        return False
-    if fingerprint is not None:
-        try:
-            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
-        except OSError:
-            if not json_output:
-                print(
-                    "Warning: failed to write runtime fingerprint metadata.",
-                    file=sys.stderr,
-                )
+            return False
+        if fingerprint is not None:
+            try:
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Warning: failed to write runtime fingerprint metadata.",
+                        file=sys.stderr,
+                    )
     return True
 
 
@@ -3246,7 +3621,7 @@ def _ensure_runtime_wasm(
     *,
     reloc: bool,
     json_output: bool,
-    profile: BuildProfile,
+    cargo_profile: str,
     cargo_timeout: float | None,
     project_root: Path | None = None,
 ) -> bool:
@@ -3265,89 +3640,85 @@ def _ensure_runtime_wasm(
     rustflags = f"{env.get('RUSTFLAGS', '')} {flags}".strip()
     fingerprint = _runtime_fingerprint(
         root,
-        profile=profile,
+        cargo_profile=cargo_profile,
         target_triple="wasm32-wasip1",
         rustflags=rustflags,
     )
     fingerprint_path = _runtime_fingerprint_path(
-        root, runtime_wasm, profile, "wasm32-wasip1"
+        root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
-    )
-    needs_build = not runtime_wasm.exists()
-    if not needs_build:
-        if fingerprint is None or stored_fingerprint is None:
-            needs_build = True
-        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
-            needs_build = True
-        elif fingerprint.get("rustc"):
-            stored_rustc = stored_fingerprint.get("rustc")
-            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
-    if not needs_build:
-        return True
-    if not json_output:
-        print("Runtime sources changed; rebuilding runtime...")
-    _append_rustflags(env, flags)
-    _configure_wasm_cc_env(env)
-    cmd = [
-        "cargo",
-        "build",
-        "--package",
-        "molt-runtime",
-        "--target",
-        "wasm32-wasip1",
-    ]
-    if profile == "release":
-        cmd.append("--release")
-    try:
-        build = subprocess.run(
-            cmd,
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=cargo_timeout,
+    lock_suffix = "reloc" if reloc else "shared"
+    lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.{lock_suffix}"
+    with _build_lock(root, lock_name):
+        stored_fingerprint = (
+            _read_runtime_fingerprint(fingerprint_path)
+            if fingerprint_path.exists()
+            else None
         )
-    except subprocess.TimeoutExpired:
+        if not _artifact_needs_rebuild(runtime_wasm, fingerprint, stored_fingerprint):
+            return True
         if not json_output:
-            timeout_note = (
-                f"Runtime wasm build timed out after {cargo_timeout:.1f}s."
-                if cargo_timeout is not None
-                else "Runtime wasm build timed out."
-            )
-            print(timeout_note, file=sys.stderr)
-        return False
-    if build.returncode != 0:
-        if not json_output:
-            err = build.stderr.strip() or build.stdout.strip()
-            if err:
-                print(err, file=sys.stderr)
-            print("Runtime wasm build failed", file=sys.stderr)
-        return False
-    profile_dir = _cargo_profile_dir(profile)
-    target_root = _cargo_target_root(root)
-    src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
-    if not src.exists():
-        if not json_output:
-            print(
-                "Runtime wasm build succeeded but artifact is missing.", file=sys.stderr
-            )
-        return False
-    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, runtime_wasm)
-    if fingerprint is not None:
+            print("Runtime sources changed; rebuilding runtime...")
+        _append_rustflags(env, flags)
+        _configure_wasm_cc_env(env)
+        _maybe_enable_sccache(env)
+        cmd = [
+            "cargo",
+            "build",
+            "--package",
+            "molt-runtime",
+            "--profile",
+            cargo_profile,
+            "--target",
+            "wasm32-wasip1",
+        ]
         try:
-            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
-        except OSError:
+            build = _run_cargo_with_sccache_retry(
+                cmd,
+                cwd=root,
+                env=env,
+                timeout=cargo_timeout,
+                json_output=json_output,
+                label="Runtime wasm build",
+            )
+        except subprocess.TimeoutExpired:
+            if not json_output:
+                timeout_note = (
+                    f"Runtime wasm build timed out after {cargo_timeout:.1f}s."
+                    if cargo_timeout is not None
+                    else "Runtime wasm build timed out."
+                )
+                print(timeout_note, file=sys.stderr)
+            return False
+        if build.returncode != 0:
+            if not json_output:
+                err = build.stderr.strip() or build.stdout.strip()
+                if err:
+                    print(err, file=sys.stderr)
+                print("Runtime wasm build failed", file=sys.stderr)
+            return False
+        profile_dir = _cargo_profile_dir(cargo_profile)
+        target_root = _cargo_target_root(root)
+        src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+        if not src.exists():
             if not json_output:
                 print(
-                    "Warning: failed to write runtime fingerprint metadata.",
+                    "Runtime wasm build succeeded but artifact is missing.",
                     file=sys.stderr,
                 )
+            return False
+        runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, runtime_wasm)
+        if fingerprint is not None:
+            try:
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Warning: failed to write runtime fingerprint metadata.",
+                        file=sys.stderr,
+                    )
     return True
 
 
@@ -3520,8 +3891,8 @@ def _read_wasm_data_end(path: Path) -> int | None:
     return max_end
 
 
-def _cargo_profile_dir(profile: BuildProfile) -> str:
-    return "release" if profile == "release" else "debug"
+def _cargo_profile_dir(cargo_profile: str) -> str:
+    return "debug" if cargo_profile == "dev" else cargo_profile
 
 
 def _resolve_env_path(var: str, default: Path) -> Path:
@@ -3566,6 +3937,16 @@ def _default_molt_cache() -> Path:
 
 def _cargo_target_root(project_root: Path) -> Path:
     return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
+
+
+def _build_state_root(project_root: Path) -> Path:
+    override = os.environ.get("MOLT_BUILD_STATE_DIR")
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = (project_root / path).absolute()
+        return path
+    return _cargo_target_root(project_root) / ".molt_state"
 
 
 def _wasm_runtime_root(project_root: Path) -> Path:
@@ -3808,6 +4189,21 @@ def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
     return timeout, None
 
 
+def _resolve_dev_linker() -> str | None:
+    raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
+    if raw in {"0", "false", "no", "off", "none", "disable"}:
+        return None
+    if raw in {"mold", "lld"}:
+        return raw
+    if raw != "auto":
+        return None
+    if shutil.which("mold"):
+        return "mold"
+    if shutil.which("ld.lld") or shutil.which("lld"):
+        return "lld"
+    return None
+
+
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
 ) -> tuple[Path, Path, Path]:
@@ -3858,10 +4254,10 @@ def _cache_fingerprint() -> str:
     hasher.update(f"rustc:{rustc_info}\n".encode("utf-8"))
     hasher.update(f"rustflags:{rustflags}\n".encode("utf-8"))
     seen: set[Path] = set()
-    stdlib_root = _stdlib_root_path()
+    # Keep cache invalidation scoped to runtime/backend codegen sources.
+    # Frontend/stdlib semantics already flow into the IR payload hash, so
+    # hashing the entire stdlib tree here would over-invalidate unrelated builds.
     source_paths = _backend_source_paths(root) + _runtime_source_paths(root)
-    if stdlib_root.exists():
-        source_paths.append(stdlib_root)
     for path in sorted(source_paths, key=lambda p: str(p)):
         if path in seen:
             continue
@@ -4248,9 +4644,17 @@ def build(
     link_timeout, timeout_err = _resolve_timeout_env("MOLT_LINK_TIMEOUT")
     if timeout_err:
         return _fail(timeout_err, json_output, command="build")
-    backend_profile, profile_err = _resolve_backend_profile()
+    backend_profile, profile_err = _resolve_backend_profile(profile)
     if profile_err:
         return _fail(profile_err, json_output, command="build")
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
+    if runtime_profile_err:
+        return _fail(runtime_profile_err, json_output, command="build")
+    backend_cargo_profile, backend_profile_err = _resolve_cargo_profile_name(
+        backend_profile
+    )
+    if backend_profile_err:
+        return _fail(backend_profile_err, json_output, command="build")
     capabilities_list: list[str] | None = None
     capabilities_source = None
     capability_profiles: list[str] = []
@@ -5233,13 +5637,13 @@ def build(
             runtime_wasm,
             reloc=False,
             json_output=json_output,
-            profile=profile,
+            cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
         ):
             return _fail("Runtime wasm build failed", json_output, command="build")
     elif emit_mode == "bin":
-        profile_dir = _cargo_profile_dir(profile)
+        profile_dir = _cargo_profile_dir(runtime_cargo_profile)
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
@@ -5251,7 +5655,7 @@ def build(
             runtime_lib,
             target_triple,
             json_output,
-            profile,
+            runtime_cargo_profile,
             molt_root,
             cargo_timeout,
         ):
@@ -5286,148 +5690,255 @@ def build(
             cache_detail = f" ({cache_key})" if cache_key else ""
             print(f"Cache: {cache_state}{cache_detail}")
 
-    # 2. Backend: JSON IR -> output.o / output.wasm
-    if not cache_hit:
-        backend_env = os.environ.copy() if is_wasm else None
-        reloc_requested = is_wasm and (
-            linked or os.environ.get("MOLT_WASM_LINK") == "1"
-        )
-        if is_wasm and backend_env is not None:
-            if "MOLT_WASM_DATA_BASE" not in backend_env:
-                runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
-                if not _ensure_runtime_wasm(
-                    runtime_wasm,
-                    reloc=False,
-                    json_output=json_output,
-                    profile=profile,
-                    cargo_timeout=cargo_timeout,
-                    project_root=molt_root,
-                ):
-                    return _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-            if runtime_wasm.exists():
-                data_end = _read_wasm_data_end(runtime_wasm)
-                if data_end is not None:
-                    aligned = (data_end + 7) & ~7
-                    backend_env["MOLT_WASM_DATA_BASE"] = str(aligned)
-                else:
-                    warnings.append(
-                        "Failed to read runtime data size; using default data base."
-                    )
-        if reloc_requested and backend_env is not None:
-            backend_env["MOLT_WASM_LINK"] = "1"
-            if "MOLT_WASM_TABLE_BASE" not in backend_env:
-                runtime_reloc = (
-                    _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
-                )
-                if linked and not _ensure_runtime_wasm(
-                    runtime_reloc,
-                    reloc=True,
-                    json_output=json_output,
-                    profile=profile,
-                    cargo_timeout=cargo_timeout,
-                    project_root=molt_root,
-                ):
-                    return _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if runtime_reloc.exists():
-                    table_base = _read_wasm_table_min(runtime_reloc)
-                    if table_base is not None:
-                        backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
+    compile_lock = (
+        _build_lock(project_root, f"compile.{cache_key}")
+        if cache and cache_key is not None
+        else nullcontext()
+    )
+    with compile_lock:
+        if not cache_hit and cache and cache_path is not None and cache_path.exists():
+            try:
+                shutil.copy2(cache_path, output_artifact)
+                cache_hit = True
+            except OSError as exc:
+                warnings.append(f"Cache copy failed: {exc}")
+                cache_hit = False
+
+        # 2. Backend: JSON IR -> output.o / output.wasm
+        if not cache_hit:
+            backend_env = os.environ.copy() if is_wasm else None
+            reloc_requested = is_wasm and (
+                linked or os.environ.get("MOLT_WASM_LINK") == "1"
+            )
+            if is_wasm and backend_env is not None:
+                if "MOLT_WASM_DATA_BASE" not in backend_env:
+                    runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
+                    if not _ensure_runtime_wasm(
+                        runtime_wasm,
+                        reloc=False,
+                        json_output=json_output,
+                        cargo_profile=runtime_cargo_profile,
+                        cargo_timeout=cargo_timeout,
+                        project_root=molt_root,
+                    ):
+                        return _fail(
+                            "Runtime wasm build failed",
+                            json_output,
+                            command="build",
+                        )
+                if runtime_wasm.exists():
+                    data_end = _read_wasm_data_end(runtime_wasm)
+                    if data_end is not None:
+                        aligned = (data_end + 7) & ~7
+                        backend_env["MOLT_WASM_DATA_BASE"] = str(aligned)
                     else:
                         warnings.append(
-                            "Failed to read runtime table size; using default table base."
+                            "Failed to read runtime data size; using default data base."
                         )
-        backend_bin = _backend_bin_path(molt_root, backend_profile)
-        if not _ensure_backend_binary(
-            backend_bin,
-            cargo_timeout=cargo_timeout,
-            json_output=json_output,
-            profile=backend_profile,
-            project_root=molt_root,
-        ):
-            return _fail("Backend build failed", json_output, command="build")
-        if not backend_bin.exists():
-            return _fail("Backend binary missing", json_output, command="build")
-        cmd = [str(backend_bin)]
-        if is_wasm:
-            cmd.extend(["--target", "wasm"])
-        elif target_triple:
-            cmd.extend(["--target-triple", target_triple])
+            if reloc_requested and backend_env is not None:
+                backend_env["MOLT_WASM_LINK"] = "1"
+                if "MOLT_WASM_TABLE_BASE" not in backend_env:
+                    runtime_reloc = (
+                        _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
+                    )
+                    if linked and not _ensure_runtime_wasm(
+                        runtime_reloc,
+                        reloc=True,
+                        json_output=json_output,
+                        cargo_profile=runtime_cargo_profile,
+                        cargo_timeout=cargo_timeout,
+                        project_root=molt_root,
+                    ):
+                        return _fail(
+                            "Runtime wasm build failed",
+                            json_output,
+                            command="build",
+                        )
+                    if runtime_reloc.exists():
+                        table_base = _read_wasm_table_min(runtime_reloc)
+                        if table_base is not None:
+                            backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
+                        else:
+                            warnings.append(
+                                "Failed to read runtime table size; using default table base."
+                            )
+            backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
+            if not _ensure_backend_binary(
+                backend_bin,
+                cargo_timeout=cargo_timeout,
+                json_output=json_output,
+                cargo_profile=backend_cargo_profile,
+                project_root=molt_root,
+            ):
+                return _fail("Backend build failed", json_output, command="build")
+            if not backend_bin.exists():
+                return _fail("Backend binary missing", json_output, command="build")
+            daemon_socket: Path | None = None
+            daemon_ready = False
+            if _backend_daemon_enabled() and not is_wasm:
+                daemon_socket = _backend_daemon_socket_path(
+                    molt_root, backend_cargo_profile
+                )
+                startup_timeout_raw = os.environ.get(
+                    "MOLT_BACKEND_DAEMON_START_TIMEOUT", ""
+                ).strip()
+                startup_timeout = 5.0
+                if startup_timeout_raw:
+                    try:
+                        parsed = float(startup_timeout_raw)
+                        if parsed > 0:
+                            startup_timeout = parsed
+                    except ValueError:
+                        pass
+                with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
+                    daemon_ready = _backend_daemon_ping(daemon_socket, timeout=0.5)
+                    if not daemon_ready:
+                        daemon_ready = _start_backend_daemon(
+                            backend_bin,
+                            daemon_socket,
+                            cargo_profile=backend_cargo_profile,
+                            project_root=molt_root,
+                            startup_timeout=startup_timeout,
+                            json_output=json_output,
+                        )
 
-        with tempfile.TemporaryDirectory(
-            dir=artifacts_root, prefix="backend_"
-        ) as backend_dir:
-            backend_dir_path = Path(backend_dir)
-            backend_output = backend_dir_path / (
-                "output.wasm" if is_wasm else "output.o"
-            )
-            cmd_with_output = cmd + ["--output", str(backend_output)]
-            try:
-                backend_process = subprocess.run(
-                    cmd_with_output,
-                    input=json.dumps(ir, default=_json_ir_default),
-                    text=True,
-                    capture_output=True,
-                    env=backend_env,
-                    timeout=backend_timeout,
+            with tempfile.TemporaryDirectory(
+                dir=artifacts_root, prefix="backend_"
+            ) as backend_dir:
+                backend_dir_path = Path(backend_dir)
+                backend_output = backend_dir_path / (
+                    "output.wasm" if is_wasm else "output.o"
                 )
-            except subprocess.TimeoutExpired:
-                return _fail(
-                    "Backend compilation timed out",
-                    json_output,
-                    command="build",
-                )
-            if backend_process.returncode != 0:
-                if not json_output:
-                    if backend_process.stderr:
-                        print(backend_process.stderr, end="", file=sys.stderr)
-                    if backend_process.stdout:
-                        print(backend_process.stdout, end="")
-                return _fail(
-                    "Backend compilation failed",
-                    json_output,
-                    backend_process.returncode or 1,
-                    command="build",
-                )
-            if verbose and not json_output:
-                if backend_process.stdout:
-                    print(backend_process.stdout, end="")
-                if backend_process.stderr:
-                    print(backend_process.stderr, end="", file=sys.stderr)
-            if not backend_output.exists():
-                return _fail("Backend output missing", json_output, command="build")
-            try:
-                if output_artifact.parent != Path("."):
-                    output_artifact.parent.mkdir(parents=True, exist_ok=True)
-                backend_output.replace(output_artifact)
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    return _fail(
-                        f"Failed to move backend output: {exc}",
-                        json_output,
-                        command="build",
+                backend_compiled = False
+                daemon_error: str | None = None
+                if daemon_ready and daemon_socket is not None:
+                    backend_compiled, daemon_error = _compile_with_backend_daemon(
+                        daemon_socket,
+                        ir=ir,
+                        backend_output=backend_output,
+                        is_wasm=is_wasm,
+                        target_triple=target_triple,
+                        cache_key=cache_key,
+                        timeout=backend_timeout,
                     )
+                    if not backend_compiled and _backend_daemon_retryable_error(
+                        daemon_error
+                    ):
+                        startup_timeout_raw = os.environ.get(
+                            "MOLT_BACKEND_DAEMON_START_TIMEOUT", ""
+                        ).strip()
+                        restart_timeout = 5.0
+                        if startup_timeout_raw:
+                            try:
+                                parsed = float(startup_timeout_raw)
+                                if parsed > 0:
+                                    restart_timeout = parsed
+                            except ValueError:
+                                pass
+                        with _build_lock(
+                            molt_root, f"backend-daemon.{backend_cargo_profile}"
+                        ):
+                            daemon_ready = _backend_daemon_ping(
+                                daemon_socket, timeout=0.5
+                            )
+                            if not daemon_ready:
+                                daemon_ready = _start_backend_daemon(
+                                    backend_bin,
+                                    daemon_socket,
+                                    cargo_profile=backend_cargo_profile,
+                                    project_root=molt_root,
+                                    startup_timeout=restart_timeout,
+                                    json_output=json_output,
+                                )
+                        if daemon_ready:
+                            backend_compiled, daemon_error = (
+                                _compile_with_backend_daemon(
+                                    daemon_socket,
+                                    ir=ir,
+                                    backend_output=backend_output,
+                                    is_wasm=is_wasm,
+                                    target_triple=target_triple,
+                                    cache_key=cache_key,
+                                    timeout=backend_timeout,
+                                )
+                            )
+                    if (
+                        not backend_compiled
+                        and verbose
+                        and not json_output
+                        and daemon_error
+                    ):
+                        print(
+                            "Backend daemon compile failed; falling back to one-shot mode: "
+                            f"{daemon_error}",
+                            file=sys.stderr,
+                        )
+                if not backend_compiled:
+                    cmd = [str(backend_bin)]
+                    if is_wasm:
+                        cmd.extend(["--target", "wasm"])
+                    elif target_triple:
+                        cmd.extend(["--target-triple", target_triple])
+                    cmd_with_output = cmd + ["--output", str(backend_output)]
+                    try:
+                        backend_process = subprocess.run(
+                            cmd_with_output,
+                            input=json.dumps(ir, default=_json_ir_default),
+                            text=True,
+                            capture_output=True,
+                            env=backend_env,
+                            timeout=backend_timeout,
+                        )
+                    except subprocess.TimeoutExpired:
+                        return _fail(
+                            "Backend compilation timed out",
+                            json_output,
+                            command="build",
+                        )
+                    if backend_process.returncode != 0:
+                        if not json_output:
+                            if backend_process.stderr:
+                                print(backend_process.stderr, end="", file=sys.stderr)
+                            if backend_process.stdout:
+                                print(backend_process.stdout, end="")
+                        return _fail(
+                            "Backend compilation failed",
+                            json_output,
+                            backend_process.returncode or 1,
+                            command="build",
+                        )
+                    if verbose and not json_output:
+                        if backend_process.stdout:
+                            print(backend_process.stdout, end="")
+                        if backend_process.stderr:
+                            print(backend_process.stderr, end="", file=sys.stderr)
+                if not backend_output.exists():
+                    return _fail("Backend output missing", json_output, command="build")
                 try:
-                    shutil.copy2(backend_output, output_artifact)
-                    backend_output.unlink()
-                except OSError as copy_exc:
-                    return _fail(
-                        f"Failed to move backend output: {copy_exc}",
-                        json_output,
-                        command="build",
-                    )
-        if cache and cache_path is not None:
-            try:
-                shutil.copy2(output_artifact, cache_path)
-            except OSError as exc:
-                warnings.append(f"Cache write failed: {exc}")
+                    if output_artifact.parent != Path("."):
+                        output_artifact.parent.mkdir(parents=True, exist_ok=True)
+                    backend_output.replace(output_artifact)
+                except OSError as exc:
+                    if exc.errno != errno.EXDEV:
+                        return _fail(
+                            f"Failed to move backend output: {exc}",
+                            json_output,
+                            command="build",
+                        )
+                    try:
+                        shutil.copy2(backend_output, output_artifact)
+                        backend_output.unlink()
+                    except OSError as copy_exc:
+                        return _fail(
+                            f"Failed to move backend output: {copy_exc}",
+                            json_output,
+                            command="build",
+                        )
+                if cache and cache_path is not None:
+                    try:
+                        shutil.copy2(output_artifact, cache_path)
+                    except OSError as exc:
+                        warnings.append(f"Cache write failed: {exc}")
 
     if is_wasm:
         output_wasm = output_artifact
@@ -5437,7 +5948,7 @@ def build(
                 runtime_reloc,
                 reloc=True,
                 json_output=json_output,
-                profile=profile,
+                cargo_profile=runtime_cargo_profile,
                 cargo_timeout=cargo_timeout,
                 project_root=molt_root,
             ):
@@ -5697,7 +6208,7 @@ int main(int argc, char** argv) {
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     if runtime_lib is None:
-        profile_dir = _cargo_profile_dir(profile)
+        profile_dir = _cargo_profile_dir(runtime_cargo_profile)
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
@@ -5739,6 +6250,11 @@ int main(int argc, char** argv) {
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
+    linker_hint: str | None = None
+    if profile == "dev":
+        linker_hint = _resolve_dev_linker()
+        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
+            link_cmd.append(f"-fuse-ld={linker_hint}")
     if sys.platform == "darwin" and not target_triple:
         link_cmd = _strip_arch_flags(link_cmd)
         arch = (
@@ -5775,6 +6291,24 @@ int main(int argc, char** argv) {
         )
     except subprocess.TimeoutExpired:
         return _fail("Linker timed out", json_output, command="build")
+
+    if link_process.returncode != 0 and linker_hint is not None:
+        retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
+        if retry_cmd != link_cmd:
+            try:
+                retry_process = subprocess.run(
+                    retry_cmd,
+                    capture_output=json_output,
+                    text=True,
+                    timeout=link_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail("Linker timed out", json_output, command="build")
+            if retry_process.returncode == 0:
+                warnings.append(
+                    f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
+                )
+                link_process = retry_process
 
     if link_process.returncode == 0:
         if json_output:
@@ -5866,6 +6400,7 @@ def run_script(
     trusted: bool = False,
     capabilities: CapabilityInput | None = None,
     build_args: list[str] | None = None,
+    build_profile: BuildProfile | None = None,
 ) -> int:
     if file_path and module:
         return _fail(
@@ -5918,6 +6453,8 @@ def run_script(
 
     build_args = list(build_args or [])
     capabilities_tmp: Path | None = None
+    if build_profile is not None and not _build_args_has_profile_flag(build_args):
+        build_args.extend(["--profile", build_profile])
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
@@ -6085,6 +6622,7 @@ def compare(
     capabilities: CapabilityInput | None = None,
     build_args: list[str] | None = None,
     rebuild: bool = False,
+    build_profile: BuildProfile | None = None,
 ) -> int:
     if file_path and module:
         return _fail(
@@ -6138,6 +6676,8 @@ def compare(
 
     build_args = list(build_args or [])
     capabilities_tmp: Path | None = None
+    if build_profile is not None and not _build_args_has_profile_flag(build_args):
+        build_args.extend(["--profile", build_profile])
     if rebuild and not _build_args_has_cache_flag(build_args):
         build_args.append("--no-cache")
     if trusted and not _build_args_has_trusted_flag(build_args):
@@ -6329,6 +6869,7 @@ def compare(
 def diff(
     file_path: str | None,
     python_version: str | None,
+    build_profile: BuildProfile | None = None,
     trusted: bool = False,
     json_output: bool = False,
     verbose: bool = False,
@@ -6343,6 +6884,8 @@ def diff(
     cmd = [sys.executable, "tests/molt_diff.py"]
     if python_version:
         cmd.extend(["--python-version", python_version])
+    if build_profile is not None:
+        cmd.extend(["--build-profile", build_profile])
     if file_path:
         cmd.append(file_path)
     return _run_command(
@@ -6375,6 +6918,7 @@ def test(
     file_path: str | None,
     python_version: str | None,
     pytest_args: list[str],
+    build_profile: BuildProfile | None = None,
     trusted: bool = False,
     json_output: bool = False,
     verbose: bool = False,
@@ -6392,6 +6936,8 @@ def test(
         cmd = [sys.executable, "tests/molt_diff.py"]
         if python_version:
             cmd.extend(["--python-version", python_version])
+        if build_profile is not None:
+            cmd.extend(["--build-profile", build_profile])
         if file_path:
             cmd.append(file_path)
     else:
@@ -8340,6 +8886,7 @@ def _completion_script(shell: str) -> str:
             "--emit",
             "--emit-ir",
             "--profile",
+            "--build-profile",
             "--deterministic",
             "--no-deterministic",
             "--deterministic-warn",
@@ -8370,6 +8917,8 @@ def _completion_script(shell: str) -> str:
         "run": [
             "--module",
             "--build-arg",
+            "--profile",
+            "--build-profile",
             "--rebuild",
             "--timing",
             "--capabilities",
@@ -8383,6 +8932,8 @@ def _completion_script(shell: str) -> str:
             "--python-version",
             "--module",
             "--build-arg",
+            "--profile",
+            "--build-profile",
             "--rebuild",
             "--capabilities",
             "--trusted",
@@ -8393,6 +8944,8 @@ def _completion_script(shell: str) -> str:
         "test": [
             "--suite",
             "--python-version",
+            "--profile",
+            "--build-profile",
             "--trusted",
             "--no-trusted",
             "--json",
@@ -8400,6 +8953,8 @@ def _completion_script(shell: str) -> str:
         ],
         "diff": [
             "--python-version",
+            "--profile",
+            "--build-profile",
             "--trusted",
             "--no-trusted",
             "--json",
@@ -8649,7 +9204,36 @@ def _build_args_has_capabilities_flag(args: list[str]) -> bool:
     return False
 
 
+def _build_args_has_profile_flag(args: list[str]) -> bool:
+    for arg in args:
+        if (
+            arg == "--profile"
+            or arg.startswith("--profile=")
+            or arg == "--build-profile"
+            or arg.startswith("--build-profile=")
+        ):
+            return True
+    return False
+
+
+def _ensure_cli_hash_seed() -> None:
+    desired = os.environ.get(_HASH_SEED_OVERRIDE_ENV, "0").strip()
+    if not desired:
+        desired = "0"
+    if desired.lower() in {"off", "disable", "random"}:
+        return
+    if os.environ.get("PYTHONHASHSEED") == desired:
+        return
+    if os.environ.get(_HASH_SEED_SENTINEL_ENV) == "1":
+        return
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = desired
+    env[_HASH_SEED_SENTINEL_ENV] = "1"
+    os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
+
+
 def main() -> int:
+    _ensure_cli_hash_seed()
     parser = argparse.ArgumentParser(prog="molt")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -8745,6 +9329,7 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--profile",
+        "--build-profile",
         choices=["dev", "release"],
         default=None,
         help="Build profile for backend/runtime (default: release).",
@@ -8852,6 +9437,13 @@ def main() -> int:
         help="Extra args passed to `molt build`.",
     )
     run_parser.add_argument(
+        "--profile",
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile passed to `molt build` (default: dev).",
+    )
+    run_parser.add_argument(
         "--rebuild",
         action="store_true",
         help="Disable build cache for `molt build`.",
@@ -8906,6 +9498,13 @@ def main() -> int:
         help="Extra args passed to `molt build` for the Molt side.",
     )
     compare_parser.add_argument(
+        "--profile",
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile passed to `molt build` (default: dev).",
+    )
+    compare_parser.add_argument(
         "--rebuild",
         action="store_true",
         help="Disable build cache for the Molt build.",
@@ -8944,6 +9543,13 @@ def main() -> int:
         help="Python version for diff suite (e.g. 3.13).",
     )
     test_parser.add_argument(
+        "--profile",
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile for Molt builds in suite=diff (default: dev).",
+    )
+    test_parser.add_argument(
         "--trusted",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -8968,6 +9574,13 @@ def main() -> int:
     diff_parser.add_argument("path", nargs="?", help="File or directory to test.")
     diff_parser.add_argument(
         "--python-version", help="Python version to test against (e.g. 3.13)."
+    )
+    diff_parser.add_argument(
+        "--profile",
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile for Molt builds in the diff harness (default: dev).",
     )
     diff_parser.add_argument(
         "--trusted",
@@ -9404,6 +10017,7 @@ def main() -> int:
     config = _load_molt_config(config_root)
     build_cfg = _resolve_build_config(config)
     run_cfg = _resolve_command_config(config, "run")
+    compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
     publish_cfg = _resolve_command_config(config, "publish")
@@ -9547,6 +10161,20 @@ def main() -> int:
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
+        run_profile = (
+            args.profile
+            or run_cfg.get("profile")
+            or run_cfg.get("build_profile")
+            or build_cfg.get("profile")
+            or build_cfg.get("build_profile")
+            or "dev"
+        )
+        if run_profile is not None and run_profile not in {"dev", "release"}:
+            return _fail(
+                f"Invalid run profile: {run_profile}",
+                args.json,
+                command="run",
+            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(run_cfg.get("trusted"), False)
@@ -9563,15 +10191,38 @@ def main() -> int:
             trusted,
             capabilities,
             build_args,
+            cast(BuildProfile | None, run_profile),
         )
     if args.command == "compare":
         python_exe = args.python or args.python_version
         build_args = _strip_leading_double_dash(args.build_arg)
+        compare_profile = (
+            args.profile
+            or compare_cfg.get("profile")
+            or compare_cfg.get("build_profile")
+            or run_cfg.get("profile")
+            or run_cfg.get("build_profile")
+            or build_cfg.get("profile")
+            or build_cfg.get("build_profile")
+            or "dev"
+        )
+        if compare_profile is not None and compare_profile not in {"dev", "release"}:
+            return _fail(
+                f"Invalid compare profile: {compare_profile}",
+                args.json,
+                command="compare",
+            )
         trusted = args.trusted
         if trusted is None:
-            trusted = _coerce_bool(run_cfg.get("trusted"), False)
+            trusted = _coerce_bool(
+                compare_cfg.get("trusted", run_cfg.get("trusted")),
+                False,
+            )
         capabilities = (
-            args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
+            args.capabilities
+            or compare_cfg.get("capabilities")
+            or run_cfg.get("capabilities")
+            or cfg_capabilities
         )
         return compare(
             args.file,
@@ -9584,11 +10235,26 @@ def main() -> int:
             capabilities,
             build_args,
             args.rebuild,
+            cast(BuildProfile | None, compare_profile),
         )
     if args.command == "test":
         pytest_args = _strip_leading_double_dash(args.pytest_args)
         if args.suite == "dev" and (args.path or pytest_args) and args.verbose:
             print("Ignoring extra args for suite=dev.")
+        test_profile = (
+            args.profile
+            or test_cfg.get("profile")
+            or test_cfg.get("build_profile")
+            or build_cfg.get("profile")
+            or build_cfg.get("build_profile")
+            or "dev"
+        )
+        if test_profile is not None and test_profile not in {"dev", "release"}:
+            return _fail(
+                f"Invalid test profile: {test_profile}",
+                args.json,
+                command="test",
+            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(test_cfg.get("trusted"), False)
@@ -9597,17 +10263,33 @@ def main() -> int:
             args.path,
             args.python_version,
             pytest_args,
+            cast(BuildProfile | None, test_profile),
             trusted,
             args.json,
             args.verbose,
         )
     if args.command == "diff":
+        diff_profile = (
+            args.profile
+            or diff_cfg.get("profile")
+            or diff_cfg.get("build_profile")
+            or build_cfg.get("profile")
+            or build_cfg.get("build_profile")
+            or "dev"
+        )
+        if diff_profile is not None and diff_profile not in {"dev", "release"}:
+            return _fail(
+                f"Invalid diff profile: {diff_profile}",
+                args.json,
+                command="diff",
+            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(diff_cfg.get("trusted"), False)
         return diff(
             args.path,
             args.python_version,
+            cast(BuildProfile | None, diff_profile),
             trusted,
             args.json,
             args.verbose,

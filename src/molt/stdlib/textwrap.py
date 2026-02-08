@@ -1,8 +1,14 @@
-"""Minimal textwrap support for Molt."""
+"""Intrinsic-backed textwrap subset for Molt."""
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 __all__ = ["TextWrapper", "indent"]
+
+_MOLT_TEXTWRAP_WRAP = _require_intrinsic("molt_textwrap_wrap", globals())
+_MOLT_TEXTWRAP_FILL = _require_intrinsic("molt_textwrap_fill", globals())
+_MOLT_TEXTWRAP_INDENT = _require_intrinsic("molt_textwrap_indent", globals())
 
 
 class TextWrapper:
@@ -10,23 +16,20 @@ class TextWrapper:
         self.width = int(width)
 
     def wrap(self, text: str) -> list[str]:
-        words = text.split()
-        if not words:
-            return []
-        lines: list[str] = []
-        current = words[0]
-        for word in words[1:]:
-            if len(current) + 1 + len(word) <= self.width:
-                current = f"{current} {word}"
-            else:
-                lines.append(current)
-                current = word
-        lines.append(current)
-        return lines
+        out = _MOLT_TEXTWRAP_WRAP(text, self.width)
+        if not isinstance(out, list) or not all(isinstance(item, str) for item in out):
+            raise RuntimeError("textwrap.wrap intrinsic returned invalid value")
+        return list(out)
 
     def fill(self, text: str) -> str:
-        return "\n".join(self.wrap(text))
+        out = _MOLT_TEXTWRAP_FILL(text, self.width)
+        if not isinstance(out, str):
+            raise RuntimeError("textwrap.fill intrinsic returned invalid value")
+        return out
 
 
 def indent(text: str, prefix: str) -> str:
-    return "\n".join(prefix + line for line in text.split("\n"))
+    out = _MOLT_TEXTWRAP_INDENT(text, prefix)
+    if not isinstance(out, str):
+        raise RuntimeError("textwrap.indent intrinsic returned invalid value")
+    return out

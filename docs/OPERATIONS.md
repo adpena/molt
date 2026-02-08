@@ -16,10 +16,49 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 
 ## Differential Suite (Operational Controls)
 - **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
+- **Build profile default**: diff harness defaults to `--build-profile dev` (override with `--build-profile release` or `MOLT_DIFF_BUILD_PROFILE=release` for release validation).
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
 - **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
+- **Wrapper policy**: diff runs disable `RUSTC_WRAPPER`/`sccache` by default for portability. Opt in with `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` on hosts where wrapper caches are known-good.
+
+## Build Throughput (Multi-Agent)
+- **Stable cache keys**: the CLI enforces `PYTHONHASHSEED=0` by default to keep IR/cache keys deterministic across invocations.
+- **Hash-seed override**: set `MOLT_HASH_SEED=<value>` to override; set `MOLT_HASH_SEED=random` to opt out.
+- **Cache invalidation scope**: object-cache keys use IR payload + runtime/backend fingerprint. Unrelated stdlib file edits do not invalidate every cached object unless they affect generated IR for that build.
+- **Lock-check cache**: deterministic lock checks are cached in `target/lock_checks/` to avoid repeated `uv lock --check` and `cargo metadata --locked` on every build.
+- **Concurrent rebuild suppression**: backend/runtime Cargo rebuilds acquire file locks under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` so parallel agents sharing a target dir wait instead of duplicating rebuilds.
+- **Build state override**: set `MOLT_BUILD_STATE_DIR=<path>` to pin lock/fingerprint metadata to a custom shared location; by default it lives under `<CARGO_TARGET_DIR>/.molt_state/`.
+- **sccache auto-enable**: the CLI enables `sccache` automatically when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable. Cargo builds now auto-retry once without `RUSTC_WRAPPER` when a wrapper-level `sccache` failure is detected.
+- **Dev profile routing**: `molt ... --profile dev` maps to Cargo profile `dev-fast` by default. Override with `MOLT_DEV_CARGO_PROFILE`; use `MOLT_RELEASE_CARGO_PROFILE` for release lane overrides.
+- **Backend daemon**: native backend compiles use a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and in-daemon object cache size with `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- **Daemon lifecycle**: daemon sockets/logs/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile.
+- **Bootstrap command**: `tools/throughput_env.sh --apply` (or `eval "$(tools/throughput_env.sh --print)"`) configures:
+  - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache` when external volume exists
+  - `CARGO_TARGET_DIR=~/.molt/throughput_target` (local APFS/ext4 for Rust incremental hard-links)
+  - `SCCACHE_DIR=/Volumes/APDataStore/Molt/sccache` and `SCCACHE_CACHE_SIZE=20G` on external, else local `10G`
+  - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
+- **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using defaults (external `200G` + `30` days, local `30G` + `30` days). Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
+- **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
+  - Example: `uv run --python 3.12 python3 tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Users/$USER/.molt/throughput_target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
+  - Output: `matrix_results.json` under the output root (`/Volumes/APDataStore/Molt/...` by default when present).
+  - If rustc prints incremental hard-link fallback warnings, move `--shared-target-dir` to a local APFS/ext4 path.
+
+### Fast Dev Playbook (Recommended)
+1. `tools/throughput_env.sh --apply`
+2. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
+3. `MOLT_DIFF_MEASURE_RSS=1 UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 tests/differential/basic`
+
+Expected behavior in this lane:
+- Runtime/backend Cargo crates rebuild once per fingerprint and profile, with parallel agents waiting on shared build locks.
+- Backend codegen uses the persistent daemon for native builds when available (fewer cold starts across repeated builds).
+- Per-script object artifacts are reused via `MOLT_CACHE` keying when IR+fingerprint inputs are unchanged.
+
+When throughput regresses unexpectedly:
+1. Check lock contention under `<CARGO_TARGET_DIR>/.molt_state/build_locks/`.
+2. Check `sccache -s` hit rates and wrapper disable/retry logs.
+3. Run `tools/throughput_matrix.py` to isolate profile/wrapper/concurrency regressions.
 
 ## Remote Access and Persistent Sessions
 This project assumes persistent terminal sessions and remote access.

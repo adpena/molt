@@ -1,4 +1,4 @@
-"""Minimal intrinsic-friendly http.server subset for Molt."""
+"""Minimal intrinsic-first http.server subset for Molt."""
 
 from __future__ import annotations
 
@@ -7,16 +7,36 @@ import socketserver
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
-
-
-_REASON_PHRASES = {
-    101: "Switching Protocols",
-    200: "OK",
-    400: "Bad Request",
-    404: "Not Found",
-    500: "Internal Server Error",
-    501: "Not Implemented",
-}
+_MOLT_HTTP_SERVER_READ_REQUEST = _require_intrinsic(
+    "molt_http_server_read_request", globals()
+)
+_MOLT_HTTP_SERVER_COMPUTE_CLOSE_CONNECTION = _require_intrinsic(
+    "molt_http_server_compute_close_connection", globals()
+)
+_MOLT_HTTP_SERVER_HANDLE_ONE_REQUEST = _require_intrinsic(
+    "molt_http_server_handle_one_request", globals()
+)
+_MOLT_HTTP_SERVER_SEND_RESPONSE = _require_intrinsic(
+    "molt_http_server_send_response", globals()
+)
+_MOLT_HTTP_SERVER_SEND_RESPONSE_ONLY = _require_intrinsic(
+    "molt_http_server_send_response_only", globals()
+)
+_MOLT_HTTP_SERVER_SEND_HEADER = _require_intrinsic(
+    "molt_http_server_send_header", globals()
+)
+_MOLT_HTTP_SERVER_END_HEADERS = _require_intrinsic(
+    "molt_http_server_end_headers", globals()
+)
+_MOLT_HTTP_SERVER_SEND_ERROR = _require_intrinsic(
+    "molt_http_server_send_error", globals()
+)
+_MOLT_HTTP_SERVER_VERSION_STRING = _require_intrinsic(
+    "molt_http_server_version_string", globals()
+)
+_MOLT_HTTP_SERVER_DATE_TIME_STRING = _require_intrinsic(
+    "molt_http_server_date_time_string", globals()
+)
 
 
 class HTTPServer(socketserver.TCPServer):
@@ -31,49 +51,34 @@ class BaseHTTPRequestHandler(socketserver.StreamRequestHandler):
     server_version = "BaseHTTP/0.6"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    default_request_version = "HTTP/0.9"
 
     def handle(self) -> None:
-        request_line = self.rfile.readline(65537)
-        if not request_line:
-            return
-        text = request_line.decode("iso-8859-1", "surrogateescape").rstrip("\r\n")
-        parts = text.split()
-        if len(parts) < 3:
-            return
-        self.command = parts[0]
-        self.path = parts[1]
-        self.request_version = parts[2]
-        self.headers: dict[str, str] = {}
-        while True:
-            line = self.rfile.readline(65537)
-            if not line or line in (b"\r\n", b"\n"):
-                break
-            line_text = line.decode("iso-8859-1", "surrogateescape").rstrip("\r\n")
-            if ":" not in line_text:
-                continue
-            key, value = line_text.split(":", 1)
-            self.headers[key.strip()] = value.lstrip()
-        method_name = f"do_{self.command}"
-        handler = getattr(self, method_name, None)
-        if handler is None:
-            self.send_response(501)
-            self.end_headers()
-            return
-        handler()
+        while bool(_MOLT_HTTP_SERVER_HANDLE_ONE_REQUEST(self)):
+            pass
 
     def send_response(self, code: int, message: str | None = None) -> None:
-        reason = message if message is not None else _REASON_PHRASES.get(code, "")
-        line = f"HTTP/1.1 {int(code)} {reason}\r\n".encode("ascii", "surrogateescape")
-        self.wfile.write(line)
+        _MOLT_HTTP_SERVER_SEND_RESPONSE(self, int(code), message)
+
+    def send_response_only(self, code: int, message: str | None = None) -> None:
+        _MOLT_HTTP_SERVER_SEND_RESPONSE_ONLY(self, int(code), message)
+
+    def version_string(self) -> str:
+        return str(
+            _MOLT_HTTP_SERVER_VERSION_STRING(self.server_version, self.sys_version)
+        )
+
+    def date_time_string(self, timestamp: float | None = None) -> str:
+        return str(_MOLT_HTTP_SERVER_DATE_TIME_STRING(timestamp))
 
     def send_header(self, keyword: str, value: str) -> None:
-        line = f"{keyword}: {value}\r\n".encode("ascii", "surrogateescape")
-        self.wfile.write(line)
+        _MOLT_HTTP_SERVER_SEND_HEADER(self, keyword, value)
 
     def end_headers(self) -> None:
-        self.wfile.write(b"\r\n")
-        if hasattr(self.wfile, "flush"):
-            self.wfile.flush()
+        _MOLT_HTTP_SERVER_END_HEADERS(self)
+
+    def send_error(self, code: int, message: str | None = None) -> None:
+        _MOLT_HTTP_SERVER_SEND_ERROR(self, int(code), message)
 
     def log_message(self, format: str, *args: object) -> None:
         del format, args

@@ -1993,9 +1993,7 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
 fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     let pair_bits = molt_iter_next(iter_bits);
     let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return None;
-    };
+    let pair_ptr = pair_obj.as_ptr()?;
     unsafe {
         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");

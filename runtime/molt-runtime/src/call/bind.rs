@@ -66,15 +66,10 @@ unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> bool {
 }
 
 unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
-    let Some(field_names_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
-    else {
-        return None;
-    };
+    let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
     let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
     dec_ref_bits(_py, field_names_name);
-    let Some(field_names_bits) = field_names_bits else {
-        return None;
-    };
+    let field_names_bits = field_names_bits?;
     let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
         return Some(raise_exception::<_>(
             _py,
@@ -2071,14 +2066,14 @@ unsafe fn bind_builtin_class_text_io_wrapper(
     if values[0].is_none() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'buffer'");
     }
-    for idx in 1..=3 {
-        if values[idx].is_none() {
-            values[idx] = Some(MoltObject::none().bits());
+    for slot in values.iter_mut().take(4).skip(1) {
+        if slot.is_none() {
+            *slot = Some(MoltObject::none().bits());
         }
     }
-    for idx in 4..=5 {
-        if values[idx].is_none() {
-            values[idx] = Some(MoltObject::from_bool(false).bits());
+    for slot in values.iter_mut().take(6).skip(4) {
+        if slot.is_none() {
+            *slot = Some(MoltObject::from_bool(false).bits());
         }
     }
     Some(values.into_iter().flatten().collect())

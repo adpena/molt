@@ -637,12 +637,8 @@ fn collect_real_vec(_py: &PyToken<'_>, iter_bits: u64) -> Option<Vec<f64>> {
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
-            let Some(real) = coerce_real(_py, val_bits) else {
-                return None;
-            };
-            let Some(f) = coerce_to_f64(_py, real) else {
-                return None;
-            };
+            let real = coerce_real(_py, val_bits)?;
+            let f = coerce_to_f64(_py, real)?;
             out.push(f);
         }
     }

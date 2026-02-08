@@ -53,6 +53,9 @@ __all__ = [
     "version",
     "version_info",
     "path",
+    "meta_path",
+    "path_hooks",
+    "path_importer_cache",
     "modules",
     "stdin",
     "stdout",
@@ -136,6 +139,9 @@ platform = _resolve_platform()
 version = _MOLT_SYS_VERSION()
 version_info = cast(tuple[object, ...], _MOLT_SYS_VERSION_INFO())
 path: list[str] = []
+meta_path: list[object] = []
+path_hooks: list[object] = []
+path_importer_cache: dict[str, object] = {}
 
 
 def _bootstrap_module_file() -> str | None:

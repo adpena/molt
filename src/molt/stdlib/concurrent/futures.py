@@ -7,6 +7,7 @@ callbacks/cancellation semantics.
 
 from __future__ import annotations
 
+import abc as _abc
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, TYPE_CHECKING
@@ -22,8 +23,7 @@ from builtins import TimeoutError as _BuiltinTimeoutError
 
 if TYPE_CHECKING:
 
-    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any:
-        raise NotImplementedError
+    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any: ...
 
 
 class CancelledError(Exception):
@@ -200,12 +200,14 @@ class Future:
                 pass
 
 
-class Executor:
-    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        raise NotImplementedError
+class Executor(_abc.ABC):
+    @_abc.abstractmethod
+    def submit(
+        self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Future: ...
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: ...
 
     def __enter__(self) -> "Executor":
         return self

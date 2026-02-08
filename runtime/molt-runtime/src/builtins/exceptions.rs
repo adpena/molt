@@ -1495,6 +1495,23 @@ fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u6
     }
 }
 
+fn exception_dict_attr_bits(_py: &PyToken<'_>, ptr: *mut u8, name: &[u8]) -> Option<u64> {
+    let dict_bits = unsafe { exception_dict_bits(ptr) };
+    if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
+        return None;
+    }
+    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        let key_bits = attr_name_bits_from_bytes(_py, name)?;
+        let out = dict_get_in_place(_py, dict_ptr, key_bits);
+        dec_ref_bits(_py, key_bits);
+        out
+    }
+}
+
 fn exception_group_collect_exceptions(
     _py: &PyToken<'_>,
     exceptions_bits: u64,
@@ -2820,6 +2837,22 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
             return msg;
         }
     }
+    if kind == "HTTPError" {
+        if let (Some(code_bits), Some(msg_bits)) = (
+            exception_dict_attr_bits(_py, ptr, b"code"),
+            exception_dict_attr_bits(_py, ptr, b"msg"),
+        ) {
+            let code = format_obj_str(_py, obj_from_bits(code_bits));
+            let msg = format_obj_str(_py, obj_from_bits(msg_bits));
+            return format!("HTTP Error {code}: {msg}");
+        }
+    }
+    if kind == "URLError" || kind == "ContentTooShortError" {
+        if let Some(reason_bits) = exception_dict_attr_bits(_py, ptr, b"reason") {
+            let reason = format_obj_str(_py, obj_from_bits(reason_bits));
+            return format!("<urlopen error {reason}>");
+        }
+    }
     let base_group_bits = builtin_classes(_py).base_exception_group;
     if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
         let msg_bits = exception_group_message_bits(_py, ptr);
@@ -3116,9 +3149,7 @@ unsafe fn frame_line_from_entry(entry: FrameEntry) -> Option<i64> {
     if entry.code_bits == 0 {
         return None;
     }
-    let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() else {
-        return None;
-    };
+    let code_ptr = obj_from_bits(entry.code_bits).as_ptr()?;
     if object_type_id(code_ptr) != TYPE_ID_CODE {
         return None;
     }

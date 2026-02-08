@@ -23,15 +23,10 @@ unsafe fn alloc_dataclass_for_class_ptr(
     class_ptr: *mut u8,
     class_bits: u64,
 ) -> Option<u64> {
-    let Some(field_names_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
-    else {
-        return None;
-    };
+    let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
     let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
     dec_ref_bits(_py, field_names_name);
-    let Some(field_names_bits) = field_names_bits else {
-        return None;
-    };
+    let field_names_bits = field_names_bits?;
     let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
         return Some(raise_exception::<_>(
             _py,
@@ -741,6 +736,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
     ptr
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn alloc_code_obj(
     _py: &PyToken<'_>,
     filename_bits: u64,

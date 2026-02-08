@@ -37,18 +37,14 @@ WRAPPER_ASSIGNMENTS = (
 WRAPPER_UPDATES = ("__dict__",)
 
 
-def _as_callable(name: str):
-    return _require_intrinsic(name, globals())
-
-
-_MOLT_KWD_MARK = _as_callable("molt_functools_kwd_mark")
-_MOLT_UPDATE_WRAPPER = _as_callable("molt_functools_update_wrapper")
-_MOLT_WRAPS = _as_callable("molt_functools_wraps")
-_MOLT_CMP_TO_KEY = _as_callable("molt_functools_cmp_to_key")
-_MOLT_TOTAL_ORDERING = _as_callable("molt_functools_total_ordering")
-_MOLT_PARTIAL = _as_callable("molt_functools_partial")
-_MOLT_REDUCE = _as_callable("molt_functools_reduce")
-_MOLT_LRU_CACHE = _as_callable("molt_functools_lru_cache")
+_MOLT_KWD_MARK = _require_intrinsic("molt_functools_kwd_mark", globals())
+_MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper", globals())
+_MOLT_WRAPS = _require_intrinsic("molt_functools_wraps", globals())
+_MOLT_CMP_TO_KEY = _require_intrinsic("molt_functools_cmp_to_key", globals())
+_MOLT_TOTAL_ORDERING = _require_intrinsic("molt_functools_total_ordering", globals())
+_MOLT_PARTIAL = _require_intrinsic("molt_functools_partial", globals())
+_MOLT_REDUCE = _require_intrinsic("molt_functools_reduce", globals())
+_MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache", globals())
 
 _MISSING = _MOLT_KWD_MARK()
 
