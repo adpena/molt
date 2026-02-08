@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import abc as _abc
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 TYPE_CHECKING = False
@@ -55,6 +57,9 @@ _MOLT_PATH_EXPANDVARS_ENV = _require_intrinsic("molt_path_expandvars_env", globa
 _MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs", globals())
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
 _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile", globals())
+_MOLT_PATH_ISLINK = _require_intrinsic("molt_path_islink", globals())
+_MOLT_PATH_READLINK = _require_intrinsic("molt_path_readlink", globals())
+_MOLT_PATH_SYMLINK = _require_intrinsic("molt_path_symlink", globals())
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
 _MOLT_OS_READ = _require_intrinsic("molt_os_read", globals())
 _MOLT_OS_WRITE = _require_intrinsic("molt_os_write", globals())
@@ -105,6 +110,8 @@ __all__ = [
     "set_inheritable",
     "unlink",
     "remove",
+    "readlink",
+    "symlink",
     "environ",
     "path",
     "PathLike",
@@ -349,11 +356,11 @@ class _Environ:
         return _molt_env_snapshot().values()
 
 
-class PathLike:
+class PathLike(_abc.ABC):
     __slots__ = ()
 
-    def __fspath__(self) -> str | bytes:
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def __fspath__(self) -> str | bytes: ...
 
 
 def fspath(path: Any) -> str | bytes:
@@ -467,6 +474,12 @@ class _Path:
         return bool(intrinsic(path))
 
     @staticmethod
+    def islink(path: Any) -> bool:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISLINK, "molt_path_islink")
+        return bool(intrinsic(path))
+
+    @staticmethod
     def unlink(path: Any) -> None:
         _require_cap("fs.write")
         intrinsic = _require_callable_intrinsic(_MOLT_PATH_UNLINK, "molt_path_unlink")
@@ -534,6 +547,28 @@ def unlink(path: Any) -> None:
 
 def remove(path: Any) -> None:
     unlink(path)
+
+
+def readlink(path: Any, *, dir_fd: int | None = None) -> str:
+    _require_cap("fs.read")
+    if dir_fd is not None:
+        raise NotImplementedError("os.readlink(dir_fd=...) is not supported")
+    intrinsic = _require_callable_intrinsic(_MOLT_PATH_READLINK, "molt_path_readlink")
+    return _expect_str(intrinsic(path), "path_readlink")
+
+
+def symlink(
+    src: Any,
+    dst: Any,
+    target_is_directory: bool = False,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    _require_cap("fs.write")
+    if dir_fd is not None:
+        raise NotImplementedError("os.symlink(dir_fd=...) is not supported")
+    intrinsic = _require_callable_intrinsic(_MOLT_PATH_SYMLINK, "molt_path_symlink")
+    intrinsic(src, dst, bool(target_is_directory))
 
 
 def rmdir(path: Any) -> None:

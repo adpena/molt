@@ -1,5 +1,6 @@
 use crate::PyToken;
 use molt_obj_model::MoltObject;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
@@ -7,15 +8,16 @@ use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::module_attr_lookup;
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
-    alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
+    alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
     class_name_for_error, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
     dict_set_in_place, exception_pending, format_exception_with_traceback, has_capability,
-    inc_ref_bits, init_atomic_bits, int_bits_from_i64, intern_static_name, is_truthy,
-    module_dict_bits, module_name_bits, molt_exception_kind, molt_exception_last,
-    molt_int_from_obj, molt_is_callable, molt_iter, molt_iter_next, obj_eq, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, seq_vec_ref, set_add_in_place, string_bytes,
-    string_len, string_obj_to_owned, to_i64, type_name, type_of_bits, TYPE_ID_DICT, TYPE_ID_MODULE,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    inc_ref_bits, init_atomic_bits, int_bits_from_i64, intern_static_name, is_missing_bits,
+    is_truthy, missing_bits, module_dict_bits, module_name_bits, molt_exception_kind,
+    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter,
+    molt_iter_next, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    seq_vec_ref, set_add_in_place, string_bytes, string_len, string_obj_to_owned, to_i64,
+    type_name, type_of_bits, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -406,6 +408,70 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                 MoltObject::none().bits()
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if !exception_pending(_py) {
+            let mut canonical_bits: Option<u64> = None;
+            let sys_bits = {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                guard.get("sys").copied()
+            };
+            if let Some(sys_bits) = sys_bits {
+                if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                    let from_sys_bits = unsafe { dict_get_in_place(_py, modules_ptr, name_bits) };
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if let Some(bits) = from_sys_bits {
+                        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                            let ty = unsafe { object_type_id(ptr) };
+                            if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                                canonical_bits = Some(bits);
+                            }
+                        }
+                    }
+                }
+            }
+            if canonical_bits.is_none() {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                if let Some(bits) = guard.get(&name) {
+                    if let Some(ptr) = obj_from_bits(*bits).as_ptr() {
+                        let ty = unsafe { object_type_id(ptr) };
+                        if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                            canonical_bits = Some(*bits);
+                        }
+                    }
+                }
+            }
+            if let Some(bits) = canonical_bits {
+                if bits != module_bits {
+                    if !obj_from_bits(module_bits).is_none() {
+                        dec_ref_bits(_py, module_bits);
+                    }
+                    inc_ref_bits(_py, bits);
+                }
+                return bits;
+            }
+            let module_obj = obj_from_bits(module_bits);
+            if !module_obj.is_none() {
+                let is_valid_module = if let Some(ptr) = module_obj.as_ptr() {
+                    let ty = unsafe { object_type_id(ptr) };
+                    ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
+                } else {
+                    false
+                };
+                if !is_valid_module {
+                    let got = type_name(_py, module_obj);
+                    dec_ref_bits(_py, module_bits);
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!("import returned non-module payload: {got}"),
+                    );
+                }
+            }
+        }
         if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
             let msg = format!("No module named '{name}'");
             return raise_exception::<_>(_py, "ImportError", &msg);
@@ -439,11 +505,349 @@ unsafe fn dict_set_str_key_bits(
     Ok(())
 }
 
+unsafe fn runpy_import_module_bits(_py: &PyToken<'_>, name: &str) -> Result<u64, u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let name_ptr = alloc_string(_py, name.as_bytes());
+        if name_ptr.is_null() {
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let module_bits = molt_isolate_import(name_bits);
+        let name_text =
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| name.to_string());
+        let mut canonical_bits: Option<u64> = None;
+        if !exception_pending(_py) {
+            // Prefer canonical module handles from sys.modules when isolate-import
+            // returns non-module payloads (status sentinels, accidental scalar values, etc).
+            let sys_bits = {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                guard.get("sys").copied()
+            };
+            if let Some(sys_bits) = sys_bits {
+                if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                    let module_key_ptr = alloc_string(_py, name_text.as_bytes());
+                    if module_key_ptr.is_null() {
+                        dec_ref_bits(_py, name_bits);
+                        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                    }
+                    let module_key_bits = MoltObject::from_ptr(module_key_ptr).bits();
+                    let from_sys_bits = dict_get_in_place(_py, modules_ptr, module_key_bits);
+                    dec_ref_bits(_py, module_key_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, name_bits);
+                        return Err(MoltObject::none().bits());
+                    }
+                    if let Some(bits) = from_sys_bits {
+                        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                            let ty = object_type_id(ptr);
+                            if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                                canonical_bits = Some(bits);
+                            }
+                        }
+                    }
+                }
+            }
+            if canonical_bits.is_none() {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                if let Some(bits) = guard.get(name) {
+                    if let Some(ptr) = obj_from_bits(*bits).as_ptr() {
+                        let ty = object_type_id(ptr);
+                        if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                            canonical_bits = Some(*bits);
+                        }
+                    }
+                }
+            }
+        }
+        dec_ref_bits(_py, name_bits);
+
+        if let Some(bits) = canonical_bits {
+            if bits != module_bits {
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                inc_ref_bits(_py, bits);
+            }
+            return Ok(bits);
+        }
+
+        if let Some(ptr) = obj_from_bits(module_bits).as_ptr() {
+            let ty = object_type_id(ptr);
+            if ty != TYPE_ID_MODULE && ty != TYPE_ID_DICT {
+                let type_name = type_name(_py, obj_from_bits(module_bits));
+                dec_ref_bits(_py, module_bits);
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("runpy import returned non-module payload: {type_name}"),
+                ));
+            }
+        }
+        Ok(module_bits)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+        let guard = cache.lock().unwrap();
+        if let Some(bits) = guard.get(name) {
+            inc_ref_bits(_py, *bits);
+            Ok(*bits)
+        } else {
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+unsafe fn runpy_module_dict_ptr(_py: &PyToken<'_>, module_bits: u64) -> Result<*mut u8, u64> {
+    let module_ptr = match obj_from_bits(module_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_MODULE => ptr,
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => return Ok(ptr),
+        _ => {
+            let got = type_name(_py, obj_from_bits(module_bits));
+            let msg = format!("module import expects module or dict, got {got}");
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        }
+    };
+    match obj_from_bits(module_dict_bits(module_ptr)).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => Ok(ptr),
+        _ => Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "module dict missing",
+        )),
+    }
+}
+
+unsafe fn runpy_module_is_package(_py: &PyToken<'_>, module_dict_ptr: *mut u8) -> bool {
+    static MODULE_PATH_NAME: AtomicU64 = AtomicU64::new(0);
+    let path_name = intern_static_name(_py, &MODULE_PATH_NAME, b"__path__");
+    if let Some(bits) = dict_get_in_place(_py, module_dict_ptr, path_name) {
+        return !obj_from_bits(bits).is_none();
+    }
+    false
+}
+
+unsafe fn runpy_apply_module_metadata(
+    _py: &PyToken<'_>,
+    module_dict_ptr: *mut u8,
+    out_ptr: *mut u8,
+    target_name: &str,
+) -> Result<(), u64> {
+    static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_FILE_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_CACHED_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_DOC_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let target_name_ptr = alloc_string(_py, target_name.as_bytes());
+    if target_name_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let target_name_bits = MoltObject::from_ptr(target_name_ptr).bits();
+    dict_set_str_key_bits(_py, out_ptr, "__name__", target_name_bits)?;
+    dec_ref_bits(_py, target_name_bits);
+
+    let specials: [(&str, &[u8], &AtomicU64); 6] = [
+        ("__file__", b"__file__", &MODULE_FILE_NAME),
+        ("__package__", b"__package__", &MODULE_PACKAGE_NAME),
+        ("__cached__", b"__cached__", &MODULE_CACHED_NAME),
+        ("__spec__", b"__spec__", &MODULE_SPEC_NAME),
+        ("__doc__", b"__doc__", &MODULE_DOC_NAME),
+        ("__loader__", b"__loader__", &MODULE_LOADER_NAME),
+    ];
+    for (public_name, interned, slot) in specials {
+        let key_bits = intern_static_name(_py, slot, interned);
+        let value_bits = dict_get_in_place(_py, module_dict_ptr, key_bits)
+            .unwrap_or_else(|| MoltObject::none().bits());
+        dict_set_str_key_bits(_py, out_ptr, public_name, value_bits)?;
+    }
+
+    // Keep __name__ lookup warm for metadata reads in repeated runs.
+    let _ = intern_static_name(_py, &MODULE_NAME_NAME, b"__name__");
+    Ok(())
+}
+
 fn runpy_package_name(run_name: &str) -> String {
     run_name
         .rsplit_once('.')
         .map(|(prefix, _)| prefix.to_string())
         .unwrap_or_default()
+}
+
+unsafe fn runpy_sys_path_entries(_py: &PyToken<'_>) -> Vec<String> {
+    let sys_bits = {
+        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+        let guard = cache.lock().unwrap();
+        guard.get("sys").copied()
+    };
+    let Some(sys_bits) = sys_bits else {
+        return Vec::new();
+    };
+    let Some(sys_ptr) = obj_from_bits(sys_bits).as_ptr() else {
+        return Vec::new();
+    };
+    if object_type_id(sys_ptr) != TYPE_ID_MODULE {
+        return Vec::new();
+    }
+    let path_key_ptr = alloc_string(_py, b"path");
+    if path_key_ptr.is_null() {
+        return Vec::new();
+    }
+    let path_key_bits = MoltObject::from_ptr(path_key_ptr).bits();
+    let path_bits = module_attr_lookup(_py, sys_ptr, path_key_bits);
+    dec_ref_bits(_py, path_key_bits);
+    let Some(path_bits) = path_bits else {
+        return Vec::new();
+    };
+    let Some(path_ptr) = obj_from_bits(path_bits).as_ptr() else {
+        dec_ref_bits(_py, path_bits);
+        return Vec::new();
+    };
+    let entries = seq_vec_ref(path_ptr)
+        .iter()
+        .filter_map(|&bits| string_obj_to_owned(obj_from_bits(bits)))
+        .collect::<Vec<_>>();
+    dec_ref_bits(_py, path_bits);
+    entries
+}
+
+fn runpy_normalize_candidate(path: PathBuf) -> String {
+    std::fs::canonicalize(&path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn runpy_resolve_module_source(
+    mod_name: &str,
+    sys_path: &[String],
+) -> Option<(String, String, String)> {
+    let parts = mod_name.split('.').collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+    for base in sys_path {
+        let mut cur = if base.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(base)
+        };
+        let mut matched = true;
+        for (idx, part) in parts.iter().enumerate() {
+            let last = idx + 1 == parts.len();
+            if last {
+                let file_path = cur.join(format!("{part}.py"));
+                if file_path.is_file() {
+                    let package_name = runpy_package_name(mod_name);
+                    return Some((
+                        runpy_normalize_candidate(file_path),
+                        mod_name.to_string(),
+                        package_name,
+                    ));
+                }
+                let pkg_dir = cur.join(part);
+                let init_path = pkg_dir.join("__init__.py");
+                if init_path.is_file() {
+                    let main_path = pkg_dir.join("__main__.py");
+                    if main_path.is_file() {
+                        return Some((
+                            runpy_normalize_candidate(main_path),
+                            format!("{mod_name}.__main__"),
+                            mod_name.to_string(),
+                        ));
+                    }
+                }
+                matched = false;
+            } else {
+                cur.push(part);
+                if !cur.join("__init__.py").is_file() {
+                    matched = false;
+                    break;
+                }
+            }
+        }
+        if matched {
+            continue;
+        }
+    }
+    None
+}
+
+unsafe fn runpy_make_spec_obj(_py: &PyToken<'_>, import_name: &str) -> Result<u64, u64> {
+    let name_ptr = alloc_string(_py, import_name.as_bytes());
+    if name_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let spec_ptr = alloc_module_obj(_py, name_bits);
+    if spec_ptr.is_null() {
+        dec_ref_bits(_py, name_bits);
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let spec_bits = MoltObject::from_ptr(spec_ptr).bits();
+    let dict_ptr = match obj_from_bits(module_dict_bits(spec_ptr)).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+        _ => {
+            dec_ref_bits(_py, spec_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "spec dict missing",
+            ));
+        }
+    };
+    dict_set_str_key_bits(_py, dict_ptr, "name", name_bits)?;
+    dec_ref_bits(_py, name_bits);
+    Ok(spec_bits)
+}
+
+unsafe fn runpy_apply_source_metadata(
+    _py: &PyToken<'_>,
+    out_ptr: *mut u8,
+    target_name: &str,
+    import_name: &str,
+    source_path: &str,
+    package_name: &str,
+) -> Result<(), u64> {
+    let run_name_ptr = alloc_string(_py, target_name.as_bytes());
+    if run_name_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let run_name_bits = MoltObject::from_ptr(run_name_ptr).bits();
+    dict_set_str_key_bits(_py, out_ptr, "__name__", run_name_bits)?;
+    dec_ref_bits(_py, run_name_bits);
+
+    let path_ptr = alloc_string(_py, source_path.as_bytes());
+    if path_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let path_bits = MoltObject::from_ptr(path_ptr).bits();
+    dict_set_str_key_bits(_py, out_ptr, "__file__", path_bits)?;
+    dec_ref_bits(_py, path_bits);
+
+    let pkg_ptr = alloc_string(_py, package_name.as_bytes());
+    if pkg_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let pkg_bits = MoltObject::from_ptr(pkg_ptr).bits();
+    dict_set_str_key_bits(_py, out_ptr, "__package__", pkg_bits)?;
+    dec_ref_bits(_py, pkg_bits);
+
+    let none_bits = MoltObject::none().bits();
+    dict_set_str_key_bits(_py, out_ptr, "__cached__", none_bits)?;
+    dict_set_str_key_bits(_py, out_ptr, "__doc__", none_bits)?;
+    dict_set_str_key_bits(_py, out_ptr, "__loader__", none_bits)?;
+
+    let spec_bits = runpy_make_spec_obj(_py, import_name)?;
+    dict_set_str_key_bits(_py, out_ptr, "__spec__", spec_bits)?;
+    dec_ref_bits(_py, spec_bits);
+    Ok(())
 }
 
 fn is_ascii_digits(text: &str) -> bool {
@@ -461,6 +865,319 @@ fn is_identifier_text(text: &str) -> bool {
     chars.all(|ch| ch == '_' || is_xid_continue(ch))
 }
 
+fn is_dotted_identifier_text(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .split('.')
+            .all(|segment| !segment.is_empty() && is_identifier_text(segment))
+}
+
+fn strip_inline_comment_text(text: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (idx, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '#' => return text[..idx].trim_end(),
+            _ => {}
+        }
+    }
+    text.trim_end()
+}
+
+fn parse_restricted_import_item(part: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((left, right)) = trimmed.rsplit_once(" as ") {
+        let module_name = left.trim();
+        let alias = right.trim();
+        if !is_dotted_identifier_text(module_name) || !is_identifier_text(alias) {
+            return None;
+        }
+        return Some((module_name, Some(alias)));
+    }
+    if !is_dotted_identifier_text(trimmed) {
+        return None;
+    }
+    Some((trimmed, None))
+}
+
+unsafe fn runpy_restricted_import_stmt(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    spec: &str,
+    filename: &str,
+) -> Result<(), u64> {
+    for part in spec.split(',') {
+        let Some((module_name, alias)) = parse_restricted_import_item(part) else {
+            return Err(raise_exception::<_>(
+                _py,
+                "NotImplementedError",
+                &format!("unsupported import statement in {filename}"),
+            ));
+        };
+        let imported_bits = runpy_import_module_bits(_py, module_name)?;
+        if obj_from_bits(imported_bits).is_none() {
+            if !exception_pending(_py) {
+                let message = format!("No module named '{module_name}'");
+                return Err(raise_exception::<_>(_py, "ImportError", &message));
+            }
+            return Err(MoltObject::none().bits());
+        }
+
+        let mut bind_bits = imported_bits;
+        let bind_name = if let Some(alias_name) = alias {
+            alias_name
+        } else if let Some((head, _)) = module_name.split_once('.') {
+            let top_bits = runpy_import_module_bits(_py, head)?;
+            if !obj_from_bits(top_bits).is_none() {
+                bind_bits = top_bits;
+                dec_ref_bits(_py, imported_bits);
+            }
+            head
+        } else {
+            module_name
+        };
+        dict_set_str_key_bits(_py, namespace_ptr, bind_name, bind_bits)?;
+        if !obj_from_bits(bind_bits).is_none() {
+            dec_ref_bits(_py, bind_bits);
+        }
+    }
+    Ok(())
+}
+
+unsafe fn runpy_restricted_from_import_stmt(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    spec: &str,
+    filename: &str,
+) -> Result<(), u64> {
+    let Some((module_name_raw, targets_raw)) = spec.split_once(" import ") else {
+        return Err(raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported from-import statement in {filename}"),
+        ));
+    };
+    let module_name = module_name_raw.trim();
+    if !is_dotted_identifier_text(module_name) {
+        return Err(raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported from-import statement in {filename}"),
+        ));
+    }
+
+    let module_bits = runpy_import_module_bits(_py, module_name)?;
+    if obj_from_bits(module_bits).is_none() {
+        if !exception_pending(_py) {
+            let message = format!("No module named '{module_name}'");
+            return Err(raise_exception::<_>(_py, "ImportError", &message));
+        }
+        return Err(MoltObject::none().bits());
+    }
+
+    for target in targets_raw.split(',') {
+        let trimmed = target.trim();
+        if trimmed.is_empty() {
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+            }
+            return Err(raise_exception::<_>(
+                _py,
+                "NotImplementedError",
+                &format!("unsupported from-import statement in {filename}"),
+            ));
+        }
+        if trimmed == "*" {
+            if let Err(err) = runpy_restricted_import_star_into_namespace(
+                _py,
+                namespace_ptr,
+                module_bits,
+                module_name,
+            ) {
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                return Err(err);
+            }
+            continue;
+        }
+        let (name, alias) = if let Some((left, right)) = trimmed.rsplit_once(" as ") {
+            let left = left.trim();
+            let right = right.trim();
+            if !is_identifier_text(left) || !is_identifier_text(right) {
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                return Err(raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    &format!("unsupported from-import statement in {filename}"),
+                ));
+            }
+            (left, right)
+        } else {
+            if !is_identifier_text(trimmed) {
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                return Err(raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    &format!("unsupported from-import statement in {filename}"),
+                ));
+            }
+            (trimmed, trimmed)
+        };
+
+        let name_ptr = alloc_string(_py, name.as_bytes());
+        if name_ptr.is_null() {
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let missing = missing_bits(_py);
+        let value_bits = molt_getattr_builtin(module_bits, name_bits, missing);
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+            }
+            return Err(MoltObject::none().bits());
+        }
+        if is_missing_bits(_py, value_bits) {
+            if !obj_from_bits(value_bits).is_none() {
+                dec_ref_bits(_py, value_bits);
+            }
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+            }
+            let message = format!("cannot import name '{name}' from '{module_name}'");
+            return Err(raise_exception::<_>(_py, "ImportError", &message));
+        }
+
+        dict_set_str_key_bits(_py, namespace_ptr, alias, value_bits)?;
+        if !obj_from_bits(value_bits).is_none() {
+            dec_ref_bits(_py, value_bits);
+        }
+    }
+
+    if !obj_from_bits(module_bits).is_none() {
+        dec_ref_bits(_py, module_bits);
+    }
+    Ok(())
+}
+
+unsafe fn runpy_restricted_import_star_into_namespace(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    module_bits: u64,
+    module_name: &str,
+) -> Result<(), u64> {
+    let module_ptr = match obj_from_bits(module_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_MODULE => ptr,
+        _ => {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from-import wildcard expects module",
+            ));
+        }
+    };
+    let module_dict_bits = module_dict_bits(module_ptr);
+    let module_dict_ptr = match obj_from_bits(module_dict_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+        _ => {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "module dict missing",
+            ));
+        }
+    };
+
+    let all_name_bits = intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
+    if let Some(all_bits) = dict_get_in_place(_py, module_dict_ptr, all_name_bits) {
+        let iter_bits = molt_iter(all_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        loop {
+            let pair_bits = molt_iter_next(iter_bits);
+            let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
+                return Err(MoltObject::none().bits());
+            };
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return Err(MoltObject::none().bits());
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return Err(MoltObject::none().bits());
+            }
+            if is_truthy(_py, obj_from_bits(elems[1])) {
+                break;
+            }
+            let name_bits = elems[0];
+            match obj_from_bits(name_bits).as_ptr() {
+                Some(name_ptr) if object_type_id(name_ptr) == TYPE_ID_STRING => {}
+                _ => {
+                    let type_name = class_name_for_error(type_of_bits(_py, name_bits));
+                    let message =
+                        format!("Item in {module_name}.__all__ must be str, not {type_name}");
+                    return Err(raise_exception::<_>(_py, "TypeError", &message));
+                }
+            }
+            let Some(value_bits) = dict_get_in_place(_py, module_dict_ptr, name_bits) else {
+                let name = string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default();
+                let message = format!("module '{module_name}' has no attribute '{name}'");
+                return Err(raise_exception::<_>(_py, "AttributeError", &message));
+            };
+            dict_set_in_place(_py, namespace_ptr, name_bits, value_bits);
+        }
+        return Ok(());
+    }
+
+    let order = dict_order(module_dict_ptr);
+    for idx in (0..order.len()).step_by(2) {
+        let name_bits = order[idx];
+        let Some(name_ptr) = obj_from_bits(name_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(name_ptr) != TYPE_ID_STRING {
+            continue;
+        }
+        let name_len = string_len(name_ptr);
+        if name_len > 0 {
+            let name_bytes = std::slice::from_raw_parts(string_bytes(name_ptr), name_len);
+            if name_bytes[0] == b'_' {
+                continue;
+            }
+        }
+        let value_bits = order[idx + 1];
+        dict_set_in_place(_py, namespace_ptr, name_bits, value_bits);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum RestrictedLiteral {
     NoneValue,
@@ -468,6 +1185,10 @@ enum RestrictedLiteral {
     Int(i64),
     Float(f64),
     Str(String),
+    Bytes(Vec<u8>),
+    List(Vec<RestrictedLiteral>),
+    Tuple(Vec<RestrictedLiteral>),
+    Dict(Vec<(RestrictedLiteral, RestrictedLiteral)>),
 }
 
 fn parse_restricted_string_literal(text: &str) -> Option<String> {
@@ -504,7 +1225,130 @@ fn parse_restricted_string_literal(text: &str) -> Option<String> {
     Some(out)
 }
 
+fn split_top_level_parts(text: &str, delimiter: char) -> Option<Vec<&str>> {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut round_depth = 0i32;
+    let mut square_depth = 0i32;
+    let mut curly_depth = 0i32;
+    for (idx, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => round_depth += 1,
+            ')' => {
+                round_depth -= 1;
+                if round_depth < 0 {
+                    return None;
+                }
+            }
+            '[' => square_depth += 1,
+            ']' => {
+                square_depth -= 1;
+                if square_depth < 0 {
+                    return None;
+                }
+            }
+            '{' => curly_depth += 1,
+            '}' => {
+                curly_depth -= 1;
+                if curly_depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        if ch == delimiter && round_depth == 0 && square_depth == 0 && curly_depth == 0 {
+            parts.push(&text[start..idx]);
+            start = idx + ch.len_utf8();
+        }
+    }
+    if quote.is_some() || round_depth != 0 || square_depth != 0 || curly_depth != 0 {
+        return None;
+    }
+    parts.push(&text[start..]);
+    Some(parts)
+}
+
+fn split_top_level_once(text: &str, delimiter: char) -> Option<(&str, &str)> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut round_depth = 0i32;
+    let mut square_depth = 0i32;
+    let mut curly_depth = 0i32;
+    for (idx, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => round_depth += 1,
+            ')' => {
+                round_depth -= 1;
+                if round_depth < 0 {
+                    return None;
+                }
+            }
+            '[' => square_depth += 1,
+            ']' => {
+                square_depth -= 1;
+                if square_depth < 0 {
+                    return None;
+                }
+            }
+            '{' => curly_depth += 1,
+            '}' => {
+                curly_depth -= 1;
+                if curly_depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        if ch == delimiter && round_depth == 0 && square_depth == 0 && curly_depth == 0 {
+            let split_at = idx + ch.len_utf8();
+            return Some((&text[..idx], &text[split_at..]));
+        }
+    }
+    None
+}
+
+fn parse_restricted_bytes_literal(text: &str) -> Option<Vec<u8>> {
+    let rest = text.strip_prefix('b').or_else(|| text.strip_prefix('B'))?;
+    parse_restricted_string_literal(rest).map(|value| value.into_bytes())
+}
+
 fn parse_restricted_literal(text: &str) -> Option<RestrictedLiteral> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
     match text {
         "None" => return Some(RestrictedLiteral::NoneValue),
         "True" => return Some(RestrictedLiteral::Bool(true)),
@@ -529,6 +1373,64 @@ fn parse_restricted_literal(text: &str) -> Option<RestrictedLiteral> {
             return Some(RestrictedLiteral::Float(value));
         }
     }
+    if let Some(value) = parse_restricted_bytes_literal(text) {
+        return Some(RestrictedLiteral::Bytes(value));
+    }
+    if text.starts_with('[') && text.ends_with(']') {
+        let inner = text[1..text.len() - 1].trim();
+        if inner.is_empty() {
+            return Some(RestrictedLiteral::List(Vec::new()));
+        }
+        let parts = split_top_level_parts(inner, ',')?;
+        let mut values: Vec<RestrictedLiteral> = Vec::new();
+        for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            values.push(parse_restricted_literal(part)?);
+        }
+        return Some(RestrictedLiteral::List(values));
+    }
+    if text.starts_with('(') && text.ends_with(')') {
+        let inner = text[1..text.len() - 1].trim();
+        if inner.is_empty() {
+            return Some(RestrictedLiteral::Tuple(Vec::new()));
+        }
+        let parts = split_top_level_parts(inner, ',')?;
+        let has_top_level_comma = parts.len() > 1;
+        let mut values: Vec<RestrictedLiteral> = Vec::new();
+        for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            values.push(parse_restricted_literal(part)?);
+        }
+        if !has_top_level_comma && values.len() == 1 {
+            return values.into_iter().next();
+        }
+        return Some(RestrictedLiteral::Tuple(values));
+    }
+    if text.starts_with('{') && text.ends_with('}') {
+        let inner = text[1..text.len() - 1].trim();
+        if inner.is_empty() {
+            return Some(RestrictedLiteral::Dict(Vec::new()));
+        }
+        let parts = split_top_level_parts(inner, ',')?;
+        let mut entries: Vec<(RestrictedLiteral, RestrictedLiteral)> = Vec::new();
+        for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let (left, right) = split_top_level_once(part, ':')?;
+            let key = parse_restricted_literal(left.trim())?;
+            let value = parse_restricted_literal(right.trim())?;
+            entries.push((key, value));
+        }
+        return Some(RestrictedLiteral::Dict(entries));
+    }
     parse_restricted_string_literal(text).map(RestrictedLiteral::Str)
 }
 
@@ -546,10 +1448,70 @@ fn restricted_literal_to_bits(_py: &PyToken<'_>, value: RestrictedLiteral) -> Re
                 Ok(MoltObject::from_ptr(ptr).bits())
             }
         }
+        RestrictedLiteral::Bytes(value) => {
+            let ptr = alloc_bytes(_py, value.as_slice());
+            if ptr.is_null() {
+                Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+            } else {
+                Ok(MoltObject::from_ptr(ptr).bits())
+            }
+        }
+        RestrictedLiteral::List(values) => {
+            let mut bits_vec: Vec<u64> = Vec::with_capacity(values.len());
+            for item in values {
+                bits_vec.push(restricted_literal_to_bits(_py, item)?);
+            }
+            let ptr = alloc_list(_py, bits_vec.as_slice());
+            for bits in bits_vec {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+            if ptr.is_null() {
+                Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+            } else {
+                Ok(MoltObject::from_ptr(ptr).bits())
+            }
+        }
+        RestrictedLiteral::Tuple(values) => {
+            let mut bits_vec: Vec<u64> = Vec::with_capacity(values.len());
+            for item in values {
+                bits_vec.push(restricted_literal_to_bits(_py, item)?);
+            }
+            let ptr = alloc_tuple(_py, bits_vec.as_slice());
+            for bits in bits_vec {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+            if ptr.is_null() {
+                Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+            } else {
+                Ok(MoltObject::from_ptr(ptr).bits())
+            }
+        }
+        RestrictedLiteral::Dict(entries) => {
+            let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
+            for (key, value) in entries {
+                pairs.push(restricted_literal_to_bits(_py, key)?);
+                pairs.push(restricted_literal_to_bits(_py, value)?);
+            }
+            let ptr = alloc_dict_with_pairs(_py, &pairs);
+            for bits in pairs {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+            if ptr.is_null() {
+                Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+            } else {
+                Ok(MoltObject::from_ptr(ptr).bits())
+            }
+        }
     }
 }
 
-unsafe fn runpy_exec_restricted_source(
+pub(crate) unsafe fn runpy_exec_restricted_source(
     _py: &PyToken<'_>,
     namespace_ptr: *mut u8,
     source: &str,
@@ -561,7 +1523,7 @@ unsafe fn runpy_exec_restricted_source(
     while idx < lines.len() {
         let raw = lines[idx];
         idx += 1;
-        let stripped = raw.trim();
+        let stripped = strip_inline_comment_text(raw.trim());
         if stripped.is_empty() || stripped.starts_with('#') {
             continue;
         }
@@ -595,6 +1557,14 @@ unsafe fn runpy_exec_restricted_source(
 
         saw_stmt = true;
         if stripped == "pass" {
+            continue;
+        }
+        if let Some(rest) = stripped.strip_prefix("import ") {
+            runpy_restricted_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
+            continue;
+        }
+        if let Some(rest) = stripped.strip_prefix("from ") {
+            runpy_restricted_from_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
             continue;
         }
         if !stripped.contains('=') || stripped.contains("==") || stripped.contains("!=") {
@@ -638,19 +1608,20 @@ pub extern "C" fn molt_runpy_run_module(
     mod_name_bits: u64,
     run_name_bits: u64,
     init_globals_bits: u64,
+    alter_sys_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let mod_name = match string_obj_to_owned(obj_from_bits(mod_name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "mod_name must be str"),
         };
-        let target_name = {
+        let requested_run_name = {
             let run_name_obj = obj_from_bits(run_name_bits);
             if run_name_obj.is_none() {
-                mod_name.clone()
+                None
             } else {
                 match string_obj_to_owned(run_name_obj) {
-                    Some(val) => val,
+                    Some(val) => Some(val),
                     None => {
                         return raise_exception::<_>(_py, "TypeError", "run_name must be str");
                     }
@@ -674,71 +1645,270 @@ pub extern "C" fn molt_runpy_run_module(
                 }
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let module_bits = unsafe { molt_isolate_import(mod_name_bits) };
-        #[cfg(target_arch = "wasm32")]
-        let module_bits = {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let guard = cache.lock().unwrap();
-            if let Some(bits) = guard.get(&mod_name) {
-                inc_ref_bits(_py, *bits);
-                *bits
-            } else {
-                MoltObject::none().bits()
-            }
+        let alter_sys = is_truthy(_py, obj_from_bits(alter_sys_bits));
+        let mut import_name = mod_name.clone();
+        let mut module_bits = match unsafe { runpy_import_module_bits(_py, &import_name) } {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
         };
         if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
             let msg = format!("No module named '{mod_name}'");
             return raise_exception::<_>(_py, "ImportError", &msg);
         }
-        let module_ptr = match obj_from_bits(module_bits).as_ptr() {
-            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_MODULE } => ptr,
-            _ => return raise_exception::<_>(_py, "TypeError", "module import expects module"),
-        };
-        let module_dict_ptr = unsafe {
-            match obj_from_bits(module_dict_bits(module_ptr)).as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
-            }
-        };
-        let out_ptr = alloc_dict_with_pairs(_py, &[]);
-        if out_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        if obj_from_bits(module_bits).is_none() {
+            return MoltObject::none().bits();
         }
-        unsafe {
-            let source_order = dict_order(module_dict_ptr);
-            for idx in (0..source_order.len()).step_by(2) {
-                let key_bits = source_order[idx];
-                let val_bits = source_order[idx + 1];
-                dict_set_in_place(_py, out_ptr, key_bits, val_bits);
+        let payload_is_module_or_dict = obj_from_bits(module_bits)
+            .as_ptr()
+            .map(|ptr| {
+                let ty = unsafe { object_type_id(ptr) };
+                ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
+            })
+            .unwrap_or(false);
+        if !payload_is_module_or_dict {
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
             }
-            if let Some(init_ptr) = init_dict_ptr {
-                let init_order = dict_order(init_ptr);
-                for idx in (0..init_order.len()).step_by(2) {
-                    let key_bits = init_order[idx];
-                    let val_bits = init_order[idx + 1];
-                    dict_set_in_place(_py, out_ptr, key_bits, val_bits);
+            let sys_path = unsafe { runpy_sys_path_entries(_py) };
+            let Some((source_path, import_name, package_name)) =
+                runpy_resolve_module_source(&mod_name, &sys_path)
+            else {
+                let msg = format!("No module named '{mod_name}'");
+                return raise_exception::<_>(_py, "ImportError", &msg);
+            };
+            let source_bytes = match std::fs::read(&source_path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    let message = err.to_string();
+                    return match err.kind() {
+                        std::io::ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, "FileNotFoundError", &message)
+                        }
+                        std::io::ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, "PermissionError", &message)
+                        }
+                        std::io::ErrorKind::IsADirectory => {
+                            raise_exception::<_>(_py, "IsADirectoryError", &message)
+                        }
+                        _ => raise_exception::<_>(_py, "OSError", &message),
+                    };
+                }
+            };
+            let source = String::from_utf8_lossy(&source_bytes).into_owned();
+            let target_name = requested_run_name
+                .clone()
+                .unwrap_or_else(|| import_name.clone());
+            let out_ptr = alloc_dict_with_pairs(_py, &[]);
+            if out_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let out_bits = MoltObject::from_ptr(out_ptr).bits();
+            let mut alter_sys_modules_state: Option<(*mut u8, u64, Option<u64>)> = None;
+            unsafe {
+                if let Some(init_ptr) = init_dict_ptr {
+                    dict_copy_entries(_py, init_ptr, out_ptr);
+                }
+                if let Err(err) = runpy_apply_source_metadata(
+                    _py,
+                    out_ptr,
+                    &target_name,
+                    &import_name,
+                    &source_path,
+                    &package_name,
+                ) {
+                    dec_ref_bits(_py, out_bits);
+                    return err;
+                }
+                if alter_sys {
+                    let sys_bits = {
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                        let guard = cache.lock().unwrap();
+                        guard.get("sys").copied()
+                    };
+                    if let Some(sys_bits) = sys_bits {
+                        if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                            let run_name_ptr = alloc_string(_py, target_name.as_bytes());
+                            if run_name_ptr.is_null() {
+                                dec_ref_bits(_py, out_bits);
+                                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                            }
+                            let run_name_bits = MoltObject::from_ptr(run_name_ptr).bits();
+                            let previous_bits = dict_get_in_place(_py, modules_ptr, run_name_bits);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, run_name_bits);
+                                dec_ref_bits(_py, out_bits);
+                                return MoltObject::none().bits();
+                            }
+                            dict_set_in_place(_py, modules_ptr, run_name_bits, out_bits);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, run_name_bits);
+                                dec_ref_bits(_py, out_bits);
+                                return MoltObject::none().bits();
+                            }
+                            alter_sys_modules_state =
+                                Some((modules_ptr, run_name_bits, previous_bits));
+                        }
+                    }
+                }
+                if let Err(err) = runpy_exec_restricted_source(_py, out_ptr, &source, &source_path)
+                {
+                    if let Some((modules_ptr, key_bits, previous_bits)) =
+                        alter_sys_modules_state.take()
+                    {
+                        if let Some(bits) = previous_bits {
+                            dict_set_in_place(_py, modules_ptr, key_bits, bits);
+                        } else {
+                            dict_del_in_place(_py, modules_ptr, key_bits);
+                        }
+                        dec_ref_bits(_py, key_bits);
+                    }
+                    dec_ref_bits(_py, out_bits);
+                    return err;
+                }
+            }
+            if let Some((modules_ptr, key_bits, previous_bits)) = alter_sys_modules_state.take() {
+                unsafe {
+                    if let Some(bits) = previous_bits {
+                        dict_set_in_place(_py, modules_ptr, key_bits, bits);
+                    } else {
+                        dict_del_in_place(_py, modules_ptr, key_bits);
+                    }
+                }
+                dec_ref_bits(_py, key_bits);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, out_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+            return out_bits;
+        }
+        let mut module_dict_ptr = match unsafe { runpy_module_dict_ptr(_py, module_bits) } {
+            Ok(ptr) => ptr,
+            Err(bits) => {
+                dec_ref_bits(_py, module_bits);
+                return bits;
+            }
+        };
+        if unsafe { runpy_module_is_package(_py, module_dict_ptr) } {
+            let package_bits = module_bits;
+            import_name = format!("{mod_name}.__main__");
+            module_bits = match unsafe { runpy_import_module_bits(_py, &import_name) } {
+                Ok(bits) => bits,
+                Err(bits) => {
+                    dec_ref_bits(_py, package_bits);
+                    return bits;
+                }
+            };
+            dec_ref_bits(_py, package_bits);
+            if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
+                let message = format!(
+                    "No module named '{import_name}'; '{mod_name}' is a package and cannot be directly executed"
+                );
+                return raise_exception::<_>(_py, "ImportError", &message);
+            }
+            if obj_from_bits(module_bits).is_none() {
+                return MoltObject::none().bits();
+            }
+            module_dict_ptr = match unsafe { runpy_module_dict_ptr(_py, module_bits) } {
+                Ok(ptr) => ptr,
+                Err(bits) => {
+                    dec_ref_bits(_py, module_bits);
+                    return bits;
+                }
+            };
+        }
+        let target_name = requested_run_name
+            .clone()
+            .unwrap_or_else(|| import_name.clone());
+        let mut alter_sys_modules_state: Option<(*mut u8, u64, Option<u64>)> = None;
+        if alter_sys {
+            let sys_bits = {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                guard.get("sys").copied()
+            };
+            if let Some(sys_bits) = sys_bits {
+                if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                    let run_name_ptr = alloc_string(_py, target_name.as_bytes());
+                    if run_name_ptr.is_null() {
+                        dec_ref_bits(_py, module_bits);
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    let run_name_bits = MoltObject::from_ptr(run_name_ptr).bits();
+                    let previous_bits =
+                        unsafe { dict_get_in_place(_py, modules_ptr, run_name_bits) };
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, run_name_bits);
+                        dec_ref_bits(_py, module_bits);
+                        return MoltObject::none().bits();
+                    }
+                    unsafe {
+                        dict_set_in_place(_py, modules_ptr, run_name_bits, module_bits);
+                    }
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, run_name_bits);
+                        dec_ref_bits(_py, module_bits);
+                        return MoltObject::none().bits();
+                    }
+                    alter_sys_modules_state = Some((modules_ptr, run_name_bits, previous_bits));
                 }
             }
         }
-        let name_key_ptr = alloc_string(_py, b"__name__");
-        if name_key_ptr.is_null() {
+        let out_ptr = alloc_dict_with_pairs(_py, &[]);
+        if out_ptr.is_null() {
+            if let Some((modules_ptr, key_bits, previous_bits)) = alter_sys_modules_state.take() {
+                unsafe {
+                    if let Some(bits) = previous_bits {
+                        dict_set_in_place(_py, modules_ptr, key_bits, bits);
+                    } else {
+                        dict_del_in_place(_py, modules_ptr, key_bits);
+                    }
+                }
+                dec_ref_bits(_py, key_bits);
+            }
+            dec_ref_bits(_py, module_bits);
             return raise_exception::<_>(_py, "MemoryError", "out of memory");
         }
-        let target_name_ptr = alloc_string(_py, target_name.as_bytes());
-        if target_name_ptr.is_null() {
-            let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
-            dec_ref_bits(_py, name_key_bits);
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
-        let target_name_bits = MoltObject::from_ptr(target_name_ptr).bits();
+        let out_bits = MoltObject::from_ptr(out_ptr).bits();
         unsafe {
-            dict_set_in_place(_py, out_ptr, name_key_bits, target_name_bits);
+            dict_copy_entries(_py, module_dict_ptr, out_ptr);
+            if let Some(init_ptr) = init_dict_ptr {
+                dict_copy_entries(_py, init_ptr, out_ptr);
+            }
+            if let Err(err) =
+                runpy_apply_module_metadata(_py, module_dict_ptr, out_ptr, &target_name)
+            {
+                if let Some((modules_ptr, key_bits, previous_bits)) = alter_sys_modules_state.take()
+                {
+                    if let Some(bits) = previous_bits {
+                        dict_set_in_place(_py, modules_ptr, key_bits, bits);
+                    } else {
+                        dict_del_in_place(_py, modules_ptr, key_bits);
+                    }
+                    dec_ref_bits(_py, key_bits);
+                }
+                dec_ref_bits(_py, out_bits);
+                dec_ref_bits(_py, module_bits);
+                return err;
+            }
         }
-        dec_ref_bits(_py, name_key_bits);
-        dec_ref_bits(_py, target_name_bits);
-        MoltObject::from_ptr(out_ptr).bits()
+        if let Some((modules_ptr, key_bits, previous_bits)) = alter_sys_modules_state.take() {
+            unsafe {
+                if let Some(bits) = previous_bits {
+                    dict_set_in_place(_py, modules_ptr, key_bits, bits);
+                } else {
+                    dict_del_in_place(_py, modules_ptr, key_bits);
+                }
+            }
+            dec_ref_bits(_py, key_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, out_bits);
+                dec_ref_bits(_py, module_bits);
+                return MoltObject::none().bits();
+            }
+        }
+        dec_ref_bits(_py, module_bits);
+        out_bits
     })
 }
 
@@ -955,6 +2125,41 @@ mod tests {
             parse_restricted_literal("'hello\\nworld'"),
             Some(RestrictedLiteral::Str("hello\nworld".to_string()))
         );
+        assert_eq!(
+            parse_restricted_literal("b'abc'"),
+            Some(RestrictedLiteral::Bytes(b"abc".to_vec()))
+        );
+        assert_eq!(
+            parse_restricted_literal("[1, 2, 3]"),
+            Some(RestrictedLiteral::List(vec![
+                RestrictedLiteral::Int(1),
+                RestrictedLiteral::Int(2),
+                RestrictedLiteral::Int(3),
+            ]))
+        );
+        assert_eq!(
+            parse_restricted_literal("(1, 'x')"),
+            Some(RestrictedLiteral::Tuple(vec![
+                RestrictedLiteral::Int(1),
+                RestrictedLiteral::Str("x".to_string()),
+            ]))
+        );
+        assert_eq!(
+            parse_restricted_literal("{'a': 1, 'b': [2, 3]}"),
+            Some(RestrictedLiteral::Dict(vec![
+                (
+                    RestrictedLiteral::Str("a".to_string()),
+                    RestrictedLiteral::Int(1),
+                ),
+                (
+                    RestrictedLiteral::Str("b".to_string()),
+                    RestrictedLiteral::List(vec![
+                        RestrictedLiteral::Int(2),
+                        RestrictedLiteral::Int(3),
+                    ]),
+                ),
+            ]))
+        );
     }
 
     #[test]
@@ -964,6 +2169,18 @@ mod tests {
         assert!(is_identifier_text("Δx"));
         assert!(!is_identifier_text("9abc"));
         assert!(!is_identifier_text("a-b"));
+        assert!(is_dotted_identifier_text("pkg.mod"));
+        assert!(!is_dotted_identifier_text("pkg..mod"));
+    }
+
+    #[test]
+    fn strip_inline_comment_preserves_strings() {
+        assert_eq!(strip_inline_comment_text("x = 1 # tail"), "x = 1");
+        assert_eq!(strip_inline_comment_text("x = 'a#b'  # tail"), "x = 'a#b'");
+        assert_eq!(
+            strip_inline_comment_text("x = \"a#b\\\"c\" # tail"),
+            "x = \"a#b\\\"c\""
+        );
     }
 
     #[test]

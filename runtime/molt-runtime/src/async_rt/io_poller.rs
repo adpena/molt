@@ -668,19 +668,21 @@ impl IoPoller {
         if updated {
             with_socket_mut(socket_ptr, |sock| {
                 if needs_register {
-                    {
-                        let source = sock.source_mut().ok_or_else(|| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
-                        })?;
-                        self.registry.register(source, token, interests)
+                    let source = sock.source_mut().ok_or_else(|| {
+                        std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
+                    })?;
+                    match self.registry.register(source, token, interests) {
+                        Ok(()) => Ok(()),
+                        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                            self.registry.reregister(source, token, interests)
+                        }
+                        Err(err) => Err(err),
                     }
                 } else {
-                    {
-                        let source = sock.source_mut().ok_or_else(|| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
-                        })?;
-                        self.registry.reregister(source, token, interests)
-                    }
+                    let source = sock.source_mut().ok_or_else(|| {
+                        std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
+                    })?;
+                    self.registry.reregister(source, token, interests)
                 }
             })?;
         }
@@ -689,6 +691,26 @@ impl IoPoller {
         let mut guard = waiter.ready.lock().unwrap();
         loop {
             if let Some(ready) = *guard {
+                drop(guard);
+                let mut sockets = self.sockets.lock().unwrap();
+                if let Some(entry) = sockets.get_mut(&socket_id) {
+                    entry
+                        .blocking_waiters
+                        .retain(|candidate| Arc::as_ptr(candidate) as usize != waiter_id);
+                    if entry.waiters.is_empty() && entry.blocking_waiters.is_empty() {
+                        let token = entry.token;
+                        sockets.remove(&socket_id);
+                        self.tokens.lock().unwrap().remove(&token);
+                        drop(sockets);
+                        let _ = self.waker.wake();
+                        let _ = with_socket_mut(socket_ptr, |sock| {
+                            let source = sock.source_mut().ok_or_else(|| {
+                                std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
+                            })?;
+                            self.registry.deregister(source)
+                        });
+                    }
+                }
                 return Ok(ready);
             }
             if let Some(deadline) = deadline {

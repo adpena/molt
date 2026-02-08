@@ -22,18 +22,19 @@ use crate::{
     exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
     format_exception_with_traceback, generator_raise_active, handle_system_exit,
     header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_missing_bits, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_getattr_builtin, obj_from_bits,
-    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr, profile_hit,
-    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
-    runtime_state, seq_vec_ref, set_task_raise_active, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
-    to_i64, with_gil, GilGuard, GilReleaseGuard, MoltHeader, MoltObject, PtrSlot,
-    ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT,
-    ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
-    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
-    HEADER_FLAG_TASK_WAKE_PENDING, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_getattr_builtin, molt_set_add,
+    molt_set_new, obj_from_bits, object_class_bits, object_type_id, pending_bits_i64,
+    process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits, raise_exception,
+    record_exception, resolve_task_ptr, runtime_state, seq_vec_ref, set_task_raise_active,
+    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
+    task_raise_active, thread_poll_fn_addr, to_i64, with_gil, GilGuard, GilReleaseGuard,
+    MoltHeader, MoltObject, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
+    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, GIL_DEPTH,
+    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
+    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, TYPE_ID_DICT, TYPE_ID_LIST,
+    TYPE_ID_TUPLE,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,6 +47,7 @@ use super::cancellation::{
     cancel_tokens, clear_task_token, current_token_id, ensure_task_token,
     raise_cancelled_with_message, set_current_token, task_cancel_pending, task_take_cancel_pending,
 };
+use super::channels::has_capability;
 use super::{spawned_task_count, spawned_task_inc};
 
 // --- Scheduler ---
@@ -869,9 +871,310 @@ pub extern "C" fn molt_asyncio_child_watcher_pop(callbacks_bits: u64, pid_bits: 
     })
 }
 
+fn asyncio_has_any_net_capability(_py: &PyToken<'_>) -> bool {
+    has_capability(_py, "net")
+        || has_capability(_py, "net.connect")
+        || has_capability(_py, "net.listen")
+        || has_capability(_py, "net.bind")
+}
+
+fn asyncio_has_any_process_capability(_py: &PyToken<'_>) -> bool {
+    has_capability(_py, "process") || has_capability(_py, "process.exec")
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_require_ssl_transport_support() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !asyncio_has_any_net_capability(_py) {
+            return raise_exception::<u64>(
+                _py,
+                "PermissionError",
+                "missing net capability for asyncio SSL transport",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
+    operation_bits: u64,
+    ssl_bits: u64,
+    server_hostname_bits: u64,
+    server_side_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(operation) = string_obj_to_owned(obj_from_bits(operation_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "asyncio SSL transport operation must be str",
+            );
+        };
+        if operation.is_empty() {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "asyncio SSL transport operation cannot be empty",
+            );
+        }
+        let is_client_operation = matches!(
+            operation.as_str(),
+            "open_connection"
+                | "open_unix_connection"
+                | "create_connection"
+                | "create_unix_connection"
+        );
+        let is_server_operation =
+            matches!(operation.as_str(), "create_server" | "create_unix_server");
+        let is_tls_upgrade = matches!(operation.as_str(), "start_tls");
+        if !(is_client_operation || is_server_operation || is_tls_upgrade) {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "unsupported asyncio SSL transport operation",
+            );
+        }
+        let bool_true_bits = MoltObject::from_bool(true).bits();
+        let bool_false_bits = MoltObject::from_bool(false).bits();
+        if obj_from_bits(ssl_bits).is_none() {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "ssl transport requires an ssl context or ssl=True",
+            );
+        }
+        let Some(server_side_raw) = to_i64(obj_from_bits(server_side_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "server_side must be bool");
+        };
+        if server_side_raw != 0 && server_side_raw != 1 {
+            return raise_exception::<u64>(_py, "TypeError", "server_side must be bool");
+        }
+        let server_side = server_side_raw == 1;
+        if is_client_operation && server_side {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "client SSL operations require server_side=False",
+            );
+        }
+        if is_server_operation && !server_side {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "server SSL operations require server_side=True",
+            );
+        }
+        if !obj_from_bits(server_hostname_bits).is_none() {
+            let Some(server_hostname) = string_obj_to_owned(obj_from_bits(server_hostname_bits))
+            else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "server_hostname must be str or None",
+                );
+            };
+            if server_hostname.is_empty() {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "server_hostname cannot be an empty string",
+                );
+            }
+            if server_side {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "server_hostname is only meaningful for client connections",
+                );
+            }
+        }
+        if ssl_bits == bool_false_bits {
+            if is_tls_upgrade {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "start_tls requires an SSL context",
+                );
+            }
+            if !obj_from_bits(server_hostname_bits).is_none() {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "server_hostname requires an active SSL transport",
+                );
+            }
+            return bool_false_bits;
+        }
+        if !asyncio_has_any_net_capability(_py) {
+            return raise_exception::<u64>(
+                _py,
+                "PermissionError",
+                "missing net capability for asyncio SSL transport",
+            );
+        }
+        if is_client_operation {
+            if matches!(operation.as_str(), "open_connection" | "create_connection") {
+                return bool_true_bits;
+            }
+            if matches!(
+                operation.as_str(),
+                "open_unix_connection" | "create_unix_connection"
+            ) {
+                #[cfg(all(unix, not(target_arch = "wasm32")))]
+                {
+                    return bool_true_bits;
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "asyncio SSL unix transport is unavailable on wasm",
+                    );
+                }
+                #[cfg(windows)]
+                {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "asyncio SSL unix transport is unavailable on Windows",
+                    );
+                }
+                #[cfg(all(not(unix), not(target_arch = "wasm32"), not(windows)))]
+                {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "asyncio SSL unix transport is unavailable on this host",
+                    );
+                }
+            }
+            let msg = format!(
+                "unsupported asyncio SSL transport operation '{}'",
+                operation
+            );
+            return raise_exception::<u64>(_py, "ValueError", &msg);
+        }
+        if is_server_operation {
+            return bool_true_bits;
+        }
+        if is_tls_upgrade {
+            return bool_true_bits;
+        }
+        let msg = format!(
+            "asyncio SSL transport operation '{}' is not yet available in this runtime",
+            operation
+        );
+        raise_exception::<u64>(_py, "RuntimeError", &msg)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !asyncio_has_any_net_capability(_py) {
+            return raise_exception::<u64>(
+                _py,
+                "PermissionError",
+                "missing net capability for asyncio unix sockets",
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "asyncio unix sockets are unavailable on wasm",
+            );
+        }
+        #[cfg(windows)]
+        {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "asyncio unix sockets are unavailable on Windows",
+            );
+        }
+        #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+        {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "asyncio unix sockets are unavailable on this host",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !asyncio_has_any_process_capability(_py) {
+            return raise_exception::<u64>(
+                _py,
+                "PermissionError",
+                "missing process capability for asyncio child watchers",
+            );
+        }
+        #[cfg(any(target_arch = "wasm32", windows))]
+        {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "asyncio child watchers are unavailable on this host",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn molt_asyncio_task_registry_live(loop_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { asyncio_task_registry_live_impl(_py, loop_bits) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let live_bits = asyncio_task_registry_live_impl(_py, loop_bits);
+        if obj_from_bits(live_bits).is_none() {
+            return live_bits;
+        }
+        let Some(live_ptr) = obj_from_bits(live_bits).as_ptr() else {
+            dec_ref_bits(_py, live_bits);
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "asyncio_task_registry_live returned non-list value",
+            );
+        };
+        if unsafe { object_type_id(live_ptr) } != TYPE_ID_LIST {
+            dec_ref_bits(_py, live_bits);
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "asyncio_task_registry_live returned non-list value",
+            );
+        }
+        let tasks = unsafe { seq_vec_ref(live_ptr) };
+        let set_bits = molt_set_new(tasks.len() as u64);
+        if obj_from_bits(set_bits).is_none() {
+            dec_ref_bits(_py, live_bits);
+            return MoltObject::none().bits();
+        }
+        for &task_bits in tasks {
+            let _ = molt_set_add(set_bits, task_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, live_bits);
+                dec_ref_bits(_py, set_bits);
+                return MoltObject::none().bits();
+            }
+        }
+        dec_ref_bits(_py, live_bits);
+        set_bits
+    })
 }
 
 pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
@@ -1592,6 +1895,33 @@ impl SleepQueue {
             }
             return Some(entry.deadline);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_due_scheduler_tasks(&self) -> Vec<*mut u8> {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.shutdown {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        let mut due: Vec<*mut u8> = Vec::new();
+        loop {
+            let Some(entry) = guard.heap.peek() else {
+                break;
+            };
+            let key = entry.task_ptr;
+            if guard.tasks.get(&key) != Some(&entry.gen) {
+                guard.heap.pop();
+                continue;
+            }
+            if entry.deadline > now {
+                break;
+            }
+            let entry = guard.heap.pop().expect("heap entry disappeared");
+            guard.tasks.remove(&key);
+            due.push(entry.task_ptr.0);
+        }
+        due
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2689,6 +3019,13 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             {
                 let _gil = GilGuard::new();
                 let _py = _gil.token();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let due = runtime_state(&_py).sleep_queue().take_due_scheduler_tasks();
+                    for due_task in due {
+                        enqueue_task_ptr(&_py, due_task);
+                    }
+                }
                 runtime_state(&_py).scheduler().drain_ready();
             }
             let wake_pending = {
@@ -2728,17 +3065,30 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 }
                 continue;
             }
+            let refreshed_deadline = {
+                let _gil = GilGuard::new();
+                let _py = _gil.token();
+                let scheduler_deadline =
+                    runtime_state(&_py).sleep_queue().next_scheduler_deadline();
+                match (deadline, scheduler_deadline) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            };
             let spawned = spawned_task_count();
-            if let Some(deadline) = deadline {
+            if let Some(deadline) = refreshed_deadline {
                 let _release = GilReleaseGuard::new();
                 let now = Instant::now();
                 if deadline > now {
-                    let wait = deadline - now;
+                    // Cap block_on sleeps so external wakeups (io/thread/process/task) are
+                    // observed promptly instead of stalling until long deadlines.
+                    let mut wait = (deadline - now).min(BLOCK_ON_MAX_WAIT);
                     if spawned > 0 && wait < BLOCK_ON_MIN_SLEEP {
-                        std::thread::sleep(BLOCK_ON_MIN_SLEEP);
-                    } else {
-                        std::thread::sleep(wait);
+                        wait = BLOCK_ON_MIN_SLEEP;
                     }
+                    std::thread::sleep(wait);
                 } else if spawned > 0 {
                     std::thread::sleep(BLOCK_ON_MIN_SLEEP);
                 } else {

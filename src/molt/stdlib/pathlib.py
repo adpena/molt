@@ -2,7 +2,7 @@
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial):
 # close remaining pathlib parity gaps (glob recursion edge cases, Windows
-# drive/anchor flavor details, and strict symlink-resolve semantics) by moving
+# drive/anchor flavor details, and remaining symlink edge semantics) by moving
 # the remaining path-shaping hot paths into Rust intrinsics.
 
 from __future__ import annotations
@@ -28,9 +28,11 @@ _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
+_MOLT_PATH_RESOLVE = _require_intrinsic("molt_path_resolve", globals())
 _MOLT_PATH_PARTS = _require_intrinsic("molt_path_parts", globals())
 _MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot", globals())
 _MOLT_PATH_PARENTS = _require_intrinsic("molt_path_parents", globals())
+_MOLT_PATH_COMPARE = _require_intrinsic("molt_path_compare", globals())
 _MOLT_PATH_RELATIVE_TO = _require_intrinsic("molt_path_relative_to", globals())
 _MOLT_PATH_WITH_NAME = _require_intrinsic("molt_path_with_name", globals())
 _MOLT_PATH_WITH_SUFFIX = _require_intrinsic("molt_path_with_suffix", globals())
@@ -42,6 +44,9 @@ _MOLT_PATH_GLOB = _require_intrinsic("molt_path_glob", globals())
 _MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
 _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile", globals())
+_MOLT_PATH_ISLINK = _require_intrinsic("molt_path_islink", globals())
+_MOLT_PATH_READLINK = _require_intrinsic("molt_path_readlink", globals())
+_MOLT_PATH_SYMLINK = _require_intrinsic("molt_path_symlink", globals())
 _MOLT_PATH_LISTDIR = _require_intrinsic("molt_path_listdir", globals())
 _MOLT_PATH_MKDIR = _require_intrinsic("molt_path_mkdir", globals())
 _MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink", globals())
@@ -126,8 +131,8 @@ class Path:
     def expanduser(self) -> Path:
         return self._wrap(_MOLT_PATH_EXPANDUSER(self._path))
 
-    def resolve(self) -> Path:
-        return self._wrap(_MOLT_PATH_ABSPATH(self._path))
+    def resolve(self, strict: bool = False) -> Path:
+        return self._wrap(_MOLT_PATH_RESOLVE(self._path, bool(strict)))
 
     def _parts(self) -> list[str]:
         raw = _MOLT_PATH_PARTS(self._path)
@@ -184,6 +189,11 @@ class Path:
     def __truediv__(self, key: str) -> Path:
         key = self._coerce_part(key)
         path = _MOLT_PATH_JOIN(self._path, key)
+        return self._wrap(path)
+
+    def __rtruediv__(self, key: str) -> Path:
+        key = self._coerce_part(key)
+        path = _MOLT_PATH_JOIN(key, self._path)
         return self._wrap(path)
 
     def open(
@@ -252,6 +262,22 @@ class Path:
     def is_file(self) -> bool:
         capabilities.require("fs.read")
         return bool(_MOLT_PATH_ISFILE(self._path))
+
+    def is_symlink(self) -> bool:
+        capabilities.require("fs.read")
+        return bool(_MOLT_PATH_ISLINK(self._path))
+
+    def readlink(self) -> Path:
+        capabilities.require("fs.read")
+        value = _MOLT_PATH_READLINK(self._path)
+        if not isinstance(value, str):
+            raise RuntimeError("path readlink intrinsic returned invalid value")
+        return self._wrap(value)
+
+    def symlink_to(self, target: str | Path, target_is_directory: bool = False) -> None:
+        capabilities.require("fs.write")
+        target_path = self._coerce_part(target)
+        _MOLT_PATH_SYMLINK(target_path, self._path, bool(target_is_directory))
 
     def unlink(self) -> None:
         capabilities.require("fs.write")
@@ -354,27 +380,27 @@ class Path:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return False
-        return self._parts() == other._parts()
+        return int(_MOLT_PATH_COMPARE(self._path, other._path)) == 0
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return NotImplemented  # type: ignore[return-value]
-        return tuple(self._parts()) < tuple(other._parts())
+        return int(_MOLT_PATH_COMPARE(self._path, other._path)) < 0
 
     def __le__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return NotImplemented  # type: ignore[return-value]
-        return tuple(self._parts()) <= tuple(other._parts())
+        return int(_MOLT_PATH_COMPARE(self._path, other._path)) <= 0
 
     def __gt__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return NotImplemented  # type: ignore[return-value]
-        return tuple(self._parts()) > tuple(other._parts())
+        return int(_MOLT_PATH_COMPARE(self._path, other._path)) > 0
 
     def __ge__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return NotImplemented  # type: ignore[return-value]
-        return tuple(self._parts()) >= tuple(other._parts())
+        return int(_MOLT_PATH_COMPARE(self._path, other._path)) >= 0
 
     def relative_to(self, *other: str) -> Path:
         if not other:

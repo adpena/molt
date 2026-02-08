@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import abc as _abc
 from typing import Any, Callable
+from types import GenericAlias as _GenericAlias
 
 import sys as _sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): add remaining contextlib parity (`AbstractContextManager` and full edge-case semantics).
-
 __all__ = [
+    "AbstractAsyncContextManager",
+    "AbstractContextManager",
     "ContextDecorator",
     "AsyncExitStack",
     "ExitStack",
@@ -22,6 +24,7 @@ __all__ = [
     "redirect_stderr",
     "redirect_stdout",
     "suppress",
+    "chdir",
 ]
 
 
@@ -32,6 +35,27 @@ _MOLT_CONTEXTLIB_ACLOSING_ENTER = _require_intrinsic(
 )
 _MOLT_CONTEXTLIB_ACLOSING_EXIT = _require_intrinsic(
     "molt_contextlib_aclosing_exit", globals()
+)
+_MOLT_CONTEXTLIB_ABSTRACT_ENTER = _require_intrinsic(
+    "molt_contextlib_abstract_enter", globals()
+)
+_MOLT_CONTEXTLIB_ABSTRACT_AENTER = _require_intrinsic(
+    "molt_contextlib_abstract_aenter", globals()
+)
+_MOLT_CONTEXTLIB_ABSTRACT_SUBCLASSHOOK = _require_intrinsic(
+    "molt_contextlib_abstract_subclasshook", globals()
+)
+_MOLT_CONTEXTLIB_ABSTRACT_ASYNC_SUBCLASSHOOK = _require_intrinsic(
+    "molt_contextlib_abstract_async_subclasshook", globals()
+)
+_MOLT_CONTEXTLIB_CONTEXTDECORATOR_CALL = _require_intrinsic(
+    "molt_contextlib_contextdecorator_call", globals()
+)
+_MOLT_CONTEXTLIB_CHDIR_ENTER = _require_intrinsic(
+    "molt_contextlib_chdir_enter", globals()
+)
+_MOLT_CONTEXTLIB_CHDIR_EXIT = _require_intrinsic(
+    "molt_contextlib_chdir_exit", globals()
 )
 _MOLT_CONTEXTLIB_ASYNCGEN_CM_NEW = _require_intrinsic(
     "molt_contextlib_asyncgen_cm_new", globals()
@@ -142,20 +166,69 @@ def aclosing(thing: Any) -> Any:
     return _AClosing(thing)
 
 
-class ContextDecorator:
+class AbstractContextManager(_abc.ABC):
+    __class_getitem__ = classmethod(_GenericAlias)
+    __slots__ = ()
+
+    def __enter__(self) -> Any:
+        return _MOLT_CONTEXTLIB_ABSTRACT_ENTER(self)
+
+    @_abc.abstractmethod
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+        return None
+
+    @classmethod
+    def __subclasshook__(cls, C: Any) -> Any:
+        if cls is AbstractContextManager:
+            return _MOLT_CONTEXTLIB_ABSTRACT_SUBCLASSHOOK(C)
+        return NotImplemented
+
+
+class AbstractAsyncContextManager(_abc.ABC):
+    __class_getitem__ = classmethod(_GenericAlias)
+    __slots__ = ()
+
+    async def __aenter__(self) -> Any:
+        return _MOLT_CONTEXTLIB_ABSTRACT_AENTER(self)
+
+    @_abc.abstractmethod
+    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+        return None
+
+    @classmethod
+    def __subclasshook__(cls, C: Any) -> Any:
+        if cls is AbstractAsyncContextManager:
+            return _MOLT_CONTEXTLIB_ABSTRACT_ASYNC_SUBCLASSHOOK(C)
+        return NotImplemented
+
+
+class ContextDecorator(_abc.ABC):
     def _recreate_cm(self) -> "ContextDecorator":
         return self
 
-    def __enter__(self) -> Any:
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def __enter__(self) -> Any: ...
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        raise NotImplementedError
+    @_abc.abstractmethod
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool: ...
 
     def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
         def _inner(*args: Any, **kwargs: Any) -> Any:
-            with self._recreate_cm():
-                return func(*args, **kwargs)
+            cm = self._recreate_cm()
+            return _MOLT_CONTEXTLIB_CONTEXTDECORATOR_CALL(cm, func, args, kwargs)
+
+        _copy_wrapper_metadata(_inner, func)
+        return _inner
+
+
+class AsyncContextDecorator:
+    def _recreate_cm(self) -> "AsyncContextDecorator":
+        return self
+
+    def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
+        async def _inner(*args: Any, **kwds: Any) -> Any:
+            async with self._recreate_cm():
+                return await func(*args, **kwds)
 
         _copy_wrapper_metadata(_inner, func)
         return _inner
@@ -345,3 +418,18 @@ class redirect_stdout(_RedirectStream):
 class redirect_stderr(_RedirectStream):
     def __init__(self, new_target: Any) -> None:
         super().__init__(new_target, "stderr")
+
+
+class chdir(AbstractContextManager):
+    def __init__(self, path: Any) -> None:
+        self.path = path
+        self._old_cwd: list[str] = []
+
+    def __enter__(self) -> None:
+        old_cwd = _MOLT_CONTEXTLIB_CHDIR_ENTER(self.path)
+        self._old_cwd.append(old_cwd)
+        return None
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        _MOLT_CONTEXTLIB_CHDIR_EXIT(self._old_cwd.pop())
+        return False

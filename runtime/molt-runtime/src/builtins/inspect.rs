@@ -150,6 +150,7 @@ fn dec_owned_bits(_py: &crate::PyToken<'_>, owned: &[u64]) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_signature_payload(
     _py: &crate::PyToken<'_>,
     arg_names_bits: u64,

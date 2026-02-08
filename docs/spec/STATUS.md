@@ -69,7 +69,15 @@ README/ROADMAP in sync.
 - Implemented: `__future__` and `keyword` module data/queries are now sourced from Rust intrinsics (`molt_future_features`, `molt_keyword_lists`, `molt_keyword_iskeyword`, `molt_keyword_issoftkeyword`), removing probe-only status.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
 - Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) and fail fast when intrinsics are missing.
-- Implemented: `pathlib` now routes core path algebra and filesystem operations through Rust intrinsics (`molt_path_join`, `molt_path_isabs`, `molt_path_dirname`, `molt_path_splitext`, `molt_path_abspath`, `molt_path_parts`, `molt_path_parents`, `molt_path_relative_to`, `molt_path_with_name`, `molt_path_with_suffix`, `molt_path_expanduser`, `molt_path_match`, `molt_path_glob`, `molt_path_exists`, `molt_path_listdir`, `molt_path_mkdir`, `molt_path_unlink`, `molt_path_rmdir`, `molt_file_open_ex`); targeted differential lane (`os`/`time`/`traceback`/`pathlib`/`threading`) ran `24/24` green with RSS caps enabled.
+- Implemented: `pathlib` now routes core path algebra and filesystem operations through Rust intrinsics (`molt_path_join`, `molt_path_isabs`, `molt_path_dirname`, `molt_path_splitext`, `molt_path_abspath`, `molt_path_resolve`, `molt_path_parts`, `molt_path_parents`, `molt_path_relative_to`, `molt_path_with_name`, `molt_path_with_suffix`, `molt_path_expanduser`, `molt_path_match`, `molt_path_glob`, `molt_path_exists`, `molt_path_listdir`, `molt_path_mkdir`, `molt_path_unlink`, `molt_path_rmdir`, `molt_file_open_ex`); targeted differential lane (`os`/`time`/`traceback`/`pathlib`/`threading`) ran `24/24` green with RSS caps enabled.
+- Implemented: `molt_path_isabs`/`molt_path_parts`/`molt_path_parents` now use runtime-owned splitroot-aware shaping so Windows drive/UNC absolute semantics are intrinsic-backed (no Python fallback logic), and `pathlib.Path` now supports reverse-division (`\"prefix\" / Path(\"leaf\")`) via intrinsic path joins.
+- Implemented: `glob` now lowers through Rust intrinsics (`molt_glob_has_magic`, `molt_glob`) with the Python shim reduced to intrinsic forwarding + output validation (no `fnmatch`/`os` host fallback path in the module).
+- Implemented: `fnmatch` and `shlex` now route matching/tokenization through Rust intrinsics (`molt_fnmatch`, `molt_fnmatchcase`, `molt_fnmatch_filter`, `molt_fnmatch_translate`, `molt_shlex_split_ex`, `molt_shlex_join`) with Python modules reduced to argument normalization + iterator glue.
+- Implemented: `stat`, `textwrap`, and `urllib.parse` core surfaces are now runtime-owned through dedicated intrinsics (`molt_stat_*`, `molt_textwrap_*`, `molt_urllib_*`); `stat` now includes intrinsic-backed file-type constants, permission/set-id bits, `ST_*` indexes, and helper functions (`S_IFMT`/`S_IMODE` + `S_IS*`) with a thin Python shim and no host fallback path.
+- Implemented: `urllib.parse.urlencode` now lowers through runtime intrinsic `molt_urllib_urlencode`; the shim keeps only query-item normalization and output validation.
+- Implemented: `urllib.error` now lowers exception construction/formatting through dedicated runtime intrinsics (`molt_urllib_error_urlerror_init`, `molt_urllib_error_urlerror_str`, `molt_urllib_error_httperror_init`, `molt_urllib_error_httperror_str`, `molt_urllib_error_content_too_short_init`) for `URLError`, `HTTPError`, and `ContentTooShortError`; the module shim is reduced to class shell wiring and raises immediately when intrinsics are unavailable.
+- Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
+- Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -102,12 +110,12 @@ README/ROADMAP in sync.
 - `itertools` core iterators are available (`chain`, `islice`, `repeat`, `count`, `cycle`, `accumulate`, `pairwise`, `product`, `permutations`, `combinations`, `groupby`, `tee`).
 - `heapq` includes `merge` plus max-heap helpers alongside runtime fast paths.
 - `collections.deque` supports rotate/index/insert/remove; `Counter`/`defaultdict` are dict subclasses with arithmetic/default factories, `Counter` keys/values/items/total, repr/equality parity, and in-place arithmetic ops.
-- Stdlib `linecache` supports `getline`/`getlines`/`checkcache`/`lazycache` with `fs.read` gating and loader-backed cache entries.
+- Stdlib `linecache` supports `getline`/`getlines`/`checkcache`/`lazycache` with `fs.read` gating and loader-backed cache entries; lazy loader `get_source` lookup now lowers through `molt_linecache_loader_get_source` so `ImportError`/`OSError` mapping is runtime-owned instead of Python-side fallback handling.
 - Stdlib `pkgutil` supports filesystem `iter_modules`/`walk_packages` with `fs.read` gating.
 - Stdlib `compileall` supports filesystem `compile_file`/`compile_dir`/`compile_path` with `fs.read` gating (no pyc emission).
 - Stdlib `py_compile` supports `compile` with `fs.read`/`fs.write` gating (writes empty placeholder .pyc only).
 - Stdlib `enum` provides minimal `Enum`/`IntEnum`/`Flag`/`IntFlag` support with `auto`, name/value accessors, and member maps.
-- Stdlib `traceback` supports `format_exc`/`format_tb`/`format_list`/`format_stack`/`print_exception`/`print_list`/`print_stack`, `extract_tb`/`extract_stack`, `StackSummary` extraction, and runtime-lowered exception-chain formatting via `molt_traceback_format_exception`; extract/list frame shaping is routed through `molt_traceback_payload`, and `TracebackException.from_exception` now consumes runtime-owned exception components (`molt_traceback_exception_components`) for frame/cause/context shaping. Full parity pending.
+- Stdlib `traceback` supports `format_exc`/`format_tb`/`format_list`/`format_stack`/`print_exception`/`print_list`/`print_stack`, `extract_tb`/`extract_stack`, `StackSummary` extraction, and runtime-lowered exception-chain formatting via `molt_traceback_format_exception`; traceback extraction now routes through `molt_traceback_extract_tb`/`molt_traceback_payload`, suppress-context probing lowers through `molt_traceback_exception_suppress_context`, stack frame entry retrieval routes through `molt_getframe`, and `TracebackException.from_exception` consumes a single runtime-owned chain payload (`molt_traceback_exception_chain_payload`) for frame/cause/context shaping. Full parity pending.
 - Stdlib `abc` provides minimal `ABCMeta`/`ABC` and `abstractmethod` with instantiation guards.
 - Stdlib `reprlib` provides `Repr`, `repr`, and `recursive_repr` parity.
 - C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
@@ -153,8 +161,10 @@ README/ROADMAP in sync.
 - Implemented: f-string conversion flags (`!r`, `!s`, `!a`) are supported in format placeholders, including nested format specs and debug expressions.
 - Async generators (`async def` with `yield`) are not supported.
   (TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): implement async generator lowering and runtime parity.)
-- `contextlib` parity is partial: `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`, `asynccontextmanager`/`aclosing`, `suppress`, and `redirect_stdout`/`redirect_stderr` are supported via runtime-owned intrinsics, including intrinsic-backed `ExitStack.callback` + `ExitStack.enter_context`; gaps remain for `AbstractContextManager` and full edge-case parity.
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): finish contextlib parity.)
+- `contextlib` is intrinsic-backed for `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`,
+  `asynccontextmanager`/`aclosing`, `suppress`, `redirect_stdout`/`redirect_stderr`, `nullcontext`,
+  `closing`, `AbstractContextManager`, `AbstractAsyncContextManager`, and `chdir`
+  (including runtime-owned abstract subclasshook checks and cwd enter/exit paths).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): finish abc registry + cache invalidation parity.
 - Implemented: iterator/view helper types now map to concrete builtin classes so `collections.abc` imports and registrations work without fallback/guards.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): pkgutil loader/zipimport/iter_importers parity (filesystem-only discovery + store/deflate+zip64 zipimport today).
@@ -201,27 +211,59 @@ README/ROADMAP in sync.
 - GC: reference counting only; cycle collector pending (see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
   (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): implement cycle collector.)
 - Imports: file-based sys.path resolution and `spec_from_file_location` are supported;
-  meta_path/path_hooks/namespace packages remain unsupported.
-  (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): meta_path/path_hooks + namespace packages + extension loaders.)
+  `importlib.util.find_spec` now routes `meta_path`, `path_hooks`, namespace package search,
+  extension-module spec discovery, sourceless bytecode spec discovery, zip-source spec discovery,
+  and `path_importer_cache`
+  finder reuse through runtime intrinsics.
+  (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): full extension/sourceless execution parity beyond capability-gated restricted-source shim hooks.)
 - Entry modules execute under `__main__` while remaining importable under their real module name (distinct module objects).
 - Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + filesystem loader) and package `__path__`; `importlib.machinery.SourceFileLoader`
   package/module shaping and source decode payload now lower through runtime intrinsics (`molt_importlib_source_loader_payload`,
   `molt_importlib_source_exec_payload`), file reads lower via `molt_importlib_read_file`, and source execution remains intrinsic-lowered
-  via `molt_importlib_exec_restricted_source` (restricted evaluator, no host fallback). `importlib.util` filesystem discovery/cache-path +
+  via `molt_importlib_exec_restricted_source` (restricted evaluator, no host fallback). `importlib.import_module` dispatch lowers through
+  `molt_module_import` (no Python `__import__` fallback). `importlib.util` filesystem discovery/cache-path +
   `spec_from_file_location` package shaping now lower through `molt_importlib_find_spec_payload`,
-  `molt_importlib_bootstrap_payload`, `molt_importlib_cache_from_source`, and `molt_importlib_spec_from_file_location_payload`.
+  `molt_importlib_bootstrap_payload`, `molt_importlib_runtime_state_payload`, `molt_importlib_cache_from_source`, and
+  `molt_importlib_spec_from_file_location_payload`.
+  `importlib.machinery.ZipSourceLoader` source payload/execution now lowers through
+  `molt_importlib_zip_source_exec_payload`, and module spec package detection now lowers through
+  `molt_importlib_module_spec_is_package`; extension/sourceless loader execution is intrinsic-owned via
+  `molt_importlib_exec_extension`/`molt_importlib_exec_sourceless` with capability-gated intrinsic execution lanes
+  (`*.molt.py` + `*.py` candidates) before explicit `ImportError`, and unsupported restricted-shim candidates now
+  continue probing later candidates deterministically before final failure. Restricted shim execution now
+  also handles `from x import *` semantics (including `__all__` validation/fallback underscore filtering)
+  in runtime-owned paths.
   `importlib.resources` package root/namespace resolution and traversable stat/listdir payloads are runtime-lowered via
-  `molt_importlib_resources_package_payload` and `molt_importlib_resources_path_payload`; direct resources text/binary reads lower through
+  `molt_importlib_resources_package_payload` and `molt_importlib_resources_path_payload` (including zip/whl/egg namespace/resource roots); loader reader bootstrap
+  lowers through `molt_importlib_resources_module_name`/`molt_importlib_resources_loader_reader` (including
+  explicit fallback from `module.__spec__.loader` to `module.__loader__`), and custom
+  reader contract surfaces lower through `molt_importlib_resources_reader_roots`/`molt_importlib_resources_reader_contents`/
+  `molt_importlib_resources_reader_resource_path`/`molt_importlib_resources_reader_is_resource`/
+  `molt_importlib_resources_reader_open_resource_bytes`/`molt_importlib_resources_reader_child_names`; direct resources text/binary reads lower through
   `molt_importlib_read_file`. `importlib.metadata` dist-info scan + metadata parsing lower through
-  `molt_importlib_bootstrap_payload`, `molt_importlib_metadata_dist_paths`, `molt_importlib_metadata_entry_points_payload`, and
-  `molt_importlib_metadata_payload` (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields).
-  TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery loader parity (namespace/extension/zip).
+  `molt_importlib_bootstrap_payload`, `molt_importlib_metadata_dist_paths`,
+  `molt_importlib_metadata_entry_points_payload`/`molt_importlib_metadata_entry_points_select_payload`,
+  `molt_importlib_metadata_normalize_name`, and `molt_importlib_metadata_payload`
+  (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields).
+  TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery full extension/sourceless execution parity beyond capability-gated restricted-source shim lanes (zip source loader path is intrinsic-lowered).
 - Imports: module-level `from x import *` honors `__all__` (with strict name checks) and otherwise skips underscore-prefixed names.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:planned): method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding).
 - Asyncio: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `Event`, `wait`, `wait_for`, `shield`, basic `gather`,
   stream helpers (`open_connection`/`start_server`), and `add_reader`/`add_writer`; advanced loop APIs, task groups, and full
-  transport/protocol adapters remain pending. Asyncio subprocess stdio now supports `stderr=STDOUT` and fd-based redirection.
+  transport/protocol adapters remain pending. Asyncio subprocess stdio now supports `stderr=STDOUT` and fd-based redirection,
+  with mode normalization/runtime validation lowered into Rust intrinsic `molt_asyncio_subprocess_stdio_normalize`.
+  Timer and fd-watcher teardown now lower through `molt_asyncio_timer_handle_cancel` and `molt_asyncio_fd_watcher_unregister`.
+  Runtime capability gates for SSL transport, Unix sockets, and child-watchers are intrinsic-owned
+  (`molt_asyncio_require_ssl_transport_support`, `molt_asyncio_require_unix_socket_support`, `molt_asyncio_require_child_watcher_support`)
+  so unsupported paths raise deterministic runtime/capability errors rather than Python `NotImplementedError`.
+  SSL orchestration is runtime-owned via `molt_asyncio_ssl_transport_orchestrate`; `ssl=False` now returns an explicit
+  non-SSL payload path, client TLS execution for `open_connection`/`create_connection` + `open_unix_connection`/`create_unix_connection`
+  plus client/server-side `start_tls` upgrades now lower into runtime-owned rustls stream intrinsics
+  (`molt_asyncio_tls_client_connect_new`, `molt_asyncio_tls_client_from_fd_new`,
+  `molt_asyncio_tls_server_payload`, `molt_asyncio_tls_server_from_fd_new`), and server TLS execution for
+  `start_server`/`start_unix_server` lowers through the same runtime cert/key payload + fd-upgrade intrinsics
+  instead of Python fail-fast stubs.
   Event-loop semantics target a single-threaded, deterministic scheduler; true parallelism is explicit via executors or isolated
   runtimes.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)
@@ -324,6 +366,7 @@ README/ROADMAP in sync.
   (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): wasm scheduler background workers.)
 - Implemented: native websocket connect uses the built-in tungstenite host hook (ws/wss, nonblocking) with capability gating; wasm hosts wire `molt_ws_*_host` for browser/Node (wasmtime stubs).
 - Implemented: websocket readiness integration via io_poller for native + wasm (`molt_ws_wait_new`) to avoid busy-polling and enable batch wakeups.
+- Implemented: websocket wasm-host edge failures now raise explicit intrinsic-owned errors (capability-denied connect, missing host transport, and wait-registration failures) instead of generic fallback failures.
 - TODO(perf, owner:runtime, milestone:RT3, priority:P2, status:planned): cache mio websocket poll streams/registrations to avoid per-wait `TcpStream` clones.
 
 ## Thread Safety + GIL Notes
@@ -367,21 +410,23 @@ README/ROADMAP in sync.
   (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
-- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `urllib.parse`, `fnmatch` (`*`/`?`
+- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `urllib.parse`, `urllib.error`, `urllib.request`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `string`, `struct`, `typing`, `sys`, `os`, `pathlib`,
-  `tempfile`, `gc`, `weakref`, `random` (Random API + MT parity: `seed`/`getstate`/`setstate`, `randrange`/`randint`/`shuffle`, `choice`/`choices`/`sample`, `randbytes`, `SystemRandom` via `os.urandom`, plus distributions: `uniform`, `triangular`, `normalvariate`, `gauss`, `lognormvariate`, `expovariate`, `vonmisesvariate`, `gammavariate`, `betavariate`, `paretovariate`, `weibullvariate`, `binomialvariate`), `time` (`monotonic`, `perf_counter`, `process_time`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`, plus `localtime`/`gmtime`/`strftime` + `struct_time` + `asctime`/`ctime` + `timezone`/`daylight`/`altzone`/`tzname` + `mktime`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan, `JSONEncoder`/`JSONDecoder`, `JSONDecodeError` details), `base64` (b16/b32/b32hex/b64/b85/a85/z85 encode/decode + urlsafe + legacy helpers), `hashlib`/`hmac` (Rust intrinsics for guaranteed algorithms + `pbkdf2_hmac`/`scrypt`; unsupported algorithms raise), `pickle` (protocol 0 only),
-  `socket` (runtime-backed, capability-gated; fd duplication/fromfd/inheritable plus socket-file reader read/readline paths route via Rust intrinsics, `dup` now clones via runtime socket-handle intrinsic, and default-timeout validation is CPython-shaped; advanced options + wasm parity pending), `select` (`select.select` + `poll`/`epoll`/`kqueue`/`devpoll` objects now intrinsic-backed via runtime selector registries),
+  `tempfile`, `gc`, `weakref`, `random` (Random API + MT parity: `seed`/`getstate`/`setstate`, `randrange`/`randint`/`shuffle`, `choice`/`choices`/`sample`, `randbytes`, `SystemRandom` via `os.urandom`, plus distributions: `uniform`, `triangular`, `normalvariate`, `gauss`, `lognormvariate`, `expovariate`, `vonmisesvariate`, `gammavariate`, `betavariate`, `paretovariate`, `weibullvariate`, `binomialvariate`), `time` (`monotonic`, `perf_counter`, `process_time`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`, plus `localtime`/`gmtime`/`strftime` + `struct_time` + `asctime`/`ctime` + `timezone`/`daylight`/`altzone`/`tzname` + `mktime` + `timegm`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan, `JSONEncoder`/`JSONDecoder`, `JSONDecodeError` details), `base64` (b16/b32/b32hex/b64/b85/a85/z85 encode/decode + urlsafe + legacy helpers), `hashlib`/`hmac` (Rust intrinsics for guaranteed algorithms + `pbkdf2_hmac`/`scrypt`; unsupported algorithms raise), `pickle` (protocol 0 only),
+  `socket` (runtime-backed, capability-gated; fd duplication/fromfd/inheritable plus socket-file reader read/readline paths route via Rust intrinsics, `dup` now clones via runtime socket-handle intrinsic, default-timeout validation is CPython-shaped, and `gethostbyaddr`/`getfqdn` now lower through dedicated Rust intrinsics; advanced options + wasm parity pending), `select` (`select.select` + `poll`/`epoll`/`kqueue`/`devpoll` objects now intrinsic-backed via runtime selector registries),
   `selectors` (CPython-shaped backend classes now route through intrinsic-backed `select` objects rather than Python async fan-out), `asyncio`, `contextvars`, `contextlib`, `threading`, `zipfile`, `zipimport`,
   `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
   Supported shims: `keyword` (`kwlist`/`softkwlist`, `iskeyword`, `issoftkeyword`), `pprint` (PrettyPrinter/pformat/pprint parity).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand zipfile/zipimport with bytecode caching + broader archive support.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, and `urllib.parse` per matrix coverage.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, and `urllib.parse`/`urllib.error`/`urllib.request` per matrix coverage.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (OS-specific flags, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
 - Implemented: wasm/non-Unix socket host ABI now carries ancillary payload buffers and recvmsg `msg_flags` for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into`; runtime no longer hardcodes `msg_flags=0` in wasm paths.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` cross-platform ancillary parity (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete asyncio transport/runtime parity after intrinsic capability gates (full SSL transport semantics, Unix-socket behavior parity across native/wasm, and child-watcher behavior depth on supported hosts).
+- Implemented: intrinsic-backed `pathlib.Path.glob`/`rglob` segment matching now covers `*`/`?`/`[]` classes plus recursive `**` traversal in the runtime matcher (no Python fallback path).
 - Implemented: `os.read`/`os.write` are now Rust-intrinsic-backed (`molt_os_read`/`molt_os_write`) and validated with differential coverage (`os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only compiled runs.
 - Implemented: threading basic differential lane (`tests/differential/basic/threading_*.py`) is green (`24/24`) under intrinsic-only compiled runs with RSS profiling enabled.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
@@ -389,7 +434,7 @@ README/ROADMAP in sync.
 - Implemented: uuid module parity (UUID accessors, `uuid1`/`uuid3`/`uuid4`/`uuid5`, namespaces, SafeUUID).
 - Implemented: collections.abc parity (ABC registration, structural checks, mixins).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (runtime fast-path parser + performance tuning).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand hashlib/hmac coverage for optional OpenSSL algorithms (sha512_224/sha512_256, ripemd160, md4) and add parity tests for advanced digestmod usage.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand advanced hashlib/hmac digestmod parity tests.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten `weakref.finalize` shutdown-order parity (including `atexit` edge cases) against CPython.
 - Implemented: `abc.update_abstractmethods` now lowers through Rust intrinsic `molt_abc_update_abstractmethods` (no Python-side abstract-method scanning loop in `abc.py`).
@@ -400,7 +445,7 @@ README/ROADMAP in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_bz2` compression backend parity for `bz2`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `random` distribution test vectors and edge-case coverage.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): `struct` intrinsics cover the CPython 3.12 format table (including half-float) with endianness + alignment and C-contiguous memoryview chain handling for pack/unpack/pack_into/unpack_from; remaining gaps are exact CPython diagnostic-text parity on selected edge cases.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (`timegm`) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic `time` clock policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand locale parity beyond deterministic runtime shim semantics (`setlocale` catalog coverage, category handling, and host-locale compatibility).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement gettext translation catalog/domain parity (filesystem-backed `.mo` loading and locale/domain selection).
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): wire local timezone + locale data for `time.localtime`/`time.strftime` on wasm hosts.
@@ -411,13 +456,13 @@ README/ROADMAP in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): finish remaining `types` shims (CapsuleType + any missing helper/descriptor types).
 - Import-only stubs: `collections.abc`, `_collections_abc`, `_asyncio`, `_bz2`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core collections.abc surfaces.)
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib meta_path/namespace/extension loader parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib extension/sourceless execution parity beyond capability-gated restricted-source shim lanes.
 - Implemented: relative import resolution now honors `__package__`/`__spec__` metadata (including `__main__`) and namespace packages, with CPython-matching errors for missing or over-deep parents.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader-backed and zip resource reader parity (namespace path discovery is intrinsic-lowered).
+- Implemented: `importlib.resources` custom loader reader contract parity is now wired through reader-backed traversables (`contents`/`is_resource`/`open_resource`/`resource_path`) on top of intrinsic namespace + archive resource payloads, with archive-member path tagging in runtime payloads so `resource_path()` stays filesystem-only across direct + traversable + roots fallback lanes, while archive reads remain intrinsic-backed via `open_resource()`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata dependency/advanced metadata semantics beyond intrinsic payload parsing.
-- Planned import-only stubs: `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`,
-  `ipaddress`, `mimetypes`, `socketserver`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`,
-  `email.utils`, `email.header`, `urllib.request`, `urllib.error`, `urllib.robotparser`,
+- Planned import-only stubs: `html`, `html.parser`, `http.cookies`,
+  `ipaddress`, `mimetypes`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`,
+  `email.utils`, `email.header`, `urllib.robotparser`,
   `logging.config`, `logging.handlers`, `cgi`, `zlib`.
   Additional 3.12+ planned/import-only modules (e.g., `annotationlib`, `codecs`, `configparser`,
   `difflib`, `dis`, `encodings`, `tokenize`, `trace`, `xmlrpc`, `zipapp`) are tracked in
@@ -464,10 +509,15 @@ README/ROADMAP in sync.
 - `molt vendor` supports git sources when a pinned revision (or tag/branch that resolves
   to a commit) is present, recording resolved commit + tree hash in the manifest.
 - Use `tools/dev.py lint` and `tools/dev.py test` for local validation.
+- Dev build throughput controls are available and enabled by default: `--profile dev` routes to Cargo `dev-fast`; native backend compiles use a persistent backend daemon with lock-coordinated restart/retry; shared build state (locks/fingerprints/daemon sockets) lives under `<CARGO_TARGET_DIR>/.molt_state/` (override with `MOLT_BUILD_STATE_DIR`).
+- Throughput tooling is available for repeatable setup + measurement: `tools/throughput_env.sh`, `tools/throughput_matrix.py`, and `tools/molt_cache_prune.py`.
 - On macOS arm64, uv runs that target Python 3.14 force `--no-managed-python` and
   require a system `python3.14` to avoid uv-managed hangs.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
 - Single-module wasm linking via `tools/wasm_link.py` (requires `wasm-ld`) is required for Node/wasmtime runs of runtime outputs; enable with `--linked`/`--require-linked` (or `MOLT_WASM_LINK=1`).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane with multi-job compile API + richer health telemetry under high multi-agent contention.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): add function-level object caching and batch diff compile server mode to reduce repeated backend compiles across unchanged functions/tests.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add import-graph-aware diff scheduling and distributed cache playbooks for multi-host agent fleets.
 
 ## Known Gaps
 - Browser host harness is available under `wasm/browser_host.html` with

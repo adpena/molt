@@ -9,11 +9,11 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `110`
-- `intrinsic-backed`: `40`
-- `intrinsic-partial`: `19`
-- `probe-only`: `16`
-- `python-only`: `35`
+- Total audited modules: `112`
+- `intrinsic-backed`: `58`
+- `intrinsic-partial`: `16`
+- `probe-only`: `13`
+- `python-only`: `25`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
@@ -32,21 +32,21 @@
 - `struct`: `intrinsic-backed`
 - `time`: `intrinsic-backed`
 - `inspect`: `intrinsic-partial`
-- `functools`: `python-only`
+- `functools`: `intrinsic-partial`
 - `itertools`: `intrinsic-backed`
 - `operator`: `intrinsic-backed`
-- `contextlib`: `intrinsic-partial`
+- `contextlib`: `intrinsic-backed`
 
 ### P2 queue (Phase 4: import/data/network long tail)
 - `pathlib`: `intrinsic-partial`
-- `importlib`: `probe-only`
-- `importlib.util`: `intrinsic-partial`
+- `importlib`: `intrinsic-backed`
+- `importlib.util`: `intrinsic-backed`
 - `importlib.machinery`: `intrinsic-backed`
-- `pkgutil`: `python-only`
-- `glob`: `python-only`
-- `shutil`: `python-only`
-- `py_compile`: `python-only`
-- `compileall`: `python-only`
+- `pkgutil`: `intrinsic-backed`
+- `glob`: `intrinsic-backed`
+- `shutil`: `intrinsic-backed`
+- `py_compile`: `intrinsic-backed`
+- `compileall`: `intrinsic-backed`
 - `json`: `probe-only`
 - `csv`: `python-only`
 - `pickle`: `python-only`
@@ -56,8 +56,8 @@
 - `ssl`: `not-audited`
 - `subprocess`: `not-audited`
 - `concurrent.futures`: `intrinsic-partial`
-- `http.client`: `probe-only`
-- `http.server`: `probe-only`
+- `http.client`: `intrinsic-partial`
+- `http.server`: `intrinsic-partial`
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
@@ -70,14 +70,21 @@
 - `codecs`
 - `collections`
 - `collections.abc`
+- `compileall`
+- `contextlib`
 - `copy`
 - `copyreg`
 - `dataclasses`
 - `errno`
+- `fnmatch`
 - `gc`
+- `glob`
 - `heapq`
 - `hmac`
+- `importlib`
 - `importlib.machinery`
+- `importlib.resources`
+- `importlib.util`
 - `io`
 - `itertools`
 - `keyword`
@@ -89,37 +96,47 @@
 - `multiprocessing.spawn`
 - `operator`
 - `os`
+- `pkgutil`
+- `py_compile`
 - `reprlib`
+- `runpy`
 - `select`
 - `selectors`
 - `shlex`
+- `shutil`
+- `socketserver`
+- `stat`
 - `struct`
 - `sys`
+- `textwrap`
 - `threading`
 - `time`
 - `traceback`
 - `types`
 - `typing`
+- `urllib`
+- `urllib.error`
+- `urllib.parse`
+- `urllib.request`
 - `weakref`
 
 ### Intrinsic-backed modules (partial lowering pending)
 - `_asyncio`
 - `asyncio`
 - `concurrent.futures`
-- `contextlib`
 - `decimal`
 - `email.message`
+- `functools`
 - `gettext`
 - `hashlib`
+- `http.client`
+- `http.server`
 - `importlib.metadata`
-- `importlib.resources`
-- `importlib.util`
 - `inspect`
 - `locale`
 - `math`
 - `pathlib`
 - `re`
-- `runpy`
 - `socket`
 - `zipfile`
 
@@ -128,14 +145,9 @@
 - `base64`
 - `bisect`
 - `contextvars`
-- `fnmatch`
-- `http.client`
-- `http.server`
-- `importlib`
 - `json`
 - `pprint`
 - `random`
-- `socketserver`
 - `string`
 - `tempfile`
 - `unittest`
@@ -145,7 +157,6 @@
 - `_bz2`
 - `_weakref`
 - `ast`
-- `compileall`
 - `concurrent`
 - `csv`
 - `ctypes`
@@ -153,15 +164,9 @@
 - `encodings`
 - `encodings.aliases`
 - `enum`
-- `functools`
-- `glob`
 - `ipaddress`
 - `pickle`
-- `pkgutil`
-- `py_compile`
-- `shutil`
 - `signal`
-- `stat`
 - `test`
 - `test.import_helper`
 - `test.list_tests`
@@ -172,9 +177,6 @@
 - `test.tokenizedata.badsyntax_3131`
 - `test.tokenizedata.badsyntax_pep3120`
 - `test.warnings_helper`
-- `textwrap`
-- `urllib`
-- `urllib.parse`
 - `uuid`
 - `zipimport`
 

@@ -1,36 +1,29 @@
-"""Minimal glob support for Molt."""
+"""Intrinsic-backed glob support for Molt."""
 
 from __future__ import annotations
 
-from molt.stdlib import fnmatch
-from molt.stdlib import os
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["glob", "iglob", "has_magic"]
 
 
-_MAGIC_CHARS = "*?[]"
+_MOLT_GLOB_HAS_MAGIC = _require_intrinsic("molt_glob_has_magic", globals())
+_MOLT_GLOB = _require_intrinsic("molt_glob", globals())
 
 
 def has_magic(pathname: str) -> bool:
-    return any(ch in pathname for ch in _MAGIC_CHARS)
-
-
-def _iterdir(dirname: str) -> list[str]:
-    return list(os.listdir(dirname))
+    return bool(_MOLT_GLOB_HAS_MAGIC(pathname))
 
 
 def glob(pathname: str) -> list[str]:
-    return list(iglob(pathname))
+    matches = _MOLT_GLOB(pathname)
+    if not isinstance(matches, list):
+        raise RuntimeError("glob intrinsic returned invalid value")
+    for match in matches:
+        if not isinstance(match, str):
+            raise RuntimeError("glob intrinsic returned invalid value")
+    return matches
 
 
 def iglob(pathname: str):
-    dirname, basename = os.path.split(pathname)
-    if not dirname:
-        dirname = os.curdir
-    if not has_magic(basename):
-        if os.path.exists(pathname):
-            yield pathname
-        return
-    for name in _iterdir(dirname):
-        if fnmatch.fnmatch(name, basename):
-            yield os.path.join(dirname, name)
+    yield from glob(pathname)

@@ -1,5 +1,5 @@
 # MOLT_META: wasm=no
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read,thread
 """Purpose: differential coverage for urllib request basic more."""
 
 import http.server

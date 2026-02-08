@@ -1,7 +1,6 @@
 """Capability-gated asyncio shim for Molt."""
 
 from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
 from dataclasses import dataclass
 import builtins as _builtins
@@ -137,176 +136,166 @@ if _EXPOSE_WINDOWS_POLICIES:
 
 if TYPE_CHECKING:
 
-    def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
-        raise NotImplementedError
+    def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any: ...
 
-    def molt_block_on(awaitable: Any) -> Any:
-        raise NotImplementedError
+    def molt_block_on(awaitable: Any) -> Any: ...
 
-    def molt_asyncgen_shutdown() -> None:
-        raise NotImplementedError
+    def molt_asyncgen_shutdown() -> None: ...
 
-    def molt_cancel_token_set_current(_token_id: int) -> int:
-        raise NotImplementedError
+    def molt_cancel_token_set_current(_token_id: int) -> int: ...
 
-    def molt_promise_new() -> Any:
-        raise NotImplementedError
+    def molt_promise_new() -> Any: ...
 
-    def molt_promise_set_exception(_promise: Any, _exc: Any) -> None:
-        raise NotImplementedError
+    def molt_promise_set_exception(_promise: Any, _exc: Any) -> None: ...
 
-    def molt_promise_set_result(_promise: Any, _value: Any) -> None:
-        raise NotImplementedError
+    def molt_promise_set_result(_promise: Any, _value: Any) -> None: ...
 
-    def molt_cancel_token_get_current() -> int:
-        raise NotImplementedError
+    def molt_cancel_token_get_current() -> int: ...
 
-    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None:
-        raise NotImplementedError
+    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None: ...
 
-    def molt_future_cancel(_future: Any) -> None:
-        raise NotImplementedError
+    def molt_future_cancel(_future: Any) -> None: ...
 
-    def molt_asyncio_wait_for_new(_future: Any, _timeout: Any | None = None) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_wait_for_new(_future: Any, _timeout: Any | None = None) -> Any: ...
 
     def molt_asyncio_wait_new(
         _tasks: Any, _timeout: Any | None = None, _return_when: int = 0
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
-    def molt_asyncio_gather_new(_tasks: Any, _return_exceptions: bool = False) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_gather_new(
+        _tasks: Any, _return_exceptions: bool = False
+    ) -> Any: ...
 
-    def molt_asyncio_cancel_pending(_tasks: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_cancel_pending(_tasks: Any) -> int: ...
 
-    def molt_asyncio_ready_batch_run(_handles: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_ready_batch_run(_handles: Any) -> int: ...
 
-    def molt_asyncio_ready_queue_drain(_ready_lock: Any, _ready: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_ready_queue_drain(_ready_lock: Any, _ready: Any) -> int: ...
 
     def molt_asyncio_waiters_notify(
         _waiters: Any, _count: int = 1, _result: Any = True
-    ) -> int:
-        raise NotImplementedError
+    ) -> int: ...
 
     def molt_asyncio_waiters_notify_exception(
         _waiters: Any, _count: int = 1, _exc: Any = None
-    ) -> int:
-        raise NotImplementedError
+    ) -> int: ...
 
-    def molt_asyncio_waiters_remove(_waiters: Any, _waiter: Any) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_waiters_remove(_waiters: Any, _waiter: Any) -> bool: ...
 
-    def molt_asyncio_barrier_release(_waiters: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_barrier_release(_waiters: Any) -> int: ...
 
-    def molt_asyncio_future_transfer(_source: Any, _target: Any) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_condition_wait_for_step(
+        _condition: Any, _predicate: Any
+    ) -> tuple[bool, Any]: ...
 
-    def molt_asyncio_event_waiters_cleanup(_waiters: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_future_transfer(_source: Any, _target: Any) -> bool: ...
 
-    def molt_asyncio_task_registry_set(_token_id: int, _task: Any | None) -> None:
-        raise NotImplementedError
+    def molt_asyncio_event_waiters_cleanup(_waiters: Any) -> int: ...
 
-    def molt_asyncio_task_registry_get(_token_id: int) -> Any | None:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_set(_token_id: int, _task: Any | None) -> None: ...
 
-    def molt_asyncio_task_registry_contains(_token_id: int) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_get(_token_id: int) -> Any | None: ...
 
-    def molt_asyncio_task_registry_current() -> Any | None:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_contains(_token_id: int) -> bool: ...
+
+    def molt_asyncio_task_registry_current() -> Any | None: ...
 
     def molt_asyncio_task_registry_current_for_loop(
         _loop: Any | None = None,
-    ) -> Any | None:
-        raise NotImplementedError
+    ) -> Any | None: ...
 
-    def molt_asyncio_task_registry_pop(_token_id: int) -> Any | None:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_pop(_token_id: int) -> Any | None: ...
 
-    def molt_asyncio_task_registry_move(_old_token_id: int, _new_token_id: int) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_move(
+        _old_token_id: int, _new_token_id: int
+    ) -> bool: ...
 
-    def molt_asyncio_task_registry_values() -> Any:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_values() -> Any: ...
 
-    def molt_asyncio_task_registry_live(_loop: Any | None = None) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_live(_loop: Any | None = None) -> Any: ...
 
-    def molt_asyncio_event_waiters_register(_token_id: int, _waiter: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_task_registry_live_set(_loop: Any | None = None) -> Any: ...
 
-    def molt_asyncio_event_waiters_unregister(_token_id: int, _waiter: Any) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_event_waiters_register(_token_id: int, _waiter: Any) -> None: ...
 
-    def molt_asyncio_event_waiters_cleanup_token(_token_id: int) -> int:
-        raise NotImplementedError
+    def molt_asyncio_event_waiters_unregister(_token_id: int, _waiter: Any) -> bool: ...
+
+    def molt_asyncio_event_waiters_cleanup_token(_token_id: int) -> int: ...
 
     def molt_asyncio_child_watcher_add(
         _callbacks: Any, _pid: int, _callback: Any, _args: tuple[Any, ...]
-    ) -> None:
-        raise NotImplementedError
+    ) -> None: ...
 
-    def molt_asyncio_child_watcher_remove(_callbacks: Any, _pid: int) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_child_watcher_remove(_callbacks: Any, _pid: int) -> bool: ...
 
-    def molt_asyncio_child_watcher_clear(_callbacks: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_child_watcher_clear(_callbacks: Any) -> None: ...
 
     def molt_asyncio_child_watcher_pop(
         _callbacks: Any, _pid: int
-    ) -> tuple[Any, tuple[Any, ...]] | None:
-        raise NotImplementedError
+    ) -> tuple[Any, tuple[Any, ...]] | None: ...
 
-    def molt_asyncio_running_loop_get() -> Any:
-        raise NotImplementedError
+    def molt_asyncio_require_ssl_transport_support() -> None: ...
 
-    def molt_asyncio_running_loop_set(_loop: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_ssl_transport_orchestrate(
+        _operation: str,
+        _ssl: Any,
+        _server_hostname: str | None = None,
+        _server_side: bool = False,
+    ) -> bool: ...
 
-    def molt_asyncio_event_loop_get() -> Any:
-        raise NotImplementedError
+    def molt_asyncio_tls_client_connect_new(
+        _host: str, _port: int, _server_hostname: str | None = None
+    ) -> Any: ...
 
-    def molt_asyncio_event_loop_set(_loop: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_tls_client_from_fd_new(
+        _fd: int, _server_hostname: str | None = None
+    ) -> Any: ...
 
-    def molt_asyncio_event_loop_policy_get() -> Any:
-        raise NotImplementedError
+    def molt_asyncio_tls_server_payload(_ssl: Any) -> tuple[str, str]: ...
 
-    def molt_asyncio_event_loop_policy_set(_policy: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_tls_server_from_fd_new(
+        _fd: int, _certfile: str, _keyfile: str
+    ) -> Any: ...
+
+    def molt_asyncio_require_unix_socket_support() -> None: ...
+
+    def molt_asyncio_require_child_watcher_support() -> None: ...
+
+    def molt_asyncio_running_loop_get() -> Any: ...
+
+    def molt_asyncio_running_loop_set(_loop: Any) -> None: ...
+
+    def molt_asyncio_event_loop_get() -> Any: ...
+
+    def molt_asyncio_event_loop_set(_loop: Any) -> None: ...
+
+    def molt_asyncio_event_loop_policy_get() -> Any: ...
+
+    def molt_asyncio_event_loop_policy_set(_policy: Any) -> None: ...
 
     def molt_asyncio_taskgroup_on_task_done(
         _tasks: Any, _errors: Any, _task: Any
-    ) -> bool:
-        raise NotImplementedError
+    ) -> bool: ...
 
     def molt_asyncio_taskgroup_request_cancel(
         _loop: Any | None, _cancel_callback: Any, _cancel_handle: Any | None = None
-    ) -> Any | None:
-        raise NotImplementedError
+    ) -> Any | None: ...
 
-    def molt_asyncio_task_cancel_apply(_future: Any, _msg: Any | None = None) -> bool:
-        raise NotImplementedError
+    def molt_asyncio_tasks_add_done_callback(_tasks: Any, _callback: Any) -> int: ...
 
-    def molt_asyncio_task_uncancel_apply(_future: Any) -> None:
-        raise NotImplementedError
+    def molt_asyncio_task_cancel_apply(
+        _future: Any, _msg: Any | None = None
+    ) -> bool: ...
 
-    def molt_asyncio_future_invoke_callbacks(_future: Any, _callbacks: Any) -> int:
-        raise NotImplementedError
+    def molt_asyncio_task_uncancel_apply(_future: Any) -> None: ...
 
-    def molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int:
-        raise NotImplementedError
+    def molt_asyncio_future_invoke_callbacks(_future: Any, _callbacks: Any) -> int: ...
+
+    def molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int: ...
 
     def molt_asyncio_loop_enqueue_handle(
         _loop: Any, _ready_lock: Any, _ready: Any, _handle: Any
-    ) -> int:
-        raise NotImplementedError
+    ) -> int: ...
 
     def molt_asyncio_timer_handle_new(
         _handle: Any,
@@ -315,8 +304,7 @@ if TYPE_CHECKING:
         _scheduled: Any,
         _ready_lock: Any,
         _ready: Any,
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
     def molt_asyncio_timer_schedule(
         _handle: Any,
@@ -325,13 +313,15 @@ if TYPE_CHECKING:
         _scheduled: Any,
         _ready_lock: Any,
         _ready: Any,
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
+
+    def molt_asyncio_timer_handle_cancel(
+        _scheduled: Any, _handle: Any, _timer_task: Any | None
+    ) -> None: ...
 
     def molt_asyncio_fd_watcher_new(
         _registry: Any, _fileno: Any, _callback: Any, _args: Any, _events: Any
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
     def molt_asyncio_fd_watcher_register(
         _loop: Any,
@@ -340,8 +330,23 @@ if TYPE_CHECKING:
         _callback: Any,
         _args: Any,
         _events: Any,
-    ) -> None:
-        raise NotImplementedError
+    ) -> None: ...
+
+    def molt_asyncio_fd_watcher_unregister(_registry: Any, _fileno: Any) -> bool: ...
+
+    def molt_asyncio_subprocess_stdio_normalize(
+        _value: Any,
+        _allow_stdout: bool,
+        _pipe_const: Any,
+        _devnull_const: Any,
+        _stdout_const: Any,
+        _inherit_mode: int,
+        _pipe_mode: int,
+        _devnull_mode: int,
+        _stdout_mode: int,
+        _fd_base: int,
+        _fd_max: int,
+    ) -> int: ...
 
     def molt_asyncio_server_accept_loop_new(
         _sock: Any,
@@ -350,73 +355,55 @@ if TYPE_CHECKING:
         _reader_ctor: Any,
         _writer_ctor: Any,
         _closed_probe: Any,
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
-    def molt_asyncio_ready_runner_new(_loop: Any, _ready_lock: Any, _ready: Any) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_ready_runner_new(
+        _loop: Any, _ready_lock: Any, _ready: Any
+    ) -> Any: ...
 
-    def molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any: ...
 
-    def molt_asyncio_stream_reader_readline_new(_reader: Any) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_stream_reader_readline_new(_reader: Any) -> Any: ...
 
-    def molt_asyncio_stream_send_all_new(_stream: Any, _data: Any) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_stream_send_all_new(_stream: Any, _data: Any) -> Any: ...
 
-    def molt_asyncio_stream_buffer_snapshot(_buffer: Any) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_stream_buffer_snapshot(_buffer: Any) -> Any: ...
 
-    def molt_asyncio_stream_buffer_consume(_buffer: Any, _count: int) -> int:
-        raise NotImplementedError
+    def molt_asyncio_stream_buffer_consume(_buffer: Any, _count: int) -> int: ...
 
     def molt_asyncio_socket_reader_read_new(
         _reader: Any, _n: int = -1, _fd: int = -1
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
-    def molt_asyncio_socket_reader_readline_new(_reader: Any, _fd: int = -1) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_socket_reader_readline_new(_reader: Any, _fd: int = -1) -> Any: ...
 
-    def molt_asyncio_sock_recv_new(_sock: Any, _size: int, _fd: int) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_sock_recv_new(_sock: Any, _size: int, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_connect_new(_sock: Any, _address: Any, _fd: int) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_sock_connect_new(_sock: Any, _address: Any, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_accept_new(_sock: Any, _fd: int) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_sock_accept_new(_sock: Any, _fd: int) -> Any: ...
 
     def molt_asyncio_sock_recv_into_new(
         _sock: Any, _buf: Any, _nbytes: int, _fd: int
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
-    def molt_asyncio_sock_sendall_new(_sock: Any, _data: Any, _fd: int) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_sock_sendall_new(_sock: Any, _data: Any, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_recvfrom_new(_sock: Any, _size: int, _fd: int) -> Any:
-        raise NotImplementedError
+    def molt_asyncio_sock_recvfrom_new(_sock: Any, _size: int, _fd: int) -> Any: ...
 
     def molt_asyncio_sock_recvfrom_into_new(
         _sock: Any, _buf: Any, _nbytes: int, _fd: int
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
     def molt_asyncio_sock_sendto_new(
         _sock: Any, _data: Any, _addr: Any, _fd: int
-    ) -> Any:
-        raise NotImplementedError
+    ) -> Any: ...
 
-    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any:
-        raise NotImplementedError
+    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any: ...
 
-    def molt_inspect_iscoroutine(_obj: Any) -> bool:
-        raise NotImplementedError
+    def molt_inspect_iscoroutine(_obj: Any) -> bool: ...
 
-    def molt_inspect_iscoroutinefunction(_obj: Any) -> bool:
-        raise NotImplementedError
+    def molt_inspect_iscoroutinefunction(_obj: Any) -> bool: ...
 
 
 def _mark_builtin(fn: Any) -> None:
@@ -758,8 +745,75 @@ def _require_asyncio_intrinsic(
 
 def _require_io_wait_new() -> Callable[..., Any]:
     if _molt_io_wait_new is None:
-        raise NotImplementedError("I/O polling unavailable")
+        raise RuntimeError("asyncio intrinsic not available: io_wait_new")
     return _molt_io_wait_new
+
+
+def _require_ssl_transport_support(
+    operation: str,
+    ssl: Any,
+    *,
+    server_hostname: str | None = None,
+    server_side: bool = False,
+) -> bool:
+    outcome = _require_asyncio_intrinsic(
+        molt_asyncio_ssl_transport_orchestrate,
+        "asyncio_ssl_transport_orchestrate",
+    )(operation, ssl, server_hostname, server_side)
+    if not isinstance(outcome, bool):
+        raise RuntimeError("asyncio ssl transport intrinsic returned invalid payload")
+    return outcome
+
+
+def _tls_client_connect(
+    host: str, port: int, server_hostname: str | None = None
+) -> Any:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_tls_client_connect_new,
+        "asyncio_tls_client_connect_new",
+    )(host, port, server_hostname)
+
+
+def _tls_client_from_fd(fd: int, server_hostname: str | None = None) -> Any:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_tls_client_from_fd_new,
+        "asyncio_tls_client_from_fd_new",
+    )(fd, server_hostname)
+
+
+def _tls_server_payload(ssl: Any) -> tuple[str, str]:
+    payload = _require_asyncio_intrinsic(
+        molt_asyncio_tls_server_payload, "asyncio_tls_server_payload"
+    )(ssl)
+    if (
+        isinstance(payload, tuple)
+        and len(payload) == 2
+        and isinstance(payload[0], str)
+        and isinstance(payload[1], str)
+    ):
+        return payload
+    raise RuntimeError("asyncio tls server payload intrinsic returned invalid payload")
+
+
+def _tls_server_from_fd(fd: int, certfile: str, keyfile: str) -> Any:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_tls_server_from_fd_new,
+        "asyncio_tls_server_from_fd_new",
+    )(fd, certfile, keyfile)
+
+
+def _require_unix_socket_support() -> None:
+    _require_asyncio_intrinsic(
+        molt_asyncio_require_unix_socket_support,
+        "asyncio_require_unix_socket_support",
+    )()
+
+
+def _require_child_watcher_support() -> None:
+    _require_asyncio_intrinsic(
+        molt_asyncio_require_child_watcher_support,
+        "asyncio_require_child_watcher_support",
+    )()
 
 
 def _asyncio_cancel_pending_tasks(tasks: Any) -> int:
@@ -800,6 +854,15 @@ def _asyncio_barrier_release(waiters: Any) -> int:
             molt_asyncio_barrier_release, "asyncio_barrier_release"
         )(waiters)
     )
+
+
+def _asyncio_condition_wait_for_step(
+    condition: Any, predicate: Callable[[], Any]
+) -> tuple[bool, Any]:
+    done, payload = _require_asyncio_intrinsic(
+        molt_asyncio_condition_wait_for_step, "asyncio_condition_wait_for_step"
+    )(condition, predicate)
+    return bool(done), payload
 
 
 def _asyncio_future_transfer(source: Any, target: Any) -> bool:
@@ -910,6 +973,14 @@ def _asyncio_taskgroup_on_task_done(tasks: Any, errors: Any, task: Any) -> bool:
     )
 
 
+def _asyncio_tasks_add_done_callback(tasks: Any, callback: Callable[[Any], Any]) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_tasks_add_done_callback, "asyncio_tasks_add_done_callback"
+        )(tasks, callback)
+    )
+
+
 async def _async_yield_once() -> None:
     fut = molt_async_sleep(0.0, None)
     await fut
@@ -962,6 +1033,9 @@ molt_asyncio_waiters_remove = _intrinsic_require(
 molt_asyncio_barrier_release = _intrinsic_require(
     "molt_asyncio_barrier_release", globals()
 )
+molt_asyncio_condition_wait_for_step = _intrinsic_require(
+    "molt_asyncio_condition_wait_for_step", globals()
+)
 molt_asyncio_future_transfer = _intrinsic_require(
     "molt_asyncio_future_transfer", globals()
 )
@@ -995,6 +1069,9 @@ molt_asyncio_task_registry_values = _intrinsic_require(
 molt_asyncio_task_registry_live = _intrinsic_require(
     "molt_asyncio_task_registry_live", globals()
 )
+molt_asyncio_task_registry_live_set = _intrinsic_require(
+    "molt_asyncio_task_registry_live_set", globals()
+)
 molt_asyncio_event_waiters_register = _intrinsic_require(
     "molt_asyncio_event_waiters_register", globals()
 )
@@ -1015,6 +1092,30 @@ molt_asyncio_child_watcher_clear = _intrinsic_require(
 )
 molt_asyncio_child_watcher_pop = _intrinsic_require(
     "molt_asyncio_child_watcher_pop", globals()
+)
+molt_asyncio_require_ssl_transport_support = _intrinsic_require(
+    "molt_asyncio_require_ssl_transport_support", globals()
+)
+molt_asyncio_ssl_transport_orchestrate = _intrinsic_require(
+    "molt_asyncio_ssl_transport_orchestrate", globals()
+)
+molt_asyncio_tls_client_connect_new = _intrinsic_require(
+    "molt_asyncio_tls_client_connect_new", globals()
+)
+molt_asyncio_tls_client_from_fd_new = _intrinsic_require(
+    "molt_asyncio_tls_client_from_fd_new", globals()
+)
+molt_asyncio_tls_server_payload = _intrinsic_require(
+    "molt_asyncio_tls_server_payload", globals()
+)
+molt_asyncio_tls_server_from_fd_new = _intrinsic_require(
+    "molt_asyncio_tls_server_from_fd_new", globals()
+)
+molt_asyncio_require_unix_socket_support = _intrinsic_require(
+    "molt_asyncio_require_unix_socket_support", globals()
+)
+molt_asyncio_require_child_watcher_support = _intrinsic_require(
+    "molt_asyncio_require_child_watcher_support", globals()
 )
 molt_asyncio_running_loop_get = _intrinsic_require(
     "molt_asyncio_running_loop_get", globals()
@@ -1040,6 +1141,9 @@ molt_asyncio_taskgroup_on_task_done = _intrinsic_require(
 molt_asyncio_taskgroup_request_cancel = _intrinsic_require(
     "molt_asyncio_taskgroup_request_cancel", globals()
 )
+molt_asyncio_tasks_add_done_callback = _intrinsic_require(
+    "molt_asyncio_tasks_add_done_callback", globals()
+)
 molt_asyncio_task_cancel_apply = _intrinsic_require(
     "molt_asyncio_task_cancel_apply", globals()
 )
@@ -1061,11 +1165,20 @@ molt_asyncio_timer_handle_new = _intrinsic_require(
 molt_asyncio_timer_schedule = _intrinsic_require(
     "molt_asyncio_timer_schedule", globals()
 )
+molt_asyncio_timer_handle_cancel = _intrinsic_require(
+    "molt_asyncio_timer_handle_cancel", globals()
+)
 molt_asyncio_fd_watcher_new = _intrinsic_require(
     "molt_asyncio_fd_watcher_new", globals()
 )
 molt_asyncio_fd_watcher_register = _intrinsic_require(
     "molt_asyncio_fd_watcher_register", globals()
+)
+molt_asyncio_fd_watcher_unregister = _intrinsic_require(
+    "molt_asyncio_fd_watcher_unregister", globals()
+)
+molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
+    "molt_asyncio_subprocess_stdio_normalize", globals()
 )
 molt_asyncio_server_accept_loop_new = _intrinsic_require(
     "molt_asyncio_server_accept_loop_new", globals()
@@ -1222,19 +1335,24 @@ def _encode_proc_fd(fd: int) -> int:
 
 
 def _normalize_proc_stdio(value: Any, *, allow_stdout: bool) -> int:
-    if value is None:
-        return _PROC_STDIO_INHERIT
-    if value == subprocess.PIPE:
-        return _PROC_STDIO_PIPE
-    if value == subprocess.DEVNULL:
-        return _PROC_STDIO_DEVNULL
-    if allow_stdout and value == subprocess.STDOUT:
-        return _PROC_STDIO_STDOUT
-    try:
-        fd = _fd_from_fileobj(value)
-    except Exception as exc:
-        raise NotImplementedError("unsupported subprocess stdio option") from exc
-    return _encode_proc_fd(fd)
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_subprocess_stdio_normalize,
+            "asyncio_subprocess_stdio_normalize",
+        )(
+            value,
+            bool(allow_stdout),
+            subprocess.PIPE,
+            subprocess.DEVNULL,
+            subprocess.STDOUT,
+            _PROC_STDIO_INHERIT,
+            _PROC_STDIO_PIPE,
+            _PROC_STDIO_DEVNULL,
+            _PROC_STDIO_STDOUT,
+            _PROC_STDIO_FD_BASE,
+            _PROC_STDIO_FD_MAX,
+        )
+    )
 
 
 class _NonBlockingSocket:
@@ -1702,11 +1820,11 @@ class Condition:
         return True
 
     async def wait_for(self, predicate: Callable[[], bool]) -> bool:
-        result = predicate()
-        while not result:
-            await self.wait()
-            result = predicate()
-        return result
+        while True:
+            done, payload = _asyncio_condition_wait_for_step(self, predicate)
+            if done:
+                return payload
+            await payload
 
     def notify(self, n: int = 1) -> None:
         if not self.locked():
@@ -2118,34 +2236,43 @@ class StreamWriter:
 
 class AbstractServer:
     def close(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     async def wait_closed(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     def is_serving(self) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     async def start_serving(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     async def serve_forever(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     def get_loop(self) -> "EventLoop":
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     def close_clients(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
     def abort_clients(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio server API")
 
 
 class Server(AbstractServer):
-    def __init__(self, sock: _socket.socket, callback: Any) -> None:
+    def __init__(
+        self,
+        sock: _socket.socket,
+        callback: Any,
+        *,
+        reader_ctor: Any = StreamReader,
+        writer_ctor: Any = StreamWriter,
+    ) -> None:
         self._sock = sock
         self._callback = callback
+        self._reader_ctor = reader_ctor
+        self._writer_ctor = writer_ctor
         self.sockets = [sock]
         self._closed = False
         self._accept_task = get_running_loop().create_task(
@@ -2163,8 +2290,8 @@ class Server(AbstractServer):
             self._sock,
             self._callback,
             loop,
-            StreamReader,
-            StreamWriter,
+            self._reader_ctor,
+            self._writer_ctor,
             self._molt_is_closed,
         )
 
@@ -2440,65 +2567,64 @@ class TimerHandle(Handle):
 
     def cancel(self) -> None:
         super().cancel()
-        if self._timer_task is not None:
-            try:
-                self._timer_task.cancel()
-            except Exception:
-                pass
-        try:
-            self._loop._scheduled.discard(self)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        _require_asyncio_intrinsic(
+            molt_asyncio_timer_handle_cancel, "asyncio_timer_handle_cancel"
+        )(
+            self._loop._scheduled,  # type: ignore[attr-defined]
+            self,
+            self._timer_task,
+        )
+        self._timer_task = None
 
 
 class AbstractEventLoop:
     def run_forever(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def run_until_complete(self, future: Any) -> Any:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def stop(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def is_running(self) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def is_closed(self) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def close(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def shutdown_asyncgens(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def shutdown_default_executor(self) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
     ) -> Task:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def get_task_factory(self) -> Callable[..., Task] | None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def create_future(self) -> Future:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def call_soon(
         self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
     ) -> Handle:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def call_soon_threadsafe(
         self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
     ) -> Handle:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def call_later(
         self,
@@ -2508,7 +2634,7 @@ class AbstractEventLoop:
         *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def call_at(
         self,
@@ -2518,52 +2644,52 @@ class AbstractEventLoop:
         *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def time(self) -> float:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def call_exception_handler(self, context: dict[str, Any]) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def default_exception_handler(self, context: dict[str, Any]) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def set_exception_handler(
         self, handler: Callable[["AbstractEventLoop", dict[str, Any]], Any] | None
     ) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def get_exception_handler(
         self,
     ) -> Callable[["AbstractEventLoop", dict[str, Any]], Any] | None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def get_debug(self) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def set_debug(self, enabled: bool) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def add_signal_handler(
         self, sig: int, callback: Callable[..., Any], /, *args: Any
     ) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def remove_signal_handler(self, sig: int) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def add_reader(self, fd: int, callback: Callable[..., Any], /, *args: Any) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def remove_reader(self, fd: int) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def add_writer(self, fd: int, callback: Callable[..., Any], /, *args: Any) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def remove_writer(self, fd: int) -> bool:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_connection(
         self,
@@ -2573,7 +2699,7 @@ class AbstractEventLoop:
         /,
         **kwargs: Any,
     ) -> tuple[Transport, Protocol]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_server(
         self,
@@ -2583,7 +2709,7 @@ class AbstractEventLoop:
         /,
         **kwargs: Any,
     ) -> AbstractServer:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_datagram_endpoint(
         self,
@@ -2593,7 +2719,7 @@ class AbstractEventLoop:
         /,
         **kwargs: Any,
     ) -> tuple[DatagramTransport, DatagramProtocol]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def connect_accepted_socket(
         self,
@@ -2602,7 +2728,7 @@ class AbstractEventLoop:
         /,
         **kwargs,
     ) -> tuple[Transport, Protocol]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_unix_connection(
         self,
@@ -2611,7 +2737,7 @@ class AbstractEventLoop:
         /,
         **kwargs: Any,
     ) -> tuple[Transport, Protocol]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_unix_server(
         self,
@@ -2620,60 +2746,68 @@ class AbstractEventLoop:
         /,
         **kwargs: Any,
     ) -> AbstractServer:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_subprocess_shell(self, protocol_factory: Any, cmd: Any, **kwargs):
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def create_subprocess_exec(self, protocol_factory: Any, *args: Any, **kwargs):
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def start_tls(
-        self, transport: Transport, protocol: Protocol, sslcontext: Any
+        self,
+        transport: Transport,
+        protocol: Protocol,
+        sslcontext: Any,
+        *,
+        server_side: bool = False,
+        server_hostname: str | None = None,
+        ssl_handshake_timeout: float | None = None,
+        ssl_shutdown_timeout: float | None = None,
     ):
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sendfile(self, transport: Transport, file: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def set_default_executor(self, executor: Any) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     def run_in_executor(self, executor: Any, func: Any, *args: Any) -> Future:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def getaddrinfo(self, host: Any, port: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def getnameinfo(self, sockaddr: Any, flags: int) -> Any:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_recv(self, sock: Any, n: int) -> bytes:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_recv_into(self, sock: Any, buf: Any) -> int:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_recvfrom(self, sock: Any, bufsize: int) -> tuple[Any, Any]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_recvfrom_into(self, sock: Any, buf: Any) -> tuple[int, Any]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_sendall(self, sock: Any, data: bytes) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_sendto(self, sock: Any, data: bytes, addr: Any) -> int:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_connect(self, sock: Any, address: Any) -> None:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
     async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
-        raise NotImplementedError
+        raise RuntimeError("abstract asyncio event loop API")
 
 
 class _EventLoop(AbstractEventLoop):
@@ -2692,6 +2826,7 @@ class _EventLoop(AbstractEventLoop):
         )
         self._debug = False
         self._task_factory: Callable[..., Task] | None = None
+        self._default_executor: Any | None = None
         self._selector = selector
         self._time_origin = _time.monotonic()
 
@@ -2867,6 +3002,8 @@ class _EventLoop(AbstractEventLoop):
 
     def run_in_executor(self, executor: Any, func: Any, *args: Any) -> Future:
         if executor is None:
+            executor = self._default_executor
+        if executor is None:
             future = molt_thread_submit(func, args, {})
             return future
         submit = getattr(executor, "submit", None)
@@ -2888,15 +3025,11 @@ class _EventLoop(AbstractEventLoop):
 
     def remove_reader(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
-        entry = self._readers.pop(fileno, None)
-        if entry is None:
-            return False
-        _callback, _args, task = entry
-        try:
-            task.cancel()
-        except Exception:
-            pass
-        return True
+        return bool(
+            _require_asyncio_intrinsic(
+                molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
+            )(self._readers, fileno)
+        )
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
@@ -2956,15 +3089,11 @@ class _EventLoop(AbstractEventLoop):
 
     def remove_writer(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
-        entry = self._writers.pop(fileno, None)
-        if entry is None:
-            return False
-        _callback, _args, task = entry
-        try:
-            task.cancel()
-        except Exception:
-            pass
-        return True
+        return bool(
+            _require_asyncio_intrinsic(
+                molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
+            )(self._writers, fileno)
+        )
 
     def run_until_complete(self, future: Any) -> Any:
         if self._closed:
@@ -3026,6 +3155,290 @@ class _EventLoop(AbstractEventLoop):
         _debug_exc_state("run_until_complete_return")
         return result
 
+    def run_forever(self) -> None:
+        async def _spin() -> None:
+            while not self._stopping:
+                await sleep(0.0)
+
+        self.run_until_complete(_spin())
+
+    async def shutdown_asyncgens(self) -> None:
+        _require_asyncio_intrinsic(molt_asyncgen_shutdown, "asyncgen_shutdown")()
+        return None
+
+    async def shutdown_default_executor(self) -> None:
+        self._default_executor = None
+        return None
+
+    def set_default_executor(self, executor: Any) -> None:
+        if executor is not None:
+            submit = getattr(executor, "submit", None)
+            if submit is None or not callable(submit):
+                raise TypeError("executor must define submit()")
+        self._default_executor = executor
+
+    async def create_connection(
+        self,
+        protocol_factory: Callable[[], Protocol] | None,
+        host: str | None = None,
+        port: int | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[Transport, Protocol]:
+        if protocol_factory is None:
+            raise TypeError("protocol_factory must be callable")
+        ssl = kwargs.pop("ssl", None)
+        local_addr = kwargs.pop("local_addr", None)
+        if kwargs:
+            raise TypeError("unsupported create_connection options")
+        if host is None or port is None:
+            raise TypeError("host and port are required")
+        reader, writer = await open_connection(
+            host, int(port), ssl=ssl, local_addr=local_addr
+        )
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(writer)
+        return writer, protocol
+
+    async def create_server(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        host: str | None = None,
+        port: int | None = None,
+        /,
+        **kwargs: Any,
+    ) -> AbstractServer:
+        ssl = kwargs.pop("ssl", None)
+        backlog = int(kwargs.pop("backlog", 100))
+        reuse_port = bool(kwargs.pop("reuse_port", False))
+        if kwargs:
+            raise TypeError("unsupported create_server options")
+
+        async def _on_client(reader: StreamReader, writer: StreamWriter) -> None:
+            protocol = protocol_factory()
+            connection_made = getattr(protocol, "connection_made", None)
+            if callable(connection_made):
+                connection_made(writer)
+            client_connected = getattr(protocol, "client_connected_cb", None)
+            if callable(client_connected):
+                maybe = client_connected(reader, writer)
+                if hasattr(maybe, "__await__"):
+                    await maybe
+
+        return await start_server(
+            _on_client,
+            host=host,
+            port=port,
+            backlog=backlog,
+            reuse_port=reuse_port,
+            ssl=ssl,
+        )
+
+    async def create_datagram_endpoint(
+        self,
+        protocol_factory: Callable[[], DatagramProtocol],
+        local_addr: Any | None = None,
+        remote_addr: Any | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[DatagramTransport, DatagramProtocol]:
+        family = int(kwargs.pop("family", 0) or 0)
+        proto = int(kwargs.pop("proto", 0) or 0)
+        reuse_port = bool(kwargs.pop("reuse_port", False))
+        if kwargs:
+            raise TypeError("unsupported create_datagram_endpoint options")
+        if local_addr is None and remote_addr is None:
+            raise ValueError("local_addr or remote_addr must be specified")
+        if family == 0:
+            family = _socket.AF_INET
+        sock = _socket.socket(family, _socket.SOCK_DGRAM, proto)
+        sock.setblocking(False)
+        if reuse_port and hasattr(_socket, "SO_REUSEPORT"):
+            sock.setsockopt(
+                _socket.SOL_SOCKET, int(getattr(_socket, "SO_REUSEPORT")), 1
+            )
+        if local_addr is not None:
+            sock.bind(local_addr)
+        if remote_addr is not None:
+            await self.sock_connect(sock, remote_addr)
+        transport = _DatagramSocketTransport(sock, self)
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(transport)
+        return transport, protocol
+
+    async def connect_accepted_socket(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        sock: _socket.socket,
+        /,
+        **kwargs,
+    ) -> tuple[Transport, Protocol]:
+        if kwargs:
+            raise TypeError("unsupported connect_accepted_socket options")
+        sock.setblocking(False)
+        writer = StreamWriter(sock)
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(writer)
+        return writer, protocol
+
+    async def create_unix_connection(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        path: str | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[Transport, Protocol]:
+        if protocol_factory is None:
+            raise TypeError("protocol_factory must be callable")
+        if path is None:
+            raise TypeError("path is required")
+        ssl = kwargs.pop("ssl", None)
+        local_addr = kwargs.pop("local_addr", None)
+        if kwargs:
+            raise TypeError("unsupported create_unix_connection options")
+        reader, writer = await open_unix_connection(
+            path, ssl=ssl, local_addr=local_addr
+        )
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(writer)
+        return writer, protocol
+
+    async def create_unix_server(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        path: str | None = None,
+        /,
+        **kwargs: Any,
+    ) -> AbstractServer:
+        if path is None:
+            raise TypeError("path is required")
+        ssl = kwargs.pop("ssl", None)
+        backlog = int(kwargs.pop("backlog", 100))
+        if kwargs:
+            raise TypeError("unsupported create_unix_server options")
+
+        async def _on_client(reader: StreamReader, writer: StreamWriter) -> None:
+            protocol = protocol_factory()
+            connection_made = getattr(protocol, "connection_made", None)
+            if callable(connection_made):
+                connection_made(writer)
+
+        return await start_unix_server(_on_client, path, backlog=backlog, ssl=ssl)
+
+    async def create_subprocess_shell(self, protocol_factory: Any, cmd: Any, **kwargs):
+        process = await create_subprocess_shell(cmd, **kwargs)
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(process)
+        return process, protocol
+
+    async def create_subprocess_exec(self, protocol_factory: Any, *args: Any, **kwargs):
+        process = await create_subprocess_exec(*args, **kwargs)
+        protocol = protocol_factory()
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(process)
+        return process, protocol
+
+    async def start_tls(
+        self,
+        transport: Transport,
+        protocol: Protocol,
+        sslcontext: Any,
+        *,
+        server_side: bool = False,
+        server_hostname: str | None = None,
+        ssl_handshake_timeout: float | None = None,
+        ssl_shutdown_timeout: float | None = None,
+    ):
+        # Handshake/shutdown timeout knobs are part of the public API surface.
+        # The runtime TLS lane owns execution and timeout handling semantics.
+        _ = (ssl_handshake_timeout, ssl_shutdown_timeout)
+        use_tls = _require_ssl_transport_support(
+            "start_tls",
+            sslcontext,
+            server_hostname=None if server_side else server_hostname,
+            server_side=server_side,
+        )
+        if not use_tls:
+            return transport
+        sock = getattr(transport, "_sock", None)
+        if sock is None or not hasattr(sock, "detach"):
+            raise TypeError("start_tls currently requires a stream socket transport")
+        resolved_server_hostname = server_hostname
+        if not server_side and resolved_server_hostname is None:
+            try:
+                peer = sock.getpeername()
+                if isinstance(peer, tuple) and peer:
+                    host = peer[0]
+                    if isinstance(host, str) and host:
+                        resolved_server_hostname = host
+            except Exception:
+                resolved_server_hostname = None
+        raw_fd = sock.detach()
+        if not isinstance(raw_fd, int) or raw_fd < 0:
+            raise OSError("start_tls could not detach transport socket")
+        if server_side:
+            certfile, keyfile = _tls_server_payload(sslcontext)
+            upgraded = ProcessStreamWriter(
+                _tls_server_from_fd(raw_fd, certfile, keyfile)
+            )
+        else:
+            upgraded = ProcessStreamWriter(
+                _tls_client_from_fd(raw_fd, resolved_server_hostname)
+            )
+        if hasattr(transport, "_closed"):
+            try:
+                transport._closed = True
+            except Exception:
+                pass
+        connection_made = getattr(protocol, "connection_made", None)
+        if callable(connection_made):
+            connection_made(upgraded)
+        return upgraded
+
+    async def sendfile(self, transport: Transport, file: Any, **kwargs: Any) -> Any:
+        sock = getattr(transport, "_sock", None)
+        if sock is None and isinstance(transport, StreamWriter):
+            sock = getattr(transport, "_sock", None)
+        if sock is None:
+            raise RuntimeError("transport does not expose an underlying socket")
+        offset = int(kwargs.get("offset", 0) or 0)
+        count = kwargs.get("count")
+        return await self.sock_sendfile(sock, file, offset=offset, count=count)
+
+    async def getaddrinfo(self, host: Any, port: Any, **kwargs: Any) -> Any:
+        return _socket.getaddrinfo(host, port, **kwargs)
+
+    async def getnameinfo(self, sockaddr: Any, flags: int) -> Any:
+        return _socket.getnameinfo(sockaddr, flags)
+
+    async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
+        chunk_size = 256 * 1024
+        if offset:
+            file.seek(offset)
+        remaining = None if count is None else max(0, int(count))
+        sent = 0
+        while remaining is None or remaining > 0:
+            to_read = chunk_size if remaining is None else min(chunk_size, remaining)
+            chunk = file.read(to_read)
+            if not chunk:
+                break
+            await self.sock_sendall(sock, chunk)
+            sent += len(chunk)
+            if remaining is not None:
+                remaining -= len(chunk)
+        return sent
+
 
 class BaseEventLoop(_EventLoop):
     pass
@@ -3044,13 +3457,13 @@ class AbstractEventLoopPolicy:
     """Base class for event loop policies."""
 
     def get_event_loop(self) -> EventLoop:
-        raise NotImplementedError("get_event_loop not implemented")
+        raise RuntimeError("abstract asyncio event loop policy API")
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
-        raise NotImplementedError("set_event_loop not implemented")
+        raise RuntimeError("abstract asyncio event loop policy API")
 
     def new_event_loop(self) -> EventLoop:
-        raise NotImplementedError("new_event_loop not implemented")
+        raise RuntimeError("abstract asyncio event loop policy API")
 
 
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
@@ -3157,8 +3570,7 @@ _CHILD_WATCHER: AbstractChildWatcher | None = None
 
 
 def get_child_watcher() -> AbstractChildWatcher:
-    if _IS_WINDOWS:
-        raise NotImplementedError("child watchers not supported on Windows")
+    _require_child_watcher_support()
     global _CHILD_WATCHER
     if _CHILD_WATCHER is None:
         _CHILD_WATCHER = SafeChildWatcher()
@@ -3169,8 +3581,7 @@ def get_child_watcher() -> AbstractChildWatcher:
 
 
 def set_child_watcher(watcher: AbstractChildWatcher | None) -> None:
-    if _IS_WINDOWS:
-        raise NotImplementedError("child watchers not supported on Windows")
+    _require_child_watcher_support()
     global _CHILD_WATCHER
     if watcher is None:
         _CHILD_WATCHER = None
@@ -3229,6 +3640,37 @@ class SubprocessTransport(Transport):
     pass
 
 
+class _DatagramSocketTransport(DatagramTransport):
+    def __init__(self, sock: _socket.socket, loop: "_EventLoop") -> None:
+        self._sock = sock
+        self._loop = loop
+        self._closed = False
+
+    def sendto(self, data: bytes, addr: Any | None = None) -> int:
+        if self._closed:
+            raise RuntimeError("transport is closed")
+        if addr is None:
+            return self._sock.send(data)
+        return self._sock.sendto(data, addr)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+
+    def is_closing(self) -> bool:
+        return self._closed
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        if name == "socket":
+            return self._sock
+        return default
+
+
 def _get_running_loop() -> EventLoop | None:
     return molt_asyncio_running_loop_get()
 
@@ -3275,7 +3717,7 @@ def _cancel_all_tasks(loop: EventLoop) -> None:
         live_tasks = all_tasks(loop)
     except BaseException:
         return
-    tasks = [task for task in live_tasks if not task.done()]
+    tasks = list(live_tasks)
     if not tasks:
         return
     _asyncio_cancel_pending_tasks(tasks)
@@ -3381,8 +3823,22 @@ async def open_connection(
     local_addr: Any | None = None,
 ) -> tuple["StreamReader", "StreamWriter"]:
     if ssl is not None:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support.
-        raise NotImplementedError("ssl not supported")
+        use_tls = _require_ssl_transport_support(
+            "open_connection",
+            ssl,
+            server_hostname=host if ssl is not False else None,
+            server_side=False,
+        )
+        if use_tls:
+            tls_handle = _tls_client_connect(
+                host,
+                int(port),
+                host if ssl is not False else None,
+            )
+            return (
+                ProcessStreamReader(tls_handle),
+                ProcessStreamWriter(tls_handle),
+            )
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
@@ -3400,17 +3856,25 @@ async def open_unix_connection(
     ssl: Any | None = None,
     local_addr: Any | None = None,
 ) -> tuple["StreamReader", "StreamWriter"]:
-    if _os.name == "nt" or not hasattr(_socket, "AF_UNIX"):
-        raise NotImplementedError("unix sockets not supported")
+    _require_unix_socket_support()
+    use_tls = False
     if ssl is not None:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support for unix sockets.
-        raise NotImplementedError("ssl not supported")
+        use_tls = _require_ssl_transport_support(
+            "open_unix_connection", ssl, server_side=False
+        )
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
     sock.setblocking(False)
     loop = get_running_loop()
     await loop.sock_connect(sock, path)
+    if use_tls:
+        raw_fd = sock.detach()
+        handle = _tls_client_from_fd(raw_fd, None)
+        return (
+            ProcessStreamReader(handle),
+            ProcessStreamWriter(handle),
+        )
     reader = StreamReader(sock)
     writer = StreamWriter(sock)
     return reader, writer
@@ -3433,8 +3897,41 @@ async def start_server(
     *,
     backlog: int = 100,
     reuse_port: bool = False,
+    ssl: Any | None = None,
 ) -> Server:
     _require_io_wait_new()
+    reader_ctor: Any = StreamReader
+    writer_ctor: Any = StreamWriter
+    if ssl is not None:
+        use_tls = _require_ssl_transport_support("create_server", ssl, server_side=True)
+        if use_tls:
+            certfile, keyfile = _tls_server_payload(ssl)
+            tls_handles: dict[int, Any] = {}
+
+            def _tls_reader_ctor(conn: Any) -> ProcessStreamReader:
+                if not isinstance(conn, _socket.socket):
+                    raise TypeError(
+                        "start_server ssl transport requires a stream socket connection"
+                    )
+                raw_fd = conn.detach()
+                handle = _tls_server_from_fd(raw_fd, certfile, keyfile)
+                tls_handles[id(conn)] = handle
+                return ProcessStreamReader(handle)
+
+            def _tls_writer_ctor(conn: Any) -> ProcessStreamWriter:
+                if not isinstance(conn, _socket.socket):
+                    raise TypeError(
+                        "start_server ssl transport requires a stream socket connection"
+                    )
+                key = id(conn)
+                handle = tls_handles.pop(key, None)
+                if handle is None:
+                    raw_fd = conn.detach()
+                    handle = _tls_server_from_fd(raw_fd, certfile, keyfile)
+                return ProcessStreamWriter(handle)
+
+            reader_ctor = _tls_reader_ctor
+            writer_ctor = _tls_writer_ctor
     bind_host = host if host is not None else "0.0.0.0"
     bind_port = 0 if port is None else port
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
@@ -3444,7 +3941,9 @@ async def start_server(
     sock.setblocking(False)
     sock.bind((bind_host, bind_port))
     sock.listen(backlog)
-    return Server(sock, client_connected_cb)
+    return Server(
+        sock, client_connected_cb, reader_ctor=reader_ctor, writer_ctor=writer_ctor
+    )
 
 
 async def start_unix_server(
@@ -3452,15 +3951,51 @@ async def start_unix_server(
     path: str,
     *,
     backlog: int = 100,
+    ssl: Any | None = None,
 ) -> Server:
-    if _os.name == "nt" or not hasattr(_socket, "AF_UNIX"):
-        raise NotImplementedError("unix sockets not supported")
+    _require_unix_socket_support()
     _require_io_wait_new()
+    reader_ctor: Any = StreamReader
+    writer_ctor: Any = StreamWriter
+    if ssl is not None:
+        use_tls = _require_ssl_transport_support(
+            "create_unix_server", ssl, server_side=True
+        )
+        if use_tls:
+            certfile, keyfile = _tls_server_payload(ssl)
+            tls_handles: dict[int, Any] = {}
+
+            def _tls_reader_ctor(conn: Any) -> ProcessStreamReader:
+                if not isinstance(conn, _socket.socket):
+                    raise TypeError(
+                        "start_unix_server ssl transport requires a stream socket connection"
+                    )
+                raw_fd = conn.detach()
+                handle = _tls_server_from_fd(raw_fd, certfile, keyfile)
+                tls_handles[id(conn)] = handle
+                return ProcessStreamReader(handle)
+
+            def _tls_writer_ctor(conn: Any) -> ProcessStreamWriter:
+                if not isinstance(conn, _socket.socket):
+                    raise TypeError(
+                        "start_unix_server ssl transport requires a stream socket connection"
+                    )
+                key = id(conn)
+                handle = tls_handles.pop(key, None)
+                if handle is None:
+                    raw_fd = conn.detach()
+                    handle = _tls_server_from_fd(raw_fd, certfile, keyfile)
+                return ProcessStreamWriter(handle)
+
+            reader_ctor = _tls_reader_ctor
+            writer_ctor = _tls_writer_ctor
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     sock.setblocking(False)
     sock.bind(path)
     sock.listen(backlog)
-    return Server(sock, client_connected_cb)
+    return Server(
+        sock, client_connected_cb, reader_ctor=reader_ctor, writer_ctor=writer_ctor
+    )
 
 
 async def create_subprocess_exec(
@@ -3696,21 +4231,14 @@ def all_tasks(loop: EventLoop | None = None) -> set[Task]:
     if loop is None:
         loop = get_running_loop()
     task_values = _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_live, "asyncio_task_registry_live"
+        molt_asyncio_task_registry_live_set, "asyncio_task_registry_live_set"
     )(loop)
-    if not isinstance(task_values, (list, tuple, set, frozenset)):
-        try:
-            task_values = tuple(task_values)
-        except TypeError:
-            task_values = ()
-    tasks: set[Task] = set()
-    for task in task_values:
-        try:
-            if isinstance(task, Task):
-                tasks.add(task)
-        except Exception:
-            continue
-    return tasks
+    if isinstance(task_values, set):
+        return task_values
+    try:
+        return set(task_values)
+    except Exception:
+        return set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3978,8 +4506,7 @@ def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[A
         except Exception:
             pass
 
-    for task in tasks:
-        task.add_done_callback(_enqueue)
+    _asyncio_tasks_add_done_callback(tasks, _enqueue)
 
     return _AsCompletedIterator(tasks, queue, timeout)
 

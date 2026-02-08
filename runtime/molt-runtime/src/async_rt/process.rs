@@ -1,3 +1,4 @@
+use super::generators::{asyncio_call_method0, asyncio_clear_pending_exception};
 use super::process_task_state;
 use super::{await_waiters_take, wake_task_ptr};
 use crate::*;
@@ -118,6 +119,123 @@ fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i32 {
         }
         None => raise_exception::<_>(_py, "TypeError", &format!("{name} must be int or None")),
     }
+}
+
+/// # Safety
+/// - All arguments must be valid runtime objects.
+#[no_mangle]
+pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
+    value_bits: u64,
+    allow_stdout_bits: u64,
+    pipe_const_bits: u64,
+    devnull_const_bits: u64,
+    stdout_const_bits: u64,
+    inherit_mode_bits: u64,
+    pipe_mode_bits: u64,
+    devnull_mode_bits: u64,
+    stdout_mode_bits: u64,
+    fd_base_bits: u64,
+    fd_max_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(inherit_mode) = to_i64(obj_from_bits(inherit_mode_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio inherit mode constant",
+            );
+        };
+        let Some(pipe_mode) = to_i64(obj_from_bits(pipe_mode_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio pipe mode constant",
+            );
+        };
+        let Some(devnull_mode) = to_i64(obj_from_bits(devnull_mode_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio devnull mode constant",
+            );
+        };
+        let Some(stdout_mode) = to_i64(obj_from_bits(stdout_mode_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio stdout mode constant",
+            );
+        };
+        let Some(fd_base) = to_i64(obj_from_bits(fd_base_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio fd_base constant",
+            );
+        };
+        let Some(fd_max) = to_i64(obj_from_bits(fd_max_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid asyncio subprocess stdio fd_max constant",
+            );
+        };
+
+        let value_obj = obj_from_bits(value_bits);
+        if value_obj.is_none() {
+            return MoltObject::from_int(inherit_mode).bits();
+        }
+        let allow_stdout = is_truthy(_py, obj_from_bits(allow_stdout_bits));
+
+        if obj_eq(_py, value_obj, obj_from_bits(pipe_const_bits)) {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_int(pipe_mode).bits();
+        }
+        if obj_eq(_py, value_obj, obj_from_bits(devnull_const_bits)) {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_int(devnull_mode).bits();
+        }
+        if allow_stdout && obj_eq(_py, value_obj, obj_from_bits(stdout_const_bits)) {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_int(stdout_mode).bits();
+        }
+
+        let mut fd = to_i64(value_obj);
+        if fd.is_none() {
+            let fileno_bits = unsafe { asyncio_call_method0(_py, value_bits, b"fileno") };
+            if exception_pending(_py) {
+                unsafe { asyncio_clear_pending_exception(_py) };
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "unsupported subprocess stdio option",
+                );
+            }
+            fd = to_i64(obj_from_bits(fileno_bits));
+            if !obj_from_bits(fileno_bits).is_none() {
+                dec_ref_bits(_py, fileno_bits);
+            }
+        }
+        let Some(fd) = fd else {
+            return raise_exception::<u64>(_py, "TypeError", "unsupported subprocess stdio option");
+        };
+        if fd < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "file descriptor must be >= 0");
+        }
+        if fd > fd_max {
+            return raise_exception::<u64>(_py, "ValueError", "file descriptor is too large");
+        }
+        match fd_base.checked_add(fd) {
+            Some(encoded) => MoltObject::from_int(encoded).bits(),
+            None => raise_exception::<u64>(_py, "ValueError", "file descriptor is too large"),
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]

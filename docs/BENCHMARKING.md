@@ -106,6 +106,65 @@ Validate native + WASM parity for the same cases.
 
 Use `molt profile <script.py>` to generate flamegraphs and identify bottlenecks in the compiler or runtime.
 
+## Compile Throughput Tuning
+
+- Bootstrap a consistent throughput environment first:
+  - `eval "$(tools/throughput_env.sh --print)"`
+  - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
+- Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
+- Prefer `--profile dev` for iteration loops (`molt build/run/compare/diff/test --suite diff`); reserve `--profile release` for release gates and perf publication.
+- `--profile dev` routes to Cargo `dev-fast` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
+- Keep cache keys deterministic by default (`PYTHONHASHSEED=0` is enforced by CLI). Override via `MOLT_HASH_SEED=<value>` only when explicitly testing hash-seed sensitivity.
+- Enable Rust compile caching:
+  - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
+  - `sccache -s` to inspect hit rates
+- Keep backend daemon enabled for native compile loops (`MOLT_BACKEND_DAEMON=1`; default) so Cranelift initialization is amortized across builds.
+- In multi-agent runs, share cache/target roots on the external volume to improve reuse:
+  - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache`
+  - `CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target`
+- For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
+  - `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`
+
+### Suggested Throughput Baseline Command
+
+```bash
+MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache \
+CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target \
+MOLT_USE_SCCACHE=1 \
+uv run --python 3.12 python3 -m molt.cli build examples/hello.py --profile dev --cache-report
+```
+
+### Throughput Matrix Harness
+
+Use the dedicated matrix harness to compare single-agent vs concurrent throughput
+across profile and wrapper modes:
+
+```bash
+uv run --python 3.12 python3 tools/throughput_matrix.py \
+  --concurrency 2 \
+  --timeout-sec 75 \
+  --shared-target-dir /Users/$USER/.molt/throughput_target \
+  --run-diff \
+  --diff-jobs 2 \
+  --diff-timeout-sec 180
+```
+
+- Results are written to `matrix_results.json` under the chosen output root.
+- When `/Volumes/APDataStore/Molt` exists, outputs default there automatically.
+- Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and enforce `MOLT_DIFF_RLIMIT_GB=10`.
+- Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
+
+### Cache Retention Policy
+
+- `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` by default.
+- Defaults:
+  - External `MOLT_CACHE`: `200G` max + `30` day age pruning.
+  - Local fallback: `30G` max + `30` day age pruning.
+- Override with env vars before running the script:
+  - `MOLT_CACHE_MAX_GB=<n>`
+  - `MOLT_CACHE_MAX_AGE_DAYS=<n>`
+  - `MOLT_CACHE_PRUNE=0` to skip prune.
+
 ## Optimization Plan
 
 Long-term or complex optimizations that require research are tracked in `OPTIMIZATIONS_PLAN.md`. If your change is a major architectural shift, please update that plan first.

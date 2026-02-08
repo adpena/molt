@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory() as tmp:
         )
         print("entry_points", len(entry_points))
         if entry_points:
-            print("entry_value", entry_points[0].value)
+            print("entry_value", entry_points["demo"].value)
         text = dist_obj.read_text("METADATA") or ""
         print("read_head", text.splitlines()[0] if text else "")
     finally:

@@ -73,6 +73,12 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing (CPython required for baseline only).
 - `molt bench --script examples/hello.py`: run the bench harness on a custom script.
 - `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
+- Build cache determinism is now enforced by default in the CLI (`PYTHONHASHSEED=0`) to stabilize cache keys across invocations. Override with `MOLT_HASH_SEED=<value>` (set `MOLT_HASH_SEED=random` to opt out).
+- Lockfile verification (`uv lock --check`, `cargo metadata --locked`) is cached under `target/lock_checks/`; remove those files when you need to force a full lock re-check.
+- Development profile routing: `--profile dev` maps to Cargo profile `dev-fast` by default (override with `MOLT_DEV_CARGO_PROFILE`; release uses `MOLT_RELEASE_CARGO_PROFILE`).
+- Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.
+- Native backend compiles use a local backend daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- Build/daemon fingerprints, sockets, and logs live under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR` when set). In multi-agent runs, point agents at a shared target dir/state dir instead of per-agent ad-hoc roots.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
 - `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
@@ -88,6 +94,11 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - If the panic is due to missing deps, run `uv sync --group dev --python 3.12`
   locally (outside the sandbox) to populate `.venv`, then rerun with `UV_NO_SYNC=1`.
 
+## Build Profile Policy (Non-Negotiable)
+- Development workflows must use `--profile dev` for `molt build`, `molt run`, `molt compare`, `molt diff`, and `molt test --suite diff`, unless explicitly validating production artifacts.
+- Production benchmarks, release validation, and published binaries must use `--profile release`.
+- Do not silently switch profiles in wrappers/harnesses; profile selection must be explicit and reproducible in command lines/config.
+
 ## No CPython Fallback (Non-Negotiable)
 - Molt-compiled binaries must run on systems without Python installed; do not depend on `python`, `sys.executable`, or CPython at runtime.
 - Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unsupported constructs must be compile-time errors or `bridge_unavailable` runtime exits when `--fallback bridge` is explicitly requested.
@@ -102,6 +113,13 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `uv run pip-audit`: Python dependency audit (run after `uv sync --group dev`).
 - `cargo nextest run -p molt-runtime --all-targets`: faster Rust test runner.
 - `export RUSTC_WRAPPER=sccache`: enable Rust compile caching (check stats with `sccache -s`).
+- The CLI auto-enables `sccache` when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable or `MOLT_USE_SCCACHE=1` to require it in your shell setup.
+- `uv run --python 3.12 python3 tools/throughput_matrix.py`: run the build-throughput matrix (single-agent vs concurrent, wrapper on/off, dev/release) and write JSON artifacts under the external volume when available. Prefer `--shared-target-dir <apfs/ext4 path>` for faster Rust incremental compiles.
+- `eval "$(tools/throughput_env.sh --print)"` (or `tools/throughput_env.sh --apply`): bootstrap throughput env defaults with external-volume-first caches, shared target dir, and `sccache` sizing (`20G` on external, `10G` local fallback).
+- Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`.
+- Throughput bootstrap also sets `CARGO_INCREMENTAL=0` by default to improve cross-run/cacheability in highly concurrent workflows; override to `1` when investigating local incremental-only behavior.
+- `python3 tools/molt_cache_prune.py`: enforce Molt cache retention policy (defaults: external `200G` + `30` days; local `30G` + `30` days).
+- Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to improve `sccache` reuse across concurrent agents; override only when debugging local incremental behavior.
 - `cargo bloat -p molt-runtime --release` and `cargo llvm-lines -p molt-runtime`: size attribution.
 - `cargo flamegraph -p molt-runtime --bench ptr_registry`: native flamegraphs.
 
@@ -157,6 +175,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Optional: set `MOLT_DIFF_WARM_CACHE=1` or pass `--warm-cache` to prebuild all tests once to seed `MOLT_CACHE` before the diff run (useful for large suites).
   - Optional: set `MOLT_DIFF_RETRY_OOM=1` (default) or pass `--no-retry-oom` to disable the one-shot OOM retry with `--jobs 1`.
   - Optional: set `MOLT_DIFF_SUMMARY=<path>` or read `MOLT_DIFF_ROOT/summary.json` for the LLM-friendly summary sidecar (includes RSS aggregates when enabled).
+  - Optional: set `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` to allow `RUSTC_WRAPPER`/`sccache` during diff runs; by default the harness disables wrappers for maximum portability/reproducibility.
   - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
 - Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in `tests/differential/INDEX.md`).

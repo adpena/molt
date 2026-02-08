@@ -1,15 +1,19 @@
-"""Utilities to support importers and packaging tools.
-
-This is a minimal, deterministic subset focused on filesystem-based discovery.
-"""
+"""Intrinsic-backed pkgutil subset for Molt."""
 
 from __future__ import annotations
 
 from typing import Iterable, Iterator
-import os
 import sys
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 __all__ = ["ModuleInfo", "iter_modules", "walk_packages"]
+
+
+_MOLT_PKGUTIL_ITER_MODULES = _require_intrinsic("molt_pkgutil_iter_modules", globals())
+_MOLT_PKGUTIL_WALK_PACKAGES = _require_intrinsic(
+    "molt_pkgutil_walk_packages", globals()
+)
 
 
 class ModuleInfo:
@@ -31,28 +35,29 @@ class ModuleInfo:
         )
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement pkgutil loader APIs, zipimport parity, and full walk_packages semantics.
+def _rows_to_module_info(rows) -> list[ModuleInfo]:
+    if not isinstance(rows, list):
+        raise RuntimeError("pkgutil intrinsic returned invalid value")
+    out: list[ModuleInfo] = []
+    for row in rows:
+        if (
+            not isinstance(row, (list, tuple))
+            or len(row) != 3
+            or not isinstance(row[0], str)
+            or not isinstance(row[1], str)
+            or not isinstance(row[2], bool)
+        ):
+            raise RuntimeError("pkgutil intrinsic returned invalid value")
+        out.append(ModuleInfo(row[0], row[1], row[2]))
+    return out
 
 
 def iter_modules(
     path: Iterable[str] | None = None, prefix: str = ""
 ) -> Iterator[ModuleInfo]:
-    """Yield ModuleInfo for all submodules on path.
-
-    If path is None, iterate over sys.path. Only filesystem paths are supported.
-    """
-    if path is None:
-        path_iter = sys.path
-    else:
-        path_iter = path
-
-    yielded: set[str] = set()
-    for entry in path_iter:
-        for info in _iter_modules_in_path(entry, prefix):
-            if info.name in yielded:
-                continue
-            yielded.add(info.name)
-            yield info
+    source = sys.path if path is None else path
+    rows = _MOLT_PKGUTIL_ITER_MODULES(source, prefix)
+    yield from _rows_to_module_info(rows)
 
 
 def walk_packages(
@@ -60,69 +65,7 @@ def walk_packages(
     prefix: str = "",
     onerror=None,
 ) -> Iterator[ModuleInfo]:
-    """Yield ModuleInfo for modules and packages recursively."""
-    for info in iter_modules(path, prefix):
-        yield info
-        if not info.ispkg:
-            continue
-        base = info.module_finder
-        pkg_name = info.name
-        if not isinstance(base, str):
-            continue
-        if prefix and pkg_name.startswith(prefix):
-            pkg_name = pkg_name[len(prefix) :]
-        subdir = _path_join(base, pkg_name)
-        try:
-            yield from walk_packages([subdir], info.name + ".", onerror)
-        except OSError:
-            if onerror:
-                onerror(subdir)
-
-
-def _iter_modules_in_path(path: str, prefix: str) -> list[ModuleInfo]:
-    try:
-        entries = os.listdir(path)
-    except OSError:
-        return []
-
-    entries.sort()
-    yielded: set[str] = set()
-    results: list[ModuleInfo] = []
-
-    for entry in entries:
-        if entry == "__pycache__":
-            continue
-        full = _path_join(path, entry)
-        if "." not in entry:
-            try:
-                dir_entries = os.listdir(full)
-            except OSError:
-                dir_entries = None
-            if dir_entries is not None:
-                if "__init__.py" in dir_entries:
-                    if entry in yielded:
-                        continue
-                    yielded.add(entry)
-                    results.append(ModuleInfo(path, prefix + entry, True))
-                continue
-
-        if not entry.endswith(".py"):
-            continue
-        modname = entry[:-3]
-        if not modname or modname == "__init__" or "." in modname:
-            continue
-        if modname in yielded:
-            continue
-        yielded.add(modname)
-        results.append(ModuleInfo(path, prefix + modname, False))
-
-    return results
-
-
-def _path_join(base: str, name: str) -> str:
-    if not base:
-        return name
-    sep = os.sep
-    if base.endswith(sep):
-        return base + name
-    return base + sep + name
+    del onerror
+    source = sys.path if path is None else path
+    rows = _MOLT_PKGUTIL_WALK_PACKAGES(source, prefix)
+    yield from _rows_to_module_info(rows)

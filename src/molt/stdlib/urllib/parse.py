@@ -1,8 +1,10 @@
-"""Minimal urllib.parse support for Molt."""
+"""Intrinsic-backed urllib.parse subset for Molt."""
 
 from __future__ import annotations
 
 from typing import Iterable, Iterator
+
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = [
     "DefragResult",
@@ -23,8 +25,19 @@ __all__ = [
     "urlunsplit",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): bring
-# urllib.parse parity to CPython (RFC-compliant parsing, params, IPv6, and encoding).
+_MOLT_URLLIB_QUOTE = _require_intrinsic("molt_urllib_quote", globals())
+_MOLT_URLLIB_QUOTE_PLUS = _require_intrinsic("molt_urllib_quote_plus", globals())
+_MOLT_URLLIB_UNQUOTE = _require_intrinsic("molt_urllib_unquote", globals())
+_MOLT_URLLIB_UNQUOTE_PLUS = _require_intrinsic("molt_urllib_unquote_plus", globals())
+_MOLT_URLLIB_PARSE_QSL = _require_intrinsic("molt_urllib_parse_qsl", globals())
+_MOLT_URLLIB_PARSE_QS = _require_intrinsic("molt_urllib_parse_qs", globals())
+_MOLT_URLLIB_URLENCODE = _require_intrinsic("molt_urllib_urlencode", globals())
+_MOLT_URLLIB_URLSPLIT = _require_intrinsic("molt_urllib_urlsplit", globals())
+_MOLT_URLLIB_URLPARSE = _require_intrinsic("molt_urllib_urlparse", globals())
+_MOLT_URLLIB_URLUNSPLIT = _require_intrinsic("molt_urllib_urlunsplit", globals())
+_MOLT_URLLIB_URLUNPARSE = _require_intrinsic("molt_urllib_urlunparse", globals())
+_MOLT_URLLIB_URLDEFRAG = _require_intrinsic("molt_urllib_urldefrag", globals())
+_MOLT_URLLIB_URLJOIN = _require_intrinsic("molt_urllib_urljoin", globals())
 
 
 class _BaseResult:
@@ -108,67 +121,32 @@ class DefragResult(_BaseResult):
         self.fragment = fragment
 
 
-_ALWAYS_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-~"
-
-
 def quote(string: str, safe: str = "/") -> str:
-    safe_set = set(_ALWAYS_SAFE + safe)
-    out: list[str] = []
-    for ch in string:
-        if ch in safe_set:
-            out.append(ch)
-            continue
-        for byte in ch.encode("utf-8"):
-            out.append(f"%{byte:02X}")
-    return "".join(out)
+    out = _MOLT_URLLIB_QUOTE(string, safe)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.quote intrinsic returned invalid value")
+    return out
 
 
 def quote_plus(string: str, safe: str = "") -> str:
-    return quote(string, safe).replace("%20", "+")
+    out = _MOLT_URLLIB_QUOTE_PLUS(string, safe)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.quote_plus intrinsic returned invalid value")
+    return out
 
 
 def unquote(string: str) -> str:
-    if "%" not in string:
-        return string
-    buf = bytearray()
-    idx = 0
-    length = len(string)
-    while idx < length:
-        ch = string[idx]
-        if ch == "%" and idx + 2 < length:
-            hex_pair = string[idx + 1 : idx + 3]
-            try:
-                buf.append(int(hex_pair, 16))
-                idx += 3
-                continue
-            except ValueError:
-                pass
-        buf.extend(ch.encode("utf-8"))
-        idx += 1
-    return buf.decode("utf-8", errors="replace")
+    out = _MOLT_URLLIB_UNQUOTE(string)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.unquote intrinsic returned invalid value")
+    return out
 
 
 def unquote_plus(string: str) -> str:
-    return unquote(string.replace("+", " "))
-
-
-def urlencode(query: Iterable, doseq: bool = False, safe: str = "") -> str:
-    if hasattr(query, "items"):
-        items = list(query.items())  # type: ignore[attr-defined]
-    else:
-        items = list(query)
-    pairs: list[str] = []
-    for key, value in items:
-        if doseq and isinstance(value, (list, tuple)):
-            for entry in value:
-                pairs.append(
-                    quote_plus(str(key), safe) + "=" + quote_plus(str(entry), safe)
-                )
-        else:
-            pairs.append(
-                quote_plus(str(key), safe) + "=" + quote_plus(str(value), safe)
-            )
-    return "&".join(pairs)
+    out = _MOLT_URLLIB_UNQUOTE_PLUS(string)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.unquote_plus intrinsic returned invalid value")
+    return out
 
 
 def parse_qsl(
@@ -176,21 +154,18 @@ def parse_qsl(
     keep_blank_values: bool = False,
     strict_parsing: bool = False,
 ) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    if not qs:
-        return pairs
-    for chunk in qs.split("&"):
-        if not chunk and not keep_blank_values:
-            continue
-        if "=" in chunk:
-            key, value = chunk.split("=", 1)
-        else:
-            if strict_parsing:
-                raise ValueError("bad query field")
-            key, value = chunk, ""
-        if value or keep_blank_values:
-            pairs.append((unquote_plus(key), unquote_plus(value)))
-    return pairs
+    out = _MOLT_URLLIB_PARSE_QSL(qs, bool(keep_blank_values), bool(strict_parsing))
+    if not isinstance(out, list):
+        raise RuntimeError("urllib.parse.parse_qsl intrinsic returned invalid value")
+    if not all(
+        isinstance(item, tuple)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and isinstance(item[1], str)
+        for item in out
+    ):
+        raise RuntimeError("urllib.parse.parse_qsl intrinsic returned invalid value")
+    return list(out)
 
 
 def parse_qs(
@@ -198,52 +173,15 @@ def parse_qs(
     keep_blank_values: bool = False,
     strict_parsing: bool = False,
 ) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {}
-    for key, value in parse_qsl(qs, keep_blank_values, strict_parsing):
-        out.setdefault(key, []).append(value)
-    return out
-
-
-def _split_scheme(url: str, default: str) -> tuple[str, str]:
-    for idx, ch in enumerate(url):
-        if ch == ":":
-            scheme = url[:idx]
-            rest = url[idx + 1 :]
-            if (
-                scheme
-                and _is_alpha(scheme[0])
-                and all(_is_alnum(c) or c in "+-." for c in scheme)
-            ):
-                return scheme.lower(), rest
-            break
-        if ch in "/?#":
-            break
-    return default, url
-
-
-def _is_alpha(ch: str) -> bool:
-    return ("a" <= ch <= "z") or ("A" <= ch <= "Z")
-
-
-def _is_alnum(ch: str) -> bool:
-    return _is_alpha(ch) or ("0" <= ch <= "9")
-
-
-def _split_netloc(rest: str) -> tuple[str, str]:
-    for idx, ch in enumerate(rest):
-        if ch in "/?#":
-            return rest[:idx], rest[idx:]
-    return rest, ""
-
-
-def _split_query_fragment(rest: str, allow_fragments: bool) -> tuple[str, str, str]:
-    fragment = ""
-    if allow_fragments and "#" in rest:
-        rest, fragment = rest.split("#", 1)
-    query = ""
-    if "?" in rest:
-        rest, query = rest.split("?", 1)
-    return rest, query, fragment
+    out = _MOLT_URLLIB_PARSE_QS(qs, bool(keep_blank_values), bool(strict_parsing))
+    if not isinstance(out, dict):
+        raise RuntimeError("urllib.parse.parse_qs intrinsic returned invalid value")
+    for key, value in out.items():
+        if not isinstance(key, str) or not isinstance(value, list):
+            raise RuntimeError("urllib.parse.parse_qs intrinsic returned invalid value")
+        if not all(isinstance(entry, str) for entry in value):
+            raise RuntimeError("urllib.parse.parse_qs intrinsic returned invalid value")
+    return dict(out)
 
 
 def urlsplit(
@@ -251,12 +189,14 @@ def urlsplit(
     scheme: str = "",
     allow_fragments: bool = True,
 ) -> SplitResult:
-    parsed_scheme, rest = _split_scheme(url, scheme)
-    netloc = ""
-    if rest.startswith("//"):
-        netloc, rest = _split_netloc(rest[2:])
-    path, query, fragment = _split_query_fragment(rest, allow_fragments)
-    return SplitResult(parsed_scheme, netloc, path, query, fragment)
+    out = _MOLT_URLLIB_URLSPLIT(url, scheme, bool(allow_fragments))
+    if (
+        not isinstance(out, tuple)
+        or len(out) != 5
+        or not all(isinstance(item, str) for item in out)
+    ):
+        raise RuntimeError("urllib.parse.urlsplit intrinsic returned invalid value")
+    return SplitResult(*out)
 
 
 def urlparse(
@@ -264,34 +204,14 @@ def urlparse(
     scheme: str = "",
     allow_fragments: bool = True,
 ) -> ParseResult:
-    split = urlsplit(url, scheme, allow_fragments)
-    path = split.path
-    params = ""
-    if ";" in path:
-        path, params = path.split(";", 1)
-    return ParseResult(
-        split.scheme, split.netloc, path, params, split.query, split.fragment
-    )
-
-
-def _unsplit(
-    scheme: str,
-    netloc: str,
-    path: str,
-    query: str,
-    fragment: str,
-) -> str:
-    out = ""
-    if scheme:
-        out += scheme + ":"
-    if netloc:
-        out += "//" + netloc
-    out += path
-    if query:
-        out += "?" + query
-    if fragment:
-        out += "#" + fragment
-    return out
+    out = _MOLT_URLLIB_URLPARSE(url, scheme, bool(allow_fragments))
+    if (
+        not isinstance(out, tuple)
+        or len(out) != 6
+        or not all(isinstance(item, str) for item in out)
+    ):
+        raise RuntimeError("urllib.parse.urlparse intrinsic returned invalid value")
+    return ParseResult(*out)
 
 
 def urlunsplit(parts: Iterable[str]) -> str:
@@ -303,7 +223,10 @@ def urlunsplit(parts: Iterable[str]) -> str:
         fragment = getattr(parts, "fragment")
     else:
         scheme, netloc, path, query, fragment = parts
-    return _unsplit(scheme, netloc, path, query, fragment)
+    out = _MOLT_URLLIB_URLUNSPLIT(scheme, netloc, path, query, fragment)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.urlunsplit intrinsic returned invalid value")
+    return out
 
 
 def urlunparse(parts: Iterable[str]) -> str:
@@ -316,51 +239,36 @@ def urlunparse(parts: Iterable[str]) -> str:
         fragment = getattr(parts, "fragment")
     else:
         scheme, netloc, path, params, query, fragment = parts
-    if params:
-        path = path + ";" + params
-    return _unsplit(scheme, netloc, path, query, fragment)
+    out = _MOLT_URLLIB_URLUNPARSE(scheme, netloc, path, params, query, fragment)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.urlunparse intrinsic returned invalid value")
+    return out
 
 
 def urldefrag(url: str) -> DefragResult:
-    if "#" in url:
-        base, frag = url.split("#", 1)
-        return DefragResult(base, frag)
-    return DefragResult(url, "")
+    out = _MOLT_URLLIB_URLDEFRAG(url)
+    if (
+        not isinstance(out, tuple)
+        or len(out) != 2
+        or not all(isinstance(item, str) for item in out)
+    ):
+        raise RuntimeError("urllib.parse.urldefrag intrinsic returned invalid value")
+    return DefragResult(*out)
 
 
 def urljoin(base: str, url: str) -> str:
-    if not base:
-        return url
-    target = urlsplit(url)
-    if target.scheme:
-        return url
-    base_parts = urlparse(base)
-    if url.startswith("//"):
-        return base_parts.scheme + ":" + url
-    if target.netloc:
-        return urlunparse(
-            (
-                base_parts.scheme,
-                target.netloc,
-                target.path,
-                "",
-                target.query,
-                target.fragment,
-            )
-        )
-    path = target.path
-    if not path:
-        path = base_parts.path
-    elif not path.startswith("/"):
-        base_path = base_parts.path
-        if "/" in base_path:
-            base_dir = base_path.rsplit("/", 1)[0]
-        else:
-            base_dir = ""
-        if base_dir:
-            path = base_dir + "/" + path
-        else:
-            path = "/" + path
-    return urlunparse(
-        (base_parts.scheme, base_parts.netloc, path, "", target.query, target.fragment)
-    )
+    out = _MOLT_URLLIB_URLJOIN(base, url)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.urljoin intrinsic returned invalid value")
+    return out
+
+
+def urlencode(query: Iterable, doseq: bool = False, safe: str = "") -> str:
+    if hasattr(query, "items"):
+        items = list(query.items())  # type: ignore[attr-defined]
+    else:
+        items = list(query)
+    out = _MOLT_URLLIB_URLENCODE(items, bool(doseq), safe)
+    if not isinstance(out, str):
+        raise RuntimeError("urllib.parse.urlencode intrinsic returned invalid value")
+    return out

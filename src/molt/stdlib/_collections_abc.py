@@ -506,8 +506,7 @@ class Buffer(metaclass=ABCMeta):
     __slots__ = ()
 
     @abstractmethod
-    def __buffer__(self, flags: int, /) -> memoryview:
-        raise NotImplementedError
+    def __buffer__(self, flags: int, /) -> memoryview: ...
 
     @classmethod
     def __subclasshook__(cls, C):
@@ -772,12 +771,12 @@ class MutableSet(Set):
     @abstractmethod
     def add(self, value):
         """Add an element."""
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def discard(self, value):
         """Remove an element.  Do not raise an exception if absent."""
-        raise NotImplementedError
+        ...
 
     def remove(self, value):
         """Remove an element. If not a member, raise a KeyError."""

@@ -1,4 +1,4 @@
-"""Minimal intrinsic-friendly http.client subset for Molt."""
+"""Intrinsic-backed http.client subset for Molt."""
 
 from __future__ import annotations
 
@@ -8,68 +8,100 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
 
-import socket as _socket  # noqa: E402
-import socketserver as _socketserver  # noqa: E402
+_MOLT_HTTP_EXECUTE = _require_intrinsic("molt_http_client_execute", globals())
+_MOLT_HTTP_RESP_READ = _require_intrinsic("molt_http_client_response_read", globals())
+_MOLT_HTTP_RESP_CLOSE = _require_intrinsic("molt_http_client_response_close", globals())
+_MOLT_HTTP_RESP_DROP = _require_intrinsic("molt_http_client_response_drop", globals())
+_MOLT_HTTP_RESP_STATUS = _require_intrinsic(
+    "molt_http_client_response_getstatus", globals()
+)
+_MOLT_HTTP_RESP_REASON = _require_intrinsic(
+    "molt_http_client_response_getreason", globals()
+)
+_MOLT_HTTP_RESP_GETHEADER = _require_intrinsic(
+    "molt_http_client_response_getheader",
+    globals(),
+)
+_MOLT_HTTP_RESP_GETHEADERS = _require_intrinsic(
+    "molt_http_client_response_getheaders",
+    globals(),
+)
 
 
 class HTTPResponse:
-    def __init__(
-        self, status: int, stream: Any | None = None, body: bytes = b""
-    ) -> None:
-        self.status = status
-        self._stream = stream
-        self._body = body
+    _handle: int
+    closed: bool
+
+    def __init__(self, handle: int) -> None:
+        self._handle = int(handle)
+        self.closed = False
 
     def read(self, amt: int | None = None) -> bytes:
-        if self._stream is None:
-            if amt is None or amt < 0:
-                out = self._body
-                self._body = b""
-                return out
-            out = self._body[:amt]
-            self._body = self._body[amt:]
-            return out
-        if self._stream is None:
-            return b""
-        if amt is None or amt < 0:
-            data = self._stream.read()
-        else:
-            data = self._stream.read(amt)
-        if isinstance(data, str):
-            return data.encode("iso-8859-1", "surrogateescape")
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            return bytes(data)
-        return b""
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        size = -1 if amt is None else int(amt)
+        return _MOLT_HTTP_RESP_READ(self._handle, size)
+
+    def close(self) -> None:
+        if not self.closed:
+            _MOLT_HTTP_RESP_CLOSE(self._handle)
+            self.closed = True
+
+    def __del__(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        try:
+            _MOLT_HTTP_RESP_DROP(handle)
+        except Exception:
+            pass
+        self._handle = None
+
+    def getheader(self, name: str, default: Any = None) -> Any:
+        return _MOLT_HTTP_RESP_GETHEADER(self._handle, str(name), default)
+
+    def getheaders(self) -> list[tuple[str, str]]:
+        out = _MOLT_HTTP_RESP_GETHEADERS(self._handle)
+        if not isinstance(out, list):
+            raise RuntimeError(
+                "http.client response headers intrinsic returned invalid value"
+            )
+        return [(str(k), str(v)) for (k, v) in out]
+
+    @property
+    def status(self) -> int:
+        return int(_MOLT_HTTP_RESP_STATUS(self._handle))
+
+    @property
+    def reason(self) -> str:
+        return str(_MOLT_HTTP_RESP_REASON(self._handle))
 
 
 class HTTPConnection:
+    host: str
+    port: int
+    timeout: float | None
+    _method: str | None
+    _url: str | None
+    _headers: list[tuple[str, str]]
+    _body: bytearray
+    _response: HTTPResponse | None
+
     def __init__(
         self, host: str, port: int | None = None, timeout: float | None = None
     ) -> None:
-        self.host = host
+        self.host = str(host)
         self.port = int(port) if port is not None else 80
-        self.timeout = timeout
-        self._sock: _socket.socket | None = None
-        self._fake_server: Any | None = None
-        self._fake_response: bytes | None = None
-        self._response_stream: Any | None = None
-        self._request_line = b""
+        self.timeout = None if timeout is None else float(timeout)
+        self._method: str | None = None
+        self._url: str | None = None
         self._headers: list[tuple[str, str]] = []
-        self._buffer: list[bytes] = []
+        self._body = bytearray()
+        self._response: HTTPResponse | None = None
 
     def connect(self) -> None:
-        fake = _socketserver._lookup_server(self.host, self.port)
-        if fake is not None:
-            self._fake_server = fake
-            self._sock = None
-            return
-        if self._sock is not None:
-            return
-        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-        if self.timeout is not None:
-            sock.settimeout(self.timeout)
-        sock.connect((self.host, self.port))
-        self._sock = sock
+        # Connection setup is deferred to request execution in the intrinsic.
+        return None
 
     def putrequest(
         self,
@@ -79,11 +111,10 @@ class HTTPConnection:
         skip_accept_encoding: bool = False,
     ) -> None:
         del skip_host, skip_accept_encoding
-        self._request_line = f"{method} {url} HTTP/1.1\r\n".encode(
-            "ascii", "surrogateescape"
-        )
+        self._method = str(method)
+        self._url = str(url)
         self._headers = []
-        self._buffer = [self._request_line]
+        self._body = bytearray()
 
     def putheader(self, header: str, *values: Any) -> None:
         if not values:
@@ -94,114 +125,79 @@ class HTTPConnection:
             value = ", ".join(str(v) for v in values)
         self._headers.append((str(header), value))
 
-    def _request_bytes(self) -> bytes:
-        lines = [self._request_line]
-        has_host = any(name.lower() == "host" for name, _ in self._headers)
-        if not has_host:
-            host_value = self.host
-            if self.port not in (80, 443):
-                host_value = f"{host_value}:{self.port}"
-            lines.append(f"Host: {host_value}\r\n".encode("ascii", "surrogateescape"))
-        for name, value in self._headers:
-            line = f"{name}: {value}\r\n".encode("ascii", "surrogateescape")
-            lines.append(line)
-        lines.append(b"\r\n")
-        return b"".join(lines)
+    def endheaders(
+        self, message_body: bytes | bytearray | memoryview | None = None
+    ) -> None:
+        if (
+            getattr(self, "_method", None) is None
+            or getattr(self, "_url", None) is None
+        ):
+            raise OSError("request not started")
+        if message_body is not None:
+            self._body.extend(bytes(message_body))
 
-    def endheaders(self, message_body: bytes | None = None) -> None:
-        if self._fake_server is not None:
-            body = message_body or b""
-            self._fake_response = self._fake_server._dispatch(
-                self._request_bytes() + body, self.timeout or 5.0
-            )
-            return
-        if self._sock is None:
-            self.connect()
-        if self._fake_server is not None:
-            body = message_body or b""
-            self._fake_response = self._fake_server._dispatch(
-                self._request_bytes() + body, self.timeout or 5.0
-            )
-            return
-        assert self._sock is not None
-        payload = self._request_bytes()
-        self._sock.sendall(payload)
-        if message_body:
-            self._sock.sendall(message_body)
+    def send(self, data: bytes | bytearray | memoryview) -> None:
+        if (
+            getattr(self, "_method", None) is None
+            or getattr(self, "_url", None) is None
+        ):
+            raise OSError("request not started")
+        self._body.extend(bytes(data))
 
     def request(
         self,
         method: str,
         url: str,
-        body: bytes | None = None,
+        body: bytes | bytearray | memoryview | None = None,
         headers: dict[str, Any] | None = None,
     ) -> None:
         self.putrequest(method, url, skip_accept_encoding=True)
         if headers:
             for name, value in headers.items():
                 self.putheader(name, value)
-        has_content_length = False
-        for header_name, _ in self._headers:
-            if str(header_name).lower() == "content-length":
-                has_content_length = True
-                break
-        if body is not None and not has_content_length:
+        if body is not None and not any(
+            name.lower() == "content-length" for name, _ in self._headers
+        ):
             self.putheader("Content-Length", str(len(body)))
-        self.endheaders(body)
+        if body is not None:
+            self._body.extend(bytes(body))
 
     def getresponse(self) -> HTTPResponse:
-        if self._fake_response is not None:
-            raw = self._fake_response
-            self._fake_response = None
-            head, _, body = raw.partition(b"\r\n\r\n")
-            first = head.split(b"\r\n", 1)[0]
-            text = first.decode("iso-8859-1", "surrogateescape").strip()
-            parts = text.split(None, 2)
-            if len(parts) >= 2:
-                try:
-                    status = int(parts[1])
-                except Exception:
-                    status = 0
-            else:
-                status = 0
-            return HTTPResponse(status, body=body)
-        if self._sock is None:
-            raise OSError("not connected")
-        stream = self._sock.makefile("rb")
-        self._response_stream = stream
-        status_line = stream.readline(65537)
-        text = status_line.decode("iso-8859-1", "surrogateescape").strip()
-        parts = text.split(None, 2)
-        if len(parts) >= 2:
-            try:
-                status = int(parts[1])
-            except Exception:
-                status = 0
-        else:
-            status = 0
-        while True:
-            line = stream.readline(65537)
-            if not line or line in (b"\r\n", b"\n"):
-                break
-        return HTTPResponse(status, stream)
+        if (
+            getattr(self, "_method", None) is None
+            or getattr(self, "_url", None) is None
+        ):
+            raise OSError("no request pending")
+        if self._response is not None and not self._response.closed:
+            self._response.close()
+        handle = _MOLT_HTTP_EXECUTE(
+            self.host,
+            self.port,
+            self.timeout,
+            self._method,
+            self._url,
+            list(self._headers),
+            bytes(self._body),
+        )
+        self._method = None
+        self._url = None
+        self._headers = []
+        self._body = bytearray()
+        self._response = HTTPResponse(int(handle))
+        return self._response
 
     def close(self) -> None:
-        stream = self._response_stream
-        if stream is not None:
+        response = self._response
+        if response is not None:
             try:
-                stream.close()
+                response.close()
             except Exception:
                 pass
-            self._response_stream = None
-        self._fake_response = None
-        self._fake_server = None
-        sock = self._sock
-        if sock is not None:
-            try:
-                sock.close()
-            except Exception:
-                pass
-            self._sock = None
+            self._response = None
+        self._method = None
+        self._url = None
+        self._headers = []
+        self._body = bytearray()
 
 
 __all__ = ["HTTPConnection", "HTTPResponse"]

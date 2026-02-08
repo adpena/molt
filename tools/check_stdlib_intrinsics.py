@@ -640,6 +640,7 @@ def main() -> int:
         help=(
             "Apply strict transitive import closure checks for critical modules: "
             + ", ".join(CRITICAL_STRICT_IMPORT_ROOTS)
+            + " (and require those roots to be intrinsic-backed)."
         ),
     )
     args = parser.parse_args()
@@ -711,14 +712,23 @@ def main() -> int:
         for module in unknown_strict_roots:
             print(f"- {module}")
         return 1
+    strict_root_status_violations = [
+        (root, modules_by_name[root].status)
+        for root in sorted(strict_roots)
+        if modules_by_name[root].status != STATUS_INTRINSIC
+    ]
+    if strict_root_status_violations:
+        print(
+            "stdlib intrinsics lint failed: strict-import roots must be intrinsic-backed"
+        )
+        for root, status in strict_root_status_violations:
+            print(f"- {root}: {status}")
+        return 1
     non_intrinsic_backed = {
         audit.module for audit in audits if audit.status != STATUS_INTRINSIC
     }
     strict_import_violations: list[tuple[str, tuple[str, ...]]] = []
     for root in sorted(strict_roots):
-        root_status = modules_by_name[root].status
-        if root_status != STATUS_INTRINSIC:
-            continue
         imported_closure = _closure({root}, dep_graph)
         imported_closure.discard(root)
         bad = tuple(sorted(imported_closure & non_intrinsic_backed))

@@ -2,19 +2,43 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+import socket as _socket
 import time
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
-
-
-@dataclass
-class _PendingRequest:
-    request_bytes: bytes
-    response_bytes: bytes | None = None
+_MOLT_SOCKETSERVER_SERVE_FOREVER = _require_intrinsic(
+    "molt_socketserver_serve_forever", globals()
+)
+_MOLT_SOCKETSERVER_HANDLE_REQUEST = _require_intrinsic(
+    "molt_socketserver_handle_request", globals()
+)
+_MOLT_SOCKETSERVER_SHUTDOWN = _require_intrinsic(
+    "molt_socketserver_shutdown", globals()
+)
+_MOLT_SOCKETSERVER_REGISTER = _require_intrinsic(
+    "molt_socketserver_register", globals()
+)
+_MOLT_SOCKETSERVER_UNREGISTER = _require_intrinsic(
+    "molt_socketserver_unregister", globals()
+)
+_MOLT_SOCKETSERVER_DISPATCH_BEGIN = _require_intrinsic(
+    "molt_socketserver_dispatch_begin", globals()
+)
+_MOLT_SOCKETSERVER_DISPATCH_POLL = _require_intrinsic(
+    "molt_socketserver_dispatch_poll", globals()
+)
+_MOLT_SOCKETSERVER_DISPATCH_CANCEL = _require_intrinsic(
+    "molt_socketserver_dispatch_cancel", globals()
+)
+_MOLT_SOCKETSERVER_GET_REQUEST_POLL = _require_intrinsic(
+    "molt_socketserver_get_request_poll", globals()
+)
+_MOLT_SOCKETSERVER_SET_RESPONSE = _require_intrinsic(
+    "molt_socketserver_set_response", globals()
+)
 
 
 class _FakeSocket:
@@ -173,46 +197,75 @@ def _lookup_server(host: str, port: int) -> "TCPServer" | None:
 
 class TCPServer:
     allow_reuse_address = False
+    request_queue_size = 5
+    timeout = None
 
     def __init__(
         self, server_address: tuple[str, int], RequestHandlerClass: Any
     ) -> None:
         host, port = server_address
-        if int(port) == 0:
-            port = _allocate_port()
-        self.server_address = (host, int(port))
+        self.server_address = (str(host), int(port))
+        self.server_name = str(host)
+        self.server_port = int(port)
         self.RequestHandlerClass = RequestHandlerClass
+        self.socket = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        if self.allow_reuse_address:
+            self.socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        self.server_bind()
+        self.server_activate()
+        # keep accept responsive so serve_forever can observe shutdown quickly
+        self.socket.settimeout(0.05)
         self._closed = False
-        self._pending: _PendingRequest | None = None
+        self._molt_shutdown_request = False
         _SERVERS[self.server_address] = self
+        _MOLT_SOCKETSERVER_REGISTER(self)
 
     def fileno(self) -> int:
         return -1
 
     def _dispatch(self, request_bytes: bytes, timeout: float = 5.0) -> bytes:
-        pending = _PendingRequest(request_bytes=request_bytes)
-        self._pending = pending
+        request_id = _MOLT_SOCKETSERVER_DISPATCH_BEGIN(self, bytes(request_bytes))
         deadline = time.monotonic() + timeout
-        while pending.response_bytes is None:
+        while True:
+            response = _MOLT_SOCKETSERVER_DISPATCH_POLL(self, request_id)
+            if response is not None:
+                return response
             if self._closed:
+                _MOLT_SOCKETSERVER_DISPATCH_CANCEL(self, request_id)
                 raise OSError("server closed")
             if time.monotonic() >= deadline:
+                _MOLT_SOCKETSERVER_DISPATCH_CANCEL(self, request_id)
                 raise TimeoutError("server request timed out")
             time.sleep(0.001)
-        return pending.response_bytes
 
-    def get_request(self) -> tuple[Any, Any, _PendingRequest]:
-        deadline = time.monotonic() + 10.0
-        while self._pending is None:
-            if self._closed:
+    def server_bind(self) -> None:
+        self.socket.bind(self.server_address)
+        host, port = self.socket.getsockname()
+        self.server_address = (str(host), int(port))
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+    def server_activate(self) -> None:
+        self.socket.listen(int(self.request_queue_size))
+
+    def get_request(self) -> tuple[Any, Any, int]:
+        while True:
+            pending = _MOLT_SOCKETSERVER_GET_REQUEST_POLL(self)
+            if pending is not None:
+                request_id, request_bytes = pending
+                request = _FakeSocket(request_bytes)
+                return request, ("127.0.0.1", 0), int(request_id)
+            if self._closed or self._molt_shutdown_request:
                 raise OSError("server closed")
-            if time.monotonic() >= deadline:
-                raise TimeoutError("handle_request timed out")
-            time.sleep(0.001)
-        pending = self._pending
-        self._pending = None
-        request = _FakeSocket(pending.request_bytes)
-        return request, ("127.0.0.1", 0), pending
+            try:
+                request, client_address = self.socket.accept()
+            except TimeoutError:
+                continue
+            try:
+                request.settimeout(None)
+            except Exception:
+                pass
+            return request, client_address, -1
 
     def process_request(self, request: Any, client_address: Any) -> None:
         self.finish_request(request, client_address)
@@ -226,18 +279,27 @@ class TCPServer:
         except Exception:
             pass
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        del request, client_address
+        return None
+
     def handle_request(self) -> None:
-        request, client_address, pending = self.get_request()
-        try:
-            self.process_request(request, client_address)
-        finally:
-            response = request.response_bytes()
-            self.close_request(request)
-            if pending.response_bytes is None:
-                pending.response_bytes = response
+        _MOLT_SOCKETSERVER_HANDLE_REQUEST(self)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        _MOLT_SOCKETSERVER_SERVE_FOREVER(self, float(poll_interval))
+
+    def shutdown(self) -> None:
+        _MOLT_SOCKETSERVER_SHUTDOWN(self)
 
     def server_close(self) -> None:
+        self._molt_shutdown_request = True
         self._closed = True
+        try:
+            self.socket.close()
+        except Exception:
+            pass
+        _MOLT_SOCKETSERVER_UNREGISTER(self)
         _SERVERS.pop(self.server_address, None)
 
     def __enter__(self) -> "TCPServer":

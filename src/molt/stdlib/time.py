@@ -28,6 +28,7 @@ _MOLT_TIME_ALTZONE = _require_intrinsic("molt_time_altzone", globals())
 _MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname", globals())
 _MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime", globals())
 _MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime", globals())
+_MOLT_TIME_TIMEGM = _require_intrinsic("molt_time_timegm", globals())
 _MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info", globals())
 _MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
 _MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
@@ -67,6 +68,7 @@ __all__ = [
     "altzone",
     "tzname",
     "mktime",
+    "timegm",
 ]
 
 if TYPE_CHECKING:
@@ -415,3 +417,10 @@ def mktime(t: Any) -> float:
     if len(tuple_val) != 9:
         raise TypeError("mktime(): illegal time tuple argument")
     return float(_MOLT_TIME_MKTIME(tuple(tuple_val)))
+
+
+def timegm(t: Any) -> float:
+    tuple_val = _coerce_time_tuple(t)
+    if len(tuple_val) != 9:
+        raise TypeError("timegm(): illegal time tuple argument")
+    return float(_MOLT_TIME_TIMEGM(tuple(tuple_val)))

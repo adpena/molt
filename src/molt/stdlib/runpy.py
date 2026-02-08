@@ -70,11 +70,8 @@ def run_module(
         raise TypeError("init_globals must be a dict or None")
     if run_name is not None and not isinstance(run_name, str):
         raise TypeError("run_name must be a string or None")
-    if alter_sys:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full runpy alter_sys semantics (argv/sys.modules updates + package execution parity).
-        raise NotImplementedError("run_module(alter_sys=True) is not supported")
     runner = _require_intrinsic(_molt_runpy_run_module, "molt_runpy_run_module")
-    return runner(mod_name, run_name, init_globals)
+    return runner(mod_name, run_name, init_globals, alter_sys)
 
 
 def run_path(

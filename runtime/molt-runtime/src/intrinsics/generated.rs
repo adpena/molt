@@ -273,6 +273,431 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_shlex_split_ex",
+        symbol: "molt_shlex_split_ex",
+        arity: 7,
+    },
+    IntrinsicSpec {
+        name: "molt_shlex_join",
+        symbol: "molt_shlex_join",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_fnmatch",
+        symbol: "molt_fnmatch",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_fnmatchcase",
+        symbol: "molt_fnmatchcase",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_fnmatch_filter",
+        symbol: "molt_fnmatch_filter",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_fnmatch_translate",
+        symbol: "molt_fnmatch_translate",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_pkgutil_iter_modules",
+        symbol: "molt_pkgutil_iter_modules",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_pkgutil_walk_packages",
+        symbol: "molt_pkgutil_walk_packages",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_shutil_copyfile",
+        symbol: "molt_shutil_copyfile",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_shutil_which",
+        symbol: "molt_shutil_which",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_py_compile_compile",
+        symbol: "molt_py_compile_compile",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_compileall_compile_file",
+        symbol: "molt_compileall_compile_file",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_compileall_compile_dir",
+        symbol: "molt_compileall_compile_dir",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_compileall_compile_path",
+        symbol: "molt_compileall_compile_path",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_constants",
+        symbol: "molt_stat_constants",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_ifmt",
+        symbol: "molt_stat_ifmt",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_imode",
+        symbol: "molt_stat_imode",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_isdir",
+        symbol: "molt_stat_isdir",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_isreg",
+        symbol: "molt_stat_isreg",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_ischr",
+        symbol: "molt_stat_ischr",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_isblk",
+        symbol: "molt_stat_isblk",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_isfifo",
+        symbol: "molt_stat_isfifo",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_islnk",
+        symbol: "molt_stat_islnk",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_stat_issock",
+        symbol: "molt_stat_issock",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_textwrap_wrap",
+        symbol: "molt_textwrap_wrap",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_textwrap_fill",
+        symbol: "molt_textwrap_fill",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_textwrap_indent",
+        symbol: "molt_textwrap_indent",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_quote",
+        symbol: "molt_urllib_quote",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_quote_plus",
+        symbol: "molt_urllib_quote_plus",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_unquote",
+        symbol: "molt_urllib_unquote",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_unquote_plus",
+        symbol: "molt_urllib_unquote_plus",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_parse_qsl",
+        symbol: "molt_urllib_parse_qsl",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_parse_qs",
+        symbol: "molt_urllib_parse_qs",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urlencode",
+        symbol: "molt_urllib_urlencode",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urlsplit",
+        symbol: "molt_urllib_urlsplit",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urlparse",
+        symbol: "molt_urllib_urlparse",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urlunsplit",
+        symbol: "molt_urllib_urlunsplit",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urlunparse",
+        symbol: "molt_urllib_urlunparse",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urldefrag",
+        symbol: "molt_urllib_urldefrag",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_urljoin",
+        symbol: "molt_urllib_urljoin",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_error_urlerror_init",
+        symbol: "molt_urllib_error_urlerror_init",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_error_urlerror_str",
+        symbol: "molt_urllib_error_urlerror_str",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_error_httperror_init",
+        symbol: "molt_urllib_error_httperror_init",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_error_httperror_str",
+        symbol: "molt_urllib_error_httperror_str",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_error_content_too_short_init",
+        symbol: "molt_urllib_error_content_too_short_init",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_request_init",
+        symbol: "molt_urllib_request_request_init",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_opener_init",
+        symbol: "molt_urllib_request_opener_init",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_add_handler",
+        symbol: "molt_urllib_request_add_handler",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_open",
+        symbol: "molt_urllib_request_open",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_process_http_error",
+        symbol: "molt_urllib_request_process_http_error",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_read",
+        symbol: "molt_urllib_request_response_read",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_close",
+        symbol: "molt_urllib_request_response_close",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_drop",
+        symbol: "molt_urllib_request_response_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_geturl",
+        symbol: "molt_urllib_request_response_geturl",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_getcode",
+        symbol: "molt_urllib_request_response_getcode",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_getreason",
+        symbol: "molt_urllib_request_response_getreason",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_urllib_request_response_getheaders",
+        symbol: "molt_urllib_request_response_getheaders",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_execute",
+        symbol: "molt_http_client_execute",
+        arity: 7,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_read",
+        symbol: "molt_http_client_response_read",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_close",
+        symbol: "molt_http_client_response_close",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_drop",
+        symbol: "molt_http_client_response_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_getstatus",
+        symbol: "molt_http_client_response_getstatus",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_getreason",
+        symbol: "molt_http_client_response_getreason",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_getheader",
+        symbol: "molt_http_client_response_getheader",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_getheaders",
+        symbol: "molt_http_client_response_getheaders",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_register",
+        symbol: "molt_socketserver_register",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_unregister",
+        symbol: "molt_socketserver_unregister",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_dispatch_begin",
+        symbol: "molt_socketserver_dispatch_begin",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_dispatch_poll",
+        symbol: "molt_socketserver_dispatch_poll",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_dispatch_cancel",
+        symbol: "molt_socketserver_dispatch_cancel",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_get_request_poll",
+        symbol: "molt_socketserver_get_request_poll",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_set_response",
+        symbol: "molt_socketserver_set_response",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_serve_forever",
+        symbol: "molt_socketserver_serve_forever",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_handle_request",
+        symbol: "molt_socketserver_handle_request",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socketserver_shutdown",
+        symbol: "molt_socketserver_shutdown",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_read_request",
+        symbol: "molt_http_server_read_request",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_compute_close_connection",
+        symbol: "molt_http_server_compute_close_connection",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_handle_one_request",
+        symbol: "molt_http_server_handle_one_request",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_send_response",
+        symbol: "molt_http_server_send_response",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_send_response_only",
+        symbol: "molt_http_server_send_response_only",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_send_header",
+        symbol: "molt_http_server_send_header",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_end_headers",
+        symbol: "molt_http_server_end_headers",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_send_error",
+        symbol: "molt_http_server_send_error",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_version_string",
+        symbol: "molt_http_server_version_string",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_server_date_time_string",
+        symbol: "molt_http_server_date_time_string",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_context_null",
         symbol: "molt_context_null",
         arity: 1,
@@ -295,6 +720,41 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_contextlib_aclosing_exit",
         symbol: "molt_contextlib_aclosing_exit",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_abstract_enter",
+        symbol: "molt_contextlib_abstract_enter",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_abstract_aenter",
+        symbol: "molt_contextlib_abstract_aenter",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_abstract_subclasshook",
+        symbol: "molt_contextlib_abstract_subclasshook",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_abstract_async_subclasshook",
+        symbol: "molt_contextlib_abstract_async_subclasshook",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_contextdecorator_call",
+        symbol: "molt_contextlib_contextdecorator_call",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_chdir_enter",
+        symbol: "molt_contextlib_chdir_enter",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextlib_chdir_exit",
+        symbol: "molt_contextlib_chdir_exit",
         arity: 1,
     },
     IntrinsicSpec {
@@ -548,6 +1008,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_asyncio_condition_wait_for_step",
+        symbol: "molt_asyncio_condition_wait_for_step",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_asyncio_future_transfer",
         symbol: "molt_asyncio_future_transfer",
         arity: 2,
@@ -603,6 +1068,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_asyncio_task_registry_live_set",
+        symbol: "molt_asyncio_task_registry_live_set",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_asyncio_event_waiters_register",
         symbol: "molt_asyncio_event_waiters_register",
         arity: 2,
@@ -636,6 +1106,46 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_asyncio_child_watcher_pop",
         symbol: "molt_asyncio_child_watcher_pop",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_require_ssl_transport_support",
+        symbol: "molt_asyncio_require_ssl_transport_support",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_ssl_transport_orchestrate",
+        symbol: "molt_asyncio_ssl_transport_orchestrate",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_tls_client_connect_new",
+        symbol: "molt_asyncio_tls_client_connect_new",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_tls_client_from_fd_new",
+        symbol: "molt_asyncio_tls_client_from_fd_new",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_tls_server_payload",
+        symbol: "molt_asyncio_tls_server_payload",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_tls_server_from_fd_new",
+        symbol: "molt_asyncio_tls_server_from_fd_new",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_require_unix_socket_support",
+        symbol: "molt_asyncio_require_unix_socket_support",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_require_child_watcher_support",
+        symbol: "molt_asyncio_require_child_watcher_support",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_asyncio_running_loop_get",
@@ -678,6 +1188,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_asyncio_tasks_add_done_callback",
+        symbol: "molt_asyncio_tasks_add_done_callback",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_asyncio_task_cancel_apply",
         symbol: "molt_asyncio_task_cancel_apply",
         arity: 2,
@@ -713,6 +1228,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
     },
     IntrinsicSpec {
+        name: "molt_asyncio_timer_handle_cancel",
+        symbol: "molt_asyncio_timer_handle_cancel",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_asyncio_fd_watcher_new",
         symbol: "molt_asyncio_fd_watcher_new",
         arity: 5,
@@ -721,6 +1241,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_asyncio_fd_watcher_register",
         symbol: "molt_asyncio_fd_watcher_register",
         arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_fd_watcher_unregister",
+        symbol: "molt_asyncio_fd_watcher_unregister",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_subprocess_stdio_normalize",
+        symbol: "molt_asyncio_subprocess_stdio_normalize",
+        arity: 11,
     },
     IntrinsicSpec {
         name: "molt_asyncio_server_accept_loop_new",
@@ -890,6 +1420,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_time_mktime",
         symbol: "molt_time_mktime",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_time_timegm",
+        symbol: "molt_time_timegm",
         arity: 1,
     },
     IntrinsicSpec {
@@ -1538,6 +2073,21 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_path_islink",
+        symbol: "molt_path_islink",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_path_readlink",
+        symbol: "molt_path_readlink",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_path_symlink",
+        symbol: "molt_path_symlink",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_path_listdir",
         symbol: "molt_path_listdir",
         arity: 1,
@@ -1628,6 +2178,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_path_resolve",
+        symbol: "molt_path_resolve",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_path_as_uri",
         symbol: "molt_path_as_uri",
         arity: 1,
@@ -1666,6 +2221,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_path_parents",
         symbol: "molt_path_parents",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_path_compare",
+        symbol: "molt_path_compare",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_path_relative_to",
@@ -1711,6 +2271,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_path_glob",
         symbol: "molt_path_glob",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_glob_has_magic",
+        symbol: "molt_glob_has_magic",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_glob",
+        symbol: "molt_glob",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_io_class",
@@ -2763,6 +3333,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_socket_gethostbyaddr",
+        symbol: "molt_socket_gethostbyaddr",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_socket_getfqdn",
+        symbol: "molt_socket_getfqdn",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_socket_getservbyname",
         symbol: "molt_socket_getservbyname",
         arity: 2,
@@ -2825,7 +3405,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_runpy_run_module",
         symbol: "molt_runpy_run_module",
-        arity: 3,
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_runpy_run_path",
@@ -2843,9 +3423,24 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_importlib_extension_loader_payload",
+        symbol: "molt_importlib_extension_loader_payload",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_sourceless_loader_payload",
+        symbol: "molt_importlib_sourceless_loader_payload",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_source_exec_payload",
         symbol: "molt_importlib_source_exec_payload",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_zip_source_exec_payload",
+        symbol: "molt_importlib_zip_source_exec_payload",
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_importlib_read_file",
@@ -2856,6 +3451,21 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_exec_restricted_source",
         symbol: "molt_importlib_exec_restricted_source",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_exec_extension",
+        symbol: "molt_importlib_exec_extension",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_exec_sourceless",
+        symbol: "molt_importlib_exec_sourceless",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_module_spec_is_package",
+        symbol: "molt_importlib_module_spec_is_package",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_importlib_cache_from_source",
@@ -2870,12 +3480,17 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_find_spec_payload",
         symbol: "molt_importlib_find_spec_payload",
-        arity: 5,
+        arity: 7,
     },
     IntrinsicSpec {
         name: "molt_importlib_bootstrap_payload",
         symbol: "molt_importlib_bootstrap_payload",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_runtime_state_payload",
+        symbol: "molt_importlib_runtime_state_payload",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_importlib_search_paths",
@@ -2896,6 +3511,71 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_resources_package_payload",
         symbol: "molt_importlib_resources_package_payload",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_as_file_enter",
+        symbol: "molt_importlib_resources_as_file_enter",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_as_file_exit",
+        symbol: "molt_importlib_resources_as_file_exit",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_module_name",
+        symbol: "molt_importlib_resources_module_name",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_loader_reader",
+        symbol: "molt_importlib_resources_loader_reader",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_roots",
+        symbol: "molt_importlib_resources_reader_roots",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_contents",
+        symbol: "molt_importlib_resources_reader_contents",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_resource_path",
+        symbol: "molt_importlib_resources_reader_resource_path",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_is_resource",
+        symbol: "molt_importlib_resources_reader_is_resource",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_open_resource_bytes",
+        symbol: "molt_importlib_resources_reader_open_resource_bytes",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_child_names",
+        symbol: "molt_importlib_resources_reader_child_names",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_exists",
+        symbol: "molt_importlib_resources_reader_exists",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_is_dir",
+        symbol: "molt_importlib_resources_reader_is_dir",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_linecache_loader_get_source",
+        symbol: "molt_linecache_loader_get_source",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_dist_paths",
@@ -3071,6 +3751,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_traceback_exception_components",
         symbol: "molt_traceback_exception_components",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_traceback_exception_chain_payload",
+        symbol: "molt_traceback_exception_chain_payload",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_traceback_exception_suppress_context",
+        symbol: "molt_traceback_exception_suppress_context",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_traceback_payload",
@@ -3641,6 +4331,203 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_shlex_quote" => Some(crate::molt_shlex_quote as *const () as usize as u64),
         "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
+        "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
+        "molt_shlex_join" => Some(crate::molt_shlex_join as *const () as usize as u64),
+        "molt_fnmatch" => Some(crate::molt_fnmatch as *const () as usize as u64),
+        "molt_fnmatchcase" => Some(crate::molt_fnmatchcase as *const () as usize as u64),
+        "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
+        "molt_fnmatch_translate" => {
+            Some(crate::molt_fnmatch_translate as *const () as usize as u64)
+        }
+        "molt_pkgutil_iter_modules" => {
+            Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64)
+        }
+        "molt_pkgutil_walk_packages" => {
+            Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64)
+        }
+        "molt_shutil_copyfile" => Some(crate::molt_shutil_copyfile as *const () as usize as u64),
+        "molt_shutil_which" => Some(crate::molt_shutil_which as *const () as usize as u64),
+        "molt_py_compile_compile" => {
+            Some(crate::molt_py_compile_compile as *const () as usize as u64)
+        }
+        "molt_compileall_compile_file" => {
+            Some(crate::molt_compileall_compile_file as *const () as usize as u64)
+        }
+        "molt_compileall_compile_dir" => {
+            Some(crate::molt_compileall_compile_dir as *const () as usize as u64)
+        }
+        "molt_compileall_compile_path" => {
+            Some(crate::molt_compileall_compile_path as *const () as usize as u64)
+        }
+        "molt_stat_constants" => Some(crate::molt_stat_constants as *const () as usize as u64),
+        "molt_stat_ifmt" => Some(crate::molt_stat_ifmt as *const () as usize as u64),
+        "molt_stat_imode" => Some(crate::molt_stat_imode as *const () as usize as u64),
+        "molt_stat_isdir" => Some(crate::molt_stat_isdir as *const () as usize as u64),
+        "molt_stat_isreg" => Some(crate::molt_stat_isreg as *const () as usize as u64),
+        "molt_stat_ischr" => Some(crate::molt_stat_ischr as *const () as usize as u64),
+        "molt_stat_isblk" => Some(crate::molt_stat_isblk as *const () as usize as u64),
+        "molt_stat_isfifo" => Some(crate::molt_stat_isfifo as *const () as usize as u64),
+        "molt_stat_islnk" => Some(crate::molt_stat_islnk as *const () as usize as u64),
+        "molt_stat_issock" => Some(crate::molt_stat_issock as *const () as usize as u64),
+        "molt_textwrap_wrap" => Some(crate::molt_textwrap_wrap as *const () as usize as u64),
+        "molt_textwrap_fill" => Some(crate::molt_textwrap_fill as *const () as usize as u64),
+        "molt_textwrap_indent" => Some(crate::molt_textwrap_indent as *const () as usize as u64),
+        "molt_urllib_quote" => Some(crate::molt_urllib_quote as *const () as usize as u64),
+        "molt_urllib_quote_plus" => {
+            Some(crate::molt_urllib_quote_plus as *const () as usize as u64)
+        }
+        "molt_urllib_unquote" => Some(crate::molt_urllib_unquote as *const () as usize as u64),
+        "molt_urllib_unquote_plus" => {
+            Some(crate::molt_urllib_unquote_plus as *const () as usize as u64)
+        }
+        "molt_urllib_parse_qsl" => Some(crate::molt_urllib_parse_qsl as *const () as usize as u64),
+        "molt_urllib_parse_qs" => Some(crate::molt_urllib_parse_qs as *const () as usize as u64),
+        "molt_urllib_urlencode" => Some(crate::molt_urllib_urlencode as *const () as usize as u64),
+        "molt_urllib_urlsplit" => Some(crate::molt_urllib_urlsplit as *const () as usize as u64),
+        "molt_urllib_urlparse" => Some(crate::molt_urllib_urlparse as *const () as usize as u64),
+        "molt_urllib_urlunsplit" => {
+            Some(crate::molt_urllib_urlunsplit as *const () as usize as u64)
+        }
+        "molt_urllib_urlunparse" => {
+            Some(crate::molt_urllib_urlunparse as *const () as usize as u64)
+        }
+        "molt_urllib_urldefrag" => Some(crate::molt_urllib_urldefrag as *const () as usize as u64),
+        "molt_urllib_urljoin" => Some(crate::molt_urllib_urljoin as *const () as usize as u64),
+        "molt_urllib_error_urlerror_init" => {
+            Some(crate::molt_urllib_error_urlerror_init as *const () as usize as u64)
+        }
+        "molt_urllib_error_urlerror_str" => {
+            Some(crate::molt_urllib_error_urlerror_str as *const () as usize as u64)
+        }
+        "molt_urllib_error_httperror_init" => {
+            Some(crate::molt_urllib_error_httperror_init as *const () as usize as u64)
+        }
+        "molt_urllib_error_httperror_str" => {
+            Some(crate::molt_urllib_error_httperror_str as *const () as usize as u64)
+        }
+        "molt_urllib_error_content_too_short_init" => {
+            Some(crate::molt_urllib_error_content_too_short_init as *const () as usize as u64)
+        }
+        "molt_urllib_request_request_init" => {
+            Some(crate::molt_urllib_request_request_init as *const () as usize as u64)
+        }
+        "molt_urllib_request_opener_init" => {
+            Some(crate::molt_urllib_request_opener_init as *const () as usize as u64)
+        }
+        "molt_urllib_request_add_handler" => {
+            Some(crate::molt_urllib_request_add_handler as *const () as usize as u64)
+        }
+        "molt_urllib_request_open" => {
+            Some(crate::molt_urllib_request_open as *const () as usize as u64)
+        }
+        "molt_urllib_request_process_http_error" => {
+            Some(crate::molt_urllib_request_process_http_error as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_read" => {
+            Some(crate::molt_urllib_request_response_read as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_close" => {
+            Some(crate::molt_urllib_request_response_close as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_drop" => {
+            Some(crate::molt_urllib_request_response_drop as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_geturl" => {
+            Some(crate::molt_urllib_request_response_geturl as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_getcode" => {
+            Some(crate::molt_urllib_request_response_getcode as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_getreason" => {
+            Some(crate::molt_urllib_request_response_getreason as *const () as usize as u64)
+        }
+        "molt_urllib_request_response_getheaders" => {
+            Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64)
+        }
+        "molt_http_client_execute" => {
+            Some(crate::molt_http_client_execute as *const () as usize as u64)
+        }
+        "molt_http_client_response_read" => {
+            Some(crate::molt_http_client_response_read as *const () as usize as u64)
+        }
+        "molt_http_client_response_close" => {
+            Some(crate::molt_http_client_response_close as *const () as usize as u64)
+        }
+        "molt_http_client_response_drop" => {
+            Some(crate::molt_http_client_response_drop as *const () as usize as u64)
+        }
+        "molt_http_client_response_getstatus" => {
+            Some(crate::molt_http_client_response_getstatus as *const () as usize as u64)
+        }
+        "molt_http_client_response_getreason" => {
+            Some(crate::molt_http_client_response_getreason as *const () as usize as u64)
+        }
+        "molt_http_client_response_getheader" => {
+            Some(crate::molt_http_client_response_getheader as *const () as usize as u64)
+        }
+        "molt_http_client_response_getheaders" => {
+            Some(crate::molt_http_client_response_getheaders as *const () as usize as u64)
+        }
+        "molt_socketserver_register" => {
+            Some(crate::molt_socketserver_register as *const () as usize as u64)
+        }
+        "molt_socketserver_unregister" => {
+            Some(crate::molt_socketserver_unregister as *const () as usize as u64)
+        }
+        "molt_socketserver_dispatch_begin" => {
+            Some(crate::molt_socketserver_dispatch_begin as *const () as usize as u64)
+        }
+        "molt_socketserver_dispatch_poll" => {
+            Some(crate::molt_socketserver_dispatch_poll as *const () as usize as u64)
+        }
+        "molt_socketserver_dispatch_cancel" => {
+            Some(crate::molt_socketserver_dispatch_cancel as *const () as usize as u64)
+        }
+        "molt_socketserver_get_request_poll" => {
+            Some(crate::molt_socketserver_get_request_poll as *const () as usize as u64)
+        }
+        "molt_socketserver_set_response" => {
+            Some(crate::molt_socketserver_set_response as *const () as usize as u64)
+        }
+        "molt_socketserver_serve_forever" => {
+            Some(crate::molt_socketserver_serve_forever as *const () as usize as u64)
+        }
+        "molt_socketserver_handle_request" => {
+            Some(crate::molt_socketserver_handle_request as *const () as usize as u64)
+        }
+        "molt_socketserver_shutdown" => {
+            Some(crate::molt_socketserver_shutdown as *const () as usize as u64)
+        }
+        "molt_http_server_read_request" => {
+            Some(crate::molt_http_server_read_request as *const () as usize as u64)
+        }
+        "molt_http_server_compute_close_connection" => {
+            Some(crate::molt_http_server_compute_close_connection as *const () as usize as u64)
+        }
+        "molt_http_server_handle_one_request" => {
+            Some(crate::molt_http_server_handle_one_request as *const () as usize as u64)
+        }
+        "molt_http_server_send_response" => {
+            Some(crate::molt_http_server_send_response as *const () as usize as u64)
+        }
+        "molt_http_server_send_response_only" => {
+            Some(crate::molt_http_server_send_response_only as *const () as usize as u64)
+        }
+        "molt_http_server_send_header" => {
+            Some(crate::molt_http_server_send_header as *const () as usize as u64)
+        }
+        "molt_http_server_end_headers" => {
+            Some(crate::molt_http_server_end_headers as *const () as usize as u64)
+        }
+        "molt_http_server_send_error" => {
+            Some(crate::molt_http_server_send_error as *const () as usize as u64)
+        }
+        "molt_http_server_version_string" => {
+            Some(crate::molt_http_server_version_string as *const () as usize as u64)
+        }
+        "molt_http_server_date_time_string" => {
+            Some(crate::molt_http_server_date_time_string as *const () as usize as u64)
+        }
         "molt_context_null" => Some(crate::molt_context_null as *const () as usize as u64),
         "molt_context_closing" => Some(crate::molt_context_closing as *const () as usize as u64),
         "molt_contextlib_closing" => {
@@ -3651,6 +4538,27 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_contextlib_aclosing_exit" => {
             Some(crate::molt_contextlib_aclosing_exit as *const () as usize as u64)
+        }
+        "molt_contextlib_abstract_enter" => {
+            Some(crate::molt_contextlib_abstract_enter as *const () as usize as u64)
+        }
+        "molt_contextlib_abstract_aenter" => {
+            Some(crate::molt_contextlib_abstract_aenter as *const () as usize as u64)
+        }
+        "molt_contextlib_abstract_subclasshook" => {
+            Some(crate::molt_contextlib_abstract_subclasshook as *const () as usize as u64)
+        }
+        "molt_contextlib_abstract_async_subclasshook" => {
+            Some(crate::molt_contextlib_abstract_async_subclasshook as *const () as usize as u64)
+        }
+        "molt_contextlib_contextdecorator_call" => {
+            Some(crate::molt_contextlib_contextdecorator_call as *const () as usize as u64)
+        }
+        "molt_contextlib_chdir_enter" => {
+            Some(crate::molt_contextlib_chdir_enter as *const () as usize as u64)
+        }
+        "molt_contextlib_chdir_exit" => {
+            Some(crate::molt_contextlib_chdir_exit as *const () as usize as u64)
         }
         "molt_contextlib_asyncgen_cm_new" => {
             Some(crate::molt_contextlib_asyncgen_cm_new as *const () as usize as u64)
@@ -3780,6 +4688,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_barrier_release" => {
             Some(crate::molt_asyncio_barrier_release as *const () as usize as u64)
         }
+        "molt_asyncio_condition_wait_for_step" => {
+            Some(crate::molt_asyncio_condition_wait_for_step as *const () as usize as u64)
+        }
         "molt_asyncio_future_transfer" => {
             Some(crate::molt_asyncio_future_transfer as *const () as usize as u64)
         }
@@ -3813,6 +4724,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_task_registry_live" => {
             Some(crate::molt_asyncio_task_registry_live as *const () as usize as u64)
         }
+        "molt_asyncio_task_registry_live_set" => {
+            Some(crate::molt_asyncio_task_registry_live_set as *const () as usize as u64)
+        }
         "molt_asyncio_event_waiters_register" => {
             Some(crate::molt_asyncio_event_waiters_register as *const () as usize as u64)
         }
@@ -3833,6 +4747,30 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_asyncio_child_watcher_pop" => {
             Some(crate::molt_asyncio_child_watcher_pop as *const () as usize as u64)
+        }
+        "molt_asyncio_require_ssl_transport_support" => {
+            Some(crate::molt_asyncio_require_ssl_transport_support as *const () as usize as u64)
+        }
+        "molt_asyncio_ssl_transport_orchestrate" => {
+            Some(crate::molt_asyncio_ssl_transport_orchestrate as *const () as usize as u64)
+        }
+        "molt_asyncio_tls_client_connect_new" => {
+            Some(crate::molt_asyncio_tls_client_connect_new as *const () as usize as u64)
+        }
+        "molt_asyncio_tls_client_from_fd_new" => {
+            Some(crate::molt_asyncio_tls_client_from_fd_new as *const () as usize as u64)
+        }
+        "molt_asyncio_tls_server_payload" => {
+            Some(crate::molt_asyncio_tls_server_payload as *const () as usize as u64)
+        }
+        "molt_asyncio_tls_server_from_fd_new" => {
+            Some(crate::molt_asyncio_tls_server_from_fd_new as *const () as usize as u64)
+        }
+        "molt_asyncio_require_unix_socket_support" => {
+            Some(crate::molt_asyncio_require_unix_socket_support as *const () as usize as u64)
+        }
+        "molt_asyncio_require_child_watcher_support" => {
+            Some(crate::molt_asyncio_require_child_watcher_support as *const () as usize as u64)
         }
         "molt_asyncio_running_loop_get" => {
             Some(crate::molt_asyncio_running_loop_get as *const () as usize as u64)
@@ -3858,6 +4796,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_taskgroup_request_cancel" => {
             Some(crate::molt_asyncio_taskgroup_request_cancel as *const () as usize as u64)
         }
+        "molt_asyncio_tasks_add_done_callback" => {
+            Some(crate::molt_asyncio_tasks_add_done_callback as *const () as usize as u64)
+        }
         "molt_asyncio_task_cancel_apply" => {
             Some(crate::molt_asyncio_task_cancel_apply as *const () as usize as u64)
         }
@@ -3879,11 +4820,20 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_timer_schedule" => {
             Some(crate::molt_asyncio_timer_schedule as *const () as usize as u64)
         }
+        "molt_asyncio_timer_handle_cancel" => {
+            Some(crate::molt_asyncio_timer_handle_cancel as *const () as usize as u64)
+        }
         "molt_asyncio_fd_watcher_new" => {
             Some(crate::molt_asyncio_fd_watcher_new as *const () as usize as u64)
         }
         "molt_asyncio_fd_watcher_register" => {
             Some(crate::molt_asyncio_fd_watcher_register as *const () as usize as u64)
+        }
+        "molt_asyncio_fd_watcher_unregister" => {
+            Some(crate::molt_asyncio_fd_watcher_unregister as *const () as usize as u64)
+        }
+        "molt_asyncio_subprocess_stdio_normalize" => {
+            Some(crate::molt_asyncio_subprocess_stdio_normalize as *const () as usize as u64)
         }
         "molt_asyncio_server_accept_loop_new" => {
             Some(crate::molt_asyncio_server_accept_loop_new as *const () as usize as u64)
@@ -3963,6 +4913,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_time_tzname" => Some(crate::molt_time_tzname as *const () as usize as u64),
         "molt_time_asctime" => Some(crate::molt_time_asctime as *const () as usize as u64),
         "molt_time_mktime" => Some(crate::molt_time_mktime as *const () as usize as u64),
+        "molt_time_timegm" => Some(crate::molt_time_timegm as *const () as usize as u64),
         "molt_time_get_clock_info" => {
             Some(crate::molt_time_get_clock_info as *const () as usize as u64)
         }
@@ -4138,6 +5089,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_exists" => Some(crate::molt_path_exists as *const () as usize as u64),
         "molt_path_isdir" => Some(crate::molt_path_isdir as *const () as usize as u64),
         "molt_path_isfile" => Some(crate::molt_path_isfile as *const () as usize as u64),
+        "molt_path_islink" => Some(crate::molt_path_islink as *const () as usize as u64),
+        "molt_path_readlink" => Some(crate::molt_path_readlink as *const () as usize as u64),
+        "molt_path_symlink" => Some(crate::molt_path_symlink as *const () as usize as u64),
         "molt_path_listdir" => Some(crate::molt_path_listdir as *const () as usize as u64),
         "molt_path_mkdir" => Some(crate::molt_path_mkdir as *const () as usize as u64),
         "molt_path_chmod" => Some(crate::molt_path_chmod as *const () as usize as u64),
@@ -4156,6 +5110,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_suffixes" => Some(crate::molt_path_suffixes as *const () as usize as u64),
         "molt_path_normpath" => Some(crate::molt_path_normpath as *const () as usize as u64),
         "molt_path_abspath" => Some(crate::molt_path_abspath as *const () as usize as u64),
+        "molt_path_resolve" => Some(crate::molt_path_resolve as *const () as usize as u64),
         "molt_path_as_uri" => Some(crate::molt_path_as_uri as *const () as usize as u64),
         "molt_path_relpath" => Some(crate::molt_path_relpath as *const () as usize as u64),
         "molt_path_expandvars" => Some(crate::molt_path_expandvars as *const () as usize as u64),
@@ -4166,6 +5121,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_parts" => Some(crate::molt_path_parts as *const () as usize as u64),
         "molt_path_splitroot" => Some(crate::molt_path_splitroot as *const () as usize as u64),
         "molt_path_parents" => Some(crate::molt_path_parents as *const () as usize as u64),
+        "molt_path_compare" => Some(crate::molt_path_compare as *const () as usize as u64),
         "molt_path_relative_to" => Some(crate::molt_path_relative_to as *const () as usize as u64),
         "molt_path_relative_to_many" => {
             Some(crate::molt_path_relative_to_many as *const () as usize as u64)
@@ -4179,6 +5135,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_expanduser" => Some(crate::molt_path_expanduser as *const () as usize as u64),
         "molt_path_match" => Some(crate::molt_path_match as *const () as usize as u64),
         "molt_path_glob" => Some(crate::molt_path_glob as *const () as usize as u64),
+        "molt_glob_has_magic" => Some(crate::molt_glob_has_magic as *const () as usize as u64),
+        "molt_glob" => Some(crate::molt_glob as *const () as usize as u64),
         "molt_io_class" => Some(crate::molt_io_class as *const () as usize as u64),
         "molt_file_open" => Some(crate::molt_file_open as *const () as usize as u64),
         "molt_file_open_ex" => Some(crate::molt_file_open_ex as *const () as usize as u64),
@@ -4533,6 +5491,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_socket_gethostbyname" => {
             Some(crate::molt_socket_gethostbyname as *const () as usize as u64)
         }
+        "molt_socket_gethostbyaddr" => {
+            Some(crate::molt_socket_gethostbyaddr as *const () as usize as u64)
+        }
+        "molt_socket_getfqdn" => Some(crate::molt_socket_getfqdn as *const () as usize as u64),
         "molt_socket_getservbyname" => {
             Some(crate::molt_socket_getservbyname as *const () as usize as u64)
         }
@@ -4557,14 +5519,32 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_source_loader_payload" => {
             Some(crate::molt_importlib_source_loader_payload as *const () as usize as u64)
         }
+        "molt_importlib_extension_loader_payload" => {
+            Some(crate::molt_importlib_extension_loader_payload as *const () as usize as u64)
+        }
+        "molt_importlib_sourceless_loader_payload" => {
+            Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64)
+        }
         "molt_importlib_source_exec_payload" => {
             Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64)
+        }
+        "molt_importlib_zip_source_exec_payload" => {
+            Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64)
         }
         "molt_importlib_read_file" => {
             Some(crate::molt_importlib_read_file as *const () as usize as u64)
         }
         "molt_importlib_exec_restricted_source" => {
             Some(crate::molt_importlib_exec_restricted_source as *const () as usize as u64)
+        }
+        "molt_importlib_exec_extension" => {
+            Some(crate::molt_importlib_exec_extension as *const () as usize as u64)
+        }
+        "molt_importlib_exec_sourceless" => {
+            Some(crate::molt_importlib_exec_sourceless as *const () as usize as u64)
+        }
+        "molt_importlib_module_spec_is_package" => {
+            Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64)
         }
         "molt_importlib_cache_from_source" => {
             Some(crate::molt_importlib_cache_from_source as *const () as usize as u64)
@@ -4578,6 +5558,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_bootstrap_payload" => {
             Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64)
         }
+        "molt_importlib_runtime_state_payload" => {
+            Some(crate::molt_importlib_runtime_state_payload as *const () as usize as u64)
+        }
         "molt_importlib_search_paths" => {
             Some(crate::molt_importlib_search_paths as *const () as usize as u64)
         }
@@ -4589,6 +5572,45 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_importlib_resources_package_payload" => {
             Some(crate::molt_importlib_resources_package_payload as *const () as usize as u64)
+        }
+        "molt_importlib_resources_as_file_enter" => {
+            Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64)
+        }
+        "molt_importlib_resources_as_file_exit" => {
+            Some(crate::molt_importlib_resources_as_file_exit as *const () as usize as u64)
+        }
+        "molt_importlib_resources_module_name" => {
+            Some(crate::molt_importlib_resources_module_name as *const () as usize as u64)
+        }
+        "molt_importlib_resources_loader_reader" => {
+            Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_roots" => {
+            Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_contents" => {
+            Some(crate::molt_importlib_resources_reader_contents as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_resource_path" => {
+            Some(crate::molt_importlib_resources_reader_resource_path as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_is_resource" => {
+            Some(crate::molt_importlib_resources_reader_is_resource as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_open_resource_bytes" => Some(
+            crate::molt_importlib_resources_reader_open_resource_bytes as *const () as usize as u64,
+        ),
+        "molt_importlib_resources_reader_child_names" => {
+            Some(crate::molt_importlib_resources_reader_child_names as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_exists" => {
+            Some(crate::molt_importlib_resources_reader_exists as *const () as usize as u64)
+        }
+        "molt_importlib_resources_reader_is_dir" => {
+            Some(crate::molt_importlib_resources_reader_is_dir as *const () as usize as u64)
+        }
+        "molt_linecache_loader_get_source" => {
+            Some(crate::molt_linecache_loader_get_source as *const () as usize as u64)
         }
         "molt_importlib_metadata_dist_paths" => {
             Some(crate::molt_importlib_metadata_dist_paths as *const () as usize as u64)
@@ -4666,6 +5688,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_traceback_exception_components" => {
             Some(crate::molt_traceback_exception_components as *const () as usize as u64)
+        }
+        "molt_traceback_exception_chain_payload" => {
+            Some(crate::molt_traceback_exception_chain_payload as *const () as usize as u64)
+        }
+        "molt_traceback_exception_suppress_context" => {
+            Some(crate::molt_traceback_exception_suppress_context as *const () as usize as u64)
         }
         "molt_traceback_payload" => {
             Some(crate::molt_traceback_payload as *const () as usize as u64)

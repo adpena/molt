@@ -181,7 +181,7 @@ stdlib:
       - tests/differential/basic/gettext_basic.py
   glob:
     tests:
-      - tests/differential/planned/glob_basic.py
+      - tests/differential/basic/glob_basic.py
   http:
     tests:
       - tests/differential/basic/http_upgrade_headers_httpclient.py
@@ -714,6 +714,7 @@ stdlib:
       - tests/differential/basic/os_environ_basic.py
       - tests/differential/basic/os_path_basic.py
       - tests/differential/basic/os_path_expandvars_normpath.py
+      - tests/differential/basic/os_path_isabs_intrinsic.py
       - tests/differential/basic/os_urandom_basic.py
       - tests/differential/planned/os_path_more.py
   pathlib:
@@ -726,6 +727,7 @@ stdlib:
       - tests/differential/basic/pathlib_purepath_comparisons.py
       - tests/differential/basic/pathlib_relative_to_errors.py
       - tests/differential/basic/pathlib_resolve_expanduser.py
+      - tests/differential/basic/pathlib_rtruediv_intrinsic.py
       - tests/differential/basic/pathlib_with_suffix_name.py
   tempfile:
     tests:
@@ -756,12 +758,22 @@ stdlib:
       - tests/differential/basic/test_support_import_helper_basic.py
   importlib:
     tests:
+      - tests/differential/basic/importlib_extension_exec_capability_intrinsic.py
+      - tests/differential/basic/importlib_extension_exec_fallback_second_shim_intrinsic.py
+      - tests/differential/basic/importlib_extension_exec_star_import_shim_intrinsic.py
       - tests/differential/basic/importlib_find_spec_path_intrinsic.py
       - tests/differential/basic/importlib_metadata_dist_paths_intrinsic.py
       - tests/differential/basic/importlib_metadata_payload_intrinsic.py
+      - tests/differential/basic/importlib_resources_custom_reader_contract_intrinsic.py
+      - tests/differential/basic/importlib_resources_loader_fallback_intrinsic.py
+      - tests/differential/basic/importlib_resources_reader_roots_archive_resource_path_intrinsic.py
       - tests/differential/basic/importlib_resources_open_intrinsic.py
       - tests/differential/basic/importlib_resources_namespace_paths_intrinsic.py
       - tests/differential/basic/importlib_resources_traversable_payload_intrinsic.py
+      - tests/differential/basic/importlib_resources_zip_reader_resource_path_intrinsic.py
+      - tests/differential/basic/importlib_sourceless_exec_capability_intrinsic.py
+      - tests/differential/basic/importlib_sourceless_exec_fallback_second_shim_intrinsic.py
+      - tests/differential/basic/importlib_sourceless_exec_star_import_shim_intrinsic.py
       - tests/differential/basic/importlib_sourcefileloader_get_data_intrinsic.py
       - tests/differential/basic/importlib_sourcefileloader_resolution.py
       - tests/differential/basic/importlib_spec_from_file_location_payload.py
@@ -806,9 +818,18 @@ stdlib:
       - tests/differential/planned/http_client_server_basic_more.py
       - tests/differential/planned/http_client_timeout_error.py
       - tests/differential/planned/http_client_connection_reset.py
+  http.server:
+    tests:
+      - tests/differential/planned/http_server_basic.py
+      - tests/differential/planned/http_server_connection_close_semantics.py
+      - tests/differential/planned/http_server_handler_error_continue.py
+      - tests/differential/planned/http_server_shutdown_lifecycle.py
   urllib.request:
     tests:
-      - tests/differential/planned/urllib_request_basic_more.py
+      - tests/differential/basic/urllib_opener_chain_order.py
+      - tests/differential/basic/urllib_request_data_open_intrinsic.py
+      - tests/differential/basic/urllib_request_data_response_semantics.py
+      - tests/differential/basic/urllib_request_basic_more.py
       - tests/differential/planned/urllib_request_timeout_error.py
   http.cookies:
     tests:
@@ -823,4 +844,5 @@ stdlib:
       - tests/differential/planned/wsgiref_simple_server_basic.py
   urllib.error:
     tests:
+      - tests/differential/basic/urllib_error_intrinsic_basic.py
       - tests/differential/planned/urllib_error_basic_more.py

@@ -1328,6 +1328,29 @@ fn path_join_many_text(mut base: String, parts: &[String], sep: char) -> String 
     base
 }
 
+fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {
+    let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
+    for value in values {
+        let ptr = alloc_string(_py, value.as_bytes());
+        if ptr.is_null() {
+            for bits in out_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        out_bits.push(MoltObject::from_ptr(ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, out_bits.as_slice());
+    for bits in out_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
 pub(crate) fn path_basename_text(path: &str, sep: char) -> String {
     if path.is_empty() {
         return String::new();
@@ -1476,7 +1499,7 @@ pub(crate) fn path_normpath_text(path: &str, sep: char) -> String {
 
 fn path_abspath_text(_py: &PyToken<'_>, path: &str, sep: char) -> Result<String, u64> {
     let mut current = path.to_string();
-    if !current.starts_with(sep) {
+    if !path_isabs_text(&current, sep) {
         if !has_capability(_py, "fs.read") {
             return Err(raise_exception::<_>(
                 _py,
@@ -1506,14 +1529,51 @@ fn path_abspath_text(_py: &PyToken<'_>, path: &str, sep: char) -> Result<String,
     Ok(path_normpath_text(&current, sep))
 }
 
+fn path_resolve_text(
+    _py: &PyToken<'_>,
+    path: &str,
+    sep: char,
+    strict: bool,
+) -> Result<String, u64> {
+    let absolute = path_abspath_text(_py, path, sep)?;
+    if !has_capability(_py, "fs.read") {
+        if strict {
+            return Err(raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "missing fs.read capability",
+            ));
+        }
+        return Ok(absolute);
+    }
+    let resolved = std::path::Path::new(&absolute);
+    match std::fs::canonicalize(resolved) {
+        Ok(path_buf) => Ok(path_normpath_text(&path_buf.to_string_lossy(), sep)),
+        Err(err)
+            if !strict && matches!(err.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+        {
+            Ok(path_normpath_text(&absolute, sep))
+        }
+        Err(err) => {
+            let msg = err.to_string();
+            let bits = match err.kind() {
+                ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
+                ErrorKind::NotADirectory => raise_exception::<_>(_py, "NotADirectoryError", &msg),
+                _ => raise_exception::<_>(_py, "OSError", &msg),
+            };
+            Err(bits)
+        }
+    }
+}
+
 fn path_parts_text(path: &str, sep: char) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut rest = path;
-    if path.starts_with(sep) {
-        out.push(sep.to_string());
-        rest = path.trim_start_matches(sep);
+    let (drive, root, tail) = path_splitroot_text(path, sep);
+    if !drive.is_empty() || !root.is_empty() {
+        out.push(format!("{drive}{root}"));
     }
-    for part in rest.split(sep) {
+    for part in tail.split(sep) {
         if part.is_empty() || part == "." {
             continue;
         }
@@ -1522,45 +1582,135 @@ fn path_parts_text(path: &str, sep: char) -> Vec<String> {
     out
 }
 
+fn path_compare_text(lhs: &str, rhs: &str, sep: char) -> i64 {
+    let lhs_parts = path_parts_text(lhs, sep);
+    let rhs_parts = path_parts_text(rhs, sep);
+    use std::cmp::Ordering;
+    match lhs_parts.cmp(&rhs_parts) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
+}
+
 fn path_parents_text(path: &str, sep: char) -> Vec<String> {
-    let parts = path_parts_text(path, sep);
-    if parts.is_empty() {
+    let (drive, root, tail) = path_splitroot_text(path, sep);
+    let anchor = format!("{drive}{root}");
+    let tail_parts = tail
+        .split(sep)
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(ToOwned::to_owned)
+        .collect::<Vec<String>>();
+    if tail_parts.is_empty() {
         return Vec::new();
     }
     let sep_s = sep.to_string();
-    let root = if parts.first().is_some_and(|part| part == &sep_s) {
-        sep_s.clone()
-    } else {
-        String::new()
-    };
-    let tail = if root.is_empty() {
-        parts
-    } else {
-        parts[1..].to_vec()
-    };
     let mut out: Vec<String> = Vec::new();
-    let mut idx = tail.len();
+    let mut idx = tail_parts.len();
     while idx > 0 {
         idx -= 1;
         if idx == 0 {
-            if root.is_empty() {
+            if anchor.is_empty() {
                 out.push(".".to_string());
             } else {
-                out.push(root.clone());
+                out.push(anchor.clone());
             }
             continue;
         }
-        let prefix = tail[..idx].join(&sep_s);
-        if root.is_empty() {
+        let prefix = tail_parts[..idx].join(&sep_s);
+        if anchor.is_empty() {
             out.push(prefix);
         } else {
-            out.push(format!("{root}{prefix}"));
+            out.push(format!("{anchor}{prefix}"));
         }
     }
     out
 }
 
+fn path_isabs_text(path: &str, sep: char) -> bool {
+    #[cfg(windows)]
+    {
+        let text = path.replace('/', "\\");
+        if text.starts_with("\\\\") || text.starts_with('\\') {
+            return true;
+        }
+        let bytes = text.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/')
+        {
+            return true;
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(sep)
+    }
+}
+
 fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
+    fn parse_char_class(
+        pat: &[char],
+        mut idx: usize,
+    ) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+        if idx >= pat.len() || pat[idx] != '[' {
+            return None;
+        }
+        idx += 1;
+        if idx >= pat.len() {
+            return None;
+        }
+
+        let mut negate = false;
+        if pat[idx] == '!' {
+            negate = true;
+            idx += 1;
+        }
+        if idx >= pat.len() {
+            return None;
+        }
+
+        let mut singles: Vec<char> = Vec::new();
+        let mut ranges: Vec<(char, char)> = Vec::new();
+
+        if pat[idx] == ']' {
+            singles.push(']');
+            idx += 1;
+        }
+
+        while idx < pat.len() && pat[idx] != ']' {
+            if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
+                let start = pat[idx];
+                let end = pat[idx + 2];
+                if start <= end {
+                    ranges.push((start, end));
+                }
+                idx += 3;
+                continue;
+            }
+            singles.push(pat[idx]);
+            idx += 1;
+        }
+        if idx >= pat.len() || pat[idx] != ']' {
+            return None;
+        }
+        Some((singles, ranges, negate, idx + 1))
+    }
+
+    fn char_class_hit(ch: char, singles: &[char], ranges: &[(char, char)], negate: bool) -> bool {
+        let mut hit = singles.contains(&ch);
+        if !hit {
+            hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
+        }
+        if negate {
+            !hit
+        } else {
+            hit
+        }
+    }
+
     let name_chars: Vec<char> = name.chars().collect();
     let pat_chars: Vec<char> = pat.chars().collect();
     let mut pi: usize = 0;
@@ -1579,6 +1729,23 @@ fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
             star_idx = Some(pi);
             matched_from_star = ni;
             continue;
+        }
+        if pi < pat_chars.len() && pat_chars[pi] == '[' {
+            if let Some((singles, ranges, negate, next_idx)) = parse_char_class(&pat_chars, pi) {
+                let hit = char_class_hit(name_chars[ni], &singles, &ranges, negate);
+                if hit {
+                    pi = next_idx;
+                    ni += 1;
+                    continue;
+                }
+                if let Some(star) = star_idx {
+                    matched_from_star += 1;
+                    ni = matched_from_star;
+                    pi = star;
+                    continue;
+                }
+                return false;
+            }
         }
         if pi < pat_chars.len() && (pat_chars[pi] == '?' || pat_chars[pi] == name_chars[ni]) {
             pi += 1;
@@ -1613,11 +1780,7 @@ fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
     } else {
         pattern.as_str()
     };
-    let path_trimmed = if absolute {
-        path.trim_start_matches(sep)
-    } else {
-        path.trim_start_matches(sep)
-    };
+    let path_trimmed = path.trim_start_matches(sep);
     if !pat.contains(sep) && !pat.contains('/') {
         let name = path_basename_text(path, sep);
         if pat == "*" {
@@ -1667,6 +1830,131 @@ fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
         }
     }
     false
+}
+
+fn glob_has_magic_text(pathname: &str) -> bool {
+    pathname
+        .as_bytes()
+        .iter()
+        .any(|ch| matches!(*ch, b'*' | b'?' | b'['))
+}
+
+fn glob_split_components(text: &str, sep: char) -> Vec<String> {
+    text.split(sep)
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn glob_walk(
+    dir: &std::path::Path,
+    rel_parts: &mut Vec<String>,
+    pat_parts: &[String],
+    pi: usize,
+    sep: char,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    let sep_s = sep.to_string();
+    if pi >= pat_parts.len() {
+        if !rel_parts.is_empty() {
+            out.push(rel_parts.join(&sep_s));
+        }
+        return Ok(());
+    }
+    let pat = &pat_parts[pi];
+    if pat == "**" {
+        glob_walk(dir, rel_parts, pat_parts, pi + 1, sep, out)?;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            rel_parts.push(name);
+            glob_walk(&entry.path(), rel_parts, pat_parts, pi, sep, out)?;
+            rel_parts.pop();
+        }
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !path_match_simple_pattern(&name, pat) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        rel_parts.push(name);
+        if pi + 1 >= pat_parts.len() {
+            out.push(rel_parts.join(&sep_s));
+        } else if file_type.is_dir() {
+            glob_walk(&entry.path(), rel_parts, pat_parts, pi + 1, sep, out)?;
+        }
+        rel_parts.pop();
+    }
+    Ok(())
+}
+
+fn path_glob_matches(
+    dir: &std::path::Path,
+    pattern: &str,
+    sep: char,
+) -> std::io::Result<Vec<String>> {
+    #[cfg(windows)]
+    let pattern = pattern.replace('/', "\\");
+    #[cfg(not(windows))]
+    let pattern = pattern.to_string();
+    let pat_parts = glob_split_components(&pattern, sep);
+    let mut matches: Vec<String> = Vec::new();
+    if !pat_parts.is_empty() {
+        let mut rel_parts: Vec<String> = Vec::new();
+        glob_walk(dir, &mut rel_parts, &pat_parts, 0, sep, &mut matches)?;
+    }
+    Ok(matches)
+}
+
+fn raise_io_error_for_glob(_py: &PyToken<'_>, err: std::io::Error) -> u64 {
+    let msg = err.to_string();
+    match err.kind() {
+        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+        ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
+        ErrorKind::NotADirectory => raise_exception::<_>(_py, "NotADirectoryError", &msg),
+        _ => raise_exception::<_>(_py, "OSError", &msg),
+    }
+}
+
+#[cfg(unix)]
+fn create_symlink_path(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    _target_is_directory: bool,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn create_symlink_path(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    target_is_directory: bool,
+) -> std::io::Result<()> {
+    if target_is_directory {
+        std::os::windows::fs::symlink_dir(src, dst)
+    } else {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symlink_path(
+    _src: &std::path::Path,
+    _dst: &std::path::Path,
+    _target_is_directory: bool,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "symlink is not supported on this host",
+    ))
 }
 
 fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
@@ -3030,6 +3318,96 @@ pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let is_link = std::fs::symlink_metadata(path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        MoltObject::from_bool(is_link).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::read_link(&path) {
+            Ok(target) => {
+                let text = target.to_string_lossy();
+                let ptr = alloc_string(_py, text.as_bytes());
+                if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                }
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                match err.kind() {
+                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                }
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_symlink(
+    src_bits: u64,
+    dst_bits: u64,
+    target_is_directory_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let src = match path_from_bits(_py, src_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let dst = match path_from_bits(_py, dst_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let target_is_directory = is_truthy(_py, obj_from_bits(target_is_directory_bits));
+        match create_symlink_path(&src, &dst, target_is_directory) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => {
+                let msg = err.to_string();
+                match err.kind() {
+                    ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
+                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    ErrorKind::Unsupported => {
+                        raise_exception::<_>(_py, "NotImplementedError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                }
+            }
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3222,7 +3600,7 @@ pub extern "C" fn molt_path_isabs(path_bits: u64) -> u64 {
             Ok(path) => path,
             Err(bits) => return bits,
         };
-        MoltObject::from_bool(path.starts_with(sep)).bits()
+        MoltObject::from_bool(path_isabs_text(&path, sep)).bits()
     })
 }
 
@@ -3352,6 +3730,31 @@ pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let out = match path_abspath_text(_py, &path, sep) {
+            Ok(out) => out,
+            Err(bits) => return bits,
+        };
+        let ptr = alloc_string(_py, out.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_resolve(path_bits: u64, strict_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sep = path_sep_char();
+        let path = match path_string_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        let strict = is_truthy(_py, obj_from_bits(strict_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let out = match path_resolve_text(_py, &path, sep, strict) {
             Ok(out) => out,
             Err(bits) => return bits,
         };
@@ -3581,6 +3984,22 @@ pub extern "C" fn molt_path_splitroot(path_bits: u64) -> u64 {
         } else {
             MoltObject::from_ptr(tuple_ptr).bits()
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_compare(lhs_bits: u64, rhs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sep = path_sep_char();
+        let lhs = match path_string_from_bits(_py, lhs_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        let rhs = match path_string_from_bits(_py, rhs_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        MoltObject::from_int(path_compare_text(&lhs, &rhs, sep)).bits()
     })
 }
 
@@ -4020,104 +4439,57 @@ pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let sep = path_sep_char();
-        #[cfg(windows)]
-        let pattern = pattern.replace('/', "\\");
+        let matches = match path_glob_matches(&dir, &pattern, sep) {
+            Ok(values) => values,
+            Err(err) => return raise_io_error_for_glob(_py, err),
+        };
+        alloc_string_list_bits(_py, &matches)
+    })
+}
 
-        fn split_components(text: &str, sep: char) -> Vec<String> {
-            text.split(sep)
-                .filter(|part| !part.is_empty() && *part != ".")
-                .map(ToOwned::to_owned)
-                .collect()
-        }
+#[no_mangle]
+pub extern "C" fn molt_glob_has_magic(pathname_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let pathname = match path_string_from_bits(_py, pathname_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        MoltObject::from_bool(glob_has_magic_text(&pathname)).bits()
+    })
+}
 
-        fn glob_walk(
-            dir: &std::path::Path,
-            rel_parts: &mut Vec<String>,
-            pat_parts: &[String],
-            pi: usize,
-            sep: char,
-            out: &mut Vec<String>,
-        ) -> std::io::Result<()> {
-            let sep_s = sep.to_string();
-            if pi >= pat_parts.len() {
-                if !rel_parts.is_empty() {
-                    out.push(rel_parts.join(&sep_s));
-                }
-                return Ok(());
-            }
-            let pat = &pat_parts[pi];
-            if pat == "**" {
-                glob_walk(dir, rel_parts, pat_parts, pi + 1, sep, out)?;
-                for entry in std::fs::read_dir(dir)? {
-                    let entry = entry?;
-                    let file_type = entry.file_type()?;
-                    if !file_type.is_dir() {
-                        continue;
-                    }
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    rel_parts.push(name);
-                    glob_walk(&entry.path(), rel_parts, pat_parts, pi, sep, out)?;
-                    rel_parts.pop();
-                }
-                return Ok(());
-            }
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !path_match_simple_pattern(&name, pat) {
-                    continue;
-                }
-                let file_type = entry.file_type()?;
-                rel_parts.push(name);
-                if pi + 1 >= pat_parts.len() {
-                    out.push(rel_parts.join(&sep_s));
-                } else if file_type.is_dir() {
-                    glob_walk(&entry.path(), rel_parts, pat_parts, pi + 1, sep, out)?;
-                }
-                rel_parts.pop();
-            }
-            Ok(())
+#[no_mangle]
+pub extern "C" fn molt_glob(pathname_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
-
-        let pat_parts = split_components(&pattern, sep);
-        let mut matches: Vec<String> = Vec::new();
-        if !pat_parts.is_empty() {
-            let mut rel_parts: Vec<String> = Vec::new();
-            if let Err(err) = glob_walk(&dir, &mut rel_parts, &pat_parts, 0, sep, &mut matches) {
-                let msg = err.to_string();
-                return match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                };
+        let pathname = match path_string_from_bits(_py, pathname_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        let sep = path_sep_char();
+        let mut dirname = path_dirname_text(&pathname, sep);
+        if dirname.is_empty() {
+            dirname = ".".to_string();
+        }
+        let basename = path_basename_text(&pathname, sep);
+        if !glob_has_magic_text(&basename) {
+            if std::fs::metadata(&pathname).is_ok() {
+                return alloc_string_list_bits(_py, &[pathname]);
             }
+            return alloc_string_list_bits(_py, &[]);
         }
-
-        let mut out_bits: Vec<u64> = Vec::with_capacity(matches.len());
-        for name in matches {
-            let ptr = alloc_string(_py, name.as_bytes());
-            if ptr.is_null() {
-                for bits in out_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            out_bits.push(MoltObject::from_ptr(ptr).bits());
+        let relative_matches =
+            match path_glob_matches(std::path::Path::new(&dirname), &basename, sep) {
+                Ok(values) => values,
+                Err(err) => return raise_io_error_for_glob(_py, err),
+            };
+        let mut out: Vec<String> = Vec::with_capacity(relative_matches.len());
+        for name in relative_matches {
+            out.push(path_join_text(dirname.clone(), &name, sep));
         }
-        let list_ptr = alloc_list(_py, out_bits.as_slice());
-        for bits in out_bits {
-            dec_ref_bits(_py, bits);
-        }
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
+        alloc_string_list_bits(_py, &out)
     })
 }
 
@@ -6629,6 +7001,7 @@ unsafe fn read_text_chunk_multibyte(
     Ok((text_bytes, at_eof))
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn read_line_multibyte(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,

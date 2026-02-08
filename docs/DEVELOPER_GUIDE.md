@@ -47,6 +47,21 @@ For the canonical vision and scope, read `docs/spec/areas/core/0000-vision.md` a
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
 - **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
 
+## Fast Build Playbook
+
+Use this workflow for high-velocity multi-agent iteration:
+
+1. `tools/throughput_env.sh --apply`
+2. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
+3. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
+
+Key controls:
+- `--profile dev` defaults to Cargo `dev-fast` (override via `MOLT_DEV_CARGO_PROFILE`).
+- Native codegen uses a backend daemon (`MOLT_BACKEND_DAEMON=1`) with restart/retry fallback for robustness.
+- Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents; lock/fingerprint/daemon state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`).
+
+Build-throughput roadmap lanes are tracked in `docs/ROADMAP.md` under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
+
 ## Key Concepts
 
 Molt uses specific terminology that might be new to Python developers.
@@ -169,6 +184,11 @@ If you want to modify Molt, follow these steps:
     ```bash
     cargo build --release --package molt-runtime
     ```
+    For day-to-day compiler/runtime iteration, prefer the dev profile:
+    ```bash
+    PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
+    ```
+    Use `--profile release` for production parity, benchmark baselines, and release artifacts.
 3.  **Test**:
     ```bash
     # Run the full dev suite

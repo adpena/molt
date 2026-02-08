@@ -1,7 +1,5 @@
 """Minimal importlib.util helpers for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): support namespace packages, custom meta_path/path_hooks finder execution, extension modules, and zip/bytecode loaders via intrinsic payloads.
-
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -26,6 +24,9 @@ _MOLT_IMPORTLIB_FIND_SPEC_PAYLOAD = _require_intrinsic(
 _MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD = _require_intrinsic(
     "molt_importlib_bootstrap_payload", globals()
 )
+_MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
+    "molt_importlib_runtime_state_payload", globals()
+)
 _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION_PAYLOAD = _require_intrinsic(
     "molt_importlib_spec_from_file_location_payload", globals()
 )
@@ -41,8 +42,38 @@ __all__ = [
 
 
 _SPEC_CACHE: dict[
-    tuple[str, tuple[str, ...], int, int, int | None, int | None], ModuleSpec | None
+    tuple[
+        str,
+        tuple[str, ...],
+        tuple[int, ...],
+        tuple[int, ...],
+        tuple[tuple[str, int], ...],
+        bool,
+    ],
+    ModuleSpec | None,
 ] = {}
+
+
+def _runtime_state_payload() -> dict[str, Any]:
+    payload = _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD()
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib runtime state payload: dict expected")
+    modules = payload.get("modules")
+    meta_path = payload.get("meta_path")
+    path_hooks = payload.get("path_hooks")
+    path_importer_cache = payload.get("path_importer_cache")
+    if not isinstance(modules, dict):
+        raise RuntimeError("invalid importlib runtime state payload: modules")
+    if path_importer_cache is not None and not isinstance(path_importer_cache, dict):
+        raise RuntimeError(
+            "invalid importlib runtime state payload: path_importer_cache"
+        )
+    return {
+        "modules": modules,
+        "meta_path": meta_path,
+        "path_hooks": path_hooks,
+        "path_importer_cache": path_importer_cache,
+    }
 
 
 def _machinery_attr(name: str) -> Any:
@@ -58,6 +89,18 @@ def _module_spec_cls():
 
 def _source_file_loader_cls():
     return _machinery_attr("SourceFileLoader")
+
+
+def _extension_file_loader_cls():
+    return _machinery_attr("ExtensionFileLoader")
+
+
+def _sourceless_file_loader_cls():
+    return _machinery_attr("SourcelessFileLoader")
+
+
+def _zip_source_loader_cls():
+    return _machinery_attr("ZipSourceLoader")
 
 
 def _molt_loader():
@@ -101,13 +144,6 @@ def _path_snapshot() -> tuple[str, ...]:
         return ()
 
 
-def _safe_len(value: object) -> int | None:
-    try:
-        return len(value)  # type: ignore[arg-type]
-    except Exception:
-        return None
-
-
 def _importlib_module_file() -> str | None:
     module_file = globals().get("__file__")
     if isinstance(module_file, str) and module_file:
@@ -130,6 +166,72 @@ def _search_paths_from_snapshot(snapshot: tuple[str, ...]) -> tuple[str, ...]:
             )
         out.append(entry)
     return tuple(out)
+
+
+def _coerce_search_paths(value: Any, label: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(entry) for entry in value if str(entry))
+    try:
+        return tuple(str(entry) for entry in value if str(entry))
+    except Exception as exc:
+        raise RuntimeError(label) from exc
+
+
+def _finder_signature(finders: Any, label: str) -> tuple[int, ...]:
+    try:
+        return tuple(id(finder) for finder in finders)
+    except Exception as exc:
+        raise RuntimeError(label) from exc
+
+
+def _path_importer_cache_signature(
+    path_importer_cache: Any, label: str
+) -> tuple[tuple[str, int], ...]:
+    if path_importer_cache is None:
+        return ()
+    if not isinstance(path_importer_cache, dict):
+        raise RuntimeError(label)
+    try:
+        return tuple(
+            sorted(
+                (str(key), id(value))
+                for key, value in path_importer_cache.items()
+                if isinstance(key, str)
+            )
+        )
+    except Exception as exc:
+        raise RuntimeError(label) from exc
+
+
+def _search_paths_for_resolved(
+    resolved: str, modules: dict[str, Any], snapshot: tuple[str, ...]
+) -> tuple[tuple[str, ...], bool]:
+    parent_name, _, _ = resolved.rpartition(".")
+    if not parent_name:
+        return _search_paths_from_snapshot(snapshot), False
+    parent = modules.get(parent_name)
+    if parent is None:
+        parent_spec = find_spec(parent_name)
+        if parent_spec is None:
+            return (), True
+        return (
+            _coerce_search_paths(
+                getattr(parent_spec, "submodule_search_locations", None),
+                "invalid parent package search path",
+            ),
+            True,
+        )
+    return (
+        _coerce_search_paths(
+            getattr(parent, "__path__", None),
+            "invalid parent package search path",
+        ),
+        True,
+    )
 
 
 def _set_cached(spec: ModuleSpec) -> None:
@@ -166,7 +268,12 @@ def _spec_from_file_location_payload(path: str) -> dict[str, object]:
 
 
 def _find_spec_in_path(
-    fullname: str, search_paths: list[str], meta_path: Any, path_hooks: Any
+    fullname: str,
+    search_paths: list[str],
+    meta_path: Any,
+    path_hooks: Any,
+    path_importer_cache: Any,
+    package_context: bool,
 ) -> ModuleSpec | None:
     payload = _MOLT_IMPORTLIB_FIND_SPEC_PAYLOAD(
         fullname,
@@ -174,11 +281,16 @@ def _find_spec_in_path(
         _importlib_module_file(),
         meta_path,
         path_hooks,
+        path_importer_cache,
+        package_context,
     )
     if payload is None:
         return None
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib find-spec payload: dict expected")
+    direct_spec = payload.get("spec")
+    if direct_spec is not None:
+        return direct_spec
     origin = payload.get("origin")
     is_package = payload.get("is_package")
     locations = payload.get("submodule_search_locations")
@@ -186,6 +298,8 @@ def _find_spec_in_path(
     is_builtin = payload.get("is_builtin")
     has_location = payload.get("has_location")
     loader_kind = payload.get("loader_kind")
+    zip_archive = payload.get("zip_archive")
+    zip_inner_path = payload.get("zip_inner_path")
     meta_path_count = payload.get("meta_path_count")
     path_hooks_count = payload.get("path_hooks_count")
     if origin is not None and not isinstance(origin, str):
@@ -207,6 +321,10 @@ def _find_spec_in_path(
         raise RuntimeError("invalid importlib find-spec payload: has_location")
     if not isinstance(loader_kind, str):
         raise RuntimeError("invalid importlib find-spec payload: loader_kind")
+    if zip_archive is not None and not isinstance(zip_archive, str):
+        raise RuntimeError("invalid importlib find-spec payload: zip_archive")
+    if zip_inner_path is not None and not isinstance(zip_inner_path, str):
+        raise RuntimeError("invalid importlib find-spec payload: zip_inner_path")
     if not isinstance(meta_path_count, int):
         raise RuntimeError("invalid importlib find-spec payload: meta_path_count")
     if not isinstance(path_hooks_count, int):
@@ -220,6 +338,41 @@ def _find_spec_in_path(
                 "invalid importlib find-spec payload: source loader origin missing"
             )
         loader = _source_file_loader_cls()(fullname, origin)
+    elif loader_kind == "extension":
+        if not isinstance(origin, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: extension loader origin missing"
+            )
+        loader = _extension_file_loader_cls()(fullname, origin)
+    elif loader_kind == "bytecode":
+        if not isinstance(origin, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: bytecode loader origin missing"
+            )
+        loader = _sourceless_file_loader_cls()(fullname, origin)
+    elif loader_kind == "zip_source":
+        if not isinstance(origin, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: zip source origin missing"
+            )
+        if not isinstance(zip_archive, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: zip source archive missing"
+            )
+        if not isinstance(zip_inner_path, str):
+            raise RuntimeError(
+                "invalid importlib find-spec payload: zip source inner path missing"
+            )
+        loader = _zip_source_loader_cls()(fullname, zip_archive, zip_inner_path)
+    elif loader_kind == "namespace":
+        if locations is None:
+            raise RuntimeError(
+                "invalid importlib find-spec payload: namespace locations missing"
+            )
+        loader = None
+        origin = None
+        cached = None
+        is_package = True
     else:
         raise RuntimeError(f"unsupported importlib loader kind: {loader_kind}")
 
@@ -235,7 +388,8 @@ def _find_spec_in_path(
 
 def find_spec(name: str, package: str | None = None):
     resolved = resolve_name(name, package)
-    modules = sys.modules
+    runtime_state = _runtime_state_payload()
+    modules = runtime_state["modules"]
     existing = modules.get(resolved)
     if existing is not None:
         spec = getattr(existing, "__spec__", None)
@@ -248,20 +402,35 @@ def find_spec(name: str, package: str | None = None):
             )
         return _module_spec_cls()(resolved, loader=None, origin=None, is_package=False)
     snapshot = _path_snapshot()
-    search_paths = _search_paths_from_snapshot(snapshot)
-    meta_path = getattr(sys, "meta_path", ())
-    path_hooks = getattr(sys, "path_hooks", ())
+    search_paths, package_context = _search_paths_for_resolved(
+        resolved, modules, snapshot
+    )
+    meta_path = runtime_state["meta_path"]
+    path_hooks = runtime_state["path_hooks"]
+    path_importer_cache = runtime_state["path_importer_cache"]
+    meta_path_sig = _finder_signature(meta_path, "invalid meta_path iterable")
+    path_hooks_sig = _finder_signature(path_hooks, "invalid path_hooks iterable")
+    path_importer_cache_sig = _path_importer_cache_signature(
+        path_importer_cache, "invalid path_importer_cache mapping"
+    )
     cache_key = (
         resolved,
         search_paths,
-        id(meta_path),
-        id(path_hooks),
-        _safe_len(meta_path),
-        _safe_len(path_hooks),
+        meta_path_sig,
+        path_hooks_sig,
+        path_importer_cache_sig,
+        package_context,
     )
     if cache_key in _SPEC_CACHE:
         return _SPEC_CACHE[cache_key]
-    spec = _find_spec_in_path(resolved, list(search_paths), meta_path, path_hooks)
+    spec = _find_spec_in_path(
+        resolved,
+        list(search_paths),
+        meta_path,
+        path_hooks,
+        path_importer_cache,
+        package_context,
+    )
     _SPEC_CACHE[cache_key] = spec
     return spec
 

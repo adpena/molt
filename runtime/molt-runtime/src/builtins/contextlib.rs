@@ -1,15 +1,17 @@
 use crate::{
     attr_name_bits_from_bytes, bits_from_ptr, call_callable0, call_callable1, call_callable3,
-    clear_exception, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    class_dict_bits, class_mro_ref, clear_exception,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, exception_kind_bits, exception_pending,
-    exception_trace_bits, header_from_obj_ptr, inc_ref_bits, is_truthy, missing_bits,
-    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_exception_last, molt_future_new, molt_future_poll, molt_getattr_builtin,
-    molt_inspect_getasyncgenstate, molt_inspect_isawaitable, molt_is_callable, molt_issubclass,
-    molt_object_setattr, molt_raise, obj_from_bits, pending_bits_i64, ptr_from_bits,
+    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_kind_bits,
+    exception_pending, exception_trace_bits, has_capability, header_from_obj_ptr, inc_ref_bits,
+    is_truthy, missing_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_exception_last, molt_future_new,
+    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
+    molt_inspect_isawaitable, molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise,
+    obj_from_bits, object_type_id, path_from_bits, pending_bits_i64, ptr_from_bits,
     raise_exception, release_ptr, resolve_ptr, string_obj_to_owned, type_of_bits, MoltObject,
-    PyToken,
+    PyToken, TYPE_ID_DICT, TYPE_ID_TYPE,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -152,6 +154,77 @@ fn ptr_live(ptr: *mut u8) -> bool {
     resolve_ptr(addr).is_some()
 }
 
+fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
+    let ptr = crate::alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(MoltObject::from_ptr(ptr).bits())
+}
+
+fn contextlib_check_methods(
+    _py: &PyToken<'_>,
+    candidate_bits: u64,
+    methods: &[&[u8]],
+) -> Result<bool, u64> {
+    let candidate = obj_from_bits(candidate_bits);
+    let Some(candidate_ptr) = candidate.as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            "object has no attribute '__mro__'",
+        ));
+    };
+    if unsafe { object_type_id(candidate_ptr) } != TYPE_ID_TYPE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            "object has no attribute '__mro__'",
+        ));
+    }
+    let Some(mro) = (unsafe { class_mro_ref(candidate_ptr) }) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            "object has no attribute '__mro__'",
+        ));
+    };
+
+    for method in methods {
+        let Some(method_name_bits) = attr_name_bits_from_bytes(_py, method) else {
+            return Err(MoltObject::none().bits());
+        };
+        let mut found = false;
+        let mut non_none = false;
+        for class_bits in mro.iter() {
+            let class_obj = obj_from_bits(*class_bits);
+            let Some(class_ptr) = class_obj.as_ptr() else {
+                continue;
+            };
+            let dict_bits = unsafe { class_dict_bits(class_ptr) };
+            let dict_obj = obj_from_bits(dict_bits);
+            let Some(dict_ptr) = dict_obj.as_ptr() else {
+                continue;
+            };
+            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+                continue;
+            }
+            if let Some(value_bits) = unsafe { dict_get_in_place(_py, dict_ptr, method_name_bits) }
+            {
+                found = true;
+                non_none = !obj_from_bits(value_bits).is_none();
+                break;
+            }
+        }
+        dec_ref_bits(_py, method_name_bits);
+        if !found || !non_none {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
 #[allow(clippy::mut_from_ref)]
 fn exitstack_from_bits_mut<'a>(
     _py: &'a PyToken<'_>,
@@ -274,6 +347,28 @@ fn call_method1(_py: &PyToken<'_>, obj_bits: u64, method: &[u8], arg_bits: u64) 
         return MoltObject::none().bits();
     }
     let out = unsafe { call_callable1(_py, method_bits, arg_bits) };
+    dec_ref_bits(_py, method_bits);
+    out
+}
+
+fn call_method3(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    method: &[u8],
+    arg1_bits: u64,
+    arg2_bits: u64,
+    arg3_bits: u64,
+) -> u64 {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, method) else {
+        return MoltObject::none().bits();
+    };
+    let missing = missing_bits(_py);
+    let method_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let out = unsafe { call_callable3(_py, method_bits, arg1_bits, arg2_bits, arg3_bits) };
     dec_ref_bits(_py, method_bits);
     out
 }
@@ -554,6 +649,155 @@ pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_contextlib_aclosing_exit(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { call_method0(_py, payload_bits, b"aclose") })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_abstract_enter(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        inc_ref_bits(_py, self_bits);
+        self_bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        inc_ref_bits(_py, self_bits);
+        self_bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        match contextlib_check_methods(_py, candidate_bits, &[b"__enter__", b"__exit__"]) {
+            Ok(true) => MoltObject::from_bool(true).bits(),
+            Ok(false) => crate::molt_not_implemented(),
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_abstract_async_subclasshook(candidate_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        match contextlib_check_methods(_py, candidate_bits, &[b"__aenter__", b"__aexit__"]) {
+            Ok(true) => MoltObject::from_bool(true).bits(),
+            Ok(false) => crate::molt_not_implemented(),
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_contextdecorator_call(
+    cm_bits: u64,
+    func_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let none_bits = MoltObject::none().bits();
+        let entered_bits = call_method0(_py, cm_bits, b"__enter__");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if !obj_from_bits(entered_bits).is_none() {
+            dec_ref_bits(_py, entered_bits);
+        }
+
+        let out_bits = call_with_star_kwargs(_py, func_bits, args_bits, kwargs_bits);
+        if !exception_pending(_py) {
+            let exit_out = call_method3(_py, cm_bits, b"__exit__", none_bits, none_bits, none_bits);
+            if exception_pending(_py) {
+                if !obj_from_bits(out_bits).is_none() {
+                    dec_ref_bits(_py, out_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            if !obj_from_bits(exit_out).is_none() {
+                dec_ref_bits(_py, exit_out);
+            }
+            return out_bits;
+        }
+
+        let raised_bits = molt_exception_last();
+        clear_exception(_py);
+        let raised_type_bits = type_of_bits(_py, raised_bits);
+        let raised_tb_bits = obj_from_bits(raised_bits)
+            .as_ptr()
+            .map(|ptr| unsafe { exception_trace_bits(ptr) })
+            .unwrap_or(none_bits);
+        let exit_out = call_method3(
+            _py,
+            cm_bits,
+            b"__exit__",
+            raised_type_bits,
+            raised_bits,
+            raised_tb_bits,
+        );
+        if exception_pending(_py) {
+            dec_ref_bits(_py, raised_bits);
+            return MoltObject::none().bits();
+        }
+        let suppress = is_truthy(_py, obj_from_bits(exit_out));
+        if !obj_from_bits(exit_out).is_none() {
+            dec_ref_bits(_py, exit_out);
+        }
+        if suppress {
+            dec_ref_bits(_py, raised_bits);
+            return MoltObject::none().bits();
+        }
+        rethrow_with_owned_exception(_py, raised_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
+        }
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(value) => value,
+            Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+        };
+        let old_cwd = match std::env::current_dir() {
+            Ok(value) => value,
+            Err(err) => return raise_exception::<u64>(_py, "OSError", &err.to_string()),
+        };
+        if let Err(err) = std::env::set_current_dir(&path) {
+            return raise_exception::<u64>(_py, "OSError", &err.to_string());
+        }
+        let old_text = old_cwd.to_string_lossy().into_owned();
+        match alloc_str_bits(_py, &old_text) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
+        }
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(value) => value,
+            Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+        };
+        if let Err(err) = std::env::set_current_dir(&path) {
+            return raise_exception::<u64>(_py, "OSError", &err.to_string());
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[no_mangle]

@@ -216,6 +216,9 @@ export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ~/.molt/bin/hello_molt
 
+# Development profile (faster local iteration)
+uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
+
 # Optional: keep the binary local instead
 uv run --python 3.12 python3 -m molt.cli build --output ./hello_molt examples/hello.py
 ./hello_molt
@@ -241,6 +244,12 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 - `molt run <file.py>`: compile with Molt and run the native binary (`--trusted` disables capability checks). Use `--timing` for build/run timing; script args are forwarded by default (use `--` to separate).
 - `molt build --module pkg` / `molt run --module pkg`: compile or run a package entrypoint (`pkg.__main__` when present).
+- Build profiles: use `--profile dev` for local development/iteration, and `--profile release` for production validation, benchmarks, and shipping artifacts.
+- Dev profile routing: `--profile dev` defaults to Cargo `dev-fast` (override with `MOLT_DEV_CARGO_PROFILE`; release override: `MOLT_RELEASE_CARGO_PROFILE`).
+- Build-cache determinism: CLI runs enforce `PYTHONHASHSEED=0` by default so repeated builds share cache keys; override via `MOLT_HASH_SEED=<value>` (`MOLT_HASH_SEED=random` disables this).
+- Rust compile cache: when `sccache` is installed, the CLI auto-enables it (`MOLT_USE_SCCACHE=auto`; set `MOLT_USE_SCCACHE=0` to disable). If a wrapper-level `sccache` error is detected, the CLI retries the Cargo build once without `RUSTC_WRAPPER`.
+- Native backend daemon: native backend compiles run through a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, and enforce cache retention with `tools/molt_cache_prune.py`.
 - `molt build --output <path|dir>`: directory outputs use the default filename; `--out-dir` only affects final outputs (intermediates remain under `$MOLT_HOME/build/<entry>`).
 - `molt compare <file.py>`: compare CPython vs Molt compiled output with separate build/run timing.
 - `molt test`: run the dev test suite (wraps `uv run --python 3.12 python3 tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
