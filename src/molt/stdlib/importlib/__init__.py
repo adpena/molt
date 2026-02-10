@@ -58,18 +58,58 @@ def _resolve_name(name: str, package: str | None) -> str:
     return f"{base}{name[level:]}" if base else name[level:]
 
 
+def _import_via_spec(resolved: str):
+    modules = _runtime_modules()
+    existing = modules.get(resolved)
+    if existing is not None:
+        return existing
+
+    spec = util.find_spec(resolved)
+    if spec is None:
+        raise ModuleNotFoundError(f"No module named '{resolved}'")
+
+    module = util.module_from_spec(spec)
+    modules[resolved] = module
+    try:
+        loader = getattr(spec, "loader", None)
+        if loader is not None:
+            if hasattr(loader, "exec_module"):
+                loader.exec_module(module)
+            elif hasattr(loader, "load_module"):
+                loaded = loader.load_module(resolved)
+                if loaded is not None:
+                    module = loaded
+        return modules.get(resolved, module)
+    except Exception:
+        modules.pop(resolved, None)
+        raise
+
+
+def _module_import_with_fallback(resolved: str):
+    try:
+        return _MOLT_MODULE_IMPORT(resolved)
+    except TypeError as exc:
+        # Some dynamic modules may not round-trip through the direct runtime import
+        # return path yet; fall back to the intrinsic-backed spec/loader flow.
+        if "import returned non-module payload" not in str(exc):
+            raise
+        return _import_via_spec(resolved)
+    except ImportError:
+        return _import_via_spec(resolved)
+
+
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]
-    mod = _MOLT_MODULE_IMPORT(resolved)
+    mod = _module_import_with_fallback(resolved)
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]
     if mod is not None:
         return mod
-    raise ImportError(f"No module named '{resolved}'")
+    raise ModuleNotFoundError(f"No module named '{resolved}'")
 
 
 def invalidate_caches() -> None:

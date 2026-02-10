@@ -122,6 +122,8 @@ Use `molt profile <script.py>` to generate flamegraphs and identify bottlenecks 
 - In multi-agent runs, share cache/target roots on the external volume to improve reuse:
   - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache`
   - `CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target`
+- Keep diff runs on the same shared target:
+  - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by `tools/throughput_env.sh --apply`)
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
   - `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`
 
@@ -153,6 +155,50 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
 - When `/Volumes/APDataStore/Molt` exists, outputs default there automatically.
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and enforce `MOLT_DIFF_RLIMIT_GB=10`.
 - Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
+
+### Compile Progress Tracker
+
+Use the compile progress suite to track the optimization initiative with stable
+case definitions (cold/warm, cache-hit/no-cache, daemon on/off, and
+`release-fast` iteration lanes):
+
+```bash
+uv run --python 3.12 python3 tools/compile_progress.py --clean-state
+```
+
+Add `--diagnostics` to collect per-case compiler phase timings/module reason
+payloads automatically.
+
+- Outputs:
+  - `compile_progress.json` (machine-readable snapshot)
+  - `compile_progress.md` (human summary table)
+  - per-case logs under `logs/`
+  - per-case diagnostics under `diagnostics/` when `--diagnostics` is set
+  - snapshots are refreshed after every completed case to preserve partial
+    progress if a long run is interrupted
+- Optional compiler diagnostics (phase timings + module inclusion reasons):
+  - `MOLT_BUILD_DIAGNOSTICS=1`
+  - `MOLT_BUILD_DIAGNOSTICS_FILE=build_diagnostics.json`
+  - Example:
+    `MOLT_BUILD_DIAGNOSTICS=1 MOLT_BUILD_DIAGNOSTICS_FILE=build_diag.json uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache examples/hello.py`
+- Queue lanes (daemon warm queue, opt-in):
+  - `--cases dev_queue_daemon_on dev_queue_daemon_off`
+  - each queue case performs warmup runs before the measured attempt
+- Release-iteration lanes (`MOLT_RELEASE_CARGO_PROFILE=release-fast`):
+  - `--cases release_fast_cold release_fast_warm release_fast_nocache_warm`
+- Contention controls (recommended on busy hosts):
+  - `--max-retries 2 --retry-backoff-sec 2 --build-lock-timeout-sec 60`
+  - timed-out attempts now perform run-scoped compiler cleanup before retrying
+    (kills stale `cargo`/`rustc`/`sccache` children and run-scoped backend
+    daemons)
+  - `SIGTERM` exits (`rc=143`/`rc=-15`) are classified as retryable
+  - add `--resume` for persistent-shell reruns so interrupted sweeps continue
+    from already completed cases
+- Default output root:
+  - `/Volumes/APDataStore/Molt/compile_progress_<timestamp>` when available
+  - `bench/results/compile_progress/<timestamp>` otherwise
+- Progress board and KPI targets live in
+  `docs/benchmarks/compile_progress.md`.
 
 ### Cache Retention Policy
 

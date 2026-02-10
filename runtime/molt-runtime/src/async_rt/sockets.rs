@@ -171,11 +171,13 @@ fn socket_ptr_from_fd(fd: SocketFd) -> Option<*mut u8> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
-    let ptr = ptr_from_bits(socket_bits);
-    if !ptr.is_null() {
-        return ptr;
-    }
-    if let Some(fd) = to_i64(obj_from_bits(socket_bits)) {
+    if let Some(fd) = to_i64(obj_from_bits(socket_bits)).or_else(|| {
+        if socket_bits <= i64::MAX as u64 {
+            Some(socket_bits as i64)
+        } else {
+            None
+        }
+    }) {
         if fd < 0 {
             return std::ptr::null_mut();
         }
@@ -187,6 +189,10 @@ pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
         {
             return socket_ptr_from_fd(fd as RawSocket).unwrap_or(std::ptr::null_mut());
         }
+    }
+    let ptr = ptr_from_bits(socket_bits);
+    if !ptr.is_null() {
+        return ptr;
     }
     std::ptr::null_mut()
 }
@@ -2592,6 +2598,13 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
                     if wait_err.kind() == ErrorKind::WouldBlock {
+                        if matches!(timeout, Some(val) if val == Duration::ZERO) {
+                            return raise_os_error_errno::<u64>(
+                                _py,
+                                libc::EWOULDBLOCK as i64,
+                                "accept: would block",
+                            );
+                        }
                         continue;
                     }
                     return raise_os_error::<u64>(_py, wait_err, "accept");
@@ -2872,9 +2885,20 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                             err.raw_os_error().unwrap_or(libc::EIO) as i64,
                         ))
                     }
-                    Err(err) => Ok(ConnectExOutcome::Done(
-                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
-                    )),
+                    Err(err) => {
+                        let errno = err.raw_os_error().unwrap_or(libc::EIO) as i64;
+                        if err.kind() == ErrorKind::WouldBlock
+                            || errno == libc::EINPROGRESS as i64
+                            || errno == libc::EALREADY as i64
+                            || errno == libc::EAGAIN as i64
+                            || errno == libc::EWOULDBLOCK as i64
+                        {
+                            Ok(ConnectExOutcome::Pending(libc::EINPROGRESS as i64))
+                        } else {
+                            inner.connect_pending = false;
+                            Ok(ConnectExOutcome::Done(errno))
+                        }
+                    }
                 };
             }
             match std::mem::replace(&mut inner.kind, MoltSocketKind::Closed) {
@@ -3608,6 +3632,177 @@ pub unsafe extern "C" fn molt_socket_recvfrom(
                     continue;
                 }
                 Err(err) => return raise_os_error::<u64>(_py, err, "recvfrom"),
+            }
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
+#[no_mangle]
+pub unsafe extern "C" fn molt_socket_recvfrom_into(
+    sock_bits: u64,
+    buffer_bits: u64,
+    size_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let socket_ptr = ptr_from_bits(sock_bits);
+        if socket_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let buffer_obj = obj_from_bits(buffer_bits);
+        let buffer_ptr = match buffer_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "recvfrom_into requires a writable buffer",
+                );
+            }
+        };
+        let size = to_i64(obj_from_bits(size_bits)).unwrap_or(-1);
+        let target_len;
+        let mut use_memoryview = false;
+        let type_id = unsafe { object_type_id(buffer_ptr) };
+        if type_id == TYPE_ID_BYTEARRAY {
+            target_len = unsafe { bytearray_len(buffer_ptr) };
+        } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_readonly(buffer_ptr) } {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "recvfrom_into requires a writable buffer",
+                );
+            }
+            target_len = unsafe { memoryview_len(buffer_ptr) };
+            use_memoryview = true;
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "recvfrom_into requires a writable buffer",
+            );
+        }
+        let size = if size < 0 {
+            target_len
+        } else {
+            (size as usize).min(target_len)
+        };
+        let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        loop {
+            let res = with_socket_mut(socket_ptr, |inner| {
+                #[cfg(unix)]
+                let fd = inner
+                    .raw_fd()
+                    .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
+                #[cfg(windows)]
+                let fd = inner
+                    .raw_socket()
+                    .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
+                let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                if use_memoryview {
+                    if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
+                        let recv_len = size.min(slice.len());
+                        let ret = unsafe {
+                            libc::recvfrom(
+                                libc_socket(fd),
+                                slice.as_mut_ptr() as *mut c_void,
+                                recv_len,
+                                flags,
+                                &mut storage as *mut _ as *mut libc::sockaddr,
+                                &mut len,
+                            )
+                        };
+                        if ret >= 0 {
+                            Ok((ret as usize, unsafe { SockAddr::new(storage, len) }, None))
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
+                    } else {
+                        let mut tmp = vec![0u8; size];
+                        let ret = unsafe {
+                            libc::recvfrom(
+                                libc_socket(fd),
+                                tmp.as_mut_ptr() as *mut c_void,
+                                tmp.len(),
+                                flags,
+                                &mut storage as *mut _ as *mut libc::sockaddr,
+                                &mut len,
+                            )
+                        };
+                        if ret >= 0 {
+                            Ok((
+                                ret as usize,
+                                unsafe { SockAddr::new(storage, len) },
+                                Some(tmp),
+                            ))
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
+                    }
+                } else {
+                    let buf = unsafe { bytearray_vec(buffer_ptr) };
+                    let recv_len = size.min(buf.len());
+                    let ret = unsafe {
+                        libc::recvfrom(
+                            libc_socket(fd),
+                            buf.as_mut_ptr() as *mut c_void,
+                            recv_len,
+                            flags,
+                            &mut storage as *mut _ as *mut libc::sockaddr,
+                            &mut len,
+                        )
+                    };
+                    if ret >= 0 {
+                        Ok((ret as usize, unsafe { SockAddr::new(storage, len) }, None))
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                }
+            });
+            match res {
+                Ok((n, addr, tmp)) => {
+                    if use_memoryview {
+                        if let Some(tmp) = tmp.as_ref() {
+                            if let Err(msg) =
+                                unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..n]) }
+                            {
+                                return raise_exception::<u64>(_py, "TypeError", &msg);
+                            }
+                        }
+                    }
+                    let n_bits = MoltObject::from_int(n as i64).bits();
+                    let addr_bits = sockaddr_to_bits(_py, &addr);
+                    let tuple_ptr = alloc_tuple(_py, &[n_bits, addr_bits]);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(tuple_ptr).bits();
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    if dontwait {
+                        return raise_os_error::<u64>(_py, err, "recvfrom_into");
+                    }
+                    if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
+                        if wait_err.kind() == ErrorKind::TimedOut {
+                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        }
+                        if wait_err.kind() == ErrorKind::WouldBlock {
+                            continue;
+                        }
+                        return raise_os_error::<u64>(_py, wait_err, "recvfrom_into");
+                    }
+                    continue;
+                }
+                Err(err) => return raise_os_error::<u64>(_py, err, "recvfrom_into"),
             }
         }
     })
@@ -5405,6 +5600,151 @@ pub extern "C" fn molt_socket_recvfrom(_sock_bits: u64, _size_bits: u64, _flags_
                 continue;
             }
             return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom");
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn molt_socket_recvfrom_into(
+    _sock_bits: u64,
+    _buffer_bits: u64,
+    _size_bits: u64,
+    _flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let buffer_obj = obj_from_bits(_buffer_bits);
+        let buffer_ptr = match buffer_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "recvfrom_into requires a writable buffer",
+                );
+            }
+        };
+        let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(-1);
+        let target_len;
+        let mut use_memoryview = false;
+        let type_id = unsafe { object_type_id(buffer_ptr) };
+        if type_id == TYPE_ID_BYTEARRAY {
+            target_len = unsafe { bytearray_len(buffer_ptr) };
+        } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_readonly(buffer_ptr) } {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "recvfrom_into requires a writable buffer",
+                );
+            }
+            target_len = unsafe { memoryview_len(buffer_ptr) };
+            use_memoryview = true;
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "recvfrom_into requires a writable buffer",
+            );
+        }
+        let size = if size < 0 {
+            target_len
+        } else {
+            (size as usize).min(target_len)
+        };
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let mut addr_buf = vec![0u8; 128];
+        let mut addr_len: u32 = 0;
+        loop {
+            let rc = if use_memoryview {
+                if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
+                    let recv_len = size.min(slice.len());
+                    unsafe {
+                        crate::molt_socket_recvfrom_host(
+                            handle,
+                            slice.as_mut_ptr() as u32,
+                            recv_len as u32,
+                            flags,
+                            addr_buf.as_mut_ptr() as u32,
+                            addr_buf.len() as u32,
+                            (&mut addr_len) as *mut u32 as u32,
+                        )
+                    }
+                } else {
+                    let mut tmp = vec![0u8; size];
+                    let res = unsafe {
+                        crate::molt_socket_recvfrom_host(
+                            handle,
+                            tmp.as_mut_ptr() as u32,
+                            tmp.len() as u32,
+                            flags,
+                            addr_buf.as_mut_ptr() as u32,
+                            addr_buf.len() as u32,
+                            (&mut addr_len) as *mut u32 as u32,
+                        )
+                    };
+                    if res >= 0 {
+                        if let Err(msg) =
+                            unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
+                        {
+                            return raise_exception::<u64>(_py, "TypeError", &msg);
+                        }
+                    }
+                    res
+                }
+            } else {
+                let buf = unsafe { bytearray_vec(buffer_ptr) };
+                let recv_len = size.min(buf.len());
+                unsafe {
+                    crate::molt_socket_recvfrom_host(
+                        handle,
+                        buf.as_mut_ptr() as u32,
+                        recv_len as u32,
+                        flags,
+                        addr_buf.as_mut_ptr() as u32,
+                        addr_buf.len() as u32,
+                        (&mut addr_len) as *mut u32 as u32,
+                    )
+                }
+            };
+            if rc >= 0 {
+                let n_bits = MoltObject::from_int(rc as i64).bits();
+                let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
+                    Ok(bits) => bits,
+                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                };
+                let tuple_ptr = alloc_tuple(_py, &[n_bits, addr_bits]);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(tuple_ptr).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom_into");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    if wait_err.kind() == ErrorKind::WouldBlock {
+                        continue;
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "recvfrom_into");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom_into");
         }
     })
 }

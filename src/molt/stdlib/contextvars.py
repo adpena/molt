@@ -7,9 +7,10 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable
 
-from molt.concurrency import current_token
-
 _require_intrinsic("molt_stdlib_probe", globals())
+_cancel_token_get_current = _require_intrinsic(
+    "molt_cancel_token_get_current", globals()
+)
 
 
 __all__ = ["Context", "ContextVar", "Token", "copy_context"]
@@ -19,7 +20,7 @@ _CONTEXTS: dict[int, dict["_ContextVar", Any]] = {}
 
 
 def _current_context_id() -> int:
-    return current_token().token_id()
+    return int(_cancel_token_get_current())
 
 
 def _current_context() -> dict["_ContextVar", Any]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-from molt.stdlib import os as _os
+import os as _os
 
 _require_intrinsic("molt_stdlib_probe", globals())
 

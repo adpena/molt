@@ -30,6 +30,9 @@ _MOLT_IMPORTLIB_RESOURCES_MODULE_NAME = _require_intrinsic(
 _MOLT_IMPORTLIB_RESOURCES_LOADER_READER = _require_intrinsic(
     "molt_importlib_resources_loader_reader", globals()
 )
+_MOLT_IMPORTLIB_RESOURCES_READER_FILES_TRAVERSABLE = _require_intrinsic(
+    "molt_importlib_resources_reader_files_traversable", globals()
+)
 _MOLT_IMPORTLIB_RESOURCES_READER_ROOTS = _require_intrinsic(
     "molt_importlib_resources_reader_roots", globals()
 )
@@ -316,6 +319,10 @@ class _LoaderReaderTraversable(Traversable):
     ):
         if not isinstance(mode, str):
             raise TypeError("mode must be str")
+        if mode not in {"r", "rb"}:
+            raise ValueError(
+                f"Invalid mode value {mode!r}, only 'r' and 'rb' are supported"
+            )
         if not self.exists():
             raise FileNotFoundError(self.__fspath__())
         if not self.is_file():
@@ -324,14 +331,6 @@ class _LoaderReaderTraversable(Traversable):
         if not name:
             raise FileNotFoundError(self.__fspath__())
         resource_path = _reader_resource_path(self._reader, name)
-        if _is_write_mode(mode):
-            if resource_path is None:
-                raise io.UnsupportedOperation(
-                    "importlib.resources Traversable.open write modes"
-                )
-            if "b" in mode:
-                return open(resource_path, mode)
-            return open(resource_path, mode, encoding=encoding, errors=errors)
         if resource_path is not None:
             if "b" in mode:
                 return open(resource_path, mode)
@@ -559,15 +558,17 @@ def _reader_roots(reader: object) -> list[str]:
     return out
 
 
+def _reader_files_traversable(reader: object) -> object | None:
+    return _MOLT_IMPORTLIB_RESOURCES_READER_FILES_TRAVERSABLE(reader)
+
+
 def _reader_contents(reader: object) -> list[str]:
     values = _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS(reader)
-    if not isinstance(values, (list, tuple)) or not all(
-        isinstance(entry, str) for entry in values
-    ):
+    if not isinstance(values, (list, tuple)):
         raise RuntimeError("invalid loader resource reader contents payload")
     out: list[str] = []
     for entry in values:
-        if entry and entry not in out:
+        if isinstance(entry, str) and entry and entry not in out:
             out.append(entry)
     return out
 
@@ -599,13 +600,11 @@ def _reader_open_resource_bytes(reader: object, name: str) -> bytes:
 
 def _reader_child_names(reader: object, parts: tuple[str, ...]) -> list[str]:
     values = _MOLT_IMPORTLIB_RESOURCES_READER_CHILD_NAMES(reader, parts)
-    if not isinstance(values, (list, tuple)) or not all(
-        isinstance(entry, str) for entry in values
-    ):
+    if not isinstance(values, (list, tuple)):
         raise RuntimeError("invalid loader resource reader contents payload")
     out: list[str] = []
     for entry in values:
-        if entry and entry not in out:
+        if isinstance(entry, str) and entry and entry not in out:
             out.append(entry)
     return out
 
@@ -647,6 +646,9 @@ def files(package: str | object) -> Traversable | _NamespaceTraversable:
     module, module_name = _get_package(package)
     package_name = _package_name(module, module_name)
     reader = _loader_resource_reader(module, package_name)
+    files_traversable = (
+        _reader_files_traversable(reader) if reader is not None else None
+    )
     roots = _reader_roots(reader) if reader is not None else []
     is_namespace = False
     if roots:
@@ -655,6 +657,8 @@ def files(package: str | object) -> Traversable | _NamespaceTraversable:
     else:
         roots, is_namespace = _package_roots(module, module_name)
         if not roots and reader is not None:
+            if files_traversable is not None:
+                return files_traversable
             return _LoaderReaderTraversable(reader, package_name)
     if not roots:
         raise ModuleNotFoundError(package_name)

@@ -22,6 +22,13 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
 - **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
 - **Wrapper policy**: diff runs disable `RUSTC_WRAPPER`/`sccache` by default for portability. Opt in with `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` on hosts where wrapper caches are known-good.
+- **Pass-log pruning**: when `--log-dir` is enabled, per-test logs for passing tests are pruned by default to reduce clutter. Set `MOLT_DIFF_LOG_PASSES=1` to keep pass logs.
+- **Backend daemon policy**: diff runs use `MOLT_DIFF_BACKEND_DAEMON` when set; otherwise defaults to platform-safe auto (`0` on macOS, `1` elsewhere).
+- **dyld hardening**: after a dyld import-format incident, diff runs force `MOLT_BACKEND_DAEMON=0` for safety. Set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only when you need cold target/state quarantine.
+- **Local dyld fallback**: on macOS, dyld retries/quarantine can route to local `/tmp` lanes (`MOLT_DIFF_DYLD_LOCAL_FALLBACK=1`, default). Override root with `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>`.
+- **Cache hardening**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`. Default is platform-safe auto (`1` on macOS, `0` elsewhere); dyld guard/retry also enables it for the current run.
+- **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
+- **Interrupted-run cleanup**: before a new long sweep, clear stale harness workers from prior crashes (`ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>`/`kill -KILL <pid>` as needed). Keep one supervising diff run per shared target.
 
 ## Build Throughput (Multi-Agent)
 - **Stable cache keys**: the CLI enforces `PYTHONHASHSEED=0` by default to keep IR/cache keys deterministic across invocations.
@@ -33,17 +40,47 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **sccache auto-enable**: the CLI enables `sccache` automatically when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable. Cargo builds now auto-retry once without `RUSTC_WRAPPER` when a wrapper-level `sccache` failure is detected.
 - **Dev profile routing**: `molt ... --profile dev` maps to Cargo profile `dev-fast` by default. Override with `MOLT_DEV_CARGO_PROFILE`; use `MOLT_RELEASE_CARGO_PROFILE` for release lane overrides.
 - **Backend daemon**: native backend compiles use a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and in-daemon object cache size with `MOLT_BACKEND_DAEMON_CACHE_MB`.
-- **Daemon lifecycle**: daemon sockets/logs/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile.
+- **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
+- **Daemon lifecycle**: daemon logs/pid/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile.
 - **Bootstrap command**: `tools/throughput_env.sh --apply` (or `eval "$(tools/throughput_env.sh --print)"`) configures:
   - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache` when external volume exists
   - `CARGO_TARGET_DIR=~/.molt/throughput_target` (local APFS/ext4 for Rust incremental hard-links)
+  - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` so differential runs reuse the same shared Cargo artifacts by default
   - `SCCACHE_DIR=/Volumes/APDataStore/Molt/sccache` and `SCCACHE_CACHE_SIZE=20G` on external, else local `10G`
   - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
 - **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using defaults (external `200G` + `30` days, local `30G` + `30` days). Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
+- **Diff run coordination lock**: `tests/molt_diff.py` acquires `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` so concurrent agents queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
   - Example: `uv run --python 3.12 python3 tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Users/$USER/.molt/throughput_target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
   - Output: `matrix_results.json` under the output root (`/Volumes/APDataStore/Molt/...` by default when present).
   - If rustc prints incremental hard-link fallback warnings, move `--shared-target-dir` to a local APFS/ext4 path.
+- **Compile-progress suite**: use `tools/compile_progress.py` for standardized
+  cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.
+  - Example: `uv run --python 3.12 python3 tools/compile_progress.py --clean-state`
+  - Include `--diagnostics` to capture per-case phase timing + module-reason
+    payloads from compiler builds.
+  - Queue lane (daemon warm queue): add
+    `--cases dev_queue_daemon_on dev_queue_daemon_off`.
+  - Release-iteration lane (`release-fast` Cargo profile override): add
+    `--cases release_fast_cold release_fast_warm release_fast_nocache_warm`.
+  - Under host contention, prefer:
+    `--max-retries 2 --retry-backoff-sec 2 --build-lock-timeout-sec 60`.
+  - Timeouts are fail-safe: the harness now kills run-scoped timed-out
+    compiler children (`cargo`/`rustc`/`sccache`) and run-scoped backend
+    daemons before retrying/continuing.
+  - `SIGTERM` exits (`rc=143`/`rc=-15`) are treated as retryable.
+  - Snapshots (`compile_progress.json` / `.md`) are updated after each
+    completed case so interrupted long runs still preserve progress.
+  - Use `--resume` in persistent `tmux`/`mosh` sessions to continue interrupted
+    long sweeps (especially release lanes) without rerunning completed cases.
+  - Outputs: `compile_progress.json` + `compile_progress.md` + per-case logs.
+  - Initiative KPI board lives at `docs/benchmarks/compile_progress.md`.
+- **Build diagnostics**: enable compiler phase timing + module-inclusion reasons
+  on demand with `MOLT_BUILD_DIAGNOSTICS=1`.
+  - Optional output file: `MOLT_BUILD_DIAGNOSTICS_FILE=<path>` (relative paths are
+    resolved under the build artifacts directory).
+  - Example:
+    `MOLT_BUILD_DIAGNOSTICS=1 MOLT_BUILD_DIAGNOSTICS_FILE=build_diag.json uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache examples/hello.py`
 
 ### Fast Dev Playbook (Recommended)
 1. `tools/throughput_env.sh --apply`

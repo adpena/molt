@@ -137,8 +137,12 @@ fn set_attribute_error_defaults(_py: &PyToken<'_>, exc_bits: u64) {
     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                dict_set_in_place(_py, dict_ptr, name_key, none_bits);
-                dict_set_in_place(_py, dict_ptr, obj_key, none_bits);
+                crate::object::ops::dict_set_in_place_preserving_pending(
+                    _py, dict_ptr, name_key, none_bits,
+                );
+                crate::object::ops::dict_set_in_place_preserving_pending(
+                    _py, dict_ptr, obj_key, none_bits,
+                );
             }
         }
     }
@@ -175,8 +179,12 @@ fn set_attribute_error_attrs(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, 
     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                dict_set_in_place(_py, dict_ptr, name_key, name_bits);
-                dict_set_in_place(_py, dict_ptr, obj_key, obj_bits);
+                crate::object::ops::dict_set_in_place_preserving_pending(
+                    _py, dict_ptr, name_key, name_bits,
+                );
+                crate::object::ops::dict_set_in_place_preserving_pending(
+                    _py, dict_ptr, obj_key, obj_bits,
+                );
             }
         }
     }

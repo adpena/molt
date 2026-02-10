@@ -62,7 +62,7 @@ def _chain_from_iterable(iterables: Iterable[Iterable[T]]) -> Iterator[T]:
 chain.from_iterable = _chain_from_iterable  # type: ignore[attr-defined]
 
 
-def islice(iterable: Iterable[T], *args: Any) -> Iterator[T]:
+def islice(iterable: Iterable[T], /, *args: Any) -> Iterator[T]:
     if len(args) == 1:
         start = args[0]
         stop = _MISSING

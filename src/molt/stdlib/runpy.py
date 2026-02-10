@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from typing import Any
+from types import ModuleType
 
 from _intrinsics import require_intrinsic as _intrinsics_require
 
-from molt import capabilities as _capabilities
+_capabilities: ModuleType | None
+try:
+    from molt import capabilities as _capabilities_raw
+except Exception:
+    _capabilities = None
+else:
+    if isinstance(_capabilities_raw, ModuleType):
+        _capabilities = _capabilities_raw
+    else:
+        _capabilities = None
 
 _molt_runpy_run_module = _intrinsics_require("molt_runpy_run_module", globals())
 _molt_runpy_resolve_path = _intrinsics_require("molt_runpy_resolve_path", globals())
@@ -22,6 +32,8 @@ def _require_intrinsic(fn: Any, name: str) -> Any:
 
 
 def _require_fs_read() -> None:
+    if _capabilities is None:
+        return
     if not _capabilities.trusted():
         _capabilities.require("fs.read")
 

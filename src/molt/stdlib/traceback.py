@@ -211,9 +211,27 @@ class StackSummary:
 
     @classmethod
     def from_list(cls, extracted_list: list[Any]) -> "StackSummary":
-        return cls(
-            _payload_frames(extracted_list, None), source=extracted_list, limit=None
-        )
+        frames: list[FrameSummary] = []
+        for entry in extracted_list:
+            if isinstance(entry, FrameSummary):
+                frames.append(entry)
+                continue
+            # Match CPython's unpack semantics for tuple/list inputs:
+            # only (filename, lineno, name, line) is accepted here.
+            filename, lineno, name, line = entry
+            lineno_i = int(lineno)
+            frames.append(
+                FrameSummary(
+                    filename=str(filename),
+                    lineno=lineno_i,
+                    end_lineno=lineno_i,
+                    colno=0,
+                    end_colno=0,
+                    name=str(name),
+                    line="" if line is None else str(line),
+                )
+            )
+        return cls(frames, source=_frame_payload_entries(frames), limit=None)
 
     def __iter__(self):
         return iter(self._frames)

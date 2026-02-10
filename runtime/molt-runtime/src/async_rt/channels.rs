@@ -1427,15 +1427,23 @@ fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *m
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tls_client_connect_native(host: &str, port: u16, server_name: &str) -> *mut u8 {
+fn tls_client_connect_native(
+    host: &str,
+    port: u16,
+    server_name: &str,
+) -> Result<*mut u8, std::io::Error> {
     let tcp = {
         let _release = GilReleaseGuard::new();
-        match TcpStream::connect((host, port)) {
-            Ok(value) => value,
-            Err(_) => return std::ptr::null_mut(),
-        }
+        TcpStream::connect((host, port))?
     };
-    tls_client_wrap_stream_native(tcp, server_name)
+    let wrapped = tls_client_wrap_stream_native(tcp, server_name);
+    if wrapped.is_null() {
+        Err(std::io::Error::other(
+            "asyncio TLS client connection failed",
+        ))
+    } else {
+        Ok(wrapped)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1848,11 +1856,10 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
             }
             name
         };
-        let stream_ptr = tls_client_connect_native(&host, port_raw as u16, &server_name);
-        if stream_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "asyncio TLS client connection failed");
+        match tls_client_connect_native(&host, port_raw as u16, &server_name) {
+            Ok(stream_ptr) => bits_from_ptr(stream_ptr),
+            Err(err) => raise_os_error::<u64>(_py, err, "connect"),
         }
-        bits_from_ptr(stream_ptr)
     })
 }
 

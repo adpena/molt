@@ -70,6 +70,45 @@ def _resolve_import_name(name: str, globals_obj, level: int) -> str:
     return f"{base}.{name}" if name and base else (name or base)
 
 
+def _is_placeholder_module(mod: object) -> bool:
+    module_dict = getattr(mod, "__dict__", None)
+    return (
+        isinstance(module_dict, dict)
+        and len(module_dict) == 1
+        and "__name__" in module_dict
+    )
+
+
+def _recover_placeholder_module(resolved: str, placeholder: object):
+    modules = getattr(_sys, "modules", {})
+    previous = modules.pop(resolved, None)
+    try:
+        import importlib.util as _importlib_util
+
+        spec = _importlib_util.find_spec(resolved, None)
+        if spec is None:
+            raise ImportError(f"No module named '{resolved}'")
+        module = _importlib_util.module_from_spec(spec)
+        modules[resolved] = module
+        loader = getattr(spec, "loader", None)
+        if loader is not None:
+            if hasattr(loader, "exec_module"):
+                loader.exec_module(module)
+            elif hasattr(loader, "load_module"):
+                loaded = loader.load_module(resolved)
+                if loaded is not None:
+                    module = loaded
+        recovered = modules.get(resolved, module)
+        if _is_placeholder_module(recovered):
+            raise ImportError(f"import of {resolved} produced placeholder module")
+        return recovered
+    except Exception:
+        modules.pop(resolved, None)
+        if previous is not None and previous is not placeholder:
+            modules[resolved] = previous
+        raise
+
+
 def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
     if not name:
         raise ImportError("Empty module name")
@@ -79,6 +118,8 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
         mod = modules[resolved]
         if mod is None:
             raise ImportError(f"import of {resolved} halted; None in sys.modules")
+        if _is_placeholder_module(mod):
+            mod = _recover_placeholder_module(resolved, mod)
         if fromlist:
             return mod
         top = resolved.split(".", 1)[0]
@@ -86,6 +127,8 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
     mod = _MOLT_MODULE_IMPORT(resolved)
     if mod is None:
         raise ImportError(f"No module named '{resolved}'")
+    if _is_placeholder_module(mod):
+        mod = _recover_placeholder_module(resolved, mod)
     if fromlist:
         return mod
     top = resolved.split(".", 1)[0]
@@ -423,7 +466,9 @@ super = super
 print = print
 vars = vars
 Ellipsis = ...
-NotImplemented = NotImplemented
+# Avoid bootstrap-time global lookup of NotImplemented in runtimes where builtins
+# are still being initialized; rich-compare returns the singleton directly.
+NotImplemented = object.__eq__(object(), object())
 BaseException = BaseException
 BaseExceptionGroup = BaseExceptionGroup
 Exception = Exception

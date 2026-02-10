@@ -13,6 +13,7 @@ import posixpath
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -46,6 +47,8 @@ BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
+# Stdlib modules that rely on nested imports for required runtime semantics.
+STDLIB_NESTED_IMPORT_SCAN_MODULES = {"typing"}
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -2138,6 +2141,124 @@ def _ensure_core_stdlib_modules(
             module_graph.setdefault(name, path)
 
 
+def _record_module_reason(
+    module_reasons: dict[str, set[str]],
+    module_name: str,
+    reason: str,
+) -> None:
+    module_reasons.setdefault(module_name, set()).add(reason)
+
+
+def _merge_module_graph_with_reason(
+    module_graph: dict[str, Path],
+    additions: dict[str, Path],
+    module_reasons: dict[str, set[str]],
+    reason: str,
+) -> None:
+    for name, path in additions.items():
+        _record_module_reason(module_reasons, name, reason)
+        module_graph.setdefault(name, path)
+
+
+def _record_new_module_reasons(
+    module_graph: dict[str, Path],
+    before_names: set[str],
+    module_reasons: dict[str, set[str]],
+    reason: str,
+) -> None:
+    for name in module_graph:
+        if name in before_names:
+            continue
+        _record_module_reason(module_reasons, name, reason)
+
+
+def _build_reason_summary(
+    module_reasons: dict[str, set[str]],
+) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for reasons in module_reasons.values():
+        for reason in reasons:
+            summary[reason] = summary.get(reason, 0) + 1
+    return {name: summary[name] for name in sorted(summary)}
+
+
+def _build_diagnostics_enabled() -> bool:
+    return _coerce_bool(os.environ.get("MOLT_BUILD_DIAGNOSTICS", ""), False)
+
+
+def _phase_duration_map(phase_starts: dict[str, float]) -> dict[str, float]:
+    if not phase_starts:
+        return {}
+    starts = sorted(phase_starts.items(), key=lambda item: item[1])
+    durations: dict[str, float] = {}
+    for idx, (name, started) in enumerate(starts):
+        if idx + 1 < len(starts):
+            ended = starts[idx + 1][1]
+        else:
+            ended = time.perf_counter()
+        durations[name] = round(max(0.0, ended - started), 6)
+    return durations
+
+
+def _resolve_build_diagnostics_path(
+    output_spec: str,
+    artifacts_root: Path,
+) -> Path:
+    path = Path(output_spec).expanduser()
+    if not path.is_absolute():
+        path = artifacts_root / path
+    return path
+
+
+def _emit_build_diagnostics(
+    *,
+    diagnostics: dict[str, Any] | None,
+    diagnostics_path: Path | None,
+    json_output: bool,
+) -> None:
+    if diagnostics is None:
+        return
+    if diagnostics_path is not None:
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_path.write_text(json.dumps(diagnostics, indent=2) + "\n")
+    if json_output:
+        return
+    phase_sec = diagnostics.get("phase_sec", {})
+    total_sec = diagnostics.get("total_sec")
+    module_count = diagnostics.get("module_count")
+    reason_summary = diagnostics.get("module_reason_summary", {})
+    print("Build diagnostics:", file=sys.stderr)
+    if isinstance(total_sec, (int, float)):
+        print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
+    if isinstance(module_count, int):
+        print(f"- modules: {module_count}", file=sys.stderr)
+    if isinstance(phase_sec, dict):
+        for name in sorted(phase_sec):
+            value = phase_sec[name]
+            if isinstance(value, (int, float)):
+                print(f"- phase.{name}: {value:.6f}s", file=sys.stderr)
+    if isinstance(reason_summary, dict):
+        for name in sorted(reason_summary):
+            value = reason_summary[name]
+            if isinstance(value, int):
+                print(f"- reason.{name}: {value}", file=sys.stderr)
+    if diagnostics_path is not None:
+        print(f"- wrote: {diagnostics_path}", file=sys.stderr)
+
+
+def _requires_spawn_entry_override(
+    module_graph: dict[str, Path], explicit_imports: set[str]
+) -> bool:
+    names: set[str] = set(module_graph)
+    names.update(explicit_imports)
+    for name in names:
+        if name == ENTRY_OVERRIDE_SPAWN or name.startswith("multiprocessing."):
+            return True
+        if name == "multiprocessing":
+            return True
+    return False
+
+
 def _discover_module_graph(
     entry_path: Path,
     roots: list[Path],
@@ -2167,7 +2288,10 @@ def _discover_module_graph(
         except SyntaxError:
             continue
         is_package = path.name == "__init__.py"
-        include_nested_imports = not _is_stdlib_path(path, stdlib_root)
+        include_nested_imports = (
+            not _is_stdlib_path(path, stdlib_root)
+            or module_name in STDLIB_NESTED_IMPORT_SCAN_MODULES
+        )
         for name in _collect_imports(
             tree,
             module_name,
@@ -2577,8 +2701,30 @@ def _build_lock(project_root: Path, name: str):
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{name}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
+    lock_timeout: float | None = 300.0
+    if timeout_raw:
+        try:
+            parsed = float(timeout_raw)
+        except ValueError:
+            parsed = 300.0
+        lock_timeout = parsed if parsed > 0 else None
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Timed out waiting for build lock "
+                        f"{lock_path} after {lock_timeout:.1f}s. "
+                        "Check for stale molt build/backend helper processes."
+                    ) from exc
+                time.sleep(0.05)
         yield
     finally:
         try:
@@ -3258,16 +3404,116 @@ def _backend_daemon_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _backend_daemon_socket_dir(project_root: Path) -> Path:
+    # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
+    # Keep sockets on a local socket-capable path by default.
+    default_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
+    socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", default_dir)
+    socket_dir.mkdir(parents=True, exist_ok=True)
+    return socket_dir
+
+
 def _backend_daemon_socket_path(project_root: Path, cargo_profile: str) -> Path:
-    root = _build_state_root(project_root) / "backend_daemon"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"molt-backend.{cargo_profile}.sock"
+    explicit_socket = os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip()
+    if explicit_socket:
+        path = Path(explicit_socket).expanduser()
+        if not path.is_absolute():
+            path = (project_root / path).absolute()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    key = f"{project_root.resolve()}|{_build_state_root(project_root)}|{cargo_profile}"
+    suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return _backend_daemon_socket_dir(project_root) / f"moltbd.{suffix}.sock"
 
 
 def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
     root = _build_state_root(project_root) / "backend_daemon"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"molt-backend.{cargo_profile}.log"
+
+
+def _backend_daemon_pid_path(project_root: Path, cargo_profile: str) -> Path:
+    root = _build_state_root(project_root) / "backend_daemon"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"molt-backend.{cargo_profile}.pid"
+
+
+def _read_backend_daemon_pid(pid_path: Path) -> int | None:
+    try:
+        raw = pid_path.read_text().strip()
+    except OSError:
+        return None
+    if not raw.isdigit():
+        return None
+    pid = int(raw)
+    return pid if pid > 0 else None
+
+
+def _write_backend_daemon_pid(pid_path: Path, pid: int) -> None:
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = pid_path.with_name(f".{pid_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(f"{pid}\n")
+        tmp_path.replace(pid_path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _remove_backend_daemon_pid(pid_path: Path) -> None:
+    try:
+        pid_path.unlink()
+    except OSError:
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_backend_daemon_pid(pid: int, *, grace: float = 1.0) -> None:
+    if pid <= 0:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        return
+    deadline = time.monotonic() + max(0.05, grace)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return
+
+
+def _atomic_copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(src, tmp_path)
+        tmp_path.replace(dst)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _backend_daemon_request(
@@ -3335,31 +3581,57 @@ def _start_backend_daemon(
     startup_timeout: float | None,
     json_output: bool,
 ) -> bool:
+    pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
+    existing_pid = _read_backend_daemon_pid(pid_path)
+    if existing_pid is not None:
+        if _pid_alive(existing_pid):
+            if socket_path.exists():
+                if _backend_daemon_ping(socket_path, timeout=1.5):
+                    return True
+                if not json_output:
+                    print(
+                        "Backend daemon is running but not responsive; "
+                        "skipping daemon restart for this build.",
+                        file=sys.stderr,
+                    )
+                return False
+            _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+        _remove_backend_daemon_pid(pid_path)
     try:
         if socket_path.exists():
+            if _backend_daemon_ping(socket_path, timeout=1.5):
+                return True
             socket_path.unlink()
     except OSError:
         pass
     log_path = _backend_daemon_log_path(project_root, cargo_profile)
+    daemon_pid: int | None = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("ab") as log_file:
-            subprocess.Popen(
+            daemon = subprocess.Popen(
                 [str(backend_bin), "--daemon", "--socket", str(socket_path)],
                 cwd=project_root,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            daemon_pid = daemon.pid
+            _write_backend_daemon_pid(pid_path, daemon_pid)
     except OSError as exc:
+        if daemon_pid is not None:
+            _remove_backend_daemon_pid(pid_path)
         if not json_output:
             print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
         return False
     deadline = time.monotonic() + (startup_timeout if startup_timeout else 5.0)
     while time.monotonic() < deadline:
-        if _backend_daemon_ping(socket_path, timeout=0.5):
+        if _backend_daemon_ping(socket_path, timeout=1.5):
             return True
         time.sleep(0.05)
+    if daemon_pid is not None:
+        _terminate_backend_daemon_pid(daemon_pid, grace=1.0)
+    _remove_backend_daemon_pid(pid_path)
     if not json_output:
         print("Backend daemon failed to become ready in time.", file=sys.stderr)
     return False
@@ -4204,6 +4476,30 @@ def _resolve_dev_linker() -> str | None:
     return None
 
 
+def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
+    if sys.platform != "darwin":
+        return None
+    dyld_info = shutil.which("dyld_info")
+    if dyld_info is None or not binary_path.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            [dyld_info, str(binary_path)],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    combined = "\n".join(
+        part.strip() for part in (proc.stdout, proc.stderr) if part and part.strip()
+    )
+    needle = combined.lower()
+    if "unknown imports_format" in needle or "unknown imports format" in needle:
+        return combined or "dyld_info reported unknown imports format."
+    return None
+
+
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
 ) -> tuple[Path, Path, Path]:
@@ -4241,6 +4537,8 @@ def _resolve_output_path(
 
 
 _CACHE_FINGERPRINT: str | None = None
+_CACHE_TOOLING_FINGERPRINT: str | None = None
+_CACHE_KEY_SCHEMA_VERSION = "v2"
 
 
 def _cache_fingerprint() -> str:
@@ -4270,6 +4568,28 @@ def _cache_fingerprint() -> str:
             _hash_runtime_file(path, root, hasher)
     _CACHE_FINGERPRINT = hasher.hexdigest()
     return _CACHE_FINGERPRINT
+
+
+def _cache_tooling_fingerprint() -> str:
+    global _CACHE_TOOLING_FINGERPRINT
+    if _CACHE_TOOLING_FINGERPRINT is not None:
+        return _CACHE_TOOLING_FINGERPRINT
+    root = Path(__file__).resolve().parents[2]
+    hasher = hashlib.sha256()
+    tooling_paths = [
+        Path(__file__).resolve(),
+        root / "src/molt/frontend/__init__.py",
+        root / "src/molt/cli.py",
+    ]
+    seen: set[Path] = set()
+    for path in tooling_paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        if path.exists():
+            _hash_runtime_file(path, root, hasher)
+    _CACHE_TOOLING_FINGERPRINT = hasher.hexdigest()
+    return _CACHE_TOOLING_FINGERPRINT
 
 
 def _json_ir_default(value: Any) -> Any:
@@ -4310,8 +4630,17 @@ def _cache_key(
     if variant:
         suffix = f"{suffix}:{variant}"
     fingerprint = _cache_fingerprint().encode("utf-8")
+    tooling_fingerprint = _cache_tooling_fingerprint().encode("utf-8")
     digest = hashlib.sha256(
-        payload + b"|" + suffix.encode("utf-8") + b"|" + fingerprint
+        payload
+        + b"|"
+        + suffix.encode("utf-8")
+        + b"|"
+        + fingerprint
+        + b"|"
+        + tooling_fingerprint
+        + b"|"
+        + _CACHE_KEY_SCHEMA_VERSION.encode("utf-8")
     ).hexdigest()
     return digest
 
@@ -4584,6 +4913,14 @@ def build(
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
 
+    diagnostics_enabled = _build_diagnostics_enabled()
+    diagnostics_path_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+    diagnostics_start = time.perf_counter()
+    phase_starts: dict[str, float] = {}
+    module_reasons: dict[str, set[str]] = {}
+    if diagnostics_enabled:
+        phase_starts["resolve_entry"] = diagnostics_start
+
     stdlib_root = _stdlib_root_path()
     warnings: list[str] = []
     cwd_root = _find_project_root(Path.cwd())
@@ -4748,6 +5085,8 @@ def build(
         entry_spec_override,
         entry_spec_override_is_package,
     ) = _infer_module_overrides(entry_tree)
+    if diagnostics_enabled:
+        phase_starts["module_graph"] = time.perf_counter()
     if entry_pkg_override_set and entry_pkg_override:
         root = _package_root_for_override(source_path, entry_pkg_override)
         if root is not None:
@@ -4788,6 +5127,7 @@ def build(
     entry_imports = set(
         _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
     )
+    stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
@@ -4797,17 +5137,40 @@ def build(
         module_roots,
         stdlib_root,
         stdlib_allowlist,
-        skip_modules=STUB_MODULES,
+        skip_modules=stub_skip_modules,
         stub_parents=stub_parents,
     )
+    if diagnostics_enabled:
+        for name in module_graph:
+            _record_module_reason(module_reasons, name, "entry_closure")
     if (
         entry_module_import_alias
         and entry_module_import_alias not in module_graph
         and source_path is not None
     ):
         module_graph[entry_module_import_alias] = source_path
+        if diagnostics_enabled:
+            _record_module_reason(
+                module_reasons, entry_module_import_alias, "entry_alias"
+            )
+    package_before = set(module_graph)
     _collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
+    if diagnostics_enabled:
+        _record_new_module_reasons(
+            module_graph,
+            package_before,
+            module_reasons,
+            "package_parent",
+        )
+    core_before = set(module_graph)
     _ensure_core_stdlib_modules(module_graph, stdlib_root)
+    if diagnostics_enabled:
+        _record_new_module_reasons(
+            module_graph,
+            core_before,
+            module_reasons,
+            "core_required",
+        )
     intrinsic_enforced = _enforce_intrinsic_stdlib(
         module_graph, stdlib_root, json_output
     )
@@ -4825,25 +5188,52 @@ def build(
             module_roots,
             stdlib_root,
             stdlib_allowlist,
-            skip_modules=STUB_MODULES,
+            skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
         )
-        for name, path in core_graph.items():
-            module_graph.setdefault(name, path)
-    spawn_enabled = False
-    if target != "wasm":
-        spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
-        if spawn_path is not None:
-            spawn_enabled = True
-            spawn_graph, _ = _discover_module_graph(
-                spawn_path,
-                roots,
-                module_roots,
-                stdlib_root,
-                stdlib_allowlist,
-                skip_modules=STUB_MODULES,
-                stub_parents=stub_parents,
+        if diagnostics_enabled:
+            _merge_module_graph_with_reason(
+                module_graph,
+                core_graph,
+                module_reasons,
+                "core_closure",
             )
+        else:
+            for name, path in core_graph.items():
+                module_graph.setdefault(name, path)
+    spawn_enabled = False
+    spawn_required = target != "wasm" and _requires_spawn_entry_override(
+        module_graph, explicit_imports
+    )
+    if spawn_required:
+        spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
+        if spawn_path is None:
+            return _fail(
+                (
+                    f"Missing required stdlib module: {ENTRY_OVERRIDE_SPAWN}. "
+                    "multiprocessing spawn entry override cannot be lowered."
+                ),
+                json_output,
+                command="build",
+            )
+        spawn_enabled = True
+        spawn_graph, _ = _discover_module_graph(
+            spawn_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            stdlib_allowlist,
+            skip_modules=stub_skip_modules,
+            stub_parents=stub_parents,
+        )
+        if diagnostics_enabled:
+            _merge_module_graph_with_reason(
+                module_graph,
+                spawn_graph,
+                module_reasons,
+                "spawn_closure",
+            )
+        else:
             for name, path in spawn_graph.items():
                 module_graph.setdefault(name, path)
     namespace_parents = _collect_namespace_parents(
@@ -4858,6 +5248,29 @@ def build(
     artifacts_root, bin_root, output_root = _resolve_output_roots(
         project_root, out_dir_path, output_base
     )
+
+    def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
+        if not diagnostics_enabled:
+            return None, None
+        module_reason_map = {
+            name: sorted(reasons) for name, reasons in sorted(module_reasons.items())
+        }
+        payload: dict[str, Any] = {
+            "enabled": True,
+            "total_sec": round(time.perf_counter() - diagnostics_start, 6),
+            "phase_sec": _phase_duration_map(phase_starts),
+            "module_count": len(module_graph),
+            "module_reason_summary": _build_reason_summary(module_reasons),
+            "module_reasons": module_reason_map,
+        }
+        out_path: Path | None = None
+        if diagnostics_path_spec:
+            out_path = _resolve_build_diagnostics_path(
+                diagnostics_path_spec,
+                artifacts_root,
+            )
+        return payload, out_path
+
     namespace_modules: dict[str, Path] = {}
     if namespace_parents:
         for name in sorted(namespace_parents):
@@ -4871,6 +5284,9 @@ def build(
             namespace_modules[name] = stub_path
         if namespace_modules:
             module_graph.update(namespace_modules)
+            if diagnostics_enabled:
+                for name in namespace_modules:
+                    _record_module_reason(module_reasons, name, "namespace_stub")
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
     if trusted and is_wasm:
@@ -4983,9 +5399,21 @@ def build(
         )
         importer_path = _write_importer_module(importer_names, artifacts_root)
         module_graph[IMPORTER_MODULE_NAME] = importer_path
+        if diagnostics_enabled:
+            _record_module_reason(
+                module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
+            )
     machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
     if machinery_path is not None:
         module_graph.setdefault("importlib.machinery", machinery_path)
+        if diagnostics_enabled and "importlib.machinery" in module_graph:
+            _record_module_reason(
+                module_reasons,
+                "importlib.machinery",
+                "machinery_support",
+            )
+    if diagnostics_enabled:
+        phase_starts["module_analysis"] = time.perf_counter()
     known_modules = set(module_graph.keys())
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
@@ -5035,6 +5463,8 @@ def build(
         module_deps[module_name] = _module_dependencies(tree, module_name, module_graph)
         known_func_defaults[module_name] = _collect_func_defaults(tree)
     module_order = _topo_sort_modules(module_graph, module_deps)
+    if diagnostics_enabled:
+        phase_starts["ir_lowering"] = time.perf_counter()
     type_facts = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _collect_type_facts_for_build(
@@ -5623,6 +6053,8 @@ def build(
             "hash": pgo_profile_summary.hash,
             "hot_functions": pgo_profile_summary.hot_functions,
         }
+    if diagnostics_enabled:
+        phase_starts["runtime_setup"] = time.perf_counter()
     if emit_ir_path is not None:
         try:
             emit_ir_path.write_text(
@@ -5663,8 +6095,18 @@ def build(
     cache_hit = False
     cache_key = None
     cache_path: Path | None = None
+    if diagnostics_enabled:
+        phase_starts["cache_lookup"] = time.perf_counter()
     if cache:
-        cache_variant = "linked" if linked else ""
+        cache_variant_parts = [
+            f"profile={profile}",
+            f"runtime_cargo={runtime_cargo_profile}",
+            f"backend_cargo={backend_cargo_profile}",
+            f"emit={emit_mode}",
+        ]
+        if linked:
+            cache_variant_parts.append("linked=1")
+        cache_variant = ";".join(cache_variant_parts)
         cache_key = _cache_key(ir, target, target_triple, cache_variant)
         cache_root = _resolve_cache_root(project_root, cache_dir)
         try:
@@ -5706,6 +6148,12 @@ def build(
 
         # 2. Backend: JSON IR -> output.o / output.wasm
         if not cache_hit:
+            if diagnostics_enabled:
+                now = time.perf_counter()
+                if "backend_codegen" not in phase_starts:
+                    phase_starts["backend_codegen"] = now
+                if "backend_prepare" not in phase_starts:
+                    phase_starts["backend_prepare"] = now
             backend_env = os.environ.copy() if is_wasm else None
             reloc_requested = is_wasm and (
                 linked or os.environ.get("MOLT_WASM_LINK") == "1"
@@ -5776,6 +6224,8 @@ def build(
             daemon_socket: Path | None = None
             daemon_ready = False
             if _backend_daemon_enabled() and not is_wasm:
+                if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
+                    phase_starts["backend_daemon_setup"] = time.perf_counter()
                 daemon_socket = _backend_daemon_socket_path(
                     molt_root, backend_cargo_profile
                 )
@@ -5791,7 +6241,7 @@ def build(
                     except ValueError:
                         pass
                 with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
-                    daemon_ready = _backend_daemon_ping(daemon_socket, timeout=0.5)
+                    daemon_ready = _backend_daemon_ping(daemon_socket, timeout=1.5)
                     if not daemon_ready:
                         daemon_ready = _start_backend_daemon(
                             backend_bin,
@@ -5801,6 +6251,8 @@ def build(
                             startup_timeout=startup_timeout,
                             json_output=json_output,
                         )
+            if diagnostics_enabled and "backend_dispatch" not in phase_starts:
+                phase_starts["backend_dispatch"] = time.perf_counter()
 
             with tempfile.TemporaryDirectory(
                 dir=artifacts_root, prefix="backend_"
@@ -5812,6 +6264,11 @@ def build(
                 backend_compiled = False
                 daemon_error: str | None = None
                 if daemon_ready and daemon_socket is not None:
+                    if (
+                        diagnostics_enabled
+                        and "backend_daemon_compile" not in phase_starts
+                    ):
+                        phase_starts["backend_daemon_compile"] = time.perf_counter()
                     backend_compiled, daemon_error = _compile_with_backend_daemon(
                         daemon_socket,
                         ir=ir,
@@ -5824,6 +6281,11 @@ def build(
                     if not backend_compiled and _backend_daemon_retryable_error(
                         daemon_error
                     ):
+                        if (
+                            diagnostics_enabled
+                            and "backend_daemon_restart" not in phase_starts
+                        ):
+                            phase_starts["backend_daemon_restart"] = time.perf_counter()
                         startup_timeout_raw = os.environ.get(
                             "MOLT_BACKEND_DAEMON_START_TIMEOUT", ""
                         ).strip()
@@ -5839,7 +6301,7 @@ def build(
                             molt_root, f"backend-daemon.{backend_cargo_profile}"
                         ):
                             daemon_ready = _backend_daemon_ping(
-                                daemon_socket, timeout=0.5
+                                daemon_socket, timeout=1.5
                             )
                             if not daemon_ready:
                                 daemon_ready = _start_backend_daemon(
@@ -5874,6 +6336,11 @@ def build(
                             file=sys.stderr,
                         )
                 if not backend_compiled:
+                    if (
+                        diagnostics_enabled
+                        and "backend_subprocess_compile" not in phase_starts
+                    ):
+                        phase_starts["backend_subprocess_compile"] = time.perf_counter()
                     cmd = [str(backend_bin)]
                     if is_wasm:
                         cmd.extend(["--target", "wasm"])
@@ -5914,6 +6381,8 @@ def build(
                             print(backend_process.stderr, end="", file=sys.stderr)
                 if not backend_output.exists():
                     return _fail("Backend output missing", json_output, command="build")
+                if diagnostics_enabled and "backend_artifact_stage" not in phase_starts:
+                    phase_starts["backend_artifact_stage"] = time.perf_counter()
                 try:
                     if output_artifact.parent != Path("."):
                         output_artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -5935,8 +6404,13 @@ def build(
                             command="build",
                         )
                 if cache and cache_path is not None:
+                    if (
+                        diagnostics_enabled
+                        and "backend_cache_write" not in phase_starts
+                    ):
+                        phase_starts["backend_cache_write"] = time.perf_counter()
                     try:
-                        shutil.copy2(output_artifact, cache_path)
+                        _atomic_copy_file(output_artifact, cache_path)
                     except OSError as exc:
                         warnings.append(f"Cache write failed: {exc}")
 
@@ -5996,6 +6470,7 @@ def build(
         primary_output = output_wasm
         if require_linked and linked_output_path is not None:
             primary_output = linked_output_path
+        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
             cache_info: dict[str, Any] = {"enabled": cache, "hit": cache_hit}
             if cache_key:
@@ -6019,6 +6494,8 @@ def build(
                 "linked": linked,
                 "require_linked": require_linked,
             }
+            if diagnostics_payload is not None:
+                data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
             if linked_output_path is not None:
@@ -6039,10 +6516,16 @@ def build(
                 print(f"Successfully built {output_wasm}")
             if linked_output_path is not None and not require_linked:
                 print(f"Successfully linked {linked_output_path}")
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+        )
         return 0
 
     output_obj = output_artifact
     if emit_mode == "obj":
+        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
             cache_info = {"enabled": cache, "hit": cache_hit}
             if cache_key:
@@ -6065,6 +6548,8 @@ def build(
                 "profile": profile,
                 "artifacts": {"object": str(output_obj)},
             }
+            if diagnostics_payload is not None:
+                data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
             if emit_ir_path is not None:
@@ -6078,6 +6563,11 @@ def build(
             _emit_json(payload, json_output)
         else:
             print(f"Successfully built {output_obj}")
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+        )
         return 0
 
     # 3. Linking: output.o + main.c -> binary
@@ -6282,6 +6772,8 @@ int main(int argc, char** argv) {
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
 
+    if diagnostics_enabled and "link" not in phase_starts:
+        phase_starts["link"] = time.perf_counter()
     try:
         link_process = subprocess.run(
             link_cmd,
@@ -6310,6 +6802,56 @@ int main(int argc, char** argv) {
                 )
                 link_process = retry_process
 
+    if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+        dyld_validation_error = _darwin_binary_imports_validation_error(output_binary)
+        if (
+            dyld_validation_error is not None
+            and linker_hint is not None
+            and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
+        ):
+            retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
+            if retry_cmd != link_cmd:
+                try:
+                    retry_process = subprocess.run(
+                        retry_cmd,
+                        capture_output=json_output,
+                        text=True,
+                        timeout=link_timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    return _fail("Linker timed out", json_output, command="build")
+                if retry_process.returncode == 0:
+                    retry_validation_error = _darwin_binary_imports_validation_error(
+                        output_binary
+                    )
+                    if retry_validation_error is None:
+                        warnings.append(
+                            "Linker fallback: "
+                            f"-fuse-ld={linker_hint} produced invalid dyld imports; "
+                            "retried default linker."
+                        )
+                        link_process = retry_process
+                        dyld_validation_error = None
+                    else:
+                        link_process = retry_process
+                        dyld_validation_error = retry_validation_error
+                else:
+                    link_process = retry_process
+        if dyld_validation_error is not None:
+            failure_stderr = (
+                (link_process.stderr or "")
+                + "\nGenerated binary failed dyld import validation.\n"
+                + dyld_validation_error
+                + "\n"
+            )
+            link_process = subprocess.CompletedProcess(
+                args=link_cmd,
+                returncode=1,
+                stdout=link_process.stdout,
+                stderr=failure_stderr,
+            )
+
+    diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
     if link_process.returncode == 0:
         if json_output:
             cache_info = {"enabled": cache, "hit": cache_hit}
@@ -6337,6 +6879,8 @@ int main(int argc, char** argv) {
                 "emit": emit_mode,
                 "profile": profile,
             }
+            if diagnostics_payload is not None:
+                data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
             if emit_ir_path is not None:
@@ -6354,6 +6898,11 @@ int main(int argc, char** argv) {
             _emit_json(payload, json_output)
         else:
             print(f"Successfully built {output_binary}")
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+        )
     else:
         if json_output:
             data: dict[str, Any] = {
@@ -6371,6 +6920,8 @@ int main(int argc, char** argv) {
                 "hit": cache_hit,
                 "key": cache_key,
             }
+            if diagnostics_payload is not None:
+                data["compile_diagnostics"] = diagnostics_payload
             if cache_path is not None:
                 data["cache"]["path"] = str(cache_path)
             if link_process.stdout:
@@ -6386,6 +6937,11 @@ int main(int argc, char** argv) {
             _emit_json(payload, json_output)
         else:
             print("Linking failed", file=sys.stderr)
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+        )
 
     return link_process.returncode
 

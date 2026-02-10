@@ -419,8 +419,10 @@ def mktime(t: Any) -> float:
     return float(_MOLT_TIME_MKTIME(tuple(tuple_val)))
 
 
-def timegm(t: Any) -> float:
+def timegm(t: Any) -> int:
     tuple_val = _coerce_time_tuple(t)
-    if len(tuple_val) != 9:
-        raise TypeError("timegm(): illegal time tuple argument")
-    return float(_MOLT_TIME_TIMEGM(tuple(tuple_val)))
+    if len(tuple_val) < 6:
+        raise ValueError(
+            f"not enough values to unpack (expected 6, got {len(tuple_val)})"
+        )
+    return int(_MOLT_TIME_TIMEGM(tuple(tuple_val)))

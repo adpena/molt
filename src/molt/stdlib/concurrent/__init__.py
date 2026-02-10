@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
-import concurrent.futures as futures
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_thread_submit", globals())
+_require_intrinsic("molt_thread_spawn", globals())
+
+from . import futures as futures  # noqa: E402
 
 __all__ = ["futures"]

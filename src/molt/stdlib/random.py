@@ -8,9 +8,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from bisect import bisect as _bisect
 from collections.abc import Sequence as _Sequence
 from itertools import accumulate as _accumulate, repeat as _repeat
+import math as _math
+import os as _os
 from typing import SupportsInt, cast
-from molt.stdlib import math as _math
-from molt.stdlib import os as _os
 
 _require_intrinsic("molt_stdlib_probe", globals())
 
@@ -415,13 +415,14 @@ class Random:
             raise ValueError("Cannot convert negative int")
         if k == 0:
             return 0
+        words = (k - 1) // 32 + 1
         out = 0
-        bits = 0
-        while bits < k:
+        top_bits = k & 31
+        for i in range(words):
             r = self._rand_u32()
-            take = min(32, k - bits)
-            out |= (r & ((1 << take) - 1)) << bits
-            bits += take
+            if i == words - 1 and top_bits:
+                r >>= 32 - top_bits
+            out |= r << (i * 32)
         return out
 
     def randbytes(self, n: int) -> bytes:
@@ -477,7 +478,10 @@ class Random:
         if cum_weights is None:
             if weights is None:
                 n += 0.0
-                return [population[_floor(random() * n)] for _ in _repeat(None, k)]
+                result = []
+                for _ in _repeat(None, k):
+                    result.append(population[_floor(random() * n)])
+                return result
             try:
                 cum_weights = list(_accumulate(weights))
             except TypeError:
@@ -497,13 +501,13 @@ class Random:
         if not _isfinite(total):
             raise ValueError("Total of weights must be finite")
         hi = n - 1
-        return [
-            population[_bisect(cum_weights, random() * total, 0, hi)]
-            for _ in _repeat(None, k)
-        ]
+        result = []
+        for _ in _repeat(None, k):
+            result.append(population[_bisect(cum_weights, random() * total, 0, hi)])
+        return result
 
     def sample(self, population, k, *, counts=None):
-        if not isinstance(population, _Sequence):
+        if not hasattr(population, "__len__") or not hasattr(population, "__getitem__"):
             raise TypeError(
                 "Population must be a sequence.  For dicts or sets, use sorted(d)."
             )
@@ -518,7 +522,10 @@ class Random:
             if total < 0:
                 raise ValueError("Counts must be non-negative")
             selections = self.sample(range(total), k=k)
-            return [population[_bisect(cum_counts, s)] for s in selections]
+            result = []
+            for s in selections:
+                result.append(population[_bisect(cum_counts, s)])
+            return result
 
         randbelow = self._randbelow
         if not 0 <= k <= n:
@@ -528,7 +535,7 @@ class Random:
         if k > 5:
             setsize += _next_power_of_four(k * 3)
         if n <= setsize:
-            pool = list(population)
+            pool = [population[i] for i in range(n)]
             for i in range(k):
                 j = randbelow(n - i)
                 result[i] = pool[j]

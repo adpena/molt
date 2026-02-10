@@ -68,6 +68,32 @@ class HTTPError(URLError):
     def headers(self, headers: object) -> None:
         self.hdrs = headers
 
+    def read(self, size: int = -1) -> object:
+        fp = self.fp
+        if fp is None:
+            return b""
+        read = getattr(fp, "read", None)
+        if callable(read):
+            return read(size)
+        return b""
+
+    def close(self) -> None:
+        fp = self.fp
+        if fp is None:
+            return
+        close = getattr(fp, "close", None)
+        if callable(close):
+            close()
+
+    def info(self) -> object:
+        return self.headers
+
+    def geturl(self) -> object:
+        return self.filename
+
+    def getcode(self) -> object:
+        return self.code
+
 
 class ContentTooShortError(URLError):
     content: object

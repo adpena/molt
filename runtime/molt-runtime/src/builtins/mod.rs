@@ -1,5 +1,6 @@
 pub(crate) mod abc;
 pub(crate) mod annotations;
+pub(crate) mod ast;
 pub(crate) mod attr;
 pub(crate) mod attributes;
 pub(crate) mod callable;

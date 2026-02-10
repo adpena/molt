@@ -51,6 +51,7 @@ Planned milestones:
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` using iterable length hints to reduce rehashing.
 - Implemented: websocket readiness integration via io_poller for native + wasm (`molt_ws_wait_new`) to avoid busy-polling and enable batch wakeups.
+- Implemented: release iteration compile profile lane via Cargo `release-fast`, including dedicated compile-progress measurement cases (`release_fast_cold`, `release_fast_warm`, `release_fast_nocache_warm`) for before/after release-lane comparison.
 - TODO(perf, owner:runtime, milestone:RT3, priority:P2, status:planned): cache mio websocket poll streams/registrations to avoid per-wait `TcpStream` clones.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops.
 - Implemented: removed linked-wasm static intrinsic dispatch workaround for channel intrinsics by canonicalizing the runtime channel-handle ABI to 64-bit bits values, restoring stable dynamic intrinsic call dispatch.
@@ -173,9 +174,11 @@ Sign-off criteria:
   reducing Python task-scan/callback loops in cancellation/error and
   ready-dispatch hot paths.
 - Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, and `collections` (capability-gated env access).
-- Partial: `decimal` shim backed by libmpdec intrinsics (contexts/traps/flags, quantize/compare/normalize/exp/div, `as_tuple`, `str`/`repr`/float conversions).
+- Partial: `decimal` shim backed by Rust intrinsics (contexts/traps/flags, quantize/compare/normalize/exp/div, `as_tuple`, `str`/`repr`/float conversions) with native Rust backend when vendored `libmpdec` sources are unavailable.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
 - Implemented: strict intrinsics registry + removal of CPython shim fallbacks in tooling/tests; JSON/MsgPack helpers now use runtime intrinsics only.
+- Implemented: `ast.parse` / `ast.walk` / `ast.get_docstring` now route through Rust intrinsics (`molt_ast_parse`, `molt_ast_walk`, `molt_ast_get_docstring`) with Python wrappers reduced to constructor wiring and argument forwarding.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): extend Rust ast lowering to additional stmt/expr variants and full argument shape parity; unsupported nodes currently raise RuntimeError immediately.
 - Implemented: `os` fd I/O lowering for compiled binaries (`molt_os_pipe`, `molt_os_read`, `molt_os_write`) with differential coverage (`os_pipe_basic.py`, `os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only runs.
 - Implemented: threading basic parity lane is green (`tests/differential/basic/threading_*.py` -> `24/24` pass) under intrinsic-only compiled runs with RSS profiling enabled.
 - Implemented: importlib namespace/distribution path discovery now lowers through runtime intrinsics (`molt_importlib_namespace_paths`, `molt_importlib_metadata_dist_paths`) and `importlib.metadata` file reads now lower via `molt_importlib_read_file` (no Python-side dist-info scan/open fallback).
@@ -183,6 +186,7 @@ Sign-off criteria:
 - Implemented: `importlib.resources` loader-reader `resource_path` now enforces filesystem-only results across direct/traversable/roots fallback lanes; archive-member paths are filtered to `None` and continue through intrinsic byte-open flows.
 - Implemented: `importlib.metadata` header + entry-point parsing now lowers through runtime payload intrinsic (`molt_importlib_metadata_payload`), leaving wrappers as cache/object shapers.
 - Implemented: `importlib.util.find_spec` now uses a runtime payload intrinsic (`molt_importlib_find_spec_payload`) for builtin/source spec shaping + bootstrap search-path resolution; Python wrappers no longer run a separate filesystem probe path.
+- Implemented: `importlib.import_module` now falls back to the intrinsic-backed spec/loader flow (`find_spec` + `module_from_spec` + loader `exec_module`) when direct runtime import returns a non-module payload, preserving dynamic `sys.path` package imports without host-Python fallback.
 - Implemented: `importlib.resources.files` package root/namespace resolution now lowers through runtime payload intrinsic (`molt_importlib_resources_package_payload`) rather than Python namespace scanning.
 - Implemented: `importlib.resources` loader-reader discovery now falls back from `module.__spec__.loader` to `module.__loader__` inside runtime intrinsic `molt_importlib_resources_loader_reader`, keeping custom reader lookup fully runtime-owned.
 - Implemented: `importlib.machinery.SourceFileLoader.exec_module` now sources decoded module text through runtime payload intrinsic (`molt_importlib_source_exec_payload`) before intrinsic restricted execution (`molt_importlib_exec_restricted_source`), removing Python-side source decode fallback logic.

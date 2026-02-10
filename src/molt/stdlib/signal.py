@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import enum as _enum
 from types import ModuleType
 from typing import cast
-
-from molt.stdlib import enum as _enum
 
 _capabilities: ModuleType | None
 try:

@@ -704,6 +704,24 @@ impl SimpleBackend {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
         flag_builder.set("opt_level", "speed").unwrap();
+        // Cranelift verifier can dominate compile time for very large generated
+        // functions during local/dev differential sweeps. Keep it enabled by
+        // default for release builds, but default it off for debug/dev builds.
+        // Callers can always override with MOLT_BACKEND_ENABLE_VERIFIER=0|1.
+        let default_enable_verifier = !cfg!(debug_assertions);
+        let enable_verifier = std::env::var("MOLT_BACKEND_ENABLE_VERIFIER")
+            .ok()
+            .map(|raw| {
+                let norm = raw.trim().to_ascii_lowercase();
+                matches!(norm.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(default_enable_verifier);
+        flag_builder
+            .set(
+                "enable_verifier",
+                if enable_verifier { "true" } else { "false" },
+            )
+            .unwrap();
         let isa_builder = if let Some(triple) = target {
             isa::lookup_by_name(triple).unwrap_or_else(|msg| {
                 panic!("target {} is not supported: {}", triple, msg);
@@ -8614,6 +8632,22 @@ impl SimpleBackend {
                     let callee = self
                         .module
                         .declare_function("molt_module_cache_get", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*name_bits]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "module_import" => {
+                    let args = op.args.as_ref().unwrap();
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_module_import", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);

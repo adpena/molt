@@ -1,4 +1,4 @@
-use super::generators::{asyncio_call_method0, asyncio_clear_pending_exception};
+use super::generators::asyncio_clear_pending_exception;
 use super::process_task_state;
 use super::{await_waiters_take, wake_task_ptr};
 use crate::*;
@@ -208,7 +208,12 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
 
         let mut fd = to_i64(value_obj);
         if fd.is_none() {
-            let fileno_bits = unsafe { asyncio_call_method0(_py, value_bits, b"fileno") };
+            let Some(fileno_name_bits) = attr_name_bits_from_bytes(_py, b"fileno") else {
+                return MoltObject::none().bits();
+            };
+            let missing = missing_bits(_py);
+            let fileno_bits = molt_getattr_builtin(value_bits, fileno_name_bits, missing);
+            dec_ref_bits(_py, fileno_name_bits);
             if exception_pending(_py) {
                 unsafe { asyncio_clear_pending_exception(_py) };
                 return raise_exception::<u64>(
@@ -217,9 +222,41 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
                     "unsupported subprocess stdio option",
                 );
             }
-            fd = to_i64(obj_from_bits(fileno_bits));
+            if fileno_bits == missing {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "unsupported subprocess stdio option",
+                );
+            }
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(fileno_bits))) {
+                if !obj_from_bits(fileno_bits).is_none() {
+                    dec_ref_bits(_py, fileno_bits);
+                }
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "unsupported subprocess stdio option",
+                );
+            }
+            let out_bits = unsafe { call_callable0(_py, fileno_bits) };
             if !obj_from_bits(fileno_bits).is_none() {
                 dec_ref_bits(_py, fileno_bits);
+            }
+            if exception_pending(_py) {
+                unsafe { asyncio_clear_pending_exception(_py) };
+                if !obj_from_bits(out_bits).is_none() {
+                    dec_ref_bits(_py, out_bits);
+                }
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "unsupported subprocess stdio option",
+                );
+            }
+            fd = to_i64(obj_from_bits(out_bits));
+            if !obj_from_bits(out_bits).is_none() {
+                dec_ref_bits(_py, out_bits);
             }
         }
         let Some(fd) = fd else {

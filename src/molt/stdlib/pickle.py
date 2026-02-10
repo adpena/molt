@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any
 
 __all__ = [
@@ -15,6 +16,9 @@ __all__ = [
     "load",
     "loads",
 ]
+
+_require_intrinsic("molt_stdlib_probe", globals())
+_pickle_encode_protocol0 = _require_intrinsic("molt_pickle_encode_protocol0", globals())
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): support
 # pickle protocols >= 1, memoized cycles, and additional builtins (bytes, bytearray,
@@ -65,7 +69,7 @@ def dumps(obj: Any, protocol: int | None = None) -> bytes:
     out: list[str] = []
     _dump_obj(obj, out)
     out.append(".")
-    return bytes("".join(out), "utf-8")
+    return _pickle_encode_protocol0(out)
 
 
 def load(file) -> Any:

@@ -4,7 +4,10 @@ import importlib.util
 import json
 import os
 import platform
+import re
+import signal
 import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -212,6 +215,104 @@ def _base_python_env() -> dict[str, str]:
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     return _prepend_pythonpath(env, "src")
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _kill_pid(pid: int, *, grace: float = 0.75) -> None:
+    if pid <= 0:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + max(0.05, grace)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return
+
+
+def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
+    if os.name != "posix" or not socket_path.exists():
+        return False
+    payload = {"version": 1, "ping": True}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(socket_path))
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            sock.shutdown(socket.SHUT_WR)
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+    except OSError:
+        return False
+    try:
+        response = json.loads(b"".join(chunks).decode("utf-8", "replace").strip())
+    except json.JSONDecodeError:
+        return False
+    return bool(response.get("ok")) and bool(response.get("pong"))
+
+
+def _prune_backend_daemons() -> None:
+    if os.name != "posix":
+        return
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
+    socket_pat = re.compile(r"--socket\s+(\S+)")
+    groups: dict[Path, list[int]] = {}
+    for line in result.stdout.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        cmd = match.group(2)
+        if "molt-backend" not in cmd or "--daemon" not in cmd:
+            continue
+        socket_match = socket_pat.search(cmd)
+        if socket_match is None:
+            continue
+        socket_path = Path(socket_match.group(1)).expanduser()
+        groups.setdefault(socket_path, []).append(pid)
+    for socket_path, pids in groups.items():
+        live = sorted({pid for pid in pids if _pid_alive(pid)})
+        if not live:
+            continue
+        if not socket_path.exists():
+            for pid in live:
+                _kill_pid(pid)
+            continue
+        if len(live) > 1:
+            for pid in live[:-1]:
+                _kill_pid(pid)
+            live = live[-1:]
+        _daemon_ping(socket_path)
 
 
 def measure_runtime(cmd_args, script=None, env=None):
@@ -906,6 +1007,8 @@ def main():
     use_codon = not args.no_codon
     use_depyler = not args.no_depyler
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
+
+    _prune_backend_daemons()
 
     warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
     results = bench_results(

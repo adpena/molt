@@ -289,7 +289,12 @@ class Context:
         _MOLT_DECIMAL_CONTEXT_SET_ROUNDING(self._handle, rid)
 
     def create_decimal(self, value: object) -> "Decimal":
-        return Decimal(value, context=self)
+        # Decimal(...) construction is context-invariant; apply this context by routing
+        # through a context-aware arithmetic op.
+        dec = Decimal(value)
+        if isinstance(dec.as_tuple().exponent, str):
+            return dec
+        return self.divide(dec, Decimal(1))
 
     def divide(self, a: "Decimal", b: "Decimal") -> "Decimal":
         return _decimal_from_handle(

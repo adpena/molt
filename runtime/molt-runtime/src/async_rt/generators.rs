@@ -23,13 +23,15 @@ use crate::{
     asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes, await_waiter_clear, await_waiter_register, await_waiters,
     await_waiters_take, call_callable0, call_callable1, call_callable2, call_callable3,
-    call_poll_fn, class_name_for_error, clear_exception, clear_exception_state, current_task_ptr,
-    dec_ref_bits, exception_args_bits, exception_clear_reason_set, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_kind_bits,
-    exception_pending, exception_stack_depth, exception_stack_set_depth, fn_ptr_code_get,
-    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
-    header_from_obj_ptr, inc_ref_bits, instant_from_monotonic_secs, io_wait_poll_fn_addr,
-    is_truthy, maybe_ptr_from_bits, missing_bits, molt_anext, molt_bytes_from_obj, molt_call_bind,
+    call_poll_fn, class_name_for_error, clear_exception, clear_exception_state,
+    context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits, exception_args_bits,
+    exception_clear_reason_set, exception_context_align_depth, exception_context_fallback_pop,
+    exception_context_fallback_push, exception_kind_bits, exception_pending, exception_stack_depth,
+    exception_stack_set_depth, exception_type_bits_from_name, fn_ptr_code_get,
+    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
+    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
+    instant_from_monotonic_secs, io_wait_poll_fn_addr, is_truthy, issubclass_bits,
+    maybe_ptr_from_bits, missing_bits, molt_anext, molt_bytes_from_obj, molt_call_bind,
     molt_callargs_expand_star, molt_callargs_new, molt_exception_clear, molt_exception_kind,
     molt_exception_last, molt_exception_set_last, molt_float_from_obj, molt_getitem_method,
     molt_io_wait_new, molt_is_callable, molt_len, molt_raise, molt_set_add, molt_set_new,
@@ -50,7 +52,7 @@ use crate::{
     GEN_YIELD_FROM_OFFSET, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
     HEADER_FLAG_SPAWN_RETAIN, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
     TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_STRING,
-    TYPE_ID_TUPLE,
+    TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -82,6 +84,15 @@ fn asyncgen_locals_trace_enabled() -> bool {
     })
 }
 
+fn asyncio_connect_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        let value = std::env::var("MOLT_TRACE_ASYNCIO_CONNECT").unwrap_or_default();
+        let trimmed = value.trim().to_ascii_lowercase();
+        !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
+    })
+}
+
 #[inline]
 fn debug_current_task() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -95,6 +106,8 @@ const ASYNCIO_WAIT_RETURN_FIRST_COMPLETED: i64 = 1;
 const ASYNCIO_WAIT_RETURN_FIRST_EXCEPTION: i64 = 2;
 const ASYNCIO_WAIT_FLAG_HAS_TIMER: i64 = 1;
 const ASYNCIO_WAIT_FLAG_TIMEOUT_READY: i64 = 2;
+const ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED: i64 = 4;
+const ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED_2: i64 = 8;
 const ASYNCIO_GATHER_RESULT_OFFSET: usize = 4;
 const ASYNCIO_SOCKET_IO_EVENT_READ: i64 = 1;
 const ASYNCIO_SOCKET_IO_EVENT_WRITE: i64 = 2;
@@ -518,15 +531,18 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             let caller_depth = exception_stack_depth();
             let caller_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+            let caller_context_stack = context_stack_take();
             let caller_context = caller_active
                 .last()
                 .copied()
                 .unwrap_or(MoltObject::none().bits());
             exception_context_fallback_push(caller_context);
             let gen_active = generator_exception_stack_take(ptr);
+            let gen_context_stack = generator_context_stack_take(ptr);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = gen_active;
             });
+            context_stack_store(gen_context_stack);
             let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
             let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
             let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -557,9 +573,12 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             let gen_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
             generator_exception_stack_store(ptr, gen_active);
+            let gen_context_stack = context_stack_take();
+            generator_context_stack_store(ptr, gen_context_stack);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = caller_active;
             });
+            context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
             exception_context_fallback_pop();
             if pending {
@@ -607,15 +626,18 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             let caller_depth = exception_stack_depth();
             let caller_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+            let caller_context_stack = context_stack_take();
             let caller_context = caller_active
                 .last()
                 .copied()
                 .unwrap_or(MoltObject::none().bits());
             exception_context_fallback_push(caller_context);
             let gen_active = generator_exception_stack_take(ptr);
+            let gen_context_stack = generator_context_stack_take(ptr);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = gen_active;
             });
+            context_stack_store(gen_context_stack);
             let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
             let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
             let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -646,9 +668,12 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             let gen_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
             generator_exception_stack_store(ptr, gen_active);
+            let gen_context_stack = context_stack_take();
+            generator_context_stack_store(ptr, gen_context_stack);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = caller_active;
             });
+            context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
             exception_context_fallback_pop();
             if pending {
@@ -684,15 +709,18 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
     let caller_depth = exception_stack_depth();
     let caller_active =
         ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+    let caller_context_stack = context_stack_take();
     let caller_context = caller_active
         .last()
         .copied()
         .unwrap_or(MoltObject::none().bits());
     exception_context_fallback_push(caller_context);
     let gen_active = generator_exception_stack_take(ptr);
+    let gen_context_stack = generator_context_stack_take(ptr);
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         *stack.borrow_mut() = gen_active;
     });
+    context_stack_store(gen_context_stack);
     let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
     let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
     let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -722,9 +750,12 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
     exception_context_align_depth(_py, new_depth);
     let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     generator_exception_stack_store(ptr, gen_active);
+    let gen_context_stack = context_stack_take();
+    generator_context_stack_store(ptr, gen_context_stack);
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         *stack.borrow_mut() = caller_active;
     });
+    context_stack_store(caller_context_stack);
     exception_stack_set_depth(_py, caller_depth);
     exception_context_fallback_pop();
     if exc_pending {
@@ -840,15 +871,18 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             let caller_depth = exception_stack_depth();
             let caller_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+            let caller_context_stack = context_stack_take();
             let caller_context = caller_active
                 .last()
                 .copied()
                 .unwrap_or(MoltObject::none().bits());
             exception_context_fallback_push(caller_context);
             let gen_active = generator_exception_stack_take(ptr);
+            let gen_context_stack = generator_context_stack_take(ptr);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = gen_active;
             });
+            context_stack_store(gen_context_stack);
             let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
             let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
             let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -879,9 +913,12 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             let gen_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
             generator_exception_stack_store(ptr, gen_active);
+            let gen_context_stack = context_stack_take();
+            generator_context_stack_store(ptr, gen_context_stack);
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = caller_active;
             });
+            context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
             exception_context_fallback_pop();
             if pending {
@@ -963,8 +1000,48 @@ pub extern "C" fn molt_generator_throw_method(gen_bits: u64, exc_bits: u64) -> u
         if exception_pending(_py) {
             return res;
         }
+        let is_generator_exit = unsafe { throw_arg_is_generator_exit(_py, exc_bits) };
+        let unpacked = generator_unpack_pair(_py, res);
+        if is_generator_exit {
+            let done = unpacked.map(|(_, done)| done);
+            let closed_now = unsafe { generator_closed(ptr) };
+            if done == Some(true) || closed_now {
+                return molt_raise(exc_bits);
+            }
+        }
         unsafe { generator_method_result(_py, res) }
     })
+}
+
+unsafe fn throw_arg_is_generator_exit(_py: &PyToken<'_>, exc_bits: u64) -> bool {
+    let gen_exit_bits = exception_type_bits_from_name(_py, "GeneratorExit");
+    if obj_from_bits(gen_exit_bits).is_none() {
+        return false;
+    }
+    let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
+        return false;
+    };
+    match object_type_id(exc_ptr) {
+        TYPE_ID_EXCEPTION => {
+            let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr)))
+                .unwrap_or_default();
+            if kind == "GeneratorExit" {
+                return true;
+            }
+            let class_bits = crate::exception_class_bits(exc_ptr);
+            class_bits == gen_exit_bits || issubclass_bits(class_bits, gen_exit_bits)
+        }
+        TYPE_ID_TUPLE => {
+            let items = seq_vec_ref(exc_ptr);
+            if items.is_empty() {
+                false
+            } else {
+                throw_arg_is_generator_exit(_py, items[0])
+            }
+        }
+        TYPE_ID_TYPE => exc_bits == gen_exit_bits || issubclass_bits(exc_bits, gen_exit_bits),
+        _ => false,
+    }
 }
 
 #[no_mangle]
@@ -2184,6 +2261,14 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 }
                 raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
                 return 0;
+            }
+            if ((*header).flags & HEADER_FLAG_COROUTINE) != 0
+                && (*header).state == 0
+                && task_cancel_pending(ptr)
+            {
+                task_take_cancel_pending(ptr);
+                task_mark_done(ptr);
+                return raise_cancelled_with_message::<i64>(_py, ptr);
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
             if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
@@ -4370,6 +4455,8 @@ unsafe fn asyncio_pending_with_wait(
 ) -> i64 {
     let mut waiter_bits = *payload_ptr.add(slot_idx);
     if obj_from_bits(waiter_bits).is_none() {
+        // Only int-like runtime objects are valid fd carriers here.
+        // Raw bit reinterpretation can misread tagged sentinels (e.g. None) as fds.
         let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1);
         waiter_bits = if fd < 0 {
             molt_async_sleep_new(
@@ -4397,6 +4484,41 @@ unsafe fn asyncio_pending_with_wait(
     }
     asyncio_drop_slot_ref(_py, payload_ptr, slot_idx);
     pending_bits_i64()
+}
+
+unsafe fn asyncio_pending_with_connect_retry(
+    _py: &PyToken<'_>,
+    payload_ptr: *mut u64,
+    slot_idx: usize,
+    fd_bits: u64,
+) -> i64 {
+    asyncio_pending_with_wait(
+        _py,
+        payload_ptr,
+        slot_idx,
+        fd_bits,
+        ASYNCIO_SOCKET_IO_EVENT_WRITE,
+    )
+}
+
+unsafe fn asyncio_socket_is_connected(_py: &PyToken<'_>, sock_bits: u64) -> bool {
+    let Some(peer_bits) = asyncio_call_method0_allow_missing(_py, sock_bits, b"getpeername") else {
+        if exception_pending(_py) {
+            asyncio_clear_pending_exception(_py);
+        }
+        return false;
+    };
+    if exception_pending(_py) {
+        if !obj_from_bits(peer_bits).is_none() {
+            dec_ref_bits(_py, peer_bits);
+        }
+        asyncio_clear_pending_exception(_py);
+        return false;
+    }
+    if !obj_from_bits(peer_bits).is_none() {
+        dec_ref_bits(_py, peer_bits);
+    }
+    true
 }
 
 fn asyncio_msg_dontwait() -> i64 {
@@ -5498,43 +5620,102 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
         let payload_ptr = obj_ptr as *mut u64;
         let sock_bits = *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_SOCK);
         let addr_bits = *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_ADDR);
-        let rc_bits = asyncio_call_method1(_py, sock_bits, b"connect_ex", addr_bits);
-        if exception_pending(_py) {
-            let exc_bits = asyncio_take_pending_exception_bits(_py);
-            let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);
-            if errno != i64::MIN && asyncio_retryable_socket_errno(errno) {
+        let mut allow_immediate_retry = true;
+        loop {
+            let rc_bits = asyncio_call_method1(_py, sock_bits, b"connect_ex", addr_bits);
+            if exception_pending(_py) {
+                let exc_bits = asyncio_take_pending_exception_bits(_py);
+                let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);
+                if asyncio_connect_trace_enabled() {
+                    eprintln!(
+                        "molt async connect: exception errno={} sock=0x{:x}",
+                        errno, sock_bits
+                    );
+                }
+                if errno != i64::MIN && asyncio_retryable_socket_errno(errno) {
+                    dec_ref_bits(_py, exc_bits);
+                    if asyncio_socket_is_connected(_py, sock_bits) {
+                        if asyncio_connect_trace_enabled() {
+                            eprintln!(
+                                "molt async connect: connected-via-getpeername sock=0x{:x}",
+                                sock_bits
+                            );
+                        }
+                        asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                        return MoltObject::none().bits() as i64;
+                    }
+                    let pending = asyncio_pending_with_connect_retry(
+                        _py,
+                        payload_ptr,
+                        ASYNCIO_SOCK_CONNECT_SLOT_WAIT,
+                        *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_FD),
+                    );
+                    if pending == pending_bits_i64()
+                        && allow_immediate_retry
+                        && obj_from_bits(*payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_WAIT)).is_none()
+                    {
+                        allow_immediate_retry = false;
+                        continue;
+                    }
+                    if asyncio_connect_trace_enabled() {
+                        eprintln!(
+                            "molt async connect: waiting errno={} wait_slot_none={}",
+                            errno,
+                            obj_from_bits(*payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_WAIT))
+                                .is_none()
+                        );
+                    }
+                    return pending;
+                }
+                let raised = molt_raise(exc_bits);
                 dec_ref_bits(_py, exc_bits);
-                let fd_bits = *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_FD);
-                return asyncio_pending_with_wait(
+                return raised as i64;
+            }
+            let rc = to_i64(obj_from_bits(rc_bits)).unwrap_or(libc::EINVAL as i64);
+            dec_ref_bits(_py, rc_bits);
+            if asyncio_connect_trace_enabled() {
+                eprintln!("molt async connect: rc={} sock=0x{:x}", rc, sock_bits);
+            }
+            if rc == 0 || rc == libc::EISCONN as i64 {
+                asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                return MoltObject::none().bits() as i64;
+            }
+            if asyncio_retryable_socket_errno(rc) {
+                if asyncio_socket_is_connected(_py, sock_bits) {
+                    if asyncio_connect_trace_enabled() {
+                        eprintln!(
+                            "molt async connect: connected-after-retry sock=0x{:x}",
+                            sock_bits
+                        );
+                    }
+                    asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                    return MoltObject::none().bits() as i64;
+                }
+                let pending = asyncio_pending_with_connect_retry(
                     _py,
                     payload_ptr,
                     ASYNCIO_SOCK_CONNECT_SLOT_WAIT,
-                    fd_bits,
-                    ASYNCIO_SOCKET_IO_EVENT_WRITE,
+                    *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_FD),
                 );
+                if pending == pending_bits_i64()
+                    && allow_immediate_retry
+                    && obj_from_bits(*payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_WAIT)).is_none()
+                {
+                    allow_immediate_retry = false;
+                    continue;
+                }
+                if asyncio_connect_trace_enabled() {
+                    eprintln!(
+                        "molt async connect: pending rc={} wait_slot_none={}",
+                        rc,
+                        obj_from_bits(*payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_WAIT)).is_none()
+                    );
+                }
+                return pending;
             }
-            let raised = molt_raise(exc_bits);
-            dec_ref_bits(_py, exc_bits);
-            return raised as i64;
-        }
-        let rc = to_i64(obj_from_bits(rc_bits)).unwrap_or(libc::EINVAL as i64);
-        dec_ref_bits(_py, rc_bits);
-        if rc == 0 {
             asyncio_drop_payload_slots(_py, payload_ptr, 4);
-            return MoltObject::none().bits() as i64;
+            return raise_os_error_errno::<i64>(_py, rc, "connect");
         }
-        if asyncio_retryable_socket_errno(rc) {
-            let fd_bits = *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_FD);
-            return asyncio_pending_with_wait(
-                _py,
-                payload_ptr,
-                ASYNCIO_SOCK_CONNECT_SLOT_WAIT,
-                fd_bits,
-                ASYNCIO_SOCKET_IO_EVENT_WRITE,
-            );
-        }
-        asyncio_drop_payload_slots(_py, payload_ptr, 4);
-        raise_os_error_errno::<i64>(_py, rc, "connect")
     })
 }
 
@@ -6581,7 +6762,9 @@ pub extern "C" fn molt_asyncio_wait_new(
                 }
                 wait_flags |= ASYNCIO_WAIT_FLAG_HAS_TIMER;
             } else {
-                wait_flags |= ASYNCIO_WAIT_FLAG_TIMEOUT_READY;
+                // Match CPython: timeout<=0 still gives scheduled tasks one loop turn
+                // before timing out.
+                wait_flags |= ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED_2;
             }
         }
 
@@ -6645,6 +6828,18 @@ pub unsafe extern "C" fn molt_asyncio_wait_poll(obj_bits: u64) -> i64 {
         };
         let mut wait_flags = to_i64(obj_from_bits(*payload_ptr.add(3))).unwrap_or(0);
         if !triggered {
+            if (wait_flags & ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED_2) != 0 {
+                wait_flags &= !ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED_2;
+                wait_flags |= ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED;
+                *payload_ptr.add(3) = MoltObject::from_int(wait_flags).bits();
+                return pending_bits_i64();
+            }
+            if (wait_flags & ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED) != 0 {
+                wait_flags &= !ASYNCIO_WAIT_FLAG_TIMEOUT_DEFERRED;
+                wait_flags |= ASYNCIO_WAIT_FLAG_TIMEOUT_READY;
+                *payload_ptr.add(3) = MoltObject::from_int(wait_flags).bits();
+                return pending_bits_i64();
+            }
             if (wait_flags & ASYNCIO_WAIT_FLAG_TIMEOUT_READY) != 0 {
                 triggered = true;
             } else if (wait_flags & ASYNCIO_WAIT_FLAG_HAS_TIMER) != 0 {
@@ -7324,7 +7519,30 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                     if !done_now {
                         wait_for_cancel_target(_py, target_bits);
                         (*header).state = WAIT_FOR_STATE_CANCEL_WAIT;
-                        return pending_bits_i64();
+                        // Fast-path immediate timeout cancellation: if the target settles
+                        // synchronously (common when it has not started yet), resolve now
+                        // instead of yielding another scheduler turn.
+                        let target_res = wait_for_poll_target(_py, target_bits);
+                        if target_res == pending_bits_i64() {
+                            return pending_bits_i64();
+                        }
+                        let flags = wait_for_flags(payload_ptr);
+                        if (flags & WAIT_FOR_FLAG_FORCE_TIMEOUT) != 0 {
+                            wait_for_clear_pending_exception(_py);
+                            return wait_for_raise_timeout(_py);
+                        }
+                        if exception_pending(_py) {
+                            let exc_bits = molt_exception_last();
+                            let kind_bits = molt_exception_kind(exc_bits);
+                            let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+                            dec_ref_bits(_py, kind_bits);
+                            dec_ref_bits(_py, exc_bits);
+                            if kind.as_deref() == Some("CancelledError") {
+                                molt_exception_clear();
+                                return wait_for_raise_timeout(_py);
+                            }
+                        }
+                        return target_res;
                     }
                 } else {
                     let timer_bits = molt_async_sleep_new(

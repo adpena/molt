@@ -234,6 +234,18 @@ fn asyncio_event_loop_get_impl(_py: &PyToken<'_>) -> u64 {
     bits
 }
 
+fn asyncio_event_loop_get_current_impl(_py: &PyToken<'_>) -> u64 {
+    let bits = asyncio_event_loop_get_impl(_py);
+    if !obj_from_bits(bits).is_none() {
+        return bits;
+    }
+    raise_exception(
+        _py,
+        "RuntimeError",
+        "There is no current event loop in thread 'MainThread'.",
+    )
+}
+
 fn asyncio_event_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     let tid = crate::concurrency::current_thread_id();
     let mut guard = asyncio_event_loop_map(_py).lock().unwrap();
@@ -643,7 +655,10 @@ fn asyncio_child_watcher_pop_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid_bi
     out_bits
 }
 
-fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+fn asyncio_task_registry_live_values_impl(
+    _py: &PyToken<'_>,
+    loop_bits: u64,
+) -> Result<Vec<u64>, u64> {
     let target_loop = if obj_from_bits(loop_bits).is_none() {
         None
     } else {
@@ -655,13 +670,13 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     };
     let done_name_ptr = alloc_string(_py, b"done");
     if done_name_ptr.is_null() {
-        return MoltObject::none().bits();
+        return Err(MoltObject::none().bits());
     }
     let done_name_bits = MoltObject::from_ptr(done_name_ptr).bits();
     let loop_name_ptr = alloc_string(_py, b"_loop");
     if loop_name_ptr.is_null() {
         dec_ref_bits(_py, done_name_bits);
-        return MoltObject::none().bits();
+        return Err(MoltObject::none().bits());
     }
     let loop_name_bits = MoltObject::from_ptr(loop_name_ptr).bits();
     let missing = missing_bits(_py);
@@ -679,7 +694,7 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
                 }
                 dec_ref_bits(_py, done_name_bits);
                 dec_ref_bits(_py, loop_name_bits);
-                return MoltObject::none().bits();
+                return Err(MoltObject::none().bits());
             }
             let matches = !is_missing_bits(_py, loop_attr_bits) && loop_attr_bits == loop_filter;
             if !obj_from_bits(loop_attr_bits).is_none() {
@@ -696,7 +711,7 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
             }
             dec_ref_bits(_py, done_name_bits);
             dec_ref_bits(_py, loop_name_bits);
-            return MoltObject::none().bits();
+            return Err(MoltObject::none().bits());
         }
         if is_missing_bits(_py, done_method_bits) {
             if !obj_from_bits(done_method_bits).is_none() {
@@ -712,7 +727,7 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
             }
             dec_ref_bits(_py, done_name_bits);
             dec_ref_bits(_py, loop_name_bits);
-            return MoltObject::none().bits();
+            return Err(MoltObject::none().bits());
         }
         let is_done = is_truthy(_py, obj_from_bits(done_bits));
         if !obj_from_bits(done_bits).is_none() {
@@ -726,6 +741,14 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
 
     dec_ref_bits(_py, done_name_bits);
     dec_ref_bits(_py, loop_name_bits);
+    Ok(out_bits)
+}
+
+fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+    let out_bits = match asyncio_task_registry_live_values_impl(_py, loop_bits) {
+        Ok(bits) => bits,
+        Err(bits) => return bits,
+    };
     let list_ptr = alloc_list(_py, out_bits.as_slice());
     for bits in out_bits {
         dec_ref_bits(_py, bits);
@@ -750,6 +773,11 @@ pub extern "C" fn molt_asyncio_running_loop_set(loop_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_asyncio_event_loop_get() -> u64 {
     crate::with_gil_entry!(_py, { asyncio_event_loop_get_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_loop_get_current() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_event_loop_get_current_impl(_py) })
 }
 
 #[no_mangle]
@@ -1006,6 +1034,13 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
             }
             return bool_false_bits;
         }
+        if is_client_operation && obj_from_bits(server_hostname_bits).is_none() {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "you have to pass server_hostname when using ssl",
+            );
+        }
         if !asyncio_has_any_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -1138,41 +1173,30 @@ pub extern "C" fn molt_asyncio_task_registry_live(loop_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let live_bits = asyncio_task_registry_live_impl(_py, loop_bits);
-        if obj_from_bits(live_bits).is_none() {
-            return live_bits;
-        }
-        let Some(live_ptr) = obj_from_bits(live_bits).as_ptr() else {
-            dec_ref_bits(_py, live_bits);
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "asyncio_task_registry_live returned non-list value",
-            );
+        let tasks = match asyncio_task_registry_live_values_impl(_py, loop_bits) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
         };
-        if unsafe { object_type_id(live_ptr) } != TYPE_ID_LIST {
-            dec_ref_bits(_py, live_bits);
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "asyncio_task_registry_live returned non-list value",
-            );
-        }
-        let tasks = unsafe { seq_vec_ref(live_ptr) };
         let set_bits = molt_set_new(tasks.len() as u64);
         if obj_from_bits(set_bits).is_none() {
-            dec_ref_bits(_py, live_bits);
+            for task_bits in tasks {
+                dec_ref_bits(_py, task_bits);
+            }
             return MoltObject::none().bits();
         }
-        for &task_bits in tasks {
+        for &task_bits in &tasks {
             let _ = molt_set_add(set_bits, task_bits);
             if exception_pending(_py) {
-                dec_ref_bits(_py, live_bits);
                 dec_ref_bits(_py, set_bits);
+                for live_task_bits in tasks {
+                    dec_ref_bits(_py, live_task_bits);
+                }
                 return MoltObject::none().bits();
             }
         }
-        dec_ref_bits(_py, live_bits);
+        for task_bits in tasks {
+            dec_ref_bits(_py, task_bits);
+        }
         set_bits
     })
 }
