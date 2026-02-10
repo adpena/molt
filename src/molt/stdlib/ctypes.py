@@ -1,17 +1,10 @@
-"""Minimal ctypes support for Molt (ffi.unsafe capability-gated)."""
+"""Intrinsic-backed ctypes subset for Molt (ffi.unsafe capability-gated)."""
 
 from __future__ import annotations
 
-from types import ModuleType
-from typing import Any, cast
+from typing import Any
 
-_capabilities: ModuleType | None
-try:
-    from molt import capabilities as _capabilities_raw
-except Exception:
-    _capabilities = None
-else:
-    _capabilities = cast(ModuleType, _capabilities_raw)
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = [
     "Structure",
@@ -20,16 +13,17 @@ __all__ = [
     "sizeof",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement
-# full ctypes surface (arrays/pointers/structures, alignment, c_* types, and FFI calls).
+_MOLT_CTYPES_REQUIRE_FFI = _require_intrinsic("molt_ctypes_require_ffi", globals())
+_MOLT_CTYPES_COERCE_VALUE = _require_intrinsic("molt_ctypes_coerce_value", globals())
+_MOLT_CTYPES_DEFAULT_VALUE = _require_intrinsic("molt_ctypes_default_value", globals())
+_MOLT_CTYPES_SIZEOF = _require_intrinsic("molt_ctypes_sizeof", globals())
+
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand
+# ctypes intrinsic coverage beyond the core scalar/structure/array/pointer subset.
 
 
 def _require_ffi() -> None:
-    if _capabilities is None:
-        return
-    if _capabilities.trusted():
-        return
-    _capabilities.require("ffi.unsafe")
+    _MOLT_CTYPES_REQUIRE_FFI()
 
 
 class _CType:
@@ -51,7 +45,8 @@ class _CTypeSpec:
         self._size = int(size)
 
     def __call__(self, value: Any = 0) -> _CType:
-        inst = _CType(value)
+        _MOLT_CTYPES_REQUIRE_FFI()
+        inst = _CType(_MOLT_CTYPES_COERCE_VALUE(self, value))
         inst._size = self._size
         return inst
 
@@ -69,43 +64,21 @@ c_int = _CTypeSpec("c_int", 4)
 
 
 def _coerce_value(ctype: Any, value: Any) -> Any:
-    if isinstance(value, _CType):
-        return int(value.value)
-    if isinstance(ctype, _CTypeSpec):
-        return int(value)
-    if isinstance(ctype, type) and issubclass(ctype, _CType):
-        return int(value)
-    return value
+    _MOLT_CTYPES_REQUIRE_FFI()
+    return _MOLT_CTYPES_COERCE_VALUE(ctype, value)
 
 
 def _default_value(ctype: Any) -> Any:
-    if isinstance(ctype, _CTypeSpec):
-        return 0
-    if isinstance(ctype, type) and issubclass(ctype, _CType):
-        return int(ctype().value)
-    if isinstance(ctype, type) and issubclass(ctype, Structure):
-        return ctype()
-    if hasattr(ctype, "_length") and hasattr(ctype, "_ctype"):
-        return ctype()
-    return None
+    _MOLT_CTYPES_REQUIRE_FFI()
+    return _MOLT_CTYPES_DEFAULT_VALUE(ctype)
 
 
 def _sizeof_type(ctype: Any) -> int:
-    if isinstance(ctype, _CTypeSpec):
-        return int(getattr(ctype, "_size", 0))
-    if isinstance(ctype, type) and issubclass(ctype, _CType):
-        return int(getattr(ctype, "_size", 0))
-    if isinstance(ctype, type) and issubclass(ctype, Structure):
-        return int(getattr(ctype, "_size", 0))
-    if isinstance(ctype, type) and hasattr(ctype, "_size"):
-        return int(getattr(ctype, "_size", 0))
-    if isinstance(ctype, _CType):
-        return int(getattr(ctype.__class__, "_size", 0))
-    if isinstance(ctype, Structure):
-        return int(getattr(ctype.__class__, "_size", 0))
-    if hasattr(ctype, "_size"):
-        return int(getattr(ctype, "_size", 0))
-    raise TypeError("unsupported type")
+    _MOLT_CTYPES_REQUIRE_FFI()
+    out = _MOLT_CTYPES_SIZEOF(ctype)
+    if not isinstance(out, int):
+        raise RuntimeError("ctypes sizeof intrinsic returned invalid value")
+    return out
 
 
 def _make_array_type(ctype: Any, length: int) -> type:

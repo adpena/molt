@@ -2,6 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use digest::Digest;
+use getrandom::getrandom;
+use md5::Md5;
+use sha1::Sha1;
 
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
@@ -44,6 +50,9 @@ static SYS_PLATFORM_CACHE: AtomicU64 = AtomicU64::new(0);
 static ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static PROCESS_ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
+static UUID_NODE_STATE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+static UUID_V1_STATE: OnceLock<Mutex<(Option<u16>, u64)>> = OnceLock::new();
+const UUID_EPOCH_100NS: u64 = 0x01B21DD213814000;
 
 fn trace_env_get() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -72,6 +81,132 @@ fn process_env_state() -> &'static Mutex<BTreeMap<String, String>> {
 
 fn locale_state() -> &'static Mutex<String> {
     LOCALE_STATE.get_or_init(|| Mutex::new(String::from("C")))
+}
+
+fn uuid_node_state() -> &'static Mutex<Option<u64>> {
+    UUID_NODE_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn uuid_v1_state() -> &'static Mutex<(Option<u16>, u64)> {
+    UUID_V1_STATE.get_or_init(|| Mutex::new((None, 0)))
+}
+
+fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
+    let mut out = [0u8; N];
+    getrandom(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
+    Ok(out)
+}
+
+fn uuid_node() -> Result<u64, String> {
+    let mut guard = uuid_node_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(node) = *guard {
+        return Ok(node);
+    }
+    let mut bytes = uuid_random_bytes::<6>()?;
+    // Match CPython behavior: set multicast bit on a random node id.
+    bytes[0] |= 0x01;
+    let mut node = 0u64;
+    for byte in bytes {
+        node = (node << 8) | u64::from(byte);
+    }
+    *guard = Some(node);
+    Ok(node)
+}
+
+fn uuid_apply_version_and_variant(bytes: &mut [u8; 16], version: u8) {
+    bytes[6] = (bytes[6] & 0x0F) | ((version & 0x0F) << 4);
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+}
+
+fn uuid_v4_bytes() -> Result<[u8; 16], String> {
+    let mut bytes = uuid_random_bytes::<16>()?;
+    uuid_apply_version_and_variant(&mut bytes, 4);
+    Ok(bytes)
+}
+
+fn uuid_v3_bytes(namespace: &[u8], name: &[u8]) -> [u8; 16] {
+    let mut hasher = Md5::new();
+    hasher.update(namespace);
+    hasher.update(name);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    uuid_apply_version_and_variant(&mut out, 3);
+    out
+}
+
+fn uuid_v5_bytes(namespace: &[u8], name: &[u8]) -> [u8; 16] {
+    let mut hasher = Sha1::new();
+    hasher.update(namespace);
+    hasher.update(name);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    uuid_apply_version_and_variant(&mut out, 5);
+    out
+}
+
+fn uuid_timestamp_100ns() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let ticks = now / 100;
+    UUID_EPOCH_100NS.saturating_add(ticks as u64)
+}
+
+fn uuid_v1_bytes(
+    node_override: Option<u64>,
+    clock_seq_override: Option<u16>,
+) -> Result<[u8; 16], String> {
+    let node = match node_override {
+        Some(value) => value,
+        None => uuid_node()?,
+    };
+    let mut state = uuid_v1_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.0.is_none() {
+        let seed = uuid_random_bytes::<2>()?;
+        state.0 = Some((u16::from(seed[0]) << 8 | u16::from(seed[1])) & 0x3FFF);
+    }
+    let mut timestamp = uuid_timestamp_100ns();
+    let mut clock_seq = clock_seq_override.unwrap_or_else(|| state.0.unwrap_or(0));
+    if timestamp <= state.1 {
+        timestamp = state.1.saturating_add(1);
+        if clock_seq_override.is_none() {
+            clock_seq = (clock_seq + 1) & 0x3FFF;
+        }
+    }
+    if clock_seq_override.is_none() {
+        state.0 = Some(clock_seq);
+    }
+    state.1 = timestamp;
+    drop(state);
+
+    let time_low = (timestamp & 0xFFFF_FFFF) as u32;
+    let time_mid = ((timestamp >> 32) & 0xFFFF) as u16;
+    let mut time_hi_and_version = ((timestamp >> 48) & 0x0FFF) as u16;
+    time_hi_and_version |= 1 << 12;
+    let clock_seq_low = (clock_seq & 0xFF) as u8;
+    let mut clock_seq_hi_and_reserved = ((clock_seq >> 8) & 0x3F) as u8;
+    clock_seq_hi_and_reserved |= 0x80;
+
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&time_low.to_be_bytes());
+    out[4..6].copy_from_slice(&time_mid.to_be_bytes());
+    out[6..8].copy_from_slice(&time_hi_and_version.to_be_bytes());
+    out[8] = clock_seq_hi_and_reserved;
+    out[9] = clock_seq_low;
+    out[10] = ((node >> 40) & 0xFF) as u8;
+    out[11] = ((node >> 32) & 0xFF) as u8;
+    out[12] = ((node >> 24) & 0xFF) as u8;
+    out[13] = ((node >> 16) & 0xFF) as u8;
+    out[14] = ((node >> 8) & 0xFF) as u8;
+    out[15] = (node & 0xFF) as u8;
+    Ok(out)
 }
 
 fn collect_env_state() -> BTreeMap<String, String> {
@@ -2241,6 +2376,9 @@ fn importlib_reader_lookup_callable(
     let missing = missing_bits(_py);
     let attr_bits = molt_getattr_builtin(target_bits, name_bits, missing);
     if exception_pending(_py) {
+        if clear_pending_if_kind(_py, &["AttributeError"]) {
+            return Ok(None);
+        }
         return Err(MoltObject::none().bits());
     }
     if is_missing_bits(_py, attr_bits) {
@@ -2268,6 +2406,9 @@ fn getattr_optional_bits(
     let missing = missing_bits(_py);
     let attr_bits = molt_getattr_builtin(target_bits, name_bits, missing);
     if exception_pending(_py) {
+        if clear_pending_if_kind(_py, &["AttributeError"]) {
+            return Ok(None);
+        }
         return Err(MoltObject::none().bits());
     }
     if is_missing_bits(_py, attr_bits) {
@@ -2456,7 +2597,7 @@ fn importlib_resources_loader_reader_from_bits(
 fn importlib_reader_collect_unique_strings(
     _py: &PyToken<'_>,
     values_bits: u64,
-    invalid_entry_message: &str,
+    _invalid_entry_message: &str,
 ) -> Result<Vec<String>, u64> {
     let iter_bits = molt_iter(values_bits);
     if exception_pending(_py) {
@@ -2481,11 +2622,9 @@ fn importlib_reader_collect_unique_strings(
             break;
         }
         let Some(entry) = string_obj_to_owned(obj_from_bits(pair[0])) else {
-            return Err(raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                invalid_entry_message,
-            ));
+            // CPython ResourceReader handling is tolerant of non-string entries in
+            // iterator-style views; skip malformed entries instead of aborting.
+            continue;
         };
         if entry.is_empty() {
             continue;
@@ -3742,6 +3881,24 @@ fn string_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Stri
     }
 }
 
+fn bytes_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Vec<u8>, u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            &format!("{name} must be bytes-like"),
+        ));
+    };
+    let Some(slice) = (unsafe { bytes_like_slice(ptr) }) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            &format!("{name} must be bytes-like"),
+        ));
+    };
+    Ok(slice.to_vec())
+}
+
 fn optional_string_arg_from_bits(
     _py: &PyToken<'_>,
     bits: u64,
@@ -4510,57 +4667,75 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
-pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let search_paths =
-            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-        let Some(resolution) = importlib_find_in_path(&fullname, &search_paths, false) else {
-            return MoltObject::none().bits();
-        };
-        let origin_bits = match resolution.origin.as_deref() {
-            Some(origin) => match alloc_str_bits(_py, origin) {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            },
-            None => MoltObject::none().bits(),
-        };
-        let locations_bits = match resolution.submodule_search_locations.as_ref() {
-            Some(entries) => match alloc_string_list_bits(_py, entries) {
-                Some(bits) => bits,
-                None => {
+fn importlib_find_in_path_payload(
+    _py: &PyToken<'_>,
+    fullname_bits: u64,
+    search_paths_bits: u64,
+    package_context: bool,
+) -> u64 {
+    if !has_capability(_py, "fs.read") {
+        return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+    }
+    let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
+        Ok(value) => value,
+        Err(bits) => return bits,
+    };
+    let search_paths = match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+        Ok(value) => value,
+        Err(bits) => return bits,
+    };
+    let Some(resolution) = importlib_find_in_path(&fullname, &search_paths, package_context) else {
+        return MoltObject::none().bits();
+    };
+    let origin_bits = match resolution.origin.as_deref() {
+        Some(origin) => match alloc_str_bits(_py, origin) {
+            Ok(bits) => bits,
+            Err(err_bits) => return err_bits,
+        },
+        None => MoltObject::none().bits(),
+    };
+    let locations_bits = match resolution.submodule_search_locations.as_ref() {
+        Some(entries) => match alloc_string_list_bits(_py, entries) {
+            Some(bits) => bits,
+            None => {
+                dec_ref_bits(_py, origin_bits);
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+        },
+        None => MoltObject::none().bits(),
+    };
+    let cached_bits = match resolution.cached.as_deref() {
+        Some(cached) => match alloc_str_bits(_py, cached) {
+            Ok(bits) => bits,
+            Err(err_bits) => {
+                if !obj_from_bits(origin_bits).is_none() {
                     dec_ref_bits(_py, origin_bits);
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
-            },
-            None => MoltObject::none().bits(),
-        };
-        let cached_bits = match resolution.cached.as_deref() {
-            Some(cached) => match alloc_str_bits(_py, cached) {
-                Ok(bits) => bits,
-                Err(err_bits) => {
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    if !obj_from_bits(locations_bits).is_none() {
-                        dec_ref_bits(_py, locations_bits);
-                    }
-                    return err_bits;
+                if !obj_from_bits(locations_bits).is_none() {
+                    dec_ref_bits(_py, locations_bits);
                 }
-            },
-            None => MoltObject::none().bits(),
-        };
-        let loader_kind_bits = match alloc_str_bits(_py, &resolution.loader_kind) {
+                return err_bits;
+            }
+        },
+        None => MoltObject::none().bits(),
+    };
+    let loader_kind_bits = match alloc_str_bits(_py, &resolution.loader_kind) {
+        Ok(bits) => bits,
+        Err(err_bits) => {
+            if !obj_from_bits(origin_bits).is_none() {
+                dec_ref_bits(_py, origin_bits);
+            }
+            if !obj_from_bits(locations_bits).is_none() {
+                dec_ref_bits(_py, locations_bits);
+            }
+            if !obj_from_bits(cached_bits).is_none() {
+                dec_ref_bits(_py, cached_bits);
+            }
+            return err_bits;
+        }
+    };
+    let zip_archive_bits = match resolution.zip_archive.as_deref() {
+        Some(path) => match alloc_str_bits(_py, path) {
             Ok(bits) => bits,
             Err(err_bits) => {
                 if !obj_from_bits(origin_bits).is_none() {
@@ -4572,87 +4747,87 @@ pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_b
                 if !obj_from_bits(cached_bits).is_none() {
                     dec_ref_bits(_py, cached_bits);
                 }
+                dec_ref_bits(_py, loader_kind_bits);
                 return err_bits;
             }
-        };
-        let zip_archive_bits = match resolution.zip_archive.as_deref() {
-            Some(path) => match alloc_str_bits(_py, path) {
-                Ok(bits) => bits,
-                Err(err_bits) => {
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    if !obj_from_bits(locations_bits).is_none() {
-                        dec_ref_bits(_py, locations_bits);
-                    }
-                    if !obj_from_bits(cached_bits).is_none() {
-                        dec_ref_bits(_py, cached_bits);
-                    }
-                    dec_ref_bits(_py, loader_kind_bits);
-                    return err_bits;
+        },
+        None => MoltObject::none().bits(),
+    };
+    let zip_inner_path_bits = match resolution.zip_inner_path.as_deref() {
+        Some(path) => match alloc_str_bits(_py, path) {
+            Ok(bits) => bits,
+            Err(err_bits) => {
+                if !obj_from_bits(origin_bits).is_none() {
+                    dec_ref_bits(_py, origin_bits);
                 }
-            },
-            None => MoltObject::none().bits(),
-        };
-        let zip_inner_path_bits = match resolution.zip_inner_path.as_deref() {
-            Some(path) => match alloc_str_bits(_py, path) {
-                Ok(bits) => bits,
-                Err(err_bits) => {
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    if !obj_from_bits(locations_bits).is_none() {
-                        dec_ref_bits(_py, locations_bits);
-                    }
-                    if !obj_from_bits(cached_bits).is_none() {
-                        dec_ref_bits(_py, cached_bits);
-                    }
-                    dec_ref_bits(_py, loader_kind_bits);
-                    if !obj_from_bits(zip_archive_bits).is_none() {
-                        dec_ref_bits(_py, zip_archive_bits);
-                    }
-                    return err_bits;
+                if !obj_from_bits(locations_bits).is_none() {
+                    dec_ref_bits(_py, locations_bits);
                 }
-            },
-            None => MoltObject::none().bits(),
-        };
-        let is_package_bits = MoltObject::from_bool(resolution.is_package).bits();
-        let has_location_bits = MoltObject::from_bool(resolution.has_location).bits();
-        let keys_and_values: [(&[u8], u64); 8] = [
-            (b"origin", origin_bits),
-            (b"is_package", is_package_bits),
-            (b"submodule_search_locations", locations_bits),
-            (b"cached", cached_bits),
-            (b"loader_kind", loader_kind_bits),
-            (b"has_location", has_location_bits),
-            (b"zip_archive", zip_archive_bits),
-            (b"zip_inner_path", zip_inner_path_bits),
-        ];
-        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        for (key, value_bits) in keys_and_values {
-            let key_ptr = alloc_string(_py, key);
-            if key_ptr.is_null() {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+                if !obj_from_bits(cached_bits).is_none() {
+                    dec_ref_bits(_py, cached_bits);
                 }
-                return MoltObject::none().bits();
+                dec_ref_bits(_py, loader_kind_bits);
+                if !obj_from_bits(zip_archive_bits).is_none() {
+                    dec_ref_bits(_py, zip_archive_bits);
+                }
+                return err_bits;
             }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned.push(key_bits);
-            owned.push(value_bits);
+        },
+        None => MoltObject::none().bits(),
+    };
+    let is_package_bits = MoltObject::from_bool(resolution.is_package).bits();
+    let has_location_bits = MoltObject::from_bool(resolution.has_location).bits();
+    let keys_and_values: [(&[u8], u64); 8] = [
+        (b"origin", origin_bits),
+        (b"is_package", is_package_bits),
+        (b"submodule_search_locations", locations_bits),
+        (b"cached", cached_bits),
+        (b"loader_kind", loader_kind_bits),
+        (b"has_location", has_location_bits),
+        (b"zip_archive", zip_archive_bits),
+        (b"zip_inner_path", zip_inner_path_bits),
+    ];
+    let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+    let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+    for (key, value_bits) in keys_and_values {
+        let key_ptr = alloc_string(_py, key);
+        if key_ptr.is_null() {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
         }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(dict_ptr).bits()
-        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        pairs.push(key_bits);
+        pairs.push(value_bits);
+        owned.push(key_bits);
+        owned.push(value_bits);
+    }
+    let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+    for bits in owned {
+        dec_ref_bits(_py, bits);
+    }
+    if dict_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(dict_ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_importlib_find_in_path_package_context(
+    fullname_bits: u64,
+    search_paths_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, true)
     })
 }
 
@@ -4710,18 +4885,21 @@ pub extern "C" fn molt_importlib_find_spec_payload(
                 Err(err) => err,
             };
         }
-        if meta_path_count == 0 {
-            return MoltObject::none().bits();
-        }
-        let via_path_hooks = match importlib_find_spec_via_path_hooks(
-            _py,
-            &fullname,
-            &search_paths,
-            path_hooks_bits,
-            path_importer_cache_bits,
-        ) {
-            Ok(value) => value,
-            Err(bits) => return bits,
+        // CPython only consults path hooks via meta-path finders (notably PathFinder).
+        // If meta_path is empty, find_spec should not probe path_hooks directly.
+        let via_path_hooks = if meta_path_count == 0 {
+            None
+        } else {
+            match importlib_find_spec_via_path_hooks(
+                _py,
+                &fullname,
+                &search_paths,
+                path_hooks_bits,
+                path_importer_cache_bits,
+            ) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            }
         };
         if let Some(spec_bits) = via_path_hooks {
             return match importlib_find_spec_direct_payload_bits(
@@ -5267,6 +5445,17 @@ pub extern "C" fn molt_importlib_resources_loader_reader(
 }
 
 #[no_mangle]
+pub extern "C" fn molt_importlib_resources_reader_files_traversable(reader_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        match importlib_reader_files_traversable_bits(_py, reader_bits) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => MoltObject::none().bits(),
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_importlib_resources_reader_roots(reader_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let roots = match importlib_resources_reader_roots_impl(_py, reader_bits) {
@@ -5747,6 +5936,139 @@ pub extern "C" fn molt_runpy_resolve_path(path_bits: u64, module_file_bits: u64)
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(dict_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_uuid_getnode() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match uuid_node() {
+            Ok(node) => MoltObject::from_int(node as i64).bits(),
+            Err(err) => raise_exception::<_>(_py, "RuntimeError", &err),
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let payload = match uuid_v4_bytes() {
+            Ok(bytes) => bytes,
+            Err(err) => return raise_exception::<_>(_py, "RuntimeError", &err),
+        };
+        let out_ptr = alloc_bytes(_py, &payload);
+        if out_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "time.wall") && !has_capability(_py, "time") {
+            return raise_exception::<_>(_py, "PermissionError", "missing time.wall capability");
+        }
+        let node_override = if obj_from_bits(node_bits).is_none() {
+            None
+        } else {
+            let value = index_i64_from_obj(_py, node_bits, "node must be an integer");
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if value < 0 || value > 0xFFFF_FFFF_FFFF_i64 {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "node is out of range (need a 48-bit value)",
+                );
+            }
+            Some(value as u64)
+        };
+        let clock_seq_override = if obj_from_bits(clock_seq_bits).is_none() {
+            None
+        } else {
+            let value = index_i64_from_obj(_py, clock_seq_bits, "clock_seq must be an integer");
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if value < 0 || value > 0x3FFF_i64 {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "clock_seq is out of range (need a 14-bit value)",
+                );
+            }
+            Some(value as u16)
+        };
+        let payload = match uuid_v1_bytes(node_override, clock_seq_override) {
+            Ok(bytes) => bytes,
+            Err(err) => return raise_exception::<_>(_py, "RuntimeError", &err),
+        };
+        let out_ptr = alloc_bytes(_py, &payload);
+        if out_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if namespace.len() != 16 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "namespace must be a 16-byte UUID payload",
+            );
+        }
+        let name = match bytes_arg_from_bits(_py, name_bits, "name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let payload = uuid_v3_bytes(&namespace, &name);
+        let out_ptr = alloc_bytes(_py, &payload);
+        if out_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if namespace.len() != 16 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "namespace must be a 16-byte UUID payload",
+            );
+        }
+        let name = match bytes_arg_from_bits(_py, name_bits, "name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let payload = uuid_v5_bytes(&namespace, &name);
+        let out_ptr = alloc_bytes(_py, &payload);
+        if out_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }

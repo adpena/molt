@@ -34,6 +34,11 @@ fn trace_io_poller() -> bool {
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_POLLER").as_deref() == Ok("1"))
 }
 
+fn trace_io_wait_errors() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_WAIT_ERRORS").as_deref() == Ok("1"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     with_socket_mut(socket_ptr, |inner| {
@@ -335,10 +340,12 @@ impl IoPoller {
         }
         let socket_id = socket_ptr as usize;
         let mut sockets = self.sockets.lock().unwrap();
+        let mut new_entry = false;
         let token = sockets
             .get(&socket_id)
             .map(|entry| entry.token)
             .unwrap_or_else(|| {
+                new_entry = true;
                 let token = Token(self.next_token.fetch_add(1, AtomicOrdering::Relaxed));
                 let debug_fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
                 sockets.insert(
@@ -360,7 +367,7 @@ impl IoPoller {
             entry.waiters.push(waiter_key);
         }
         let interest = interest_from_events(events);
-        let needs_register = entry.waiters.len() == 1;
+        let needs_register = new_entry;
         let mut updated = false;
         if needs_register {
             entry.interests = interest;
@@ -429,9 +436,11 @@ impl IoPoller {
         }
         let socket_id = ws_ptr as usize;
         let mut sockets = self.sockets.lock().unwrap();
+        let mut new_entry = false;
         let token = match sockets.get(&socket_id) {
             Some(entry) => entry.token,
             None => {
+                new_entry = true;
                 let stream = match stream {
                     Some(stream) => stream,
                     None => {
@@ -466,7 +475,7 @@ impl IoPoller {
             entry.waiters.push(waiter_key);
         }
         let interest = interest_from_events(events);
-        let needs_register = entry.waiters.len() == 1;
+        let needs_register = new_entry;
         let mut updated = false;
         if needs_register {
             entry.interests = interest;
@@ -850,10 +859,14 @@ fn io_worker(poller: Arc<IoPoller>) {
         }
         drop(events);
         if !ready_futures.is_empty() {
+            // Record readiness before taking the GIL so polling threads can observe
+            // ready masks even if wake propagation is temporarily delayed.
+            for (future, mask, _, _) in &ready_futures {
+                poller.mark_ready(*future, *mask);
+            }
             let gil = GilGuard::new();
             let py = gil.token();
             for (future, mask, socket_id, debug_fd) in ready_futures {
-                poller.mark_ready(future, mask);
                 let waiters = await_waiters_take(&py, future.0);
                 if trace_io_poller() {
                     eprintln!(
@@ -897,6 +910,13 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
         let events_bits = *payload_ptr.add(1);
         let socket_ptr = socket_ptr_from_bits_or_fd(socket_bits);
         if socket_ptr.is_null() {
+            if trace_io_wait_errors() {
+                eprintln!(
+                    "molt io_wait error: invalid socket bits=0x{:x} state={}",
+                    socket_bits,
+                    (*header).state
+                );
+            }
             return raise_exception::<i64>(_py, "TypeError", "invalid socket");
         }
         let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
@@ -953,6 +973,13 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                 .io_poller()
                 .register_wait(obj_ptr, socket_ptr, events)
             {
+                if trace_io_wait_errors() {
+                    eprintln!(
+                        "molt io_wait error: register_wait failed fd={} err={}",
+                        socket_debug_fd(socket_ptr).unwrap_or(-1),
+                        err
+                    );
+                }
                 return raise_os_error::<i64>(_py, err, "io_wait");
             }
             (*header).state = 1;
@@ -979,7 +1006,18 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
 #[no_mangle]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+        if require_net_capability::<u64>(
+            _py,
+            &[
+                "net",
+                "net.poll",
+                "net.outbound",
+                "net.listen",
+                "net.inbound",
+            ],
+        )
+        .is_err()
+        {
             return MoltObject::none().bits();
         }
         let socket_ptr = socket_ptr_from_bits_or_fd(socket_bits);
@@ -1017,7 +1055,18 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 #[no_mangle]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+        if require_net_capability::<u64>(
+            _py,
+            &[
+                "net",
+                "net.poll",
+                "net.outbound",
+                "net.listen",
+                "net.inbound",
+            ],
+        )
+        .is_err()
+        {
             return MoltObject::none().bits();
         }
         let socket_obj = obj_from_bits(socket_bits);

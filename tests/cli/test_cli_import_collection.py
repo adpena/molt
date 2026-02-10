@@ -70,6 +70,130 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     assert "dataclasses" not in graph
 
 
+def test_typing_enables_nested_import_scan_for_collections_abc(tmp_path: Path) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("import typing\n")
+    graph = _discover_with_core_modules(entry)
+    assert "typing" in graph
+    assert "_collections_abc" in graph
+
+
+def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+    module_graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+    cli._collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
+    cli._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    core_paths = [
+        path
+        for name in ("builtins", "sys")
+        if (path := module_graph.get(name)) is not None
+    ]
+    for core_path in core_paths:
+        core_graph, _ = cli._discover_module_graph(
+            core_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            stdlib_allowlist,
+            skip_modules=cli.STUB_MODULES,
+            stub_parents=cli.STUB_PARENT_MODULES,
+        )
+        for name, path in core_graph.items():
+            module_graph.setdefault(name, path)
+    assert not cli._requires_spawn_entry_override(module_graph, explicit_imports)
+
+
+def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("import multiprocessing\nprint('ok')\n")
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+    module_graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+    assert "multiprocessing" in module_graph
+    assert cli._requires_spawn_entry_override(module_graph, explicit_imports)
+
+
+def test_spawn_entry_override_required_for_spawn_import() -> None:
+    graph = {"__main__": ROOT / "script.py"}
+    explicit_imports = {"multiprocessing.spawn"}
+    assert cli._requires_spawn_entry_override(graph, explicit_imports)
+
+
+def test_merge_module_graph_with_reason_tracks_sources(tmp_path: Path) -> None:
+    module_graph = {"__main__": tmp_path / "main.py"}
+    reasons: dict[str, set[str]] = {}
+    additions = {
+        "__main__": tmp_path / "main.py",
+        "multiprocessing.spawn": tmp_path / "spawn.py",
+    }
+    cli._merge_module_graph_with_reason(
+        module_graph,
+        additions,
+        reasons,
+        "spawn_closure",
+    )
+    assert "multiprocessing.spawn" in module_graph
+    assert reasons["__main__"] == {"spawn_closure"}
+    assert reasons["multiprocessing.spawn"] == {"spawn_closure"}
+
+
+def test_build_reason_summary_is_stable() -> None:
+    reasons = {
+        "a": {"entry_closure"},
+        "b": {"entry_closure", "core_closure"},
+        "c": {"core_closure"},
+    }
+    summary = cli._build_reason_summary(reasons)
+    assert summary == {"core_closure": 2, "entry_closure": 2}
+
+
+def test_build_diagnostics_enabled_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BUILD_DIAGNOSTICS", "1")
+    assert cli._build_diagnostics_enabled()
+    monkeypatch.setenv("MOLT_BUILD_DIAGNOSTICS", "0")
+    assert not cli._build_diagnostics_enabled()
+
+
+def test_phase_duration_map_orders_by_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.time, "perf_counter", lambda: 10.0)
+    durations = cli._phase_duration_map({"module_graph": 2.0, "resolve_entry": 1.0})
+    assert durations["resolve_entry"] == 1.0
+    assert durations["module_graph"] == 8.0
+
+
+def test_resolve_build_diagnostics_path_relative_and_absolute(tmp_path: Path) -> None:
+    rel = cli._resolve_build_diagnostics_path("diag.json", tmp_path)
+    assert rel == tmp_path / "diag.json"
+    abs_path = tmp_path / "absolute_diag.json"
+    resolved_abs = cli._resolve_build_diagnostics_path(str(abs_path), tmp_path)
+    assert resolved_abs == abs_path
+
+
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
     script = tmp_path / "outside_script.py"
     script.write_text("print('ok')\n")

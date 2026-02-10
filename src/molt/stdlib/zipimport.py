@@ -1,112 +1,40 @@
-"""Minimal zipimport support for Molt (store-only archives)."""
+"""Minimal intrinsic-backed zipimport support for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): parity.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): Expand zipimport API surface beyond load_module/find_module/get_source.
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+from importlib.machinery import ModuleSpec, ZipSourceLoader
 from types import ModuleType
+from typing import Any
 import os
 import sys
 
-from molt import capabilities
-
-from importlib.machinery import ModuleSpec, _exec_restricted
-from zipfile import BadZipFile, ZipFile
-
 __all__ = ["zipimporter", "ZipImportError"]
-
-
-class _ZipCacheEntry:
-    def __init__(self, archive: str, zf: ZipFile, mtime: float, size: int) -> None:
-        self.archive = archive
-        self.zf = zf
-        self.mtime = mtime
-        self.size = size
-
-
-_ZIP_CACHE: dict[str, _ZipCacheEntry] = {}
 
 
 class ZipImportError(ImportError):
     pass
 
 
-class zipimporter:
-    def __init__(self, archive: str) -> None:
-        if not capabilities.trusted():
-            capabilities.require("fs.read")
-        archive_path = str(archive)
-        self.archive, self._prefix = _split_archive_path(archive_path)
-        if not self.archive:
-            raise ZipImportError("archive path is empty")
+_MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
+    "molt_importlib_find_in_path_package_context", globals()
+)
+_MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
+    "molt_importlib_zip_source_exec_payload", globals()
+)
 
-    def load_module(self, fullname: str):
-        if fullname in sys.modules:
-            return sys.modules[fullname]
-        try:
-            source, is_package, inner_path = self._get_source(fullname)
-        except Exception as exc:
-            raise ZipImportError(str(exc)) from exc
-        module = ModuleType(fullname)
-        origin = f"{self.archive}/{inner_path}"
-        spec = ModuleSpec(fullname, loader=self, origin=origin, is_package=is_package)
-        setattr(module, "__spec__", spec)
-        module.__loader__ = self
-        module.__file__ = origin
-        setattr(module, "__cached__", None)
-        if is_package:
-            module.__package__ = fullname
-            module.__path__ = [f"{self.archive}/{fullname.replace('.', '/')}"]
-            if spec.submodule_search_locations is None:
-                spec.submodule_search_locations = list(module.__path__)
-        else:
-            module.__package__ = fullname.rpartition(".")[0]
-        sys.modules[fullname] = module
-        _exec_restricted(module, source, origin)
-        return module
-
-    def find_module(self, fullname: str, path=None):
-        try:
-            self._get_source(fullname)
-        except ZipImportError:
-            return None
-        return self
-
-    def get_source(self, fullname: str) -> str | None:
-        try:
-            source, _, _ = self._get_source(fullname)
-        except ZipImportError:
-            return None
-        return source
-
-    def _get_source(self, fullname: str) -> tuple[str, bool, str]:
-        module_path = fullname.replace(".", "/")
-        if self._prefix:
-            module_path = f"{self._prefix}/{module_path}"
-        mod_file = f"{module_path}.py"
-        pkg_file = f"{module_path}/__init__.py"
-        try:
-            zf = _get_zipfile(self.archive)
-            try:
-                try:
-                    data = zf.read(mod_file)
-                    is_package = False
-                    inner_path = mod_file
-                except KeyError:
-                    data = zf.read(pkg_file)
-                    is_package = True
-                    inner_path = pkg_file
-            except KeyError as exc:
-                raise ZipImportError(str(exc)) from exc
-        except ZipImportError:
-            raise
-        except (BadZipFile, OSError) as exc:
-            raise ZipImportError(str(exc)) from exc
-        try:
-            source = data.decode("utf-8", errors="surrogateescape")
-        except Exception:
-            source = data.decode("utf-8", errors="replace")
-        return source, is_package, inner_path
+_capabilities: ModuleType | None
+try:
+    from molt import capabilities as _capabilities_raw
+except Exception:
+    _capabilities = None
+else:
+    _capabilities = (
+        _capabilities_raw if isinstance(_capabilities_raw, ModuleType) else None
+    )
 
 
 def _split_archive_path(path: str) -> tuple[str, str]:
@@ -125,13 +53,99 @@ def _split_archive_path(path: str) -> tuple[str, str]:
     return archive, rest
 
 
-def _get_zipfile(archive: str) -> ZipFile:
-    entry = _ZIP_CACHE.get(archive)
-    st = os.stat(archive)
-    mtime = st.st_mtime
-    size = st.st_size
-    if entry is not None and entry.mtime == mtime and entry.size == size:
-        return entry.zf
-    zf = ZipFile(archive, "r")
-    _ZIP_CACHE[archive] = _ZipCacheEntry(archive, zf, mtime, size)
-    return zf
+def _validate_resolution(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ZipImportError("invalid zipimport resolution payload")
+    loader_kind = payload.get("loader_kind")
+    zip_archive = payload.get("zip_archive")
+    zip_inner_path = payload.get("zip_inner_path")
+    if loader_kind != "zip_source":
+        raise ZipImportError("only zip source modules are supported")
+    if not isinstance(zip_archive, str) or not zip_archive:
+        raise ZipImportError("missing zip archive path")
+    if not isinstance(zip_inner_path, str) or not zip_inner_path:
+        raise ZipImportError("missing zip inner path")
+    return payload
+
+
+class zipimporter:
+    def __init__(self, archive: str) -> None:
+        if _capabilities is not None and not _capabilities.trusted():
+            _capabilities.require("fs.read")
+        archive_path = str(archive)
+        self.archive, self._prefix = _split_archive_path(archive_path)
+        if not self.archive:
+            raise ZipImportError("archive path is empty")
+        self._search_root = (
+            self.archive if not self._prefix else f"{self.archive}/{self._prefix}"
+        )
+
+    def _resolve(self, fullname: str) -> dict[str, Any]:
+        payload = _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT(
+            fullname, [self._search_root]
+        )
+        if payload is None:
+            raise ZipImportError(f"can't find module {fullname!r}")
+        return _validate_resolution(payload)
+
+    def load_module(self, fullname: str):
+        existing = sys.modules.get(fullname)
+        if existing is not None:
+            return existing
+        payload = self._resolve(fullname)
+        zip_archive = payload["zip_archive"]
+        zip_inner_path = payload["zip_inner_path"]
+        loader = ZipSourceLoader(fullname, zip_archive, zip_inner_path)
+        origin = payload.get("origin")
+        if not isinstance(origin, str):
+            origin = f"{zip_archive}/{zip_inner_path}"
+        is_package = bool(payload.get("is_package"))
+        module = ModuleType(fullname)
+        spec = ModuleSpec(fullname, loader=loader, origin=origin, is_package=is_package)
+        module.__spec__ = spec
+        module.__loader__ = loader
+        module.__file__ = origin
+        module.__cached__ = None
+        if is_package:
+            module.__package__ = fullname
+            locations = payload.get("submodule_search_locations")
+            if isinstance(locations, list) and all(
+                isinstance(entry, str) for entry in locations
+            ):
+                module.__path__ = list(locations)
+            else:
+                module.__path__ = [f"{zip_archive}/{fullname.replace('.', '/')}"]
+            if spec.submodule_search_locations is None:
+                spec.submodule_search_locations = list(module.__path__)
+            else:
+                spec.submodule_search_locations[:] = list(module.__path__)
+        else:
+            module.__package__ = fullname.rpartition(".")[0]
+        sys.modules[fullname] = module
+        loader.exec_module(module)
+        return module
+
+    def find_module(self, fullname: str, path=None):
+        try:
+            self._resolve(fullname)
+        except ZipImportError:
+            return None
+        return self
+
+    def get_source(self, fullname: str) -> str | None:
+        try:
+            payload = self._resolve(fullname)
+        except ZipImportError:
+            return None
+        source_payload = _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD(
+            fullname,
+            payload["zip_archive"],
+            payload["zip_inner_path"],
+            bool(payload.get("is_package")),
+        )
+        if not isinstance(source_payload, dict):
+            raise ZipImportError("invalid zip source payload")
+        source = source_payload.get("source")
+        if not isinstance(source, str):
+            raise ZipImportError("invalid zip source payload: source")
+        return source

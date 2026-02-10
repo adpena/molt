@@ -1920,6 +1920,10 @@ fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
     class_bits
 }
 
+pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
+    mappingproxy_class(_py)
+}
+
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = types_class(_py, &METHOD_CLASS, "method", 16);
     let new_bits = builtin_func_bits(

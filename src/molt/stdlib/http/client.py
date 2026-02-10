@@ -85,6 +85,9 @@ class HTTPConnection:
     _url: str | None
     _headers: list[tuple[str, str]]
     _body: bytearray
+    _buffer: list[bytes]
+    _skip_host: bool
+    _skip_accept_encoding: bool
     _response: HTTPResponse | None
 
     def __init__(
@@ -97,6 +100,9 @@ class HTTPConnection:
         self._url: str | None = None
         self._headers: list[tuple[str, str]] = []
         self._body = bytearray()
+        self._buffer: list[bytes] = []
+        self._skip_host = False
+        self._skip_accept_encoding = False
         self._response: HTTPResponse | None = None
 
     def connect(self) -> None:
@@ -110,20 +116,26 @@ class HTTPConnection:
         skip_host: bool = False,
         skip_accept_encoding: bool = False,
     ) -> None:
-        del skip_host, skip_accept_encoding
-        self._method = str(method)
-        self._url = str(url)
+        method_text = str(method)
+        url_text = str(url)
+        self._method = method_text
+        self._url = url_text
         self._headers = []
         self._body = bytearray()
+        self._skip_host = bool(skip_host)
+        self._skip_accept_encoding = bool(skip_accept_encoding)
+        self._buffer = []
+        self._buffer.append(f"{method_text} {url_text} HTTP/1.1\r\n".encode("ascii"))
 
     def putheader(self, header: str, *values: Any) -> None:
+        header_text = str(header)
         if not values:
             value = ""
         elif len(values) == 1:
             value = str(values[0])
         else:
             value = ", ".join(str(v) for v in values)
-        self._headers.append((str(header), value))
+        self._headers.append((header_text, value))
 
     def endheaders(
         self, message_body: bytes | bytearray | memoryview | None = None
@@ -133,8 +145,25 @@ class HTTPConnection:
             or getattr(self, "_url", None) is None
         ):
             raise OSError("request not started")
+        if self._buffer and self._buffer[-1] != b"\r\n":
+            if not self._skip_host and not any(
+                name.lower() == "host" for name, _ in self._headers
+            ):
+                host_value = self.host
+                if self.port != 80:
+                    host_value = f"{host_value}:{self.port}"
+                self._headers.insert(0, ("Host", host_value))
+            if not self._skip_accept_encoding and not any(
+                name.lower() == "accept-encoding" for name, _ in self._headers
+            ):
+                self._headers.append(("Accept-Encoding", "identity"))
+            for name, value in self._headers:
+                self._buffer.append(f"{name}: {value}\r\n".encode("ascii"))
+            self._buffer.append(b"\r\n")
         if message_body is not None:
-            self._body.extend(bytes(message_body))
+            body = bytes(message_body)
+            self._body.extend(body)
+            self._buffer.append(body)
 
     def send(self, data: bytes | bytearray | memoryview) -> None:
         if (
@@ -142,7 +171,9 @@ class HTTPConnection:
             or getattr(self, "_url", None) is None
         ):
             raise OSError("request not started")
-        self._body.extend(bytes(data))
+        out = bytes(data)
+        self._body.extend(out)
+        self._buffer.append(out)
 
     def request(
         self,
@@ -168,6 +199,17 @@ class HTTPConnection:
             or getattr(self, "_url", None) is None
         ):
             raise OSError("no request pending")
+        if not self._skip_host and not any(
+            name.lower() == "host" for name, _ in self._headers
+        ):
+            host_value = self.host
+            if self.port != 80:
+                host_value = f"{host_value}:{self.port}"
+            self._headers.insert(0, ("Host", host_value))
+        if not self._skip_accept_encoding and not any(
+            name.lower() == "accept-encoding" for name, _ in self._headers
+        ):
+            self._headers.append(("Accept-Encoding", "identity"))
         if self._response is not None and not self._response.closed:
             self._response.close()
         handle = _MOLT_HTTP_EXECUTE(
@@ -183,6 +225,9 @@ class HTTPConnection:
         self._url = None
         self._headers = []
         self._body = bytearray()
+        self._buffer = []
+        self._skip_host = False
+        self._skip_accept_encoding = False
         self._response = HTTPResponse(int(handle))
         return self._response
 
@@ -198,6 +243,9 @@ class HTTPConnection:
         self._url = None
         self._headers = []
         self._body = bytearray()
+        self._buffer = []
+        self._skip_host = False
+        self._skip_accept_encoding = False
 
 
 __all__ = ["HTTPConnection", "HTTPResponse"]

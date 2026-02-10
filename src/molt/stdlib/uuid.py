@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 import builtins as _builtins
 import enum as _enum
-import hashlib as _hashlib
-import random as _random
-import time as _time
 
 Int = _builtins.int
 BytesLike = _builtins.bytes | bytearray | memoryview
@@ -36,10 +34,13 @@ RFC_4122 = "specified in RFC 4122"
 RESERVED_MICROSOFT = "reserved for Microsoft compatibility"
 RESERVED_FUTURE = "reserved for future definition"
 
-_UUID_EPOCH = 0x01B21DD213814000
 _NODE: int | None = None
-_CLOCK_SEQ: int | None = None
-_LAST_TIMESTAMP: int | None = None
+
+_MOLT_UUID_GETNODE = _require_intrinsic("molt_uuid_getnode", globals())
+_MOLT_UUID_UUID1_BYTES = _require_intrinsic("molt_uuid_uuid1_bytes", globals())
+_MOLT_UUID_UUID3_BYTES = _require_intrinsic("molt_uuid_uuid3_bytes", globals())
+_MOLT_UUID_UUID4_BYTES = _require_intrinsic("molt_uuid_uuid4_bytes", globals())
+_MOLT_UUID_UUID5_BYTES = _require_intrinsic("molt_uuid_uuid5_bytes", globals())
 
 
 class SafeUUID(_enum.Enum):
@@ -201,81 +202,47 @@ class UUID:
 
 
 def uuid1(node: int | None = None, clock_seq: int | None = None) -> UUID:
-    global _CLOCK_SEQ, _LAST_TIMESTAMP
-    if node is None:
-        node = getnode()
-    node = _validate_node(node)
-
-    if clock_seq is not None:
-        clock_seq = _normalize_clock_seq(clock_seq)
-    elif _CLOCK_SEQ is None:
-        _CLOCK_SEQ = _random.getrandbits(14)
-
-    timestamp = _timestamp_100ns()
-    if _LAST_TIMESTAMP is not None and timestamp <= _LAST_TIMESTAMP:
-        timestamp = _LAST_TIMESTAMP + 1
-        if clock_seq is None:
-            _CLOCK_SEQ = ((_CLOCK_SEQ or 0) + 1) & 0x3FFF
-    _LAST_TIMESTAMP = timestamp
-
-    if clock_seq is None:
-        clock_seq = _CLOCK_SEQ or 0
-
-    time_low = timestamp & 0xFFFFFFFF
-    time_mid = (timestamp >> 32) & 0xFFFF
-    time_hi_version = (timestamp >> 48) & 0x0FFF
-    time_hi_version |= 1 << 12
-    clock_seq_low = clock_seq & 0xFF
-    clock_seq_hi_variant = (clock_seq >> 8) & 0x3F
-    clock_seq_hi_variant |= 0x80
-
-    return UUID(
-        fields=(
-            time_low,
-            time_mid,
-            time_hi_version,
-            clock_seq_hi_variant,
-            clock_seq_low,
-            node,
-        )
+    node_override = _validate_node(node) if node is not None else None
+    clock_seq_override = (
+        _normalize_clock_seq(clock_seq) if clock_seq is not None else None
     )
+    payload = _to_bytes(_MOLT_UUID_UUID1_BYTES(node_override, clock_seq_override))
+    if len(payload) != 16:
+        raise RuntimeError("invalid uuid1 intrinsic payload")
+    return UUID(bytes=payload)
 
 
 def uuid3(namespace: UUID, name: str | bytes) -> UUID:
     name_bytes = _coerce_name(namespace, name)
-    digest = _md5(namespace.bytes + name_bytes)
-    return _uuid_from_hash(digest, 3)
+    payload = _to_bytes(_MOLT_UUID_UUID3_BYTES(namespace.bytes, name_bytes))
+    if len(payload) != 16:
+        raise RuntimeError("invalid uuid3 intrinsic payload")
+    return UUID(bytes=payload)
 
 
 def uuid4() -> UUID:
-    value = _random.getrandbits(128)
-    data = _int_to_bytes(value, 16)
-    return UUID(bytes=data, version=4)
+    payload = _to_bytes(_MOLT_UUID_UUID4_BYTES())
+    if len(payload) != 16:
+        raise RuntimeError("invalid uuid4 intrinsic payload")
+    return UUID(bytes=payload)
 
 
 def uuid5(namespace: UUID, name: str | bytes) -> UUID:
     name_bytes = _coerce_name(namespace, name)
-    digest = _hashlib.sha1(namespace.bytes + name_bytes).digest()
-    return _uuid_from_hash(digest, 5)
+    payload = _to_bytes(_MOLT_UUID_UUID5_BYTES(namespace.bytes, name_bytes))
+    if len(payload) != 16:
+        raise RuntimeError("invalid uuid5 intrinsic payload")
+    return UUID(bytes=payload)
 
 
 def getnode() -> int:
     global _NODE
     if _NODE is None:
-        node = _random.getrandbits(48)
-        node |= 0x010000000000
-        _NODE = node
+        node = _MOLT_UUID_GETNODE()
+        if not isinstance(node, int):
+            raise RuntimeError("invalid uuid getnode intrinsic payload")
+        _NODE = _validate_node(node)
     return _NODE
-
-
-def _timestamp_100ns() -> int:
-    seconds = _time.time()
-    return int(seconds * 10_000_000) + _UUID_EPOCH
-
-
-def _uuid_from_hash(digest: bytes, version: int) -> UUID:
-    data = digest[:16]
-    return UUID(bytes=data, version=version)
 
 
 def _coerce_name(namespace: UUID, name: str | bytes) -> bytes:
@@ -420,202 +387,6 @@ def _to_bytes(value: Any) -> bytes:
     if isinstance(value, (bytearray, memoryview)):
         return _builtins.bytes(value)
     raise TypeError("a bytes-like object is required")
-
-
-def _left_rotate(value: int, shift: int) -> int:
-    return ((value << shift) | (value >> (32 - shift))) & 0xFFFFFFFF
-
-
-def _md5(data: bytes) -> bytes:
-    message = _to_bytes(data)
-    message_len_bits = (len(message) * 8) & 0xFFFFFFFFFFFFFFFF
-    message += b"\x80"
-    pad_len = (56 - (len(message) % 64)) % 64
-    message += b"\x00" * pad_len
-    message += message_len_bits.to_bytes(8, "little")
-
-    a0 = 0x67452301
-    b0 = 0xEFCDAB89
-    c0 = 0x98BADCFE
-    d0 = 0x10325476
-
-    s = [
-        7,
-        12,
-        17,
-        22,
-        7,
-        12,
-        17,
-        22,
-        7,
-        12,
-        17,
-        22,
-        7,
-        12,
-        17,
-        22,
-        5,
-        9,
-        14,
-        20,
-        5,
-        9,
-        14,
-        20,
-        5,
-        9,
-        14,
-        20,
-        5,
-        9,
-        14,
-        20,
-        4,
-        11,
-        16,
-        23,
-        4,
-        11,
-        16,
-        23,
-        4,
-        11,
-        16,
-        23,
-        4,
-        11,
-        16,
-        23,
-        6,
-        10,
-        15,
-        21,
-        6,
-        10,
-        15,
-        21,
-        6,
-        10,
-        15,
-        21,
-        6,
-        10,
-        15,
-        21,
-    ]
-    k = [
-        0xD76AA478,
-        0xE8C7B756,
-        0x242070DB,
-        0xC1BDCEEE,
-        0xF57C0FAF,
-        0x4787C62A,
-        0xA8304613,
-        0xFD469501,
-        0x698098D8,
-        0x8B44F7AF,
-        0xFFFF5BB1,
-        0x895CD7BE,
-        0x6B901122,
-        0xFD987193,
-        0xA679438E,
-        0x49B40821,
-        0xF61E2562,
-        0xC040B340,
-        0x265E5A51,
-        0xE9B6C7AA,
-        0xD62F105D,
-        0x02441453,
-        0xD8A1E681,
-        0xE7D3FBC8,
-        0x21E1CDE6,
-        0xC33707D6,
-        0xF4D50D87,
-        0x455A14ED,
-        0xA9E3E905,
-        0xFCEFA3F8,
-        0x676F02D9,
-        0x8D2A4C8A,
-        0xFFFA3942,
-        0x8771F681,
-        0x6D9D6122,
-        0xFDE5380C,
-        0xA4BEEA44,
-        0x4BDECFA9,
-        0xF6BB4B60,
-        0xBEBFBC70,
-        0x289B7EC6,
-        0xEAA127FA,
-        0xD4EF3085,
-        0x04881D05,
-        0xD9D4D039,
-        0xE6DB99E5,
-        0x1FA27CF8,
-        0xC4AC5665,
-        0xF4292244,
-        0x432AFF97,
-        0xAB9423A7,
-        0xFC93A039,
-        0x655B59C3,
-        0x8F0CCC92,
-        0xFFEFF47D,
-        0x85845DD1,
-        0x6FA87E4F,
-        0xFE2CE6E0,
-        0xA3014314,
-        0x4E0811A1,
-        0xF7537E82,
-        0xBD3AF235,
-        0x2AD7D2BB,
-        0xEB86D391,
-    ]
-
-    for chunk_start in range(0, len(message), 64):
-        chunk = message[chunk_start : chunk_start + 64]
-        m = [0] * 16
-        for i in range(16):
-            start = i * 4
-            m[i] = int.from_bytes(chunk[start : start + 4], "little")
-
-        a = a0
-        b = b0
-        c = c0
-        d = d0
-
-        for i in range(64):
-            if i <= 15:
-                f = (b & c) | (~b & d)
-                g = i
-            elif i <= 31:
-                f = (d & b) | (~d & c)
-                g = (5 * i + 1) % 16
-            elif i <= 47:
-                f = b ^ c ^ d
-                g = (3 * i + 5) % 16
-            else:
-                f = c ^ (b | ~d)
-                g = (7 * i) % 16
-
-            temp = d
-            d = c
-            c = b
-            rotate = (a + f + k[i] + m[g]) & 0xFFFFFFFF
-            b = (b + _left_rotate(rotate, s[i])) & 0xFFFFFFFF
-            a = temp
-
-        a0 = (a0 + a) & 0xFFFFFFFF
-        b0 = (b0 + b) & 0xFFFFFFFF
-        c0 = (c0 + c) & 0xFFFFFFFF
-        d0 = (d0 + d) & 0xFFFFFFFF
-
-    return (
-        a0.to_bytes(4, "little")
-        + b0.to_bytes(4, "little")
-        + c0.to_bytes(4, "little")
-        + d0.to_bytes(4, "little")
-    )
 
 
 NAMESPACE_DNS = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")

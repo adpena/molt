@@ -177,6 +177,14 @@ def _deepcopy_bytearray(obj: bytearray, memo: dict[int, Any]) -> bytearray:
     return result
 
 
+def _deepcopy_slice(obj: slice, memo: dict[int, Any]) -> slice:
+    return slice(
+        deepcopy(obj.start, memo),
+        deepcopy(obj.stop, memo),
+        deepcopy(obj.step, memo),
+    )
+
+
 def _normalize_reduce(rv: Any) -> tuple[Any, Any, Any, Any, Any]:
     if isinstance(rv, str):
         raise Error("reduction returned string")
@@ -326,7 +334,7 @@ _deepcopy_dispatch[set] = _deepcopy_set
 _deepcopy_dispatch[tuple] = _deepcopy_tuple
 _deepcopy_dispatch[bytearray] = _deepcopy_bytearray
 _deepcopy_dispatch[frozenset] = _deepcopy_frozenset
-_deepcopy_dispatch[slice] = _deepcopy_atomic
+_deepcopy_dispatch[slice] = _deepcopy_slice
 
 for _atomic in _atomic_types:
     _copy_dispatch[_atomic] = _copy_atomic

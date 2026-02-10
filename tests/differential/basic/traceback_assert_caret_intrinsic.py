@@ -1,4 +1,5 @@
 """Purpose: validate traceback caret shaping for assertion frames."""
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read
 
 import traceback
 

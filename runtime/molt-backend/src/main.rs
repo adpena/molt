@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Read};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 
@@ -168,9 +169,39 @@ fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let mut file = File::create(output_path)?;
+    let base_name = output_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("output");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_name = format!(".{base_name}.{}.{}.tmp", std::process::id(), nonce);
+    let tmp_path = output_path.with_file_name(tmp_name);
+    let mut file = File::create(&tmp_path)?;
     file.write_all(bytes)?;
-    Ok(())
+    file.sync_all()?;
+    drop(file);
+
+    match std::fs::rename(&tmp_path, output_path) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            let _ = std::fs::remove_file(output_path);
+            match std::fs::rename(&tmp_path, output_path) {
+                Ok(()) => Ok(()),
+                Err(second_err) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    Err(io::Error::new(
+                        second_err.kind(),
+                        format!(
+                            "failed to atomically replace output (first: {first_err}; second: {second_err})"
+                        ),
+                    ))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(unix)]

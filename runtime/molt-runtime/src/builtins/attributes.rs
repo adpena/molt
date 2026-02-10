@@ -10,6 +10,7 @@ use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bit
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
     awaitable_await_func_bits, class_slots_info, exception_is_attribute_error,
+    object_attr_lookup_raw,
 };
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
@@ -394,34 +395,13 @@ pub(crate) unsafe fn type_attr_lookup_ptr(
         }
         if name == "__dict__" {
             let dict_bits = class_dict_bits(obj_ptr);
-            if let Some(types_name_bits) = attr_name_bits_from_bytes(_py, b"types") {
-                let types_bits = molt_module_cache_get(types_name_bits);
-                dec_ref_bits(_py, types_name_bits);
-                if let Some(types_ptr) = obj_from_bits(types_bits).as_ptr() {
-                    if object_type_id(types_ptr) == TYPE_ID_MODULE {
-                        if let Some(proxy_name_bits) =
-                            attr_name_bits_from_bytes(_py, b"MappingProxyType")
-                        {
-                            let proxy_bits =
-                                unsafe { module_attr_lookup(_py, types_ptr, proxy_name_bits) };
-                            dec_ref_bits(_py, proxy_name_bits);
-                            if let Some(proxy_bits) = proxy_bits {
-                                let res_bits = call_callable1(_py, proxy_bits, dict_bits);
-                                dec_ref_bits(_py, proxy_bits);
-                                if exception_pending(_py) {
-                                    dec_ref_bits(_py, types_bits);
-                                    return None;
-                                }
-                                dec_ref_bits(_py, types_bits);
-                                return Some(res_bits);
-                            }
-                        }
-                    }
-                }
-                dec_ref_bits(_py, types_bits);
+            let mappingproxy_bits = crate::builtins::types::mappingproxy_class_bits(_py);
+            if !obj_from_bits(mappingproxy_bits).is_none() {
+                let res_bits = call_callable1(_py, mappingproxy_bits, dict_bits);
                 if exception_pending(_py) {
                     return None;
                 }
+                return Some(res_bits);
             }
             inc_ref_bits(_py, dict_bits);
             return Some(dict_bits);
@@ -1294,6 +1274,11 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
     }
     if type_id == TYPE_ID_DICT {
+        let class_bits = object_class_bits(obj_ptr);
+        let builtins = builtin_classes(_py);
+        if class_bits != 0 && class_bits != builtins.dict {
+            return unsafe { object_attr_lookup_raw(_py, obj_ptr, attr_bits) };
+        }
         if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
             if name == "fromkeys" {
                 if let Some(func_bits) = dict_method_bits(_py, name.as_str()) {
@@ -2184,9 +2169,43 @@ pub(crate) unsafe fn attr_lookup_ptr(
             }
             return None;
         }
+        let weakref_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.weakref_name,
+            b"__weakref__",
+        );
+        if obj_eq(
+            _py,
+            obj_from_bits(attr_bits),
+            obj_from_bits(weakref_name_bits),
+        ) {
+            if class_bits != 0 {
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                        if let Some(info) = class_slots_info(_py, class_ptr, attr_bits) {
+                            if !info.allows_attr {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+            return Some(MoltObject::none().bits());
+        }
         let dict_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
         if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
+            if class_bits != 0 {
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                        if let Some(info) = class_slots_info(_py, class_ptr, attr_bits) {
+                            if !info.allows_dict {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
             let mut dict_bits = instance_dict_bits(obj_ptr);
             if dict_bits == 0 {
                 let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -3909,13 +3928,24 @@ pub(crate) unsafe fn object_delattr_raw(
     attr_bits: u64,
     attr_name: &str,
 ) -> i64 {
+    let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
     let header = header_from_obj_ptr(obj_ptr);
     if (*header).poll_fn != 0 {
-        return attr_error(_py, "object", attr_name);
+        return attr_error_with_obj(
+            _py,
+            class_name_for_error(object_class_bits(obj_ptr)),
+            attr_name,
+            obj_bits,
+        );
     }
     let payload = object_payload_size(obj_ptr);
     if payload < std::mem::size_of::<u64>() {
-        return attr_error(_py, "object", attr_name);
+        return attr_error_with_obj(
+            _py,
+            class_name_for_error(object_class_bits(obj_ptr)),
+            attr_name,
+            obj_bits,
+        );
     }
     let class_bits = object_class_bits(obj_ptr);
     if class_bits != 0 {
@@ -3977,7 +4007,7 @@ pub(crate) unsafe fn object_delattr_raw(
                 if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                     let slot = obj_ptr.add(offset) as *const u64;
                     if is_missing_bits(_py, *slot) {
-                        return attr_error(_py, "object", attr_name);
+                        return attr_error(_py, class_name_for_error(class_bits), attr_name);
                     }
                     let missing = missing_bits(_py);
                     let _ = object_field_set_ptr_raw(_py, obj_ptr, offset, missing);
@@ -3996,7 +4026,7 @@ pub(crate) unsafe fn object_delattr_raw(
             }
         }
     }
-    attr_error(_py, "object", attr_name)
+    attr_error(_py, class_name_for_error(class_bits), attr_name)
 }
 
 unsafe fn dataclass_delattr_inner(

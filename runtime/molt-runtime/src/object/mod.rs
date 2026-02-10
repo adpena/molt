@@ -59,25 +59,26 @@ use crate::{
     exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
     exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
     function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
-    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
-    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_target_bits, map_func_bits,
-    map_iters_ptr, module_dict_bits, module_name_bits, process_poll_fn_addr, profile_hit,
-    property_del_bits, property_get_bits, property_set_bits, range_start_bits, range_step_bits,
-    range_stop_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
-    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
-    task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits, utf8_cache_remove,
-    weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits, PyToken,
-    ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
-    ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET,
-    GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT,
-    TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS, TYPE_ID_CALL_ITER,
-    TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
-    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
-    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT,
-    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP,
+    generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
+    generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
+    iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits, module_name_bits,
+    process_poll_fn_addr, profile_hit, property_del_bits, property_get_bits, property_set_bits,
+    range_start_bits, range_step_bits, range_stop_bits, reversed_target_bits, runtime_state,
+    seq_vec_ptr, set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
+    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits,
+    utf8_cache_remove, weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits,
+    PyToken, ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT,
+    ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR,
+    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS,
+    TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW,
+    TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION,
+    TYPE_ID_ZIP,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -568,16 +569,27 @@ pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     let payload = object_payload_size(ptr);
+    if payload < std::mem::size_of::<u64>() {
+        return std::ptr::null_mut();
+    }
     ptr.add(payload - std::mem::size_of::<u64>()) as *mut u64
 }
 
 pub(crate) unsafe fn instance_dict_bits(ptr: *mut u8) -> u64 {
-    *instance_dict_bits_ptr(ptr)
+    let slot = instance_dict_bits_ptr(ptr);
+    if slot.is_null() {
+        return 0;
+    }
+    *slot
 }
 
 pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     crate::gil_assert();
-    *instance_dict_bits_ptr(ptr) = bits;
+    let slot = instance_dict_bits_ptr(ptr);
+    if slot.is_null() {
+        return;
+    }
+    *slot = bits;
 }
 
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
@@ -1245,6 +1257,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 dec_ref_bits(py, closed_bits);
                 dec_ref_bits(py, depth_bits);
                 generator_exception_stack_drop(py, ptr);
+                generator_context_stack_drop(py, ptr);
             }
             TYPE_ID_ASYNC_GENERATOR => {
                 let pending_bits = asyncgen_pending_bits(ptr);

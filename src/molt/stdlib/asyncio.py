@@ -1,7 +1,7 @@
 """Capability-gated asyncio shim for Molt."""
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, cast
 from dataclasses import dataclass
 import builtins as _builtins
 from collections import deque as _deque
@@ -17,8 +17,6 @@ import types as _types
 import threading as _threading
 
 import contextvars as _contextvars
-
-from molt.concurrency import CancellationToken, spawn
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
@@ -266,6 +264,8 @@ if TYPE_CHECKING:
     def molt_asyncio_running_loop_set(_loop: Any) -> None: ...
 
     def molt_asyncio_event_loop_get() -> Any: ...
+
+    def molt_asyncio_event_loop_get_current() -> Any: ...
 
     def molt_asyncio_event_loop_set(_loop: Any) -> None: ...
 
@@ -765,6 +765,30 @@ def _require_ssl_transport_support(
     return outcome
 
 
+def _socket_eai_codes() -> set[int]:
+    codes: set[int] = set()
+    for name in dir(_socket):
+        if not name.startswith("EAI_"):
+            continue
+        value = getattr(_socket, name, None)
+        if isinstance(value, int):
+            codes.add(value)
+    return codes
+
+
+_SOCKET_EAI_CODES = _socket_eai_codes()
+
+
+def _map_socket_name_resolution_error(exc: OSError) -> OSError:
+    errno_value = getattr(exc, "errno", None)
+    if isinstance(errno_value, int) and errno_value in _SOCKET_EAI_CODES:
+        try:
+            return _socket.gaierror(errno_value, str(exc))
+        except Exception:
+            return exc
+    return exc
+
+
 def _tls_client_connect(
     host: str, port: int, server_hostname: str | None = None
 ) -> Any:
@@ -996,6 +1020,14 @@ molt_pending = _intrinsic_require("molt_pending", globals())
 molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
 molt_block_on = _intrinsic_require("molt_block_on", globals())
 molt_asyncgen_shutdown = _intrinsic_require("molt_asyncgen_shutdown", globals())
+molt_spawn = _intrinsic_require("molt_spawn", globals())
+molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
+molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
+molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop", globals())
+molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel", globals())
+molt_cancel_token_is_cancelled = _intrinsic_require(
+    "molt_cancel_token_is_cancelled", globals()
+)
 molt_cancel_token_set_current = _intrinsic_require(
     "molt_cancel_token_set_current", globals()
 )
@@ -1125,6 +1157,9 @@ molt_asyncio_running_loop_set = _intrinsic_require(
 )
 molt_asyncio_event_loop_get = _intrinsic_require(
     "molt_asyncio_event_loop_get", globals()
+)
+molt_asyncio_event_loop_get_current = _intrinsic_require(
+    "molt_asyncio_event_loop_get_current", globals()
 )
 molt_asyncio_event_loop_set = _intrinsic_require(
     "molt_asyncio_event_loop_set", globals()
@@ -1326,6 +1361,16 @@ def _fd_from_fileobj(fileobj: Any) -> int:
     raise ValueError("fileobj must be a file descriptor or have fileno()")
 
 
+def _socket_wait_key(sock: Any) -> Any:
+    fileno = getattr(sock, "fileno", None)
+    if callable(fileno):
+        return int(fileno())
+    handle_getter = getattr(sock, "_require_handle", None)
+    if callable(handle_getter):
+        return handle_getter()
+    raise TypeError("socket object must provide fileno() or _require_handle()")
+
+
 def _encode_proc_fd(fd: int) -> int:
     if fd < 0:
         raise ValueError("file descriptor must be >= 0")
@@ -1381,6 +1426,60 @@ class _NonBlockingSocket:
             self._sock.settimeout(self._prev)
         except Exception:
             return None
+
+
+def spawn(task: Any) -> None:
+    molt_spawn(task)
+
+
+class CancellationToken:
+    def __init__(self) -> None:
+        self._token = int(molt_cancel_token_new(None))
+        self._owned = True
+
+    @classmethod
+    def detached(cls) -> "CancellationToken":
+        token = cls()
+        old_id = token._token
+        token._token = int(molt_cancel_token_new(-1))
+        molt_cancel_token_drop(old_id)
+        return token
+
+    def child(self) -> "CancellationToken":
+        token = CancellationToken()
+        old_id = token._token
+        token._token = int(molt_cancel_token_new(self._token))
+        molt_cancel_token_drop(old_id)
+        return token
+
+    def cancelled(self) -> bool:
+        return bool(molt_cancel_token_is_cancelled(self._token))
+
+    def cancel(self) -> None:
+        molt_cancel_token_cancel(self._token)
+
+    def set_current(self) -> "CancellationToken":
+        prev_id = int(molt_cancel_token_set_current(self._token))
+        return _wrap_existing_token(prev_id, False)
+
+    def token_id(self) -> int:
+        return int(self._token)
+
+    def __del__(self) -> None:
+        if getattr(self, "_owned", False):
+            molt_cancel_token_drop(int(self._token))
+
+
+def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
+    token = CancellationToken()
+    old_id = token._token
+    token._token = int(token_id)
+    token._owned = bool(owned)
+    if owned:
+        molt_cancel_token_clone(int(token_id))
+    if old_id != token_id:
+        molt_cancel_token_drop(int(old_id))
+    return token
 
 
 def _swap_current_token(token: CancellationToken) -> int:
@@ -2044,6 +2143,7 @@ class StreamReader:
             self._fd = self._sock.fileno()
         except Exception:
             self._fd = -1
+        self._wait_key = _socket_wait_key(self._sock)
         self._reader = _require_asyncio_intrinsic(
             _molt_socket_reader_new, "socket_reader_new"
         )(self._sock._require_handle())
@@ -2061,7 +2161,7 @@ class StreamReader:
                 res = await _require_asyncio_intrinsic(
                     molt_asyncio_socket_reader_read_new,
                     "asyncio_socket_reader_read_new",
-                )(self._reader, n, self._fd)
+                )(self._reader, n, self._wait_key)
             except (BlockingIOError, InterruptedError):
                 await self._wait_readable()
                 continue
@@ -2148,7 +2248,7 @@ class StreamReader:
                 res = await _require_asyncio_intrinsic(
                     molt_asyncio_socket_reader_readline_new,
                     "asyncio_socket_reader_readline_new",
-                )(self._reader, self._fd)
+                )(self._reader, self._wait_key)
             except (BlockingIOError, InterruptedError):
                 await self._wait_readable()
                 continue
@@ -2309,8 +2409,18 @@ class Server(AbstractServer):
             pass
 
     async def wait_closed(self) -> None:
+        task = self._accept_task
+        if not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+            # Yield once so cancellation can propagate, but never block forever.
+            await sleep(0.0)
+            if not task.done():
+                return None
         try:
-            await self._accept_task
+            await task
         except BaseException:
             return None
 
@@ -2413,6 +2523,9 @@ class ProcessStreamWriter:
         return None
 
 
+_PROCESS_WAIT_FUTURES: dict[int, Any] = {}
+
+
 class Process:
     def __init__(
         self,
@@ -2425,7 +2538,6 @@ class Process:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
-        self._wait_future: Any | None = None
 
     @property
     def pid(self) -> int:
@@ -2448,12 +2560,13 @@ class Process:
         )
 
     async def wait(self) -> int:
-        wait_future = getattr(self, "_wait_future", None)
+        key = id(self)
+        wait_future = _PROCESS_WAIT_FUTURES.get(key)
         if wait_future is None:
             fut = _require_asyncio_intrinsic(
                 _molt_process_wait_future, "process_wait_future"
             )(self._handle)
-            self._wait_future = fut
+            _PROCESS_WAIT_FUTURES[key] = fut
             wait_future = fut
         code = int(await wait_future)
         watcher = _CHILD_WATCHER
@@ -2474,26 +2587,46 @@ class Process:
             await self.stdin.drain()
             self.stdin.close()
 
-        tasks: list[tuple[str, Future]] = []
+        tasks: list[Future] = []
+        task_kinds: list[str] = []
         if self.stdout is not None:
-            tasks.append(("stdout", ensure_future(self.stdout.read())))
+            tasks.append(ensure_future(self.stdout.read()))
+            task_kinds.append("stdout")
         if self.stderr is not None:
-            tasks.append(("stderr", ensure_future(self.stderr.read())))
+            tasks.append(ensure_future(self.stderr.read()))
+            task_kinds.append("stderr")
 
         out: bytes | None = None
         err: bytes | None = None
         try:
             if tasks:
-                results = await gather(*[task for _, task in tasks])
+                while True:
+                    current = current_task()
+                    if current is not None and current.cancelling() > 0:
+                        raise CancelledError()
+                    all_done = True
+                    for task in tasks:
+                        if not task.done():
+                            all_done = False
+                            break
+                    if all_done:
+                        break
+                    await sleep(0.0)
+                results: list[Any] = []
+                for task in tasks:
+                    results.append(await task)
                 for idx, result in enumerate(results):
-                    kind, _task = tasks[idx]
+                    kind = task_kinds[idx]
                     if kind == "stdout":
                         out = result
                     else:
                         err = result
+            current = current_task()
+            if current is not None and current.cancelling() > 0:
+                raise CancelledError()
             await self.wait()
         except BaseException:
-            for _, task in tasks:
+            for task in tasks:
                 try:
                     task.cancel()
                 except Exception:
@@ -2502,6 +2635,7 @@ class Process:
         return out, err
 
     def __del__(self) -> None:
+        _PROCESS_WAIT_FUTURES.pop(id(self), None)
         try:
             _require_asyncio_intrinsic(_molt_process_drop, "process_drop")(self._handle)
         except Exception:
@@ -3040,51 +3174,51 @@ class _EventLoop(AbstractEventLoop):
     async def sock_recv(self, sock: Any, n: int) -> bytes:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_recv_new, "asyncio_sock_recv_new"
-        )(sock, n, sock.fileno())
+        )(sock, n, _socket_wait_key(sock))
         return await fut
 
     async def sock_recv_into(self, sock: Any, buf: Any) -> int:
         nbytes = len(buf)
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_recv_into_new, "asyncio_sock_recv_into_new"
-        )(sock, buf, nbytes, sock.fileno())
+        )(sock, buf, nbytes, _socket_wait_key(sock))
         return await fut
 
     async def sock_sendall(self, sock: Any, data: bytes) -> None:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_sendall_new, "asyncio_sock_sendall_new"
-        )(sock, data, sock.fileno())
+        )(sock, data, _socket_wait_key(sock))
         await fut
 
     async def sock_recvfrom(self, sock: Any, bufsize: int) -> tuple[Any, Any]:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_recvfrom_new, "asyncio_sock_recvfrom_new"
-        )(sock, bufsize, sock.fileno())
+        )(sock, bufsize, _socket_wait_key(sock))
         return await fut
 
     async def sock_recvfrom_into(self, sock: Any, buf: Any) -> tuple[int, Any]:
         nbytes = len(buf)
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_recvfrom_into_new, "asyncio_sock_recvfrom_into_new"
-        )(sock, buf, nbytes, sock.fileno())
+        )(sock, buf, nbytes, _socket_wait_key(sock))
         return await fut
 
     async def sock_sendto(self, sock: Any, data: bytes, addr: Any) -> int:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_sendto_new, "asyncio_sock_sendto_new"
-        )(sock, data, addr, sock.fileno())
+        )(sock, data, addr, _socket_wait_key(sock))
         return await fut
 
     async def sock_connect(self, sock: Any, address: Any) -> None:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_connect_new, "asyncio_sock_connect_new"
-        )(sock, address, sock.fileno())
+        )(sock, address, _socket_wait_key(sock))
         await fut
 
     async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
         fut = _require_asyncio_intrinsic(
             molt_asyncio_sock_accept_new, "asyncio_sock_accept_new"
-        )(sock, sock.fileno())
+        )(sock, _socket_wait_key(sock))
         return await fut
 
     def remove_writer(self, fd: Any) -> bool:
@@ -3468,10 +3602,9 @@ class AbstractEventLoopPolicy:
 
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def get_event_loop(self) -> EventLoop:
-        loop = molt_asyncio_event_loop_get()
-        if loop is None:
-            loop = _EventLoop()
-            molt_asyncio_event_loop_set(loop)
+        loop = molt_asyncio_event_loop_get_current()
+        if TYPE_CHECKING:
+            return cast(EventLoop, loop)
         return loop
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
@@ -3573,7 +3706,7 @@ def get_child_watcher() -> AbstractChildWatcher:
     _require_child_watcher_support()
     global _CHILD_WATCHER
     if _CHILD_WATCHER is None:
-        _CHILD_WATCHER = SafeChildWatcher()
+        _CHILD_WATCHER = ThreadedChildWatcher()
     loop = _get_running_loop()
     if loop is not None:
         _CHILD_WATCHER.attach_loop(loop)
@@ -3830,11 +3963,14 @@ async def open_connection(
             server_side=False,
         )
         if use_tls:
-            tls_handle = _tls_client_connect(
-                host,
-                int(port),
-                host if ssl is not False else None,
-            )
+            try:
+                tls_handle = _tls_client_connect(
+                    host,
+                    int(port),
+                    host if ssl is not False else None,
+                )
+            except OSError as exc:
+                raise _map_socket_name_resolution_error(exc) from None
             return (
                 ProcessStreamReader(tls_handle),
                 ProcessStreamWriter(tls_handle),
@@ -3900,6 +4036,8 @@ async def start_server(
     ssl: Any | None = None,
 ) -> Server:
     _require_io_wait_new()
+    if ssl is False:
+        raise TypeError("ssl argument must be an SSLContext or None")
     reader_ctor: Any = StreamReader
     writer_ctor: Any = StreamWriter
     if ssl is not None:
@@ -3955,6 +4093,8 @@ async def start_unix_server(
 ) -> Server:
     _require_unix_socket_support()
     _require_io_wait_new()
+    if ssl is False:
+        raise TypeError("ssl argument must be an SSLContext or None")
     reader_ctor: Any = StreamReader
     writer_ctor: Any = StreamWriter
     if ssl is not None:

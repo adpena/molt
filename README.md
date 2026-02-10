@@ -56,7 +56,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **ASGI**: shim only (no websocket support) and not integrated into compiled runtime yet.
 - **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
-- **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
+- **Numeric tower**: complex supported; decimal is partial (Rust intrinsic-backed context + quantize/compare/compare_total/normalize/exp/div with `as_tuple`/`str`/`repr`/float conversions); missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: partial beyond ints/floats; locale-aware grouping still pending (WASM uses host locale for `n`).
 - **List membership perf**: `in`/`count`/`index` snapshot list elements to avoid mutation during comparisons; optimization pending.
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
@@ -246,10 +246,13 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - `molt build --module pkg` / `molt run --module pkg`: compile or run a package entrypoint (`pkg.__main__` when present).
 - Build profiles: use `--profile dev` for local development/iteration, and `--profile release` for production validation, benchmarks, and shipping artifacts.
 - Dev profile routing: `--profile dev` defaults to Cargo `dev-fast` (override with `MOLT_DEV_CARGO_PROFILE`; release override: `MOLT_RELEASE_CARGO_PROFILE`).
+- Release iteration lane: use `MOLT_RELEASE_CARGO_PROFILE=release-fast` for faster release-profile compile iterations, and benchmark it with `tools/compile_progress.py --cases release_fast_cold release_fast_warm release_fast_nocache_warm`.
 - Build-cache determinism: CLI runs enforce `PYTHONHASHSEED=0` by default so repeated builds share cache keys; override via `MOLT_HASH_SEED=<value>` (`MOLT_HASH_SEED=random` disables this).
 - Rust compile cache: when `sccache` is installed, the CLI auto-enables it (`MOLT_USE_SCCACHE=auto`; set `MOLT_USE_SCCACHE=0` to disable). If a wrapper-level `sccache` error is detected, the CLI retries the Cargo build once without `RUSTC_WRAPPER`.
 - Native backend daemon: native backend compiles run through a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
-- Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, and enforce cache retention with `tools/molt_cache_prune.py`.
+- Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, run compile KPI snapshots with `tools/compile_progress.py`, and enforce cache retention with `tools/molt_cache_prune.py`.
+- Shared diff target: keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by throughput bootstrap) so diff workers reuse the same Cargo artifacts instead of triggering duplicate rebuilds.
+- Diff run lock: full diff runs coordinate via `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`; tune queue wait with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - `molt build --output <path|dir>`: directory outputs use the default filename; `--out-dir` only affects final outputs (intermediates remain under `$MOLT_HOME/build/<entry>`).
 - `molt compare <file.py>`: compare CPython vs Molt compiled output with separate build/run timing.
 - `molt test`: run the dev test suite (wraps `uv run --python 3.12 python3 tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).

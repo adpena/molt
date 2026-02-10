@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from types import ModuleType
 
 
 __all__ = [
@@ -36,6 +37,16 @@ _CENTRAL_SIG = b"PK\x01\x02"
 _EOCD_SIG = b"PK\x05\x06"
 _ZIP64_EOCD_SIG = b"PK\x06\x06"
 _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
+
+_capabilities: ModuleType | None
+try:
+    from molt import capabilities as _capabilities_raw
+except Exception:
+    _capabilities = None
+else:
+    _capabilities = (
+        _capabilities_raw if isinstance(_capabilities_raw, ModuleType) else None
+    )
 
 
 class ZipInfo:
@@ -108,8 +119,6 @@ class ZipFile:
         compression: int = ZIP_STORED,
         compresslevel: int | None = None,
     ) -> None:
-        from molt import capabilities
-
         self.filename = file
         self.mode = mode
         self._fp = None
@@ -124,12 +133,12 @@ class ZipFile:
         if compression not in {ZIP_STORED, ZIP_DEFLATED}:
             raise NotImplementedError("unsupported compression method")
         if mode == "w":
-            if not capabilities.trusted():
-                capabilities.require("fs.write")
+            if _capabilities is not None and not _capabilities.trusted():
+                _capabilities.require("fs.write")
             self._fp = open(file, "wb")
         else:
-            if not capabilities.trusted():
-                capabilities.require("fs.read")
+            if _capabilities is not None and not _capabilities.trusted():
+                _capabilities.require("fs.read")
             with open(file, "rb") as handle:
                 data = handle.read()
             self._data = data

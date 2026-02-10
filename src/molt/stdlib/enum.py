@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any
 
 __all__ = ["Enum", "IntEnum", "IntFlag", "Flag", "auto"]
+
+_require_intrinsic("molt_stdlib_probe", globals())
+_enum_init_member = _require_intrinsic("molt_enum_init_member", globals())
 
 
 class _AutoValue:
@@ -66,8 +70,7 @@ class EnumMeta(type):
                     raw_value = auto_value
             value = raw_value
             member = cls.__new__(cls, value)
-            member._name_ = member_name
-            member._value_ = value
+            _enum_init_member(member, member_name, value)
             cls._member_names_.append(member_name)
             cls._member_map_[member_name] = member
             cls._value2member_map_[value] = member

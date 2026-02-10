@@ -445,6 +445,24 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                 }
             }
             if let Some(bits) = canonical_bits {
+                let sys_bits = {
+                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                    let guard = cache.lock().unwrap();
+                    guard.get("sys").copied()
+                };
+                if let Some(sys_bits) = sys_bits {
+                    if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                        unsafe {
+                            dict_set_in_place(_py, modules_ptr, name_bits, bits);
+                        }
+                        if exception_pending(_py) {
+                            if bits != module_bits && !obj_from_bits(module_bits).is_none() {
+                                dec_ref_bits(_py, module_bits);
+                            }
+                            return MoltObject::none().bits();
+                        }
+                    }
+                }
                 if bits != module_bits {
                     if !obj_from_bits(module_bits).is_none() {
                         dec_ref_bits(_py, module_bits);
@@ -469,6 +487,25 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                         "TypeError",
                         &format!("import returned non-module payload: {got}"),
                     );
+                }
+
+                // Keep sys.modules synchronized with successful runtime imports so
+                // importlib.reload()/sys.modules round-trips remain consistent.
+                let sys_bits = {
+                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                    let guard = cache.lock().unwrap();
+                    guard.get("sys").copied()
+                };
+                if let Some(sys_bits) = sys_bits {
+                    if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                        unsafe {
+                            dict_set_in_place(_py, modules_ptr, name_bits, module_bits);
+                        }
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, module_bits);
+                            return MoltObject::none().bits();
+                        }
+                    }
                 }
             }
         }
@@ -1093,26 +1130,57 @@ unsafe fn runpy_restricted_import_star_into_namespace(
     module_bits: u64,
     module_name: &str,
 ) -> Result<(), u64> {
-    let module_ptr = match obj_from_bits(module_bits).as_ptr() {
-        Some(ptr) if object_type_id(ptr) == TYPE_ID_MODULE => ptr,
-        _ => {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "from-import wildcard expects module",
-            ));
-        }
+    let import_star_error = || {
+        let message = format!("cannot import name '*' from '{module_name}'");
+        raise_exception::<u64>(_py, "ImportError", &message)
     };
-    let module_dict_bits = module_dict_bits(module_ptr);
-    let module_dict_ptr = match obj_from_bits(module_dict_bits).as_ptr() {
-        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-        _ => {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "module dict missing",
-            ));
+    let mut module_obj_ptr = obj_from_bits(module_bits).as_ptr();
+    let mut module_ty = module_obj_ptr.map(|ptr| unsafe { object_type_id(ptr) });
+    if !matches!(module_ty, Some(TYPE_ID_MODULE | TYPE_ID_DICT)) {
+        let sys_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            guard.get("sys").copied()
+        };
+        if let Some(sys_bits) = sys_bits {
+            if let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits) {
+                let key_ptr = alloc_string(_py, module_name.as_bytes());
+                if key_ptr.is_null() {
+                    return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                }
+                let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                let from_sys_bits = dict_get_in_place(_py, modules_ptr, key_bits);
+                dec_ref_bits(_py, key_bits);
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                if let Some(bits) = from_sys_bits {
+                    module_obj_ptr = obj_from_bits(bits).as_ptr();
+                    module_ty = module_obj_ptr.map(|ptr| unsafe { object_type_id(ptr) });
+                }
+            }
         }
+    }
+    let Some(module_obj_ptr) = module_obj_ptr else {
+        return Err(import_star_error());
+    };
+    let module_ty = module_ty.unwrap_or_else(|| object_type_id(module_obj_ptr));
+    let module_dict_ptr = if module_ty == TYPE_ID_MODULE {
+        let module_dict_bits = module_dict_bits(module_obj_ptr);
+        match obj_from_bits(module_dict_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "module dict missing",
+                ));
+            }
+        }
+    } else if module_ty == TYPE_ID_DICT {
+        module_obj_ptr
+    } else {
+        return Err(import_star_error());
     };
 
     let all_name_bits = intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
@@ -1434,6 +1502,20 @@ fn parse_restricted_literal(text: &str) -> Option<RestrictedLiteral> {
     parse_restricted_string_literal(text).map(RestrictedLiteral::Str)
 }
 
+fn restricted_literal_truthy(value: &RestrictedLiteral) -> bool {
+    match value {
+        RestrictedLiteral::NoneValue => false,
+        RestrictedLiteral::Bool(flag) => *flag,
+        RestrictedLiteral::Int(v) => *v != 0,
+        RestrictedLiteral::Float(v) => *v != 0.0,
+        RestrictedLiteral::Str(v) => !v.is_empty(),
+        RestrictedLiteral::Bytes(v) => !v.is_empty(),
+        RestrictedLiteral::List(v) => !v.is_empty(),
+        RestrictedLiteral::Tuple(v) => !v.is_empty(),
+        RestrictedLiteral::Dict(v) => !v.is_empty(),
+    }
+}
+
 fn restricted_literal_to_bits(_py: &PyToken<'_>, value: RestrictedLiteral) -> Result<u64, u64> {
     match value {
         RestrictedLiteral::NoneValue => Ok(MoltObject::none().bits()),
@@ -1511,6 +1593,58 @@ fn restricted_literal_to_bits(_py: &PyToken<'_>, value: RestrictedLiteral) -> Re
     }
 }
 
+unsafe fn runpy_exec_restricted_stmt(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    stripped: &str,
+    filename: &str,
+) -> Result<(), u64> {
+    if stripped == "pass" {
+        return Ok(());
+    }
+    if let Some(rest) = stripped.strip_prefix("import ") {
+        runpy_restricted_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
+        return Ok(());
+    }
+    if let Some(rest) = stripped.strip_prefix("from ") {
+        runpy_restricted_from_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
+        return Ok(());
+    }
+    if !stripped.contains('=') || stripped.contains("==") || stripped.contains("!=") {
+        return Err(raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported module statement in {filename}"),
+        ));
+    }
+    let Some((left, right)) = stripped.split_once('=') else {
+        return Err(raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported module statement in {filename}"),
+        ));
+    };
+    let target = left.trim();
+    if !is_identifier_text(target) {
+        return Err(raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported assignment target in {filename}"),
+        ));
+    }
+    let value = parse_restricted_literal(right.trim()).ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            "NotImplementedError",
+            &format!("unsupported assignment in {filename}"),
+        )
+    })?;
+    let value_bits = restricted_literal_to_bits(_py, value)?;
+    dict_set_str_key_bits(_py, namespace_ptr, target, value_bits)?;
+    dec_ref_bits(_py, value_bits);
+    Ok(())
+}
+
 pub(crate) unsafe fn runpy_exec_restricted_source(
     _py: &PyToken<'_>,
     namespace_ptr: *mut u8,
@@ -1556,49 +1690,56 @@ pub(crate) unsafe fn runpy_exec_restricted_source(
         }
 
         saw_stmt = true;
-        if stripped == "pass" {
+        if let Some(cond_raw) = stripped
+            .strip_prefix("if ")
+            .and_then(|rest| rest.strip_suffix(':'))
+        {
+            let condition = parse_restricted_literal(cond_raw.trim()).ok_or_else(|| {
+                raise_exception::<u64>(
+                    _py,
+                    "NotImplementedError",
+                    &format!("unsupported module statement in {filename}"),
+                )
+            })?;
+            let cond_true = restricted_literal_truthy(&condition);
+            let current_indent = raw
+                .chars()
+                .take_while(|ch| *ch == ' ' || *ch == '\t')
+                .count();
+            let mut saw_indented_stmt = false;
+            while idx < lines.len() {
+                let block_raw = lines[idx];
+                let block_indent = block_raw
+                    .chars()
+                    .take_while(|ch| *ch == ' ' || *ch == '\t')
+                    .count();
+                let block_trimmed = strip_inline_comment_text(block_raw.trim());
+                if !block_trimmed.is_empty() && block_indent <= current_indent {
+                    break;
+                }
+                idx += 1;
+                if block_trimmed.is_empty() || block_trimmed.starts_with('#') {
+                    continue;
+                }
+                if block_indent <= current_indent {
+                    continue;
+                }
+                saw_indented_stmt = true;
+                if !cond_true {
+                    continue;
+                }
+                runpy_exec_restricted_stmt(_py, namespace_ptr, block_trimmed, filename)?;
+            }
+            if !saw_indented_stmt {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    &format!("unsupported module statement in {filename}"),
+                ));
+            }
             continue;
         }
-        if let Some(rest) = stripped.strip_prefix("import ") {
-            runpy_restricted_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
-            continue;
-        }
-        if let Some(rest) = stripped.strip_prefix("from ") {
-            runpy_restricted_from_import_stmt(_py, namespace_ptr, rest.trim(), filename)?;
-            continue;
-        }
-        if !stripped.contains('=') || stripped.contains("==") || stripped.contains("!=") {
-            return Err(raise_exception::<_>(
-                _py,
-                "NotImplementedError",
-                &format!("unsupported module statement in {filename}"),
-            ));
-        }
-        let Some((left, right)) = stripped.split_once('=') else {
-            return Err(raise_exception::<_>(
-                _py,
-                "NotImplementedError",
-                &format!("unsupported module statement in {filename}"),
-            ));
-        };
-        let target = left.trim();
-        if !is_identifier_text(target) {
-            return Err(raise_exception::<_>(
-                _py,
-                "NotImplementedError",
-                &format!("unsupported assignment target in {filename}"),
-            ));
-        }
-        let value = parse_restricted_literal(right.trim()).ok_or_else(|| {
-            raise_exception::<u64>(
-                _py,
-                "NotImplementedError",
-                &format!("unsupported assignment in {filename}"),
-            )
-        })?;
-        let value_bits = restricted_literal_to_bits(_py, value)?;
-        dict_set_str_key_bits(_py, namespace_ptr, target, value_bits)?;
-        dec_ref_bits(_py, value_bits);
+        runpy_exec_restricted_stmt(_py, namespace_ptr, stripped, filename)?;
     }
     Ok(())
 }

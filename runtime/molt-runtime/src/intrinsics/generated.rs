@@ -258,6 +258,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_enum_init_member",
+        symbol: "molt_enum_init_member",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_re_literal_matches",
         symbol: "molt_re_literal_matches",
         arity: 3,
@@ -555,6 +560,51 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_urllib_request_response_getheaders",
         symbol: "molt_urllib_request_response_getheaders",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_cookiejar_new",
+        symbol: "molt_http_cookiejar_new",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_http_cookiejar_len",
+        symbol: "molt_http_cookiejar_len",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_cookiejar_clear",
+        symbol: "molt_http_cookiejar_clear",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_cookiejar_extract",
+        symbol: "molt_http_cookiejar_extract",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_cookiejar_header_for_url",
+        symbol: "molt_http_cookiejar_header_for_url",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_ctypes_require_ffi",
+        symbol: "molt_ctypes_require_ffi",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_ctypes_coerce_value",
+        symbol: "molt_ctypes_coerce_value",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_ctypes_default_value",
+        symbol: "molt_ctypes_default_value",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_ctypes_sizeof",
+        symbol: "molt_ctypes_sizeof",
         arity: 1,
     },
     IntrinsicSpec {
@@ -1160,6 +1210,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_asyncio_event_loop_get",
         symbol: "molt_asyncio_event_loop_get",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_asyncio_event_loop_get_current",
+        symbol: "molt_asyncio_event_loop_get_current",
         arity: 0,
     },
     IntrinsicSpec {
@@ -2508,6 +2563,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_encodings_aliases_map",
+        symbol: "molt_encodings_aliases_map",
+        arity: 0,
+    },
+    IntrinsicSpec {
         name: "molt_struct_pack",
         symbol: "molt_struct_pack",
         arity: 2,
@@ -3243,6 +3303,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_socket_recvfrom_into",
+        symbol: "molt_socket_recvfrom_into",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_socket_send",
         symbol: "molt_socket_send",
         arity: 3,
@@ -3418,6 +3483,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_uuid_getnode",
+        symbol: "molt_uuid_getnode",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_uuid_uuid4_bytes",
+        symbol: "molt_uuid_uuid4_bytes",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_uuid_uuid1_bytes",
+        symbol: "molt_uuid_uuid1_bytes",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_uuid_uuid3_bytes",
+        symbol: "molt_uuid_uuid3_bytes",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_uuid_uuid5_bytes",
+        symbol: "molt_uuid_uuid5_bytes",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_source_loader_payload",
         symbol: "molt_importlib_source_loader_payload",
         arity: 3,
@@ -3478,6 +3568,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_importlib_find_in_path_package_context",
+        symbol: "molt_importlib_find_in_path_package_context",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_find_spec_payload",
         symbol: "molt_importlib_find_spec_payload",
         arity: 7,
@@ -3531,6 +3626,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_resources_loader_reader",
         symbol: "molt_importlib_resources_loader_reader",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_files_traversable",
+        symbol: "molt_importlib_resources_reader_files_traversable",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_roots",
@@ -3616,6 +3716,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_copyreg_pickle",
         symbol: "molt_copyreg_pickle",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_pickle_encode_protocol0",
+        symbol: "molt_pickle_encode_protocol0",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_copyreg_constructor",
@@ -3811,6 +3916,21 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_gen_locals",
         symbol: "molt_gen_locals",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_ast_parse",
+        symbol: "molt_ast_parse",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_ast_walk",
+        symbol: "molt_ast_walk",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_ast_get_docstring",
+        symbol: "molt_ast_get_docstring",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_inspect_cleandoc",
@@ -4326,6 +4446,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_update_abstractmethods" => {
             Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64)
         }
+        "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
         "molt_re_literal_matches" => {
             Some(crate::molt_re_literal_matches as *const () as usize as u64)
         }
@@ -4444,6 +4565,31 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_urllib_request_response_getheaders" => {
             Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64)
         }
+        "molt_http_cookiejar_new" => {
+            Some(crate::molt_http_cookiejar_new as *const () as usize as u64)
+        }
+        "molt_http_cookiejar_len" => {
+            Some(crate::molt_http_cookiejar_len as *const () as usize as u64)
+        }
+        "molt_http_cookiejar_clear" => {
+            Some(crate::molt_http_cookiejar_clear as *const () as usize as u64)
+        }
+        "molt_http_cookiejar_extract" => {
+            Some(crate::molt_http_cookiejar_extract as *const () as usize as u64)
+        }
+        "molt_http_cookiejar_header_for_url" => {
+            Some(crate::molt_http_cookiejar_header_for_url as *const () as usize as u64)
+        }
+        "molt_ctypes_require_ffi" => {
+            Some(crate::molt_ctypes_require_ffi as *const () as usize as u64)
+        }
+        "molt_ctypes_coerce_value" => {
+            Some(crate::molt_ctypes_coerce_value as *const () as usize as u64)
+        }
+        "molt_ctypes_default_value" => {
+            Some(crate::molt_ctypes_default_value as *const () as usize as u64)
+        }
+        "molt_ctypes_sizeof" => Some(crate::molt_ctypes_sizeof as *const () as usize as u64),
         "molt_http_client_execute" => {
             Some(crate::molt_http_client_execute as *const () as usize as u64)
         }
@@ -4780,6 +4926,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_asyncio_event_loop_get" => {
             Some(crate::molt_asyncio_event_loop_get as *const () as usize as u64)
+        }
+        "molt_asyncio_event_loop_get_current" => {
+            Some(crate::molt_asyncio_event_loop_get_current as *const () as usize as u64)
         }
         "molt_asyncio_event_loop_set" => {
             Some(crate::molt_asyncio_event_loop_set as *const () as usize as u64)
@@ -5188,6 +5337,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_codecs_lookup_name" => {
             Some(crate::molt_codecs_lookup_name as *const () as usize as u64)
         }
+        "molt_encodings_aliases_map" => {
+            Some(crate::molt_encodings_aliases_map as *const () as usize as u64)
+        }
         "molt_struct_pack" => Some(crate::molt_struct_pack as *const () as usize as u64),
         "molt_struct_unpack" => Some(crate::molt_struct_unpack as *const () as usize as u64),
         "molt_struct_calcsize" => Some(crate::molt_struct_calcsize as *const () as usize as u64),
@@ -5455,6 +5607,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_socket_recv" => Some(crate::molt_socket_recv as *const () as usize as u64),
         "molt_socket_recv_into" => Some(crate::molt_socket_recv_into as *const () as usize as u64),
+        "molt_socket_recvfrom_into" => {
+            Some(crate::molt_socket_recvfrom_into as *const () as usize as u64)
+        }
         "molt_socket_send" => Some(crate::molt_socket_send as *const () as usize as u64),
         "molt_socket_sendall" => Some(crate::molt_socket_sendall as *const () as usize as u64),
         "molt_socket_sendto" => Some(crate::molt_socket_sendto as *const () as usize as u64),
@@ -5516,6 +5671,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_runpy_resolve_path" => {
             Some(crate::molt_runpy_resolve_path as *const () as usize as u64)
         }
+        "molt_uuid_getnode" => Some(crate::molt_uuid_getnode as *const () as usize as u64),
+        "molt_uuid_uuid4_bytes" => Some(crate::molt_uuid_uuid4_bytes as *const () as usize as u64),
+        "molt_uuid_uuid1_bytes" => Some(crate::molt_uuid_uuid1_bytes as *const () as usize as u64),
+        "molt_uuid_uuid3_bytes" => Some(crate::molt_uuid_uuid3_bytes as *const () as usize as u64),
+        "molt_uuid_uuid5_bytes" => Some(crate::molt_uuid_uuid5_bytes as *const () as usize as u64),
         "molt_importlib_source_loader_payload" => {
             Some(crate::molt_importlib_source_loader_payload as *const () as usize as u64)
         }
@@ -5552,6 +5712,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_find_in_path" => {
             Some(crate::molt_importlib_find_in_path as *const () as usize as u64)
         }
+        "molt_importlib_find_in_path_package_context" => {
+            Some(crate::molt_importlib_find_in_path_package_context as *const () as usize as u64)
+        }
         "molt_importlib_find_spec_payload" => {
             Some(crate::molt_importlib_find_spec_payload as *const () as usize as u64)
         }
@@ -5585,6 +5748,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_resources_loader_reader" => {
             Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64)
         }
+        "molt_importlib_resources_reader_files_traversable" => Some(
+            crate::molt_importlib_resources_reader_files_traversable as *const () as usize as u64,
+        ),
         "molt_importlib_resources_reader_roots" => {
             Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64)
         }
@@ -5634,6 +5800,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_copyreg_bootstrap as *const () as usize as u64)
         }
         "molt_copyreg_pickle" => Some(crate::molt_copyreg_pickle as *const () as usize as u64),
+        "molt_pickle_encode_protocol0" => {
+            Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64)
+        }
         "molt_copyreg_constructor" => {
             Some(crate::molt_copyreg_constructor as *const () as usize as u64)
         }
@@ -5715,6 +5884,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const () as usize as u64),
         "molt_gen_locals" => Some(crate::molt_gen_locals as *const () as usize as u64),
+        "molt_ast_parse" => Some(crate::molt_ast_parse as *const () as usize as u64),
+        "molt_ast_walk" => Some(crate::molt_ast_walk as *const () as usize as u64),
+        "molt_ast_get_docstring" => {
+            Some(crate::molt_ast_get_docstring as *const () as usize as u64)
+        }
         "molt_inspect_cleandoc" => Some(crate::molt_inspect_cleandoc as *const () as usize as u64),
         "molt_inspect_currentframe" => {
             Some(crate::molt_inspect_currentframe as *const () as usize as u64)

@@ -192,6 +192,7 @@ tests / differential / basic / urllib_parse_urldefrag.py
 tests / differential / basic / urllib_parse_urlencode_edge_cases.py
 tests / differential / basic / urllib_parse_urljoin.py
 tests / differential / basic / urllib_parse_urlsplit.py
+tests / differential / basic / urllib_error_http_error_methods.py
 tests / differential / basic / urllib_error_intrinsic_basic.py
 tests / differential / basic / urllib_opener_chain_order.py
 tests / differential / basic / urllib_request_data_open_intrinsic.py

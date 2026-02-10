@@ -17,32 +17,34 @@ use crate::{
     molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_rfind_slice,
     molt_bytearray_rsplit_max, molt_bytearray_split_max, molt_bytearray_splitlines,
     molt_bytearray_startswith_slice, molt_bytes_count_slice, molt_bytes_decode,
-    molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex, molt_bytes_rfind_slice,
-    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex, molt_bytes_maketrans,
+    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
     molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
     molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new, molt_int_new,
-    molt_iter, molt_iter_next, molt_list_index_range, molt_list_pop, molt_list_sort,
-    molt_memoryview_cast, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
-    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
-    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
-    molt_string_rfind_slice, molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_startswith_slice, molt_type_call, molt_type_init, molt_type_new, obj_eq,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, ptr_from_bits,
-    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, tuple_len, type_name, type_of_bits, MoltHeader, MoltObject, PtrDropGuard,
-    PyToken, BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW,
-    FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE,
-    FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
-    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION,
-    TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_OBJECT,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new,
+    molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_iter, molt_iter_next,
+    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_object_init,
+    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
+    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
+    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
+    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
+    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
+    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
+    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_type_call,
+    molt_type_init, molt_type_new, obj_eq, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, ptr_from_bits, raise_exception, raise_not_callable, raise_not_iterable,
+    runtime_state, seq_vec_ref, string_obj_to_owned, tuple_len, type_name, type_of_bits,
+    MoltHeader, MoltObject, PtrDropGuard, PyToken, BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP,
+    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER,
+    FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2,
+    FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE, TYPE_ID_BOUND_METHOD,
+    TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
@@ -1288,6 +1290,13 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     string_obj_to_owned(obj_from_bits(func_name_bits))
                         .unwrap_or_else(|| "function".to_string())
                 };
+                if func_name == "islice" {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "islice() takes no keyword arguments",
+                    );
+                }
                 let name_list = posonly_kw_names.join(", ");
                 let msg = format!(
                     "{func_name}() got some positional-only arguments passed as keyword arguments: '{name_list}'"
@@ -1452,6 +1461,12 @@ unsafe fn bind_builtin_call(
     if fn_ptr == fn_addr!(molt_int_new) {
         return bind_builtin_int_new(_py, args);
     }
+    if fn_ptr == fn_addr!(molt_int_to_bytes) {
+        return bind_builtin_int_bytes_codec(_py, args, "length", "byteorder");
+    }
+    if fn_ptr == fn_addr!(molt_int_from_bytes) {
+        return bind_builtin_int_bytes_codec(_py, args, "bytes", "byteorder");
+    }
     if fn_ptr == fn_addr!(molt_open_builtin) {
         return bind_builtin_open(_py, args);
     }
@@ -1505,6 +1520,12 @@ unsafe fn bind_builtin_call(
     }
     if fn_ptr == fn_addr!(molt_string_rfind_slice) {
         return bind_builtin_string_find(_py, args, "rfind");
+    }
+    if fn_ptr == fn_addr!(molt_string_index_slice) {
+        return bind_builtin_string_find(_py, args, "index");
+    }
+    if fn_ptr == fn_addr!(molt_string_rindex_slice) {
+        return bind_builtin_string_find(_py, args, "rindex");
     }
     if fn_ptr == fn_addr!(molt_bytes_find_slice) || fn_ptr == fn_addr!(molt_bytearray_find_slice) {
         return bind_builtin_string_find(_py, args, "find");
@@ -1657,6 +1678,10 @@ unsafe fn bind_builtin_call(
 
     let mut out = args.pos.clone();
     let arity = function_arity(func_ptr) as usize;
+    if fn_ptr == fn_addr!(molt_bytes_maketrans) && out.len() != 2 {
+        let msg = format!("maketrans expected 2 arguments, got {}", out.len());
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    }
     if out.len() > arity {
         return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
     }
@@ -2017,6 +2042,69 @@ unsafe fn bind_builtin_keywords(
         out.push(extra);
     }
     Some(out)
+}
+
+unsafe fn bind_builtin_int_bytes_codec(
+    _py: &PyToken<'_>,
+    args: &CallArgs,
+    required_0: &str,
+    required_1: &str,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+    }
+    if args.pos.len() > 4 {
+        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+    }
+    let mut first_bits = args.pos.get(1).copied();
+    let mut second_bits = args.pos.get(2).copied();
+    let mut signed_bits = args.pos.get(3).copied();
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            _ if name_str == required_0 => {
+                if first_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                first_bits = Some(val_bits);
+            }
+            _ if name_str == required_1 => {
+                if second_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                second_bits = Some(val_bits);
+            }
+            "signed" => {
+                if signed_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                signed_bits = Some(val_bits);
+            }
+            _ => {
+                let msg = format!("got an unexpected keyword '{name_str}'");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        }
+    }
+    let Some(first_bits) = first_bits else {
+        let msg = format!("missing required argument '{required_0}'");
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    let Some(second_bits) = second_bits else {
+        let msg = format!("missing required argument '{required_1}'");
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    let signed_bits = signed_bits.unwrap_or_else(|| MoltObject::from_bool(false).bits());
+    Some(vec![args.pos[0], first_bits, second_bits, signed_bits])
 }
 
 unsafe fn bind_builtin_class_text_io_wrapper(

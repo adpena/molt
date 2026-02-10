@@ -4587,14 +4587,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self._emit_raise_if_pending(clear_handlers=clear_handlers)
         elif module_name in self.stdlib_allowlist:
-            stub_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(MoltOp(kind="MODULE_NEW", args=[name_val], result=stub_val))
+            imported_val = MoltValue(self.next_var(), type_hint="module")
             self.emit(
-                MoltOp(
-                    kind="MODULE_CACHE_SET",
-                    args=[name_val, stub_val],
-                    result=MoltValue("none"),
-                )
+                MoltOp(kind="MODULE_IMPORT", args=[name_val], result=imported_val)
             )
         elif self.known_modules:
             exc_val = self._emit_exception_new(
@@ -5244,14 +5239,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
                 return res
-            if node.id == "NotImplemented":
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
-                return res
-            if node.id == "Ellipsis":
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="CONST_ELLIPSIS", args=[], result=res))
-                return res
             if node.id == "__name__":
                 if self.entry_module and self.module_name == self.entry_module:
                     return self._emit_module_attr_get("__name__")
@@ -5274,6 +5261,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return local
             global_val = self.globals.get(node.id)
             if global_val is None:
+                if node.id == "NotImplemented":
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
+                    return res
+                if node.id == "Ellipsis":
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(MoltOp(kind="CONST_ELLIPSIS", args=[], result=res))
+                    return res
                 if node.id in self.module_chunk_globals:
                     return self._emit_global_get(node.id)
                 if node.id == "TYPE_CHECKING":
@@ -9818,8 +9813,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.module_global_mutations.update(module_namedexpr_targets)
         free_vars = self._collect_free_vars_comprehension(node)
         if self.current_func_name == "molt_main":
-            bound = set(self.locals) | set(self.boxed_locals)
-            free_vars = [name for name in free_vars if name in bound]
+            # CPython resolves module-scope comprehension names as globals, not
+            # closure-captured cells. Capturing them here can clobber module
+            # bindings after generator execution.
+            free_vars = []
         if free_vars:
             if self.current_func_name != "molt_main":
                 self.unbound_check_names.update(free_vars)
@@ -11307,6 +11304,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     type_facts_name=f"{node.name}.{method_name}",
                     needs_return_slot=has_return,
                 )
+                self.async_context = True
                 self.global_decls = self._collect_global_decls(item.body)
                 self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
                 assigned = self._collect_assigned_names(item.body)
@@ -11649,6 +11647,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 type_facts_name=f"{node.name}.{method_name}",
                 needs_return_slot=has_return,
             )
+            self.async_context = True
             self.global_decls = self._collect_global_decls(item.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
             assigned = self._collect_assigned_names(item.body)
@@ -13443,22 +13442,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                     else:
                         arg = exc_type
-                    pair = MoltValue(self.next_var(), type_hint="tuple")
+                    callee = load_attr_callee()
+                    res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
-                        MoltOp(kind="GEN_THROW", args=[receiver, arg], result=pair)
+                        MoltOp(kind="CALL_METHOD", args=[callee, arg], result=res)
                     )
-                    one = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                    zero = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                    value = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=value))
-                    done = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-                    self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                    self._emit_stop_iteration_from_value(value)
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    return value
+                    return res
                 if method == "close":
                     if node.args:
                         raise NotImplementedError("generator.close expects 0 arguments")
@@ -16448,6 +16437,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 func_kind = parts[0]
                 poll_func = parts[1]
                 closure_size = int(parts[2])
+                if poll_func == self.current_func_name:
+                    if (
+                        self.current_func_name != "molt_main"
+                        and func_id not in self.locals
+                        and func_id not in self.async_locals
+                    ):
+                        target_value = self._emit_module_attr_get(func_id)
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="Future")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[target_value, callargs],
+                            result=res,
+                        )
+                    )
+                    return res
                 func_symbol = (
                     poll_func[: -len("_poll")]
                     if poll_func.endswith("_poll")
@@ -16517,6 +16523,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 func_kind = parts[0]
                 poll_func = parts[1]
                 closure_size = int(parts[2])
+                if poll_func == self.current_func_name:
+                    if (
+                        self.current_func_name != "molt_main"
+                        and func_id not in self.locals
+                        and func_id not in self.async_locals
+                    ):
+                        target_value = self._emit_module_attr_get(func_id)
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="async_generator")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[target_value, callargs],
+                            result=res,
+                        )
+                    )
+                    return res
                 func_symbol = (
                     poll_func[: -len("_poll")]
                     if poll_func.endswith("_poll")
@@ -16588,6 +16611,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 func_kind = parts[0]
                 poll_func = parts[1]
                 closure_size = int(parts[2])
+                if poll_func == self.current_func_name:
+                    if (
+                        self.current_func_name != "molt_main"
+                        and func_id not in self.locals
+                        and func_id not in self.async_locals
+                    ):
+                        target_value = self._emit_module_attr_get(func_id)
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="generator")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[target_value, callargs],
+                            result=res,
+                        )
+                    )
+                    return res
                 func_symbol = (
                     poll_func[: -len("_poll")]
                     if poll_func.endswith("_poll")
@@ -22455,6 +22495,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_raise_exit()
         return None
 
+    def visit_Assert(self, node: ast.Assert) -> None:
+        test_val = self.visit(node.test)
+        if test_val is None:
+            self._bridge_fallback(
+                node,
+                "assert test expression (unsupported form)",
+                impact="medium",
+                alternative="assert supported expressions",
+                detail="unsupported assert test expression",
+            )
+            return None
+
+        test_false = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="NOT", args=[test_val], result=test_false))
+        self.emit(MoltOp(kind="IF", args=[test_false], result=MoltValue("none")))
+        if node.msg is None:
+            exc_val = self._emit_exception_new_from_args("AssertionError", [])
+        else:
+            msg_val = self.visit(node.msg)
+            if msg_val is None:
+                self._bridge_fallback(
+                    node,
+                    "assert message expression (unsupported form)",
+                    impact="low",
+                    alternative="assert with supported message expression",
+                    detail="unsupported assert message expression",
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                return None
+            exc_val = self._emit_exception_new_from_args("AssertionError", [msg_val])
+        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        return None
+
     def _emit_loop_unwind(self) -> None:
         if not self.loop_try_depths:
             return
@@ -25718,6 +25792,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "module_cache_get",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "MODULE_IMPORT":
+                json_ops.append(
+                    {
+                        "kind": "module_import",
                         "args": [op.args[0].name],
                         "out": op.result.name,
                     }

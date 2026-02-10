@@ -10,6 +10,7 @@ __all__ = [
     "BaseHandler",
     "HTTPErrorProcessor",
     "HTTPHandler",
+    "HTTPCookieProcessor",
     "HTTPPasswordMgrWithDefaultRealm",
     "HTTPRedirectHandler",
     "HTTPSHandler",
@@ -202,6 +203,17 @@ class HTTPRedirectHandler(BaseHandler):
     handler_order = 600
 
 
+class HTTPCookieProcessor(BaseHandler):
+    handler_order = 700
+
+    def __init__(self, cookiejar=None):
+        if cookiejar is None:
+            from http.cookiejar import CookieJar
+
+            cookiejar = CookieJar()
+        self.cookiejar = cookiejar
+
+
 class ProxyHandler(BaseHandler):
     handler_order = 100
 
@@ -236,6 +248,12 @@ class HTTPErrorProcessor(BaseHandler):
     handler_order = 1000
 
     def http_response(self, request, response):
+        if not (
+            isinstance(response, tuple)
+            and len(response) == 2
+            and response[0] in ("__molt_urllib_response__", b"__molt_urllib_response__")
+        ):
+            return response
         out = _MOLT_PROCESS_HTTP_ERROR(request, response)
         if isinstance(out, (str, bytes, int, float)):
             return response

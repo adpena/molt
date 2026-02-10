@@ -10,16 +10,9 @@ import os
 import struct
 import sys
 import time
-from types import ModuleType
 from typing import Any, Callable, cast
 
 from _intrinsics import require_intrinsic as _intrinsics_require
-
-
-from molt import capabilities as _capabilities_mod
-
-
-_capabilities: ModuleType | None = _capabilities_mod
 
 
 def _require_intrinsic(func: Any | None, name: str) -> Callable[..., Any]:
@@ -70,6 +63,7 @@ _MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
 _MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
 _MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
 _MOLT_PENDING = _intrinsics_require("molt_pending", globals())
+_MOLT_CAP_REQUIRE = _intrinsics_require("molt_capabilities_require", globals())
 _PENDING_SENTINEL: Any | None = None
 
 _MAX_MESSAGE = 64 * 1024 * 1024
@@ -165,9 +159,7 @@ class _RemoteError(Exception):
 
 
 def _require_process_capability() -> None:
-    if _capabilities is None:
-        raise PermissionError("Missing capability")
-    _capabilities.require("process.exec")
+    _MOLT_CAP_REQUIRE("process.exec")
 
 
 def _get_env_value(key: str, default: str) -> str:

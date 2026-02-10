@@ -109,6 +109,7 @@ pub(crate) use crate::async_rt::{
     molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
+pub use crate::builtins::ast::*;
 pub(crate) use crate::builtins::attr::{
     apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
     attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
@@ -138,7 +139,10 @@ pub use crate::builtins::containers_alloc::{
     molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
 };
 pub use crate::builtins::context::*;
-pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_unwind};
+pub(crate) use crate::builtins::context::{
+    context_payload_bits, context_stack_store, context_stack_take, context_stack_unwind,
+    generator_context_stack_drop, generator_context_stack_store, generator_context_stack_take,
+};
 pub use crate::builtins::contextlib::*;
 pub(crate) use crate::builtins::contextlib::{
     contextlib_async_exitstack_enter_context_task_drop, contextlib_async_exitstack_exit_task_drop,

@@ -22,3 +22,10 @@ opt-level = 1
 debug = 1
 codegen-units = 256
 lto = "off"
+
+[profile.release-fast]
+inherits = "release"
+opt-level = 2
+lto = "off"
+codegen-units = 128
+strip = false

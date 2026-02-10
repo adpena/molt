@@ -8,8 +8,35 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from molt import capabilities
-from molt.stdlib import os as _os
+import os as _os
+from types import ModuleType
+
+_capabilities: ModuleType | None
+try:
+    from molt import capabilities as _capabilities_raw
+except Exception:
+    _capabilities = None
+else:
+    _capabilities = (
+        _capabilities_raw if isinstance(_capabilities_raw, ModuleType) else None
+    )
+
+
+class _CapabilitiesProxy:
+    __slots__ = ()
+
+    def trusted(self) -> bool:
+        if _capabilities is None:
+            return True
+        return bool(_capabilities.trusted())
+
+    def require(self, name: str) -> None:
+        if _capabilities is None:
+            return
+        _capabilities.require(name)
+
+
+capabilities = _CapabilitiesProxy()
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:

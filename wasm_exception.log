@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/Volumes/APDataStore/Molt/tmp/wasm_exc_probe_11053/if_else.py", line 3, in <module>
-  File "<molt-builtin>", line 0, in <unknown>
-OSError: write failed

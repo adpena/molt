@@ -78,6 +78,7 @@ README/ROADMAP in sync.
 - Implemented: `urllib.error` now lowers exception construction/formatting through dedicated runtime intrinsics (`molt_urllib_error_urlerror_init`, `molt_urllib_error_urlerror_str`, `molt_urllib_error_httperror_init`, `molt_urllib_error_httperror_str`, `molt_urllib_error_content_too_short_init`) for `URLError`, `HTTPError`, and `ContentTooShortError`; the module shim is reduced to class shell wiring and raises immediately when intrinsics are unavailable.
 - Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
+- Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/encoding paths (`molt_enum_init_member`, `molt_pickle_encode_protocol0`) while retaining partial stdlib shims; `enum_basic.py` and `pickle_basic.py` are green in the differential basic lane with `--build-profile dev`.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -279,8 +280,9 @@ README/ROADMAP in sync.
   `__matmul__`/`__rmatmul__` fallback for custom types).
 - Roadmap focus: async runtime core (Task/Future scheduler, contextvars, cancellation injection), capability-gated async I/O,
   DB semantics expansion, WASM DB parity, framework adapters, and production hardening (see ROADMAP).
-- Numeric tower: complex supported; decimal is backed by libmpdec intrinsics with context (prec/rounding/traps/flags),
-  quantize/compare/compare_total/normalize/exp/div/as_tuple + `str`/`repr`/float conversions; `int` still missing
+- Numeric tower: complex supported; decimal is Rust intrinsic-backed with context (prec/rounding/traps/flags),
+  quantize/compare/compare_total/normalize/exp/div/as_tuple + `str`/`repr`/float conversions (no Python fallback path;
+  when vendored libmpdec sources are absent, runtime uses the native Rust decimal backend); `int` still missing
   full method surface (e.g., `bit_length`, `to_bytes`, `from_bytes`).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting
   parity (add/sub/mul/pow/sqrt/log/ln/exp variants, quantize edge cases, to_eng_string, NaN payloads).)
@@ -509,8 +511,9 @@ README/ROADMAP in sync.
 - `molt vendor` supports git sources when a pinned revision (or tag/branch that resolves
   to a commit) is present, recording resolved commit + tree hash in the manifest.
 - Use `tools/dev.py lint` and `tools/dev.py test` for local validation.
-- Dev build throughput controls are available and enabled by default: `--profile dev` routes to Cargo `dev-fast`; native backend compiles use a persistent backend daemon with lock-coordinated restart/retry; shared build state (locks/fingerprints/daemon sockets) lives under `<CARGO_TARGET_DIR>/.molt_state/` (override with `MOLT_BUILD_STATE_DIR`).
+- Dev build throughput controls are available and enabled by default: `--profile dev` routes to Cargo `dev-fast`; native backend compiles use a persistent backend daemon with lock-coordinated restart/retry; shared build state (locks/fingerprints) lives under `<CARGO_TARGET_DIR>/.molt_state/` (override with `MOLT_BUILD_STATE_DIR`) while daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
 - Throughput tooling is available for repeatable setup + measurement: `tools/throughput_env.sh`, `tools/throughput_matrix.py`, and `tools/molt_cache_prune.py`.
+- Release compile iteration lane is available via Cargo profile override `MOLT_RELEASE_CARGO_PROFILE=release-fast`; `tools/compile_progress.py` includes dedicated `release_fast_cold`, `release_fast_warm`, and `release_fast_nocache_warm` cases for measurement and regression tracking.
 - On macOS arm64, uv runs that target Python 3.14 force `--no-managed-python` and
   require a system `python3.14` to avoid uv-managed hangs.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).

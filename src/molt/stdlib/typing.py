@@ -417,11 +417,47 @@ def _load_collections_abc() -> ModuleType:
     abc_mod = _typing_cast(ModuleType, abc_mod_raw)
     if getattr(abc_mod, "__name__", None) == "_abc":
         raise RuntimeError("typing requires _collections_abc, not _abc")
-    for required in ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable"):
-        if getattr(abc_mod, required, None) is None:
-            raise RuntimeError(f"typing missing _collections_abc.{required}")
+    required_names = ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable")
+    missing = [name for name in required_names if getattr(abc_mod, name, None) is None]
+    if missing:
+        repaired = _reload_collections_abc()
+        if isinstance(repaired, ModuleType):
+            abc_mod = repaired
+            missing = [
+                name for name in required_names if getattr(abc_mod, name, None) is None
+            ]
+    if missing:
+        raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
     globals()["_ABC_CACHE"] = abc_mod
     return abc_mod
+
+
+def _reload_collections_abc() -> ModuleType | None:
+    modules = getattr(_sys, "modules", {})
+    previous = modules.pop("_collections_abc", None)
+    try:
+        import importlib.util as _importlib_util
+
+        spec = _importlib_util.find_spec("_collections_abc", None)
+        if spec is None:
+            return None
+        module = _importlib_util.module_from_spec(spec)
+        modules["_collections_abc"] = module
+        loader = getattr(spec, "loader", None)
+        if loader is not None:
+            if hasattr(loader, "exec_module"):
+                loader.exec_module(module)
+            elif hasattr(loader, "load_module"):
+                loaded = loader.load_module("_collections_abc")
+                if loaded is not None:
+                    module = loaded
+        reloaded = modules.get("_collections_abc", module)
+        return _typing_cast(ModuleType, reloaded)
+    except Exception:
+        modules.pop("_collections_abc", None)
+        if previous is not None:
+            modules["_collections_abc"] = previous
+        return None
 
 
 Awaitable = _LazySpecialGenericAlias("Awaitable", "Awaitable")

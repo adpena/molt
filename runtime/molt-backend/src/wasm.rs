@@ -773,6 +773,7 @@ impl WasmBackend {
         add_import("object_field_init_ptr", 17, &mut self.import_ids);
         add_import("module_new", 2, &mut self.import_ids);
         add_import("module_cache_get", 2, &mut self.import_ids);
+        add_import("module_import", 2, &mut self.import_ids);
         add_import("module_cache_set", 3, &mut self.import_ids);
         add_import("module_get_attr", 3, &mut self.import_ids);
         add_import("module_get_global", 3, &mut self.import_ids);
@@ -1379,6 +1380,7 @@ impl WasmBackend {
             ("molt_code_new", "code_new", 8),
             ("molt_compile_builtin", "compile_builtin", 6),
             ("molt_module_new", "module_new", 1),
+            ("molt_module_import", "module_import", 1),
             ("molt_module_cache_set", "module_cache_set", 2),
             ("molt_class_new", "class_new", 1),
             ("molt_class_set_base", "class_set_base", 2),
@@ -6172,6 +6174,14 @@ impl WasmBackend {
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_cache_get"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "module_import" => {
+                        let args = op.args.as_ref().unwrap();
+                        let name = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(name));
+                        emit_call(func, reloc_enabled, import_ids["module_import"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

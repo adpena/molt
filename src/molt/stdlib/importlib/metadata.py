@@ -10,8 +10,17 @@ from dataclasses import dataclass
 from typing import Iterable
 import os
 import sys
+from types import ModuleType
 
-from molt import capabilities
+_capabilities: ModuleType | None
+try:
+    from molt import capabilities as _capabilities_raw
+except Exception:
+    _capabilities = None
+else:
+    _capabilities = (
+        _capabilities_raw if isinstance(_capabilities_raw, ModuleType) else None
+    )
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file", globals())
@@ -54,8 +63,8 @@ def _normalize(name: str) -> str:
 
 
 def _ensure_fs_read() -> None:
-    if not capabilities.trusted():
-        capabilities.require("fs.read")
+    if _capabilities is not None and not _capabilities.trusted():
+        _capabilities.require("fs.read")
 
 
 class _Metadata:

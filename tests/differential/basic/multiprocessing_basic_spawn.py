@@ -1,4 +1,5 @@
 """Purpose: differential coverage for multiprocessing spawn + queue IPC."""
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read
 
 import multiprocessing as mp
 

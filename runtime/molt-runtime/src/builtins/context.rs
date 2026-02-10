@@ -5,7 +5,14 @@ use crate::{
     runtime_state, to_i64, type_of_bits, MoltHeader, MoltObject, PyToken, CONTEXT_STACK,
     TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
+
+thread_local! {
+    static GENERATOR_CONTEXT_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
+        RefCell::new(HashMap::new());
+}
 
 fn context_debug_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -25,6 +32,44 @@ fn context_debug_log(msg: &str) {
 
 fn context_stack_len() -> usize {
     CONTEXT_STACK.with(|stack| stack.borrow().len())
+}
+
+pub(crate) fn context_stack_take() -> Vec<u64> {
+    CONTEXT_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()))
+}
+
+pub(crate) fn context_stack_store(values: Vec<u64>) {
+    CONTEXT_STACK.with(|stack| {
+        *stack.borrow_mut() = values;
+    });
+}
+
+pub(crate) fn generator_context_stack_take(ptr: *mut u8) -> Vec<u64> {
+    GENERATOR_CONTEXT_STACKS
+        .with(|map| map.borrow_mut().remove(&(ptr as usize)).unwrap_or_default())
+}
+
+pub(crate) fn generator_context_stack_store(ptr: *mut u8, values: Vec<u64>) {
+    GENERATOR_CONTEXT_STACKS.with(|map| {
+        if values.is_empty() {
+            map.borrow_mut().remove(&(ptr as usize));
+        } else {
+            map.borrow_mut().insert(ptr as usize, values);
+        }
+    });
+}
+
+pub(crate) fn generator_context_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
+    crate::gil_assert();
+    GENERATOR_CONTEXT_STACKS.with(|map| {
+        if let Some(values) = map.borrow_mut().remove(&(ptr as usize)) {
+            for bits in values {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+        }
+    });
 }
 
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {

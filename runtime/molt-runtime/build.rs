@@ -16,14 +16,17 @@ fn main() {
     if target_os == "macos" {
         println!("cargo:rustc-link-arg-cdylib=-Wl,-undefined,dynamic_lookup");
     }
+    println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
 
-    build_libmpdec(
+    if build_libmpdec(
         &manifest_dir,
         &out_dir,
         &target_env,
         &target_ptr_width,
         &target_arch,
-    );
+    ) {
+        println!("cargo:rustc-cfg=molt_has_mpdec");
+    }
 
     if target_arch != "wasm32" {
         let output = Command::new("python3")
@@ -195,7 +198,7 @@ fn build_libmpdec(
     target_env: &str,
     target_ptr_width: &str,
     target_arch: &str,
-) {
+) -> bool {
     let repo_root = manifest_dir
         .parent()
         .and_then(|path| path.parent())
@@ -253,6 +256,17 @@ fn build_libmpdec(
     }
     println!("cargo:rerun-if-changed={}", pyconfig.display());
 
+    let missing: Vec<String> = sources
+        .iter()
+        .chain(headers.iter())
+        .map(|name| libmpdec_dir.join(name))
+        .filter(|path| !path.exists())
+        .map(|path| path.display().to_string())
+        .collect();
+    if !missing.is_empty() {
+        return false;
+    }
+
     let mut build = Build::new();
     build.include(&libmpdec_dir);
     build.include(out_dir);
@@ -304,4 +318,5 @@ fn build_libmpdec(
         println!("cargo:rustc-link-lib=wasi-emulated-signal");
     }
     build.compile("molt_mpdec");
+    true
 }

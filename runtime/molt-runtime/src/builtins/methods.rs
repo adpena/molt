@@ -274,6 +274,18 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_rfind_slice),
             6,
         )),
+        "index" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_index,
+            fn_addr!(molt_string_index_slice),
+            6,
+        )),
+        "rindex" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_rindex,
+            fn_addr!(molt_string_rindex_slice),
+            6,
+        )),
         "format" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_format,

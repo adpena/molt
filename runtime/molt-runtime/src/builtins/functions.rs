@@ -1,5 +1,5 @@
 use molt_obj_model::MoltObject;
-use rustpython_parser::{parse as parse_python, Mode as ParseMode, ParseErrorType};
+use rustpython_parser::{ast as pyast, parse as parse_python, Mode as ParseMode, ParseErrorType};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -52,6 +52,19 @@ struct UrllibHttpRequest {
     timeout: Option<f64>,
 }
 
+#[derive(Clone)]
+struct MoltCookieEntry {
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+}
+
+#[derive(Clone, Default)]
+struct MoltCookieJar {
+    cookies: Vec<MoltCookieEntry>,
+}
+
 struct MoltSocketServerPending {
     request: Vec<u8>,
     response: Option<Vec<u8>>,
@@ -68,6 +81,8 @@ struct MoltSocketServerRuntime {
 static URLLIB_RESPONSE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltUrllibResponse>>> =
     OnceLock::new();
 static URLLIB_RESPONSE_NEXT: AtomicU64 = AtomicU64::new(1);
+static COOKIEJAR_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltCookieJar>>> = OnceLock::new();
+static COOKIEJAR_NEXT: AtomicU64 = AtomicU64::new(1);
 static SOCKETSERVER_RUNTIME: OnceLock<Mutex<MoltSocketServerRuntime>> = OnceLock::new();
 
 #[no_mangle]
@@ -93,6 +108,71 @@ pub extern "C" fn molt_re_literal_matches(
             segment == literal
         };
         MoltObject::from_bool(matched).bits()
+    })
+}
+
+fn enum_set_attr(
+    _py: &crate::concurrency::gil::PyToken<'_>,
+    target_bits: u64,
+    name: &[u8],
+    value_bits: u64,
+) -> bool {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return false;
+    };
+    let _ = crate::molt_object_setattr(target_bits, name_bits, value_bits);
+    !exception_pending(_py)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_enum_init_member(member_bits: u64, name_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !enum_set_attr(_py, member_bits, b"_name_", name_bits)
+            || !enum_set_attr(_py, member_bits, b"_value_", value_bits)
+        {
+            return MoltObject::none().bits();
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_pickle_encode_protocol0(parts_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts_obj = obj_from_bits(parts_bits);
+        let Some(parts_ptr) = parts_obj.as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "pickle opcode chunks must be a sequence",
+            );
+        };
+        let parts_type = unsafe { object_type_id(parts_ptr) };
+        if parts_type != TYPE_ID_LIST && parts_type != TYPE_ID_TUPLE {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "pickle opcode chunks must be a sequence",
+            );
+        }
+        let elems = unsafe { seq_vec_ref(parts_ptr) };
+        let mut joined = String::new();
+        for &elem_bits in elems.iter() {
+            let Some(chunk) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "pickle opcode chunks must contain str values",
+                );
+            };
+            joined.push_str(&chunk);
+        }
+        let bytes_ptr = crate::alloc_bytes(_py, joined.as_bytes());
+        if bytes_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(bytes_ptr).bits()
+        }
     })
 }
 
@@ -989,6 +1069,44 @@ fn urllib_request_pending_exception_kind_name(_py: &crate::PyToken<'_>) -> Optio
     out
 }
 
+fn ctypes_attr_present(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
+    match urllib_request_attr_optional(_py, obj_bits, name)? {
+        Some(bits) => {
+            dec_ref_bits(_py, bits);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+fn ctypes_is_scalar_ctype(_py: &crate::PyToken<'_>, ctype_bits: u64) -> Result<bool, u64> {
+    let has_size = ctypes_attr_present(_py, ctype_bits, b"_size")?;
+    if !has_size {
+        return Ok(false);
+    }
+    let has_fields = ctypes_attr_present(_py, ctype_bits, b"_fields_")?;
+    let has_length = ctypes_attr_present(_py, ctype_bits, b"_length")?;
+    Ok(!has_fields && !has_length)
+}
+
+fn ctypes_sizeof_bits(_py: &crate::PyToken<'_>, obj_or_type_bits: u64) -> Result<u64, u64> {
+    let Some(size_bits) = urllib_request_attr_optional(_py, obj_or_type_bits, b"_size")? else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "unsupported type for ctypes.sizeof",
+        ));
+    };
+    let out = match to_i64(obj_from_bits(size_bits)) {
+        Some(value) => MoltObject::from_int(value).bits(),
+        None => {
+            raise_exception::<u64>(_py, "TypeError", "ctypes size value must be int-compatible")
+        }
+    };
+    dec_ref_bits(_py, size_bits);
+    Ok(out)
+}
+
 fn urllib_attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
     match urllib_request_attr_optional(_py, obj_bits, name)? {
         Some(bits) => {
@@ -998,6 +1116,116 @@ fn urllib_attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> R
         }
         None => Ok(false),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !crate::has_capability(_py, "ffi.unsafe") {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "capability 'ffi.unsafe' required",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !crate::has_capability(_py, "ffi.unsafe") {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "capability 'ffi.unsafe' required",
+            );
+        }
+
+        if let Some(inner_bits) = match urllib_request_attr_optional(_py, value_bits, b"value") {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        } {
+            let out = match to_i64(obj_from_bits(inner_bits)) {
+                Some(num) => MoltObject::from_int(num).bits(),
+                None => raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "ctypes value.value must be int-compatible",
+                ),
+            };
+            dec_ref_bits(_py, inner_bits);
+            return out;
+        }
+
+        let is_scalar = match ctypes_is_scalar_ctype(_py, ctype_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if !is_scalar {
+            return value_bits;
+        }
+        let Some(num) = to_i64(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ctypes scalar value must be int");
+        };
+        MoltObject::from_int(num).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !crate::has_capability(_py, "ffi.unsafe") {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "capability 'ffi.unsafe' required",
+            );
+        }
+
+        let is_scalar = match ctypes_is_scalar_ctype(_py, ctype_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if is_scalar {
+            return MoltObject::from_int(0).bits();
+        }
+
+        let has_fields = match ctypes_attr_present(_py, ctype_bits, b"_fields_") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let has_length = match ctypes_attr_present(_py, ctype_bits, b"_length") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if has_fields || has_length {
+            let out_bits = unsafe { call_callable0(_py, ctype_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return out_bits;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !crate::has_capability(_py, "ffi.unsafe") {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "capability 'ffi.unsafe' required",
+            );
+        }
+        match ctypes_sizeof_bits(_py, obj_or_type_bits) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
 }
 
 fn socketserver_runtime() -> &'static Mutex<MoltSocketServerRuntime> {
@@ -1772,6 +2000,365 @@ fn urllib_response_with<T>(handle: i64, f: impl FnOnce(&MoltUrllibResponse) -> T
 fn urllib_response_drop(handle: i64) {
     if let Ok(mut guard) = urllib_response_registry().lock() {
         guard.remove(&(handle as u64));
+    }
+}
+
+fn cookiejar_registry() -> &'static Mutex<HashMap<u64, MoltCookieJar>> {
+    COOKIEJAR_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cookiejar_store_new() -> Option<i64> {
+    let id = COOKIEJAR_NEXT.fetch_add(1, Ordering::Relaxed);
+    let Ok(mut guard) = cookiejar_registry().lock() else {
+        return None;
+    };
+    guard.insert(id, MoltCookieJar::default());
+    i64::try_from(id).ok()
+}
+
+fn cookiejar_with_mut<T>(handle: i64, f: impl FnOnce(&mut MoltCookieJar) -> T) -> Option<T> {
+    let Ok(mut guard) = cookiejar_registry().lock() else {
+        return None;
+    };
+    guard.get_mut(&(handle as u64)).map(f)
+}
+
+fn cookiejar_with<T>(handle: i64, f: impl FnOnce(&MoltCookieJar) -> T) -> Option<T> {
+    let Ok(guard) = cookiejar_registry().lock() else {
+        return None;
+    };
+    guard.get(&(handle as u64)).map(f)
+}
+
+fn urllib_cookiejar_domain_matches(host: &str, domain: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+fn urllib_cookiejar_path_matches(request_path: &str, cookie_path: &str) -> bool {
+    if cookie_path == "/" {
+        return true;
+    }
+    if request_path == cookie_path {
+        return true;
+    }
+    if !request_path.starts_with(cookie_path) {
+        return false;
+    }
+    cookie_path.ends_with('/')
+        || request_path
+            .as_bytes()
+            .get(cookie_path.len())
+            .copied()
+            .is_some_and(|b| b == b'/')
+}
+
+fn urllib_cookiejar_default_scope(url: &str) -> (String, String) {
+    let parts = urllib_urlsplit_impl(url, "", true);
+    let host = urllib_http_parse_host_port(&parts[1], 80)
+        .0
+        .to_ascii_lowercase();
+    let raw_path = if parts[2].is_empty() {
+        "/".to_string()
+    } else if parts[2].starts_with('/') {
+        parts[2].clone()
+    } else {
+        format!("/{}", parts[2])
+    };
+    let path = match raw_path.rfind('/') {
+        Some(0) | None => "/".to_string(),
+        Some(idx) => raw_path[..idx].to_string(),
+    };
+    (host, path)
+}
+
+fn urllib_cookiejar_parse_set_cookie(
+    set_cookie_value: &str,
+    default_domain: &str,
+    default_path: &str,
+) -> Option<(MoltCookieEntry, bool)> {
+    let mut parts = set_cookie_value.split(';');
+    let first = parts.next()?.trim();
+    let (name_raw, value_raw) = first.split_once('=')?;
+    let name = name_raw.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut domain = default_domain.to_ascii_lowercase();
+    let mut path = if default_path.is_empty() {
+        "/".to_string()
+    } else {
+        default_path.to_string()
+    };
+    let mut delete_cookie = false;
+    for attr in parts {
+        let attr = attr.trim();
+        if attr.is_empty() {
+            continue;
+        }
+        let (key, value_opt) = match attr.split_once('=') {
+            Some((k, v)) => (k.trim().to_ascii_lowercase(), Some(v.trim())),
+            None => (attr.to_ascii_lowercase(), None),
+        };
+        match key.as_str() {
+            "domain" => {
+                if let Some(value) = value_opt {
+                    let normalized = value.trim().trim_start_matches('.').to_ascii_lowercase();
+                    if !normalized.is_empty() {
+                        domain = normalized;
+                    }
+                }
+            }
+            "path" => {
+                if let Some(value) = value_opt {
+                    if !value.is_empty() {
+                        path = if value.starts_with('/') {
+                            value.to_string()
+                        } else {
+                            format!("/{value}")
+                        };
+                    }
+                }
+            }
+            "max-age" => {
+                if let Some(value) = value_opt {
+                    if value == "0" {
+                        delete_cookie = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((
+        MoltCookieEntry {
+            name: name.to_string(),
+            value: value_raw.trim().to_string(),
+            domain,
+            path,
+        },
+        delete_cookie,
+    ))
+}
+
+fn urllib_cookiejar_store_from_headers(
+    handle: i64,
+    request_url: &str,
+    headers: &[(String, String)],
+) {
+    let (default_domain, default_path) = urllib_cookiejar_default_scope(request_url);
+    for (header_name, header_value) in headers {
+        if !header_name.eq_ignore_ascii_case("Set-Cookie") {
+            continue;
+        }
+        let Some((cookie, delete_cookie)) =
+            urllib_cookiejar_parse_set_cookie(header_value, &default_domain, &default_path)
+        else {
+            continue;
+        };
+        let _ = cookiejar_with_mut(handle, |jar| {
+            let same_cookie = |entry: &MoltCookieEntry| {
+                entry.name == cookie.name
+                    && entry.domain == cookie.domain
+                    && entry.path == cookie.path
+            };
+            if delete_cookie || cookie.value.is_empty() {
+                jar.cookies.retain(|entry| !same_cookie(entry));
+                return;
+            }
+            if let Some(existing) = jar.cookies.iter_mut().find(|entry| same_cookie(entry)) {
+                *existing = cookie;
+            } else {
+                jar.cookies.push(cookie);
+            }
+        });
+    }
+}
+
+fn urllib_cookiejar_header_for_url(handle: i64, request_url: &str) -> Option<String> {
+    let parts = urllib_urlsplit_impl(request_url, "", true);
+    let host = urllib_http_parse_host_port(&parts[1], 80)
+        .0
+        .to_ascii_lowercase();
+    let path = if parts[2].is_empty() {
+        "/".to_string()
+    } else if parts[2].starts_with('/') {
+        parts[2].clone()
+    } else {
+        format!("/{}", parts[2])
+    };
+    cookiejar_with(handle, |jar| {
+        let mut pairs: Vec<String> = Vec::new();
+        for entry in &jar.cookies {
+            if urllib_cookiejar_domain_matches(&host, &entry.domain)
+                && urllib_cookiejar_path_matches(&path, &entry.path)
+            {
+                pairs.push(format!("{}={}", entry.name, entry.value));
+            }
+        }
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(pairs.join("; "))
+        }
+    })
+    .flatten()
+}
+
+fn urllib_http_extract_headers_mapping(
+    _py: &crate::PyToken<'_>,
+    mapping_bits: u64,
+) -> Result<Vec<(String, String)>, u64> {
+    if obj_from_bits(mapping_bits).is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(items_name_bits) = attr_name_bits_from_bytes(_py, b"items") else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let items_method_bits = molt_getattr_builtin(mapping_bits, items_name_bits, missing);
+    dec_ref_bits(_py, items_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if items_method_bits == missing
+        || !is_truthy(_py, obj_from_bits(molt_is_callable(items_method_bits)))
+    {
+        if items_method_bits != missing {
+            dec_ref_bits(_py, items_method_bits);
+        }
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "headers must be a mapping",
+        ));
+    }
+    let iterable_bits = unsafe { call_callable0(_py, items_method_bits) };
+    dec_ref_bits(_py, items_method_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let iter_bits = molt_iter(iterable_bits);
+    dec_ref_bits(_py, iterable_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    loop {
+        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
+        if done {
+            break;
+        }
+        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "headers mapping items must be pairs",
+            ));
+        };
+        let item_type = unsafe { object_type_id(item_ptr) };
+        if item_type != TYPE_ID_LIST && item_type != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "headers mapping items must be pairs",
+            ));
+        }
+        let fields = unsafe { seq_vec_ref(item_ptr) };
+        if fields.len() != 2 {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "headers mapping items must be pairs",
+            ));
+        }
+        out.push((
+            crate::format_obj_str(_py, obj_from_bits(fields[0])),
+            crate::format_obj_str(_py, obj_from_bits(fields[1])),
+        ));
+        dec_ref_bits(_py, item_bits);
+    }
+    Ok(out)
+}
+
+fn urllib_cookiejar_handles_from_handlers(
+    _py: &crate::PyToken<'_>,
+    handlers: &[u64],
+) -> Result<Vec<i64>, u64> {
+    let mut out: Vec<i64> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for handler_bits in handlers {
+        let Some(cookiejar_bits) = urllib_request_attr_optional(_py, *handler_bits, b"cookiejar")?
+        else {
+            continue;
+        };
+        if obj_from_bits(cookiejar_bits).is_none() {
+            dec_ref_bits(_py, cookiejar_bits);
+            continue;
+        }
+        let handle_opt =
+            match urllib_request_attr_optional(_py, cookiejar_bits, b"_molt_cookiejar_handle") {
+                Ok(value) => value,
+                Err(bits) => {
+                    dec_ref_bits(_py, cookiejar_bits);
+                    return Err(bits);
+                }
+            };
+        dec_ref_bits(_py, cookiejar_bits);
+        let Some(handle_bits) = handle_opt else {
+            continue;
+        };
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            dec_ref_bits(_py, handle_bits);
+            continue;
+        };
+        dec_ref_bits(_py, handle_bits);
+        if seen.insert(handle) {
+            out.push(handle);
+        }
+    }
+    Ok(out)
+}
+
+fn urllib_cookiejar_apply_header_for_url(
+    _py: &crate::PyToken<'_>,
+    cookiejar_handles: &[i64],
+    request_url: &str,
+    headers: &mut Vec<(String, String)>,
+) {
+    for handle in cookiejar_handles {
+        let Some(cookie_header) = urllib_cookiejar_header_for_url(*handle, request_url) else {
+            continue;
+        };
+        let mut replaced = false;
+        for (name, value) in headers.iter_mut() {
+            if name.eq_ignore_ascii_case("Cookie") {
+                if value.is_empty() {
+                    *value = cookie_header.clone();
+                } else {
+                    *value = format!("{value}; {cookie_header}");
+                }
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            headers.push(("Cookie".to_string(), cookie_header));
+        }
+    }
+}
+
+fn urllib_cookiejar_store_headers_for_url(
+    cookiejar_handles: &[i64],
+    request_url: &str,
+    response_headers: &[(String, String)],
+) {
+    for handle in cookiejar_handles {
+        urllib_cookiejar_store_from_headers(*handle, request_url, response_headers);
     }
 }
 
@@ -3917,6 +4504,88 @@ pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_http_cookiejar_new() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = cookiejar_store_new() else {
+            return raise_exception::<_>(_py, "RuntimeError", "cookie jar allocation failed");
+        };
+        MoltObject::from_int(handle).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+        };
+        let Some(size) = cookiejar_with(handle, |jar| jar.cookies.len()) else {
+            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
+        };
+        MoltObject::from_int(i64::try_from(size).unwrap_or(i64::MAX)).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+        };
+        let Some(()) = cookiejar_with_mut(handle, |jar| {
+            jar.cookies.clear();
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
+        };
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_http_cookiejar_extract(
+    handle_bits: u64,
+    request_url_bits: u64,
+    headers_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+        };
+        let Some(request_url) = string_obj_to_owned(obj_from_bits(request_url_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "request url must be str");
+        };
+        let headers = match urllib_http_extract_headers_mapping(_py, headers_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        urllib_cookiejar_store_from_headers(handle, &request_url, &headers);
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_http_cookiejar_header_for_url(
+    handle_bits: u64,
+    request_url_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+        };
+        let Some(request_url) = string_obj_to_owned(obj_from_bits(request_url_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "request url must be str");
+        };
+        let Some(header) = urllib_cookiejar_header_for_url(handle, &request_url) else {
+            return MoltObject::none().bits();
+        };
+        let Some(bits) = alloc_string_bits(_py, &header) else {
+            return MoltObject::none().bits();
+        };
+        bits
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_urllib_error_urlerror_init(
     self_bits: u64,
     reason_bits: u64,
@@ -3962,6 +4631,8 @@ pub extern "C" fn molt_urllib_error_httperror_init(
     fp_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        // CPython's urllib.error.HTTPError does not populate BaseException.args
+        // with constructor values in this path; normalize args to ().
         if !urllib_error_init_args(_py, self_bits, &[]) {
             return MoltObject::none().bits();
         }
@@ -5193,10 +5864,11 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         Ok(value) => value,
                         Err(bits) => return bits,
                     };
-                let headers = match urllib_http_extract_request_headers(_py, active_request_bits) {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
+                let mut base_headers =
+                    match urllib_http_extract_request_headers(_py, active_request_bits) {
+                        Ok(value) => value,
+                        Err(bits) => return bits,
+                    };
                 let proxy = match urllib_http_find_proxy_for_scheme(
                     _py,
                     opener_bits,
@@ -5210,6 +5882,11 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                 let mut proxy_auth_attempted = false;
                 let mut current_url = full_url.clone();
                 let mut redirects = 0usize;
+                let cookiejar_handles = match urllib_cookiejar_handles_from_handlers(_py, &handlers)
+                {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
                 loop {
                     let parts = urllib_urlsplit_impl(&current_url, "", true);
                     let netloc_now = parts[1].clone();
@@ -5226,7 +5903,13 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                     if host_now.is_empty() {
                         return urllib_raise_url_error(_py, "no host given");
                     }
-                    let mut effective_headers = headers.clone();
+                    let mut effective_headers = base_headers.clone();
+                    urllib_cookiejar_apply_header_for_url(
+                        _py,
+                        &cookiejar_handles,
+                        &current_url,
+                        &mut effective_headers,
+                    );
                     if let Some(proxy_auth_value) = proxy_auth_header.as_ref() {
                         let mut replaced = false;
                         for (name, value) in &mut effective_headers {
@@ -5306,6 +5989,11 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                             }
                             Err(bits) => return bits,
                         };
+                    urllib_cookiejar_store_headers_for_url(
+                        &cookiejar_handles,
+                        &current_url,
+                        &resp_headers,
+                    );
                     if code == 407 && proxy.is_some() {
                         if proxy_auth_attempted {
                             return urllib_raise_url_error(_py, "proxy authentication required");
@@ -5348,6 +6036,10 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         if code == 303 || ((code == 301 || code == 302) && method != "HEAD") {
                             method = "GET".to_string();
                             body.clear();
+                            base_headers.retain(|(name, _)| {
+                                !name.eq_ignore_ascii_case("Content-Length")
+                                    && !name.eq_ignore_ascii_case("Content-Type")
+                            });
                         }
                         continue;
                     }
@@ -6077,6 +6769,342 @@ fn compile_error_type(error: &ParseErrorType) -> &'static str {
     }
 }
 
+fn collect_bound_names_in_target(target: &pyast::Expr, out: &mut HashSet<String>) {
+    match target {
+        pyast::Expr::Name(node) => {
+            out.insert(node.id.as_str().to_string());
+        }
+        pyast::Expr::Tuple(node) => {
+            for elt in &node.elts {
+                collect_bound_names_in_target(elt, out);
+            }
+        }
+        pyast::Expr::List(node) => {
+            for elt in &node.elts {
+                collect_bound_names_in_target(elt, out);
+            }
+        }
+        pyast::Expr::Starred(node) => {
+            collect_bound_names_in_target(node.value.as_ref(), out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_import_binding(alias: &pyast::Alias, out: &mut HashSet<String>) {
+    if let Some(asname) = alias.asname.as_ref() {
+        out.insert(asname.as_str().to_string());
+        return;
+    }
+    let raw = alias.name.as_str();
+    let base = raw.split('.').next().unwrap_or(raw);
+    if !base.is_empty() {
+        out.insert(base.to_string());
+    }
+}
+
+fn collect_arg_bindings(args: &pyast::Arguments, out: &mut HashSet<String>) {
+    for arg in &args.posonlyargs {
+        out.insert(arg.def.arg.as_str().to_string());
+    }
+    for arg in &args.args {
+        out.insert(arg.def.arg.as_str().to_string());
+    }
+    if let Some(vararg) = args.vararg.as_ref() {
+        out.insert(vararg.arg.as_str().to_string());
+    }
+    for arg in &args.kwonlyargs {
+        out.insert(arg.def.arg.as_str().to_string());
+    }
+    if let Some(kwarg) = args.kwarg.as_ref() {
+        out.insert(kwarg.arg.as_str().to_string());
+    }
+}
+
+fn collect_function_scope_info(
+    stmt: &pyast::Stmt,
+    local_bindings: &mut HashSet<String>,
+    nonlocal_decls: &mut HashSet<String>,
+    global_decls: &mut HashSet<String>,
+) {
+    match stmt {
+        pyast::Stmt::FunctionDef(node) => {
+            local_bindings.insert(node.name.as_str().to_string());
+        }
+        pyast::Stmt::AsyncFunctionDef(node) => {
+            local_bindings.insert(node.name.as_str().to_string());
+        }
+        pyast::Stmt::ClassDef(node) => {
+            local_bindings.insert(node.name.as_str().to_string());
+        }
+        pyast::Stmt::Global(node) => {
+            for name in &node.names {
+                global_decls.insert(name.as_str().to_string());
+            }
+        }
+        pyast::Stmt::Nonlocal(node) => {
+            for name in &node.names {
+                nonlocal_decls.insert(name.as_str().to_string());
+            }
+        }
+        pyast::Stmt::Assign(node) => {
+            for target in &node.targets {
+                collect_bound_names_in_target(target, local_bindings);
+            }
+        }
+        pyast::Stmt::AnnAssign(node) => {
+            collect_bound_names_in_target(node.target.as_ref(), local_bindings);
+        }
+        pyast::Stmt::AugAssign(node) => {
+            collect_bound_names_in_target(node.target.as_ref(), local_bindings);
+        }
+        pyast::Stmt::For(node) => {
+            collect_bound_names_in_target(node.target.as_ref(), local_bindings);
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::AsyncFor(node) => {
+            collect_bound_names_in_target(node.target.as_ref(), local_bindings);
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::With(node) => {
+            for item in &node.items {
+                if let Some(target) = item.optional_vars.as_ref() {
+                    collect_bound_names_in_target(target.as_ref(), local_bindings);
+                }
+            }
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::AsyncWith(node) => {
+            for item in &node.items {
+                if let Some(target) = item.optional_vars.as_ref() {
+                    collect_bound_names_in_target(target.as_ref(), local_bindings);
+                }
+            }
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::If(node) => {
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::While(node) => {
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::Try(node) => {
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for handler in &node.handlers {
+                let pyast::ExceptHandler::ExceptHandler(handler) = handler;
+                if let Some(name) = handler.name.as_ref() {
+                    local_bindings.insert(name.as_str().to_string());
+                }
+                for child in &handler.body {
+                    collect_function_scope_info(
+                        child,
+                        local_bindings,
+                        nonlocal_decls,
+                        global_decls,
+                    );
+                }
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.finalbody {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::TryStar(node) => {
+            for child in &node.body {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for handler in &node.handlers {
+                let pyast::ExceptHandler::ExceptHandler(handler) = handler;
+                if let Some(name) = handler.name.as_ref() {
+                    local_bindings.insert(name.as_str().to_string());
+                }
+                for child in &handler.body {
+                    collect_function_scope_info(
+                        child,
+                        local_bindings,
+                        nonlocal_decls,
+                        global_decls,
+                    );
+                }
+            }
+            for child in &node.orelse {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+            for child in &node.finalbody {
+                collect_function_scope_info(child, local_bindings, nonlocal_decls, global_decls);
+            }
+        }
+        pyast::Stmt::Match(node) => {
+            for case in &node.cases {
+                for child in &case.body {
+                    collect_function_scope_info(
+                        child,
+                        local_bindings,
+                        nonlocal_decls,
+                        global_decls,
+                    );
+                }
+            }
+        }
+        pyast::Stmt::Import(node) => {
+            for alias in &node.names {
+                collect_import_binding(alias, local_bindings);
+            }
+        }
+        pyast::Stmt::ImportFrom(node) => {
+            for alias in &node.names {
+                collect_import_binding(alias, local_bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_nested_function_scopes(
+    stmts: &[pyast::Stmt],
+    enclosing_function_bindings: &[HashSet<String>],
+) -> Result<(), String> {
+    for stmt in stmts {
+        match stmt {
+            pyast::Stmt::FunctionDef(node) => {
+                validate_function_scope(&node.args, &node.body, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::AsyncFunctionDef(node) => {
+                validate_function_scope(&node.args, &node.body, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::ClassDef(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::If(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::For(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::AsyncFor(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::While(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::With(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::AsyncWith(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::Try(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                for handler in &node.handlers {
+                    let pyast::ExceptHandler::ExceptHandler(handler) = handler;
+                    walk_nested_function_scopes(&handler.body, enclosing_function_bindings)?;
+                }
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.finalbody, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::TryStar(node) => {
+                walk_nested_function_scopes(&node.body, enclosing_function_bindings)?;
+                for handler in &node.handlers {
+                    let pyast::ExceptHandler::ExceptHandler(handler) = handler;
+                    walk_nested_function_scopes(&handler.body, enclosing_function_bindings)?;
+                }
+                walk_nested_function_scopes(&node.orelse, enclosing_function_bindings)?;
+                walk_nested_function_scopes(&node.finalbody, enclosing_function_bindings)?;
+            }
+            pyast::Stmt::Match(node) => {
+                for case in &node.cases {
+                    walk_nested_function_scopes(&case.body, enclosing_function_bindings)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_function_scope(
+    args: &pyast::Arguments,
+    body: &[pyast::Stmt],
+    enclosing_function_bindings: &[HashSet<String>],
+) -> Result<(), String> {
+    let mut local_bindings: HashSet<String> = HashSet::new();
+    collect_arg_bindings(args, &mut local_bindings);
+    let mut nonlocal_decls: HashSet<String> = HashSet::new();
+    let mut global_decls: HashSet<String> = HashSet::new();
+    for stmt in body {
+        collect_function_scope_info(
+            stmt,
+            &mut local_bindings,
+            &mut nonlocal_decls,
+            &mut global_decls,
+        );
+    }
+    for name in &nonlocal_decls {
+        if global_decls.contains(name) {
+            return Err(format!("name '{name}' is nonlocal and global"));
+        }
+        let mut found = false;
+        for scope in enclosing_function_bindings.iter().rev() {
+            if scope.contains(name) {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(format!("no binding for nonlocal '{name}' found"));
+        }
+    }
+    for name in &nonlocal_decls {
+        local_bindings.remove(name);
+    }
+    for name in &global_decls {
+        local_bindings.remove(name);
+    }
+    let mut next_enclosing = enclosing_function_bindings.to_vec();
+    next_enclosing.push(local_bindings);
+    walk_nested_function_scopes(body, &next_enclosing)
+}
+
+fn compile_validate_nonlocal_semantics(parsed: &pyast::Mod) -> Result<(), String> {
+    match parsed {
+        pyast::Mod::Module(module) => walk_nested_function_scopes(&module.body, &[]),
+        pyast::Mod::Interactive(module) => walk_nested_function_scopes(&module.body, &[]),
+        _ => Ok(()),
+    }
+}
+
 fn compile_validate_source(
     source: &str,
     filename: &str,
@@ -6094,7 +7122,10 @@ fn compile_validate_source(
         }
     };
     match parse_python(source, parse_mode, filename) {
-        Ok(_) => Ok(()),
+        Ok(parsed) => match compile_validate_nonlocal_semantics(&parsed) {
+            Ok(()) => Ok(()),
+            Err(message) => Err(("SyntaxError", message)),
+        },
         Err(err) => Err((compile_error_type(&err.error), err.error.to_string())),
     }
 }

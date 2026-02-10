@@ -283,6 +283,18 @@ def _signature_from_intrinsic(obj: Any) -> Signature | None:
     return Signature(params)
 
 
+def _signature_bind_bound_method(sig: Signature, method_obj: Any) -> Signature:
+    if getattr(method_obj, "__self__", None) is None:
+        return sig
+    ordered = list(sig.parameters.values())
+    if not ordered:
+        return sig
+    first = ordered[0]
+    if first.kind not in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD):
+        return sig
+    return Signature(ordered[1:], getattr(sig, "return_annotation", _empty))
+
+
 def signature(obj: Any) -> Signature:
     sig = getattr(obj, "__signature__", None)
     if isinstance(sig, Signature):
@@ -292,4 +304,14 @@ def signature(obj: Any) -> Signature:
     intrinsic_sig = _signature_from_intrinsic(obj)
     if intrinsic_sig is not None:
         return intrinsic_sig
+    method_fn = getattr(obj, "__func__", None)
+    if method_fn is not None:
+        fn_sig = getattr(method_fn, "__signature__", None)
+        if isinstance(fn_sig, Signature):
+            return _signature_bind_bound_method(fn_sig, obj)
+        if fn_sig is not None:
+            return _signature_bind_bound_method(fn_sig, obj)
+        intrinsic_fn_sig = _signature_from_intrinsic(method_fn)
+        if intrinsic_fn_sig is not None:
+            return _signature_bind_bound_method(intrinsic_fn_sig, obj)
     raise TypeError("inspect.signature cannot introspect this object")

@@ -70,6 +70,7 @@ _molt_socket_connect = _require_intrinsic("molt_socket_connect", globals())
 _molt_socket_connect_ex = _require_intrinsic("molt_socket_connect_ex", globals())
 _molt_socket_recv = _require_intrinsic("molt_socket_recv", globals())
 _molt_socket_recv_into = _require_intrinsic("molt_socket_recv_into", globals())
+_molt_socket_recvfrom_into = _require_intrinsic("molt_socket_recvfrom_into", globals())
 _molt_socket_send = _require_intrinsic("molt_socket_send", globals())
 _molt_socket_sendall = _require_intrinsic("molt_socket_sendall", globals())
 _molt_socket_sendto = _require_intrinsic("molt_socket_sendto", globals())
@@ -155,11 +156,23 @@ def setdefaulttimeout(timeout: float | None) -> None:
 
 
 def _map_gaierror(exc: OSError) -> gaierror:
-    return gaierror(exc.errno or 0, str(exc))
+    code = _exc_errno(exc)
+    return gaierror(0 if code is None else code, str(exc))
 
 
 def _map_herror(exc: OSError) -> herror:
-    return herror(exc.errno or 0, str(exc))
+    code = _exc_errno(exc)
+    return herror(0 if code is None else code, str(exc))
+
+
+def _exc_errno(exc: OSError) -> int | None:
+    value = getattr(exc, "errno", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def _require_socket_intrinsic(fn: Any | None, name: str) -> Any:
@@ -383,9 +396,13 @@ class socket:
         )
 
     def setblocking(self, flag: bool) -> None:
-        _require_socket_intrinsic(_molt_socket_setblocking, "setblocking")(
-            self._require_handle(), bool(flag)
-        )
+        # Keep timeout metadata in sync with CPython: setblocking(False) == settimeout(0.0),
+        # setblocking(True) == settimeout(None). This is required for non-blocking connect_ex
+        # semantics used by asyncio loop sock_connect.
+        if bool(flag):
+            self.settimeout(None)
+        else:
+            self.settimeout(0.0)
 
     def getblocking(self) -> bool:
         return bool(
@@ -470,6 +487,18 @@ class socket:
     def recvfrom(self, bufsize: int, flags: int = 0) -> tuple[bytes, Any]:
         return _require_socket_intrinsic(_molt_socket_recvfrom, "recvfrom")(
             self._require_handle(), int(bufsize), int(flags)
+        )
+
+    def recvfrom_into(
+        self, buffer: Any, nbytes: int = 0, flags: int = 0
+    ) -> tuple[int, Any]:
+        size = int(nbytes)
+        if size < 0:
+            raise ValueError("negative buffersize in recvfrom_into")
+        if size == 0:
+            size = -1
+        return _require_socket_intrinsic(_molt_socket_recvfrom_into, "recvfrom_into")(
+            self._require_handle(), buffer, size, int(flags)
         )
 
     def sendmsg(
@@ -615,7 +644,7 @@ def getaddrinfo(
             host, port, family, type, proto, flags
         )
     except OSError as exc:
-        if exc.errno in _EAI_CODES:
+        if _exc_errno(exc) in _EAI_CODES:
             raise _map_gaierror(exc) from None
         raise
 
@@ -626,7 +655,7 @@ def getnameinfo(addr: Any, flags: int) -> tuple[str, str]:
             addr, flags
         )
     except OSError as exc:
-        if exc.errno in _EAI_CODES:
+        if _exc_errno(exc) in _EAI_CODES:
             raise _map_gaierror(exc) from None
         raise
 
@@ -641,7 +670,7 @@ def gethostbyname(hostname: str) -> str:
             hostname
         )
     except OSError as exc:
-        if exc.errno in _EAI_CODES:
+        if _exc_errno(exc) in _EAI_CODES:
             raise _map_gaierror(exc) from None
         raise
 
@@ -652,7 +681,7 @@ def gethostbyaddr(hostname: str) -> tuple[str, list[str], list[str]]:
             hostname
         )
     except OSError as exc:
-        if exc.errno in _EAI_CODES:
+        if _exc_errno(exc) in _EAI_CODES:
             raise _map_gaierror(exc) from None
         raise _map_herror(exc) from None
 
@@ -661,7 +690,7 @@ def getfqdn(name: str | None = None) -> str:
     try:
         return _require_socket_intrinsic(_molt_socket_getfqdn, "getfqdn")(name)
     except OSError as exc:
-        if exc.errno in _EAI_CODES:
+        if _exc_errno(exc) in _EAI_CODES:
             raise _map_gaierror(exc) from None
         raise
 
