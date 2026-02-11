@@ -645,6 +645,18 @@ fn collect_real_vec(_py: &PyToken<'_>, iter_bits: u64) -> Option<Vec<f64>> {
     Some(out)
 }
 
+fn kahan_sum(values: &[f64]) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut compensation = 0.0_f64;
+    for value in values {
+        let y = *value - compensation;
+        let t = sum + y;
+        compensation = (t - sum) - y;
+        sum = t;
+    }
+    sum
+}
+
 #[no_mangle]
 pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2157,5 +2169,67 @@ pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
             return math_domain_error(_py);
         }
         MoltObject::from_float(math_remainder(x, y)).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(values) = collect_real_vec(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        if values.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "mean requires at least one data point",
+            );
+        }
+        let total = kahan_sum(&values);
+        MoltObject::from_float(total / values.len() as f64).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(values) = collect_real_vec(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        let n = values.len();
+        if n < 2 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "stdev requires at least two data points",
+            );
+        }
+        let mean = if obj_from_bits(xbar_bits).is_none() {
+            kahan_sum(&values) / n as f64
+        } else {
+            let Some(value) = coerce_real_named(_py, xbar_bits, "stdev") else {
+                return MoltObject::none().bits();
+            };
+            let Some(f) = coerce_to_f64(_py, value) else {
+                return MoltObject::none().bits();
+            };
+            f
+        };
+        let mut sum_sq = 0.0_f64;
+        let mut compensation = 0.0_f64;
+        for sample in &values {
+            let diff = *sample - mean;
+            let term = diff * diff;
+            let y = term - compensation;
+            let t = sum_sq + y;
+            compensation = (t - sum_sq) - y;
+            sum_sq = t;
+        }
+        let variance = if sum_sq < 0.0 && sum_sq > -f64::EPSILON {
+            0.0
+        } else {
+            sum_sq / (n - 1) as f64
+        };
+        MoltObject::from_float(math_sqrt(variance)).bits()
     })
 }

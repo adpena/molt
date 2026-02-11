@@ -3,8 +3,7 @@
 import io
 import tokenize
 
-source = "x = 1
-"
+source = "x = 1\n"
 stream = io.BytesIO(source.encode("utf-8"))
 
 tokens = list(tokenize.tokenize(stream.readline))

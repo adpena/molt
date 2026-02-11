@@ -3165,8 +3165,15 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         exception_context_fallback_pop();
         // Move any pending exception off the block_on task and onto the caller/global slot.
         let task_exc_slot = {
+            let state = runtime_state(_py);
             let mut guard = task_last_exceptions(_py).lock().unwrap();
-            guard.remove(&PtrSlot(task_ptr))
+            let slot = guard.remove(&PtrSlot(task_ptr));
+            if guard.is_empty() {
+                state
+                    .task_last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
+            }
+            slot
         };
         let pending_bits = if let Some(exc_slot) = task_exc_slot {
             MoltObject::from_ptr(exc_slot.0).bits()

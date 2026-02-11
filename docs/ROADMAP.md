@@ -132,6 +132,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `json` parity plan (runtime fast-path + performance tuning + full cls/callback parity).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `enum` parity (aliases, functional API, Flag/IntFlag edge cases).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` distributions + extended test vectors.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `statistics` intrinsic coverage beyond `mean`/`stdev`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module API + runtime cycle collector hook.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` ancillary-data parity (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`) while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty control messages.
@@ -164,7 +165,8 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - Implemented: asyncio runtime capability gates for SSL transport, Unix sockets, and child-watchers now lower through Rust intrinsics (`molt_asyncio_require_ssl_transport_support`, `molt_asyncio_require_unix_socket_support`, `molt_asyncio_require_child_watcher_support`) with deterministic runtime errors instead of Python `NotImplementedError` branches.
 - Implemented: asyncio SSL orchestration is runtime-owned (`molt_asyncio_ssl_transport_orchestrate`); `ssl=False` lowers to an explicit non-SSL intrinsic payload path, client TLS execution (`open_connection`/`create_connection`, `open_unix_connection`/`create_unix_connection`, and client/server-side `start_tls`) lowers through runtime rustls stream intrinsics (`molt_asyncio_tls_client_connect_new`, `molt_asyncio_tls_client_from_fd_new`, `molt_asyncio_tls_server_payload`, `molt_asyncio_tls_server_from_fd_new`), and server TLS execution for `start_server`/`start_unix_server` uses the same runtime cert/key payload + fd-upgrade intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): finish asyncio transport feature coverage after intrinsic capability gates (remaining native/wasm TLS edge parity and complete child-watcher behavior on supported hosts).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `_collections_abc`, `_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `platform`, `queue`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `copy`, `copyreg`, `string`, `numbers`, `unicodedata`, `tempfile`, `ctypes`) to minimal parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `_collections_abc`, `_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `platform`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `copy`, `copyreg`, `string`, `numbers`, `unicodedata`, `tempfile`, `ctypes`) to minimal parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): extend intrinsic-backed `queue` support beyond `Queue`/`SimpleQueue` core semantics to full parity (`LifoQueue`, `PriorityQueue`, richer API/edge-case parity) and align dependent `logging.handlers` coverage.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `glob` parity (`root_dir`, `recursive`/`**` edge semantics, `include_hidden`) on top of intrinsic-backed `molt_glob`/`molt_glob_has_magic`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `fnmatch` bytes/normcase/cache parity on top of intrinsic-backed `molt_fnmatch*` runtime lane.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `shlex` parser/state parity (`sourcehook`, `wordchars`, incremental stream semantics) on top of intrinsic-backed lexer/join lane.
@@ -298,6 +300,8 @@ Language feature TODOs tracked here for parity:
 - [~] Signature verification + trust policy for packaged artifacts (publish/verify enforced; load-time enforcement pending).
   (TODO(tooling, owner:release, milestone:TL2, priority:P2, status:partial): enforce signature verification/trust policy during load.)
 - [ ] Integrated Benchmarking Regression Gates (TODO(perf, owner:tooling, milestone:TL2, priority:P2, status:planned): benchmarking regression gates).
+- [~] Friend-owned benchmark harness + scorecard publication (`tools/bench_friends.py`, `bench/friends/manifest.toml`) with pinned refs and fairness metadata.
+  (TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend suite adapters/pinned command lanes and run nightly scorecards in CI.)
 
 ---
 

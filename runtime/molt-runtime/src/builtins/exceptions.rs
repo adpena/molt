@@ -129,6 +129,12 @@ fn debug_exception_raise() -> bool {
 }
 
 #[inline]
+fn debug_exception_pending() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_PENDING").as_deref() == Ok("1"))
+}
+
+#[inline]
 fn trace_exception_stack() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_EXCEPTION_STACK").as_deref() == Ok("1"))
@@ -572,14 +578,20 @@ pub(crate) unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
-    let debug_pending = std::env::var("MOLT_DEBUG_EXCEPTION_PENDING").as_deref() == Ok("1");
+    let state = runtime_state(_py);
+    let debug_pending = debug_exception_pending();
     if let Some(task_key) = current_task_key() {
-        let pending_ptr = {
+        let pending_ptr = if state
+            .task_last_exception_pending
+            .load(AtomicOrdering::Relaxed)
+        {
             let guard = task_last_exceptions(_py).lock().unwrap();
             guard.get(&task_key).copied()
+        } else {
+            None
         };
         let pending =
-            pending_ptr.is_some() || runtime_state(_py).last_exception.lock().unwrap().is_some();
+            pending_ptr.is_some() || state.last_exception_pending.load(AtomicOrdering::Relaxed);
         if debug_pending && pending {
             if let Some(ptr) = pending_ptr {
                 let kind_bits = unsafe { exception_kind_bits(ptr.0) };
@@ -593,9 +605,9 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         }
         return pending;
     }
-    let guard = runtime_state(_py).last_exception.lock().unwrap();
-    let pending = guard.is_some();
+    let pending = state.last_exception_pending.load(AtomicOrdering::Relaxed);
     if debug_pending && pending {
+        let guard = state.last_exception.lock().unwrap();
         if let Some(ptr) = *guard {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
             let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -623,9 +635,14 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
 
 pub(crate) fn clear_exception_state(_py: &PyToken<'_>) {
     crate::gil_assert();
+    let state = runtime_state(_py);
     let ptr = {
-        let mut guard = runtime_state(_py).last_exception.lock().unwrap();
-        guard.take()
+        let mut guard = state.last_exception.lock().unwrap();
+        let ptr = guard.take();
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
+        ptr
     };
     if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
@@ -971,11 +988,18 @@ pub(crate) fn task_exception_baseline_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
-    if let Some(old_ptr) = task_last_exceptions(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr))
-    {
+    let state = runtime_state(_py);
+    let old_ptr = {
+        let mut guard = task_last_exceptions(_py).lock().unwrap();
+        let old = guard.remove(&PtrSlot(ptr));
+        if guard.is_empty() {
+            state
+                .task_last_exception_pending
+                .store(false, AtomicOrdering::Relaxed);
+        }
+        old
+    };
+    if let Some(old_ptr) = old_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
         dec_ref_bits(_py, old_bits);
     }
@@ -983,6 +1007,7 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
+    let state = runtime_state(_py);
     let task_key = current_task_key();
     let mut prior_ptr = None;
     let mut context_bits: Option<u64> = None;
@@ -1005,14 +1030,23 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         TRACEBACK_SUPPRESS_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
     }
     if let Some(task_key) = task_key {
-        if let Some(old_ptr) = task_last_exceptions(_py).lock().unwrap().remove(&task_key) {
+        let mut guard = task_last_exceptions(_py).lock().unwrap();
+        if let Some(old_ptr) = guard.remove(&task_key) {
             prior_ptr = Some(old_ptr.0);
         }
+        if guard.is_empty() {
+            state
+                .task_last_exception_pending
+                .store(false, AtomicOrdering::Relaxed);
+        }
     } else {
-        let mut guard = runtime_state(_py).last_exception.lock().unwrap();
+        let mut guard = state.last_exception.lock().unwrap();
         if let Some(old_ptr) = guard.take() {
             prior_ptr = Some(old_ptr.0);
         }
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
     }
     if let Some(old_ptr) = prior_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr).bits();
@@ -1077,12 +1111,18 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             .lock()
             .unwrap()
             .insert(task_key, PtrSlot(ptr));
+        state
+            .task_last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
     } else {
-        let mut guard = runtime_state(_py).last_exception.lock().unwrap();
+        let mut guard = state.last_exception.lock().unwrap();
         *guard = Some(PtrSlot(ptr));
+        state
+            .last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
     }
     if std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1") {
-        let debug_pending = std::env::var("MOLT_DEBUG_EXCEPTION_PENDING").as_deref() == Ok("1");
+        let debug_pending = debug_exception_pending();
         let kind_bits = unsafe { exception_kind_bits(ptr) };
         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
             .unwrap_or_else(|| "<unknown>".to_string());
@@ -1128,17 +1168,35 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
     crate::gil_assert();
+    let state = runtime_state(_py);
     if let Some(task_key) = current_task_key() {
-        if let Some(old_ptr) = task_last_exceptions(_py).lock().unwrap().remove(&task_key) {
+        let old_ptr = {
+            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            let old = guard.remove(&task_key);
+            if guard.is_empty() {
+                state
+                    .task_last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
+            }
+            old
+        };
+        if let Some(old_ptr) = old_ptr {
             let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
             dec_ref_bits(_py, old_bits);
         }
         return;
     }
-    let mut guard = runtime_state(_py).last_exception.lock().unwrap();
+    let mut guard = state.last_exception.lock().unwrap();
     if let Some(old_ptr) = guard.take() {
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
         dec_ref_bits(_py, old_bits);
+    } else {
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
     }
 }
 
@@ -4631,6 +4689,31 @@ pub extern "C" fn molt_exception_pending() -> u64 {
             0
         }
     })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_pending_fast() -> u64 {
+    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
+        return 0;
+    };
+    if let Some(task_key) = current_task_key() {
+        if state
+            .task_last_exception_pending
+            .load(AtomicOrdering::Relaxed)
+            && state
+                .task_last_exceptions
+                .lock()
+                .unwrap()
+                .contains_key(&task_key)
+        {
+            return 1;
+        }
+    }
+    if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]

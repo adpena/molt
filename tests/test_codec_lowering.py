@@ -23,6 +23,13 @@ def _const_values(ir: dict, func_name: str = "molt_main") -> list[int]:
     raise AssertionError(f"Missing function {func_name}")
 
 
+def _ops_by_kind(ir: dict, kind: str, func_name: str = "molt_main") -> list[dict]:
+    for func in ir["functions"]:
+        if func["name"] == func_name:
+            return [op for op in func["ops"] if op["kind"] == kind]
+    raise AssertionError(f"Missing function {func_name}")
+
+
 def test_default_codec_is_msgpack():
     src = """
 import molt_json
@@ -221,6 +228,56 @@ def test_type_hint_check_lowering():
     ir = compile_to_tir(src, type_hint_policy="check")
     kinds = _op_kinds(ir)
     assert "guard_type" in kinds
+
+
+def test_type_hint_fast_int_for_comparison_bitwise_and_shift():
+    src = """
+a: int = 7
+b: int = 3
+div = a / b
+fdiv = a // b
+mod = a % b
+lt = a < b
+le = a <= b
+gt = a > b
+ge = a >= b
+eq = a == b
+ne = a != b
+bor = a | b
+band = a & b
+bxor = a ^ b
+lsh = a << b
+rsh = a >> b
+c: int = 10
+c |= b
+d: int = 11
+d &= b
+e: int = 12
+e ^= b
+"""
+    ir = compile_to_tir(src, type_hint_policy="check")
+    for kind in (
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "eq",
+        "ne",
+        "bit_or",
+        "bit_and",
+        "bit_xor",
+        "lshift",
+        "rshift",
+        "div",
+        "floordiv",
+        "mod",
+        "inplace_bit_or",
+        "inplace_bit_and",
+        "inplace_bit_xor",
+    ):
+        ops = _ops_by_kind(ir, kind)
+        assert ops, f"expected at least one {kind} op"
+        assert all(op.get("fast_int") is True for op in ops)
 
 
 def test_tuple_lowering():

@@ -8,9 +8,7 @@ import tabnanny
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'good.py')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('def f():
-    return 1
-')
+    handle.write('def f():\n    return 1\n')
 
 result = tabnanny.check(path)
 print(result is None)

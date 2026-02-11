@@ -665,7 +665,7 @@ struct AsyncWorkerContext {
 struct AsyncExecContext<'a> {
     cancelled: &'a CancelSet,
     cancel_token: CancelToken,
-    sqlite_cancel_registry: &'a SqliteCancelRegistry,
+    sqlite_cancel_registry: Arc<SqliteCancelRegistry>,
     request_id: u64,
     pool: &'a DbPool,
     pg_pool: Option<&'a PgPool>,
@@ -4429,7 +4429,7 @@ async fn handle_request_async(
     let exec_ctx = AsyncExecContext {
         cancelled: &ctx.cancelled,
         cancel_token,
-        sqlite_cancel_registry: ctx.sqlite_cancel_registry.as_ref(),
+        sqlite_cancel_registry: ctx.sqlite_cancel_registry.clone(),
         request_id,
         pool: &ctx.pool,
         pg_pool: ctx.pg_pool.as_deref(),

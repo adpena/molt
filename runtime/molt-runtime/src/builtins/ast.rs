@@ -22,6 +22,8 @@ struct AstParseCtors {
     constant: u64,
     add: u64,
     binop: u64,
+    assign: u64,
+    store: u64,
 }
 
 impl AstParseCtors {
@@ -33,11 +35,11 @@ impl AstParseCtors {
                 "ast.parse constructor payload must be a tuple/list",
             ));
         };
-        if values.len() != 12 {
+        if values.len() != 14 {
             return Err(raise_exception::<_>(
                 _py,
                 "TypeError",
-                "ast.parse constructor payload must include 12 constructors",
+                "ast.parse constructor payload must include 14 constructors",
             ));
         }
         Ok(Self {
@@ -53,6 +55,8 @@ impl AstParseCtors {
             constant: values[9],
             add: values[10],
             binop: values[11],
+            assign: values[12],
+            store: values[13],
         })
     }
 }
@@ -199,6 +203,20 @@ fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> 
     }
 }
 
+fn convert_name_with_ctx(
+    _py: &crate::PyToken<'_>,
+    name: &str,
+    ctx_ctor: u64,
+    ctors: &AstParseCtors,
+) -> Result<u64, u64> {
+    let id_bits = alloc_string_bits(_py, name)?;
+    let ctx_bits = call_ctor0(_py, ctx_ctor)?;
+    let out = call_ctor2(_py, ctors.name, id_bits, ctx_bits);
+    dec_if_heap(_py, id_bits);
+    dec_if_heap(_py, ctx_bits);
+    out
+}
+
 fn convert_expr(
     _py: &crate::PyToken<'_>,
     expr: &pyast::Expr,
@@ -211,14 +229,7 @@ fn convert_expr(
             dec_if_heap(_py, value_bits);
             out
         }
-        pyast::Expr::Name(node) => {
-            let id_bits = alloc_string_bits(_py, node.id.as_str())?;
-            let load_bits = call_ctor0(_py, ctors.load)?;
-            let out = call_ctor2(_py, ctors.name, id_bits, load_bits);
-            dec_if_heap(_py, id_bits);
-            dec_if_heap(_py, load_bits);
-            out
-        }
+        pyast::Expr::Name(node) => convert_name_with_ctx(_py, node.id.as_str(), ctors.load, ctors),
         pyast::Expr::BinOp(node) => {
             let left_bits = convert_expr(_py, node.left.as_ref(), ctors)?;
             let right_bits = match convert_expr(_py, node.right.as_ref(), ctors) {
@@ -276,6 +287,17 @@ fn convert_arg(
     let out = call_ctor1(_py, ctors.arg, name_bits);
     dec_if_heap(_py, name_bits);
     out
+}
+
+fn convert_assign_target(
+    _py: &crate::PyToken<'_>,
+    target: &pyast::Expr,
+    ctors: &AstParseCtors,
+) -> Result<u64, u64> {
+    match target {
+        pyast::Expr::Name(node) => convert_name_with_ctx(_py, node.id.as_str(), ctors.store, ctors),
+        _ => Err(unsupported_stmt(_py, "Assign(target!=Name)")),
+    }
 }
 
 fn convert_stmt(
@@ -371,6 +393,46 @@ fn convert_stmt(
             dec_if_heap(_py, name_bits);
             dec_if_heap(_py, args_obj_bits);
             dec_if_heap(_py, body_bits);
+            out
+        }
+        pyast::Stmt::Assign(node) => {
+            if node.type_comment.is_some() {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "molt ast.parse intrinsic unsupported Assign type_comment",
+                ));
+            }
+            let mut target_nodes: Vec<u64> = Vec::with_capacity(node.targets.len());
+            for target in &node.targets {
+                let target_bits = match convert_assign_target(_py, target, ctors) {
+                    Ok(bits) => bits,
+                    Err(err) => {
+                        for bits in &target_nodes {
+                            dec_if_heap(_py, *bits);
+                        }
+                        return Err(err);
+                    }
+                };
+                target_nodes.push(target_bits);
+            }
+            let targets_bits = alloc_tuple_bits(_py, &target_nodes);
+            for bits in &target_nodes {
+                dec_if_heap(_py, *bits);
+            }
+            if obj_from_bits(targets_bits).is_none() {
+                return Err(MoltObject::none().bits());
+            }
+            let value_bits = match convert_expr(_py, node.value.as_ref(), ctors) {
+                Ok(bits) => bits,
+                Err(err) => {
+                    dec_if_heap(_py, targets_bits);
+                    return Err(err);
+                }
+            };
+            let out = call_ctor2(_py, ctors.assign, targets_bits, value_bits);
+            dec_if_heap(_py, targets_bits);
+            dec_if_heap(_py, value_bits);
             out
         }
         pyast::Stmt::Return(node) => {
@@ -484,6 +546,10 @@ fn collect_child_nodes(_py: &crate::PyToken<'_>, node_bits: u64) -> Result<Vec<u
         Some("arguments") => push_attr_children_from_seq(_py, node_bits, b"args", &mut children)?,
         Some("Return") => push_attr_child(_py, node_bits, b"value", &mut children)?,
         Some("Expr") => push_attr_child(_py, node_bits, b"value", &mut children)?,
+        Some("Assign") => {
+            push_attr_children_from_seq(_py, node_bits, b"targets", &mut children)?;
+            push_attr_child(_py, node_bits, b"value", &mut children)?;
+        }
         Some("BinOp") => {
             push_attr_child(_py, node_bits, b"left", &mut children)?;
             push_attr_child(_py, node_bits, b"op", &mut children)?;

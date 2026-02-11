@@ -56,9 +56,11 @@ pub(crate) use crate::concurrency::locks::{
     molt_condition_wait_for, molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new,
     molt_event_set, molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new,
     molt_lock_acquire, molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release,
-    molt_rlock_acquire, molt_rlock_acquire_restore, molt_rlock_drop, molt_rlock_is_owned,
-    molt_rlock_locked, molt_rlock_new, molt_rlock_release, molt_rlock_release_save,
-    molt_semaphore_acquire, molt_semaphore_drop, molt_semaphore_new, molt_semaphore_release,
+    molt_queue_drop, molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_join,
+    molt_queue_new, molt_queue_put, molt_queue_qsize, molt_queue_task_done, molt_rlock_acquire,
+    molt_rlock_acquire_restore, molt_rlock_drop, molt_rlock_is_owned, molt_rlock_locked,
+    molt_rlock_new, molt_rlock_release, molt_rlock_release_save, molt_semaphore_acquire,
+    molt_semaphore_drop, molt_semaphore_new, molt_semaphore_release,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::concurrency::{

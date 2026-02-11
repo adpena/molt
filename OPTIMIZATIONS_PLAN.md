@@ -1,1174 +1,527 @@
-# Optimization Plan Spec
-
-## Purpose
-Capture complex, high-impact optimizations that require focused research, multi-week effort,
-or careful risk management. Use this file as the source of truth for exploration, evaluation,
-and regression control.
-
-## When to Add an Entry
-- The optimization is complex, risky, or time-intensive.
-- It may affect semantics or performance across multiple benchmarks.
-- It requires research, alternative algorithm evaluations, or new primitives.
-
-## Required Fields (Checklist)
-- [ ] Problem statement and current bottleneck
-- [ ] Hypotheses and expected performance deltas
-- [ ] Alternatives (at least 2), with tradeoffs
-- [ ] Research references (papers, blog posts, standard algorithms)
-- [ ] Implementation plan (phases, owners, dependencies)
-- [ ] Benchmark matrix (affected benches + expected changes)
-- [ ] Correctness plan (tests, differential cases, guard strategy)
-- [ ] Risk assessment + rollback plan
-- [ ] Success criteria + exit gates
-
-## Template
-```
-### OPT-XXXX: <Short Title>
-
-**Problem**
-- What is slow or missing? Where is it measured?
-
-**Hypotheses**
-- H1:
-- H2:
-
-**Alternatives**
-1) <Approach A> (pros/cons, complexity, risk)
-2) <Approach B> (pros/cons, complexity, risk)
-3) <Approach C> (pros/cons, complexity, risk)
-
-**Research References**
-- Paper/Link: summary of relevance
-- Paper/Link: summary of relevance
-
-**Plan**
-- Phase 0: discovery and microbench harness
-- Phase 1: prototype fast path
-- Phase 2: integrate + guard + fallback
-- Phase 3: stabilize + perf gates
-
-**Benchmark Matrix**
-- bench_sum_list.py: expected +X%
-- bench_str_split.py: expected +Y%
-- bench_str_replace.py: expected +Z%
-- cross-bench risks: <list>
-
-**Correctness Plan**
-- New unit tests:
-- Differential cases:
-- Guard/fallback behavior:
-
-**Risk + Rollback**
-- Risk: <risk>
-- Rollback steps:
-
-**Success Criteria**
-- Target speedups and regression thresholds
-- Documentation updates
-```
-
-### OPT-0001: Unicode-Safe SIMD String Search + Index Mapping Cache
-
-**Problem**
-- Non-ASCII `str.find` and `str.count` require byte-to-codepoint translation, which is O(n) per query and can dominate large text workloads.
-
-**Hypotheses**
-- H1: A cached byte->codepoint index map (built lazily) will cut non-ASCII `find/count` overhead by >2x on large inputs.
-- H2: SIMD UTF-8 validation/counting (simdutf-style) will reduce translation cost even without caching.
-
-**Alternatives**
-1) Lazy prefix index table (byte offset -> codepoint index) with amortized reuse across multiple calls.
-2) SIMD UTF-8 counting for every call (no cache, lower memory overhead).
-3) Rope/substring metadata caching (track codepoint offsets at slices) to avoid recomputing in hot loops.
-
-**Research References**
-- simdutf (fast UTF-8 validation and counting): https://github.com/simdutf/simdutf
-- PEP 393 (CPython flexible string representation): https://peps.python.org/pep-0393/
-
-**Plan**
-- Phase 0: Add microbench for non-ASCII `find/count` on 1MB-10MB inputs.
-- Phase 1: Prototype cached index table with eviction policy and measure memory overhead.
-- Phase 2: Integrate SIMD UTF-8 counter for fast byte->codepoint mapping.
-- Phase 3: Add guard + fallback; document tradeoffs in specs.
-
-**Benchmark Matrix**
-- bench_str_find.py: expected +2x on non-ASCII inputs.
-- bench_str_count.py: expected +1.5x on non-ASCII inputs.
-- bench_str_replace.py: no regression (<=2% change).
-
-**Correctness Plan**
-- New unit tests for mixed ASCII/Unicode `find`/`count` offsets.
-- Differential cases with multi-byte codepoints and combining characters.
-- Guard/fallback behavior for malformed UTF-8 (should be unreachable).
-
-**Risk + Rollback**
-- Risk: memory overhead from cached index tables.
-- Rollback: disable cache, keep SIMD counting only.
-
-**Success Criteria**
-- >=2x speedup on non-ASCII `find`/`count` without regressions >5% on ASCII benchmarks.
-- Spec + README updates with new perf gates.
-
-**Latest Results (2026-01-04)**
-- `bench_str_count_unicode.py`: 1.81x (steady vs prior run).
-- `bench_str_find_unicode.py`: 4.82x (no regression observed).
-- `bench_str_count_unicode_warm.py`: 0.25x (regression; warm cache path still dominated by index translation).
-- Memory tradeoff: cache uses 8 bytes per 4KB block (≈2KB per 1MB string, ≈20KB per 10MB string); capped at 128 entries (~2.5MB worst-case) and only enabled for strings >=16KB.
-
-### OPT-0002: Typed Buffer Protocol + SIMD Kernels for MemoryView
-
-**Problem**
-- Memoryview currently supports only 1D byte-level semantics; no typed formats, multidimensional views, or SIMD-friendly reductions.
-
-**Hypotheses**
-- H1: Introducing typed buffer views (e.g., int32/float64) unlocks fast zero-copy reductions and elementwise kernels.
-- H2: A limited format subset (PEP 3118 core) can deliver most wins with lower implementation risk.
-
-**Alternatives**
-1) Full PEP 3118 format parser + multidimensional strides (highest compatibility, complex).
-2) Core subset (bBhHiIlLqQfd) with 1D/2D only (faster, less risk).
-3) External typed array wrapper (Rust-side) with explicit constructors (simpler, lower CPython parity).
-
-**Research References**
-- PEP 3118 (buffer protocol): https://peps.python.org/pep-3118/
-- NumPy ndarray strides and buffer interface docs: https://numpy.org/doc/
-
-**Plan**
-- Phase 0: Define supported format subset + shape/stride rules in spec.
-- Phase 1: Implement typed buffer metadata + safe export hooks in runtime.
-- Phase 2: Add SIMD reductions for typed views (sum/min/max/prod).
-- Phase 3: Add frontend guards and lowering for trusted typed buffers.
-
-**Benchmark Matrix**
-- bench_sum_list.py: expected +1.5x on typed buffers.
-- bench_matrix_math.py: expected +1.2x from zero-copy views.
-- bench_deeply_nested_loop.py: no regression (<=3%).
-
-**Correctness Plan**
-- Differential tests for typed buffer slicing and endianness.
-- Property tests for stride correctness and bounds checks.
-- Guard/fallback behavior for unsupported formats.
-
-**Risk + Rollback**
-- Risk: format/stride bugs causing data corruption.
-- Rollback: restrict to read-only typed views until stabilized.
-
-**Success Criteria**
-- >=1.5x speedup on typed reductions with zero-copy interop.
-- Spec + roadmap updates and regression gates in README.
-
-### OPT-0003: Provenance-Safe Handle Table for NaN-Boxed Objects
-
-**Problem**
-- NaN-boxed heap pointers currently lose provenance by packing raw addresses into 48 bits.
-- Strict provenance tooling (Miri) flags integer-to-pointer casts and can miss real bugs.
-- We need a production-grade representation that preserves correctness without slowing hot paths.
-
-**Hypotheses**
-- H1: A handle table with generation checks removes provenance UB and prevents stale handle reuse.
-- H2: Sharded or lock-free handle lookup keeps overhead <2% on attribute/collection hot paths.
-- H3: Storing handles (not raw addresses) unlocks future GC/compaction without ABI churn.
-
-**Alternatives**
-1) Status quo pointer tagging + `with_exposed_provenance` (fast but provenance-unsafe; Miri warnings remain).
-2) Global handle table with locking (simple, safe, but likely slower on hot path).
-3) Sharded handle table with lock-free reads + generation checks (more complex, best perf).
-4) Arena + offset scheme (bounds-checked offsets; high complexity and migration cost).
-
-**Research References**
-- Rust strict provenance docs: https://doc.rust-lang.org/std/ptr/index.html#strict-provenance
-- Miri provenance model notes: https://github.com/rust-lang/miri
-- Generational indices: https://cglab.ca/~abeinges/blah/slab-allocators/
-- CHERI capability pointers overview: https://www.cl.cam.ac.uk/research/security/ctsrd/cheri/
-
-**Plan**
-- Phase 0: Define handle encoding (index + generation) and table invariants in spec.
-- Phase 1: Implement handle table + pointer map in `molt-obj-model`, wire `MoltObject` through it.
-- Phase 2: Add unregister hooks on object free; validate with Miri strict provenance.
-- Phase 3: Optimize lookup (sharding/lock-free read path) and profile against CPython/Molt baselines.
-
-**Benchmark Matrix**
-- bench_deeply_nested_loop.py: expected <=2% change after lock-free read path.
-- bench_sum_list.py: expected <=2% change (handle lookup on list elements).
-- bench_str_find.py: expected <=2% change (string object access).
-- cross-bench risks: attribute access, dict lookup, and method dispatch regressions.
-
-**Correctness Plan**
-- New unit tests for handle reuse (generation mismatch => None).
-- Differential cases: handle-heavy list/dict operations and attribute access.
-- Guard/fallback behavior: invalid handle returns `None`/error, never dereference freed memory.
-
-### OPT-0004: End-to-End Profiling + Hot-Path Optimization Pass
-
-**Problem**
-- Bench results show wide variance (hot-path regressions vs wins), but we lack a structured profiling pass that ties native/wasm hotspots, allocation pressure, and dispatch costs back to specific runtime and compiler layers.
-
-**Hypotheses**
-- H1: Call dispatch, attribute lookup, and container iteration dominate wall time on multiple microbenches; shrinking dynamic dispatch overhead by 20-40% yields broad wins.
-- H2: Avoidable allocations (temporary tuples/iterators/boxing) account for >30% of runtime in list/tuple/string-heavy benches and can be reduced with targeted fast paths.
-- H3: WASM failures in async benches are masking real performance; bringing wasm parity back will unlock actionable profiling data for async/await.
-
-**Alternatives**
-1) Targeted micro-optimizations only (fast to ship, but risks whack-a-mole regressions and misses cross-layer wins).
-2) Full profiling pass + architectural fast paths (higher cost, best long-term gains, requires careful guards).
-3) Narrow pass focused on string/bytes pipelines (lower risk, but ignores call/dispatch bottlenecks).
-
-**Research References**
-- CPython specialization/inline cache work (PEP 659): https://peps.python.org/pep-0659/
-- PyPy JIT and object space notes: https://doc.pypy.org/en/latest/
-- Rust profiling: cargo-flamegraph/pprof guides (sampling + allocation views)
-- Wasmtime/Wasmer perf notes (AOT vs JIT, perf counters)
-
-**Plan**
-- Phase 0: Baseline and profiling harness
-  - Capture native+wasm bench JSON and keep per-commit deltas.
-  - Add repeatable profiling scripts (CPU + alloc) for top 10 benches.
-  - Establish perf gates (e.g., <=5% regression allowed) and store summaries in `bench/results/`.
-- Phase 1: Hot-path identification
-  - Native: use `cargo flamegraph`/`perf` (or macOS Instruments) on `bench_deeply_nested_loop`, `bench_sum_list`, `bench_str_find*`, `bench_dict_ops`, `bench_attr_access`.
-  - Python frontend: `py-spy`/`scalene` on compiler CLI for compile-time hotspots.
-  - WASM: capture wasm-level profiles (wasmtime `--profile`, `perf` on AOT, or node `--prof` for `run_wasm.js`).
-  - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:partial): wasmtime runner is available for profiling; make DB host delivery non-blocking while preserving streaming + cancellation parity before treating it as full parity with Node.
-- Phase 2: Targeted optimizations (ranked by impact)
-  - Dispatch: inline cache for method/attribute lookup; fast-path for common builtins.
-  - Containers: iterator+index fast paths (range/list/tuple) and avoid temporary boxing.
-  - Strings/bytes: reduce UTF-8 decode churn, reuse search state, tighten slicing.
-  - Async: fix wasm compat issue and validate async benches for real perf data.
-- Phase 3: Integration and regression control
-  - Add targeted differential tests for any fast-path guards.
-  - Update README/STATUS/ROADMAP with perf deltas and guardrails.
-  - Lock in perf gates in `bench/results/` and document any tradeoffs.
-
-**Benchmark Matrix**
-- bench_deeply_nested_loop.py: expected +1.2-2.0x (dispatch + alloc wins).
-- bench_sum_list.py: expected +1.3-1.6x (iterator/boxing cuts).
-- bench_attr_access.py: expected +1.3-1.8x (inline cache).
-- bench_dict_ops.py: expected +1.2-1.5x (fewer temporaries).
-- bench_str_find_unicode.py / bench_str_count_unicode.py: expected +1.2-1.5x.
-- bench_async_await.py / bench_channel_throughput.py (wasm): restore to "n/a" -> measurable.
-
-**Correctness Plan**
-- New unit tests for cache invalidation (type changes, attribute writes).
-- Differential cases that force slow-path fallback.
-- Guard/fallback behavior: auto-disable fast path on type mismatch or missing invariants.
-
-**Risk + Rollback**
-- Risk: aggressive fast paths introduce subtle semantic divergences.
-- Rollback: keep feature flags and runtime guards; revert to slow path if mismatch detected.
-
-**Success Criteria**
-- >=20% median speedup across top 10 benches; no regressions >5% on remaining suite.
-- WASM async benches compile+run; parity gaps documented if still blocked.
-- Updated perf summary in README and bench artifacts captured in `bench/results/`.
-
-**Risk + Rollback**
-- Risk: lookup contention or handle table growth hurting perf/memory.
-- Rollback: keep handle table behind a feature flag and revert to pointer tagging.
-
-**Success Criteria**
-- Miri strict provenance passes with `-Zmiri-strict-provenance`.
-- <2% overhead on hot-path microbenchmarks after lock-free/sharded lookup.
-- Updated runtime spec, README/ROADMAP, and CI gates reflect the new object model.
-
-### OPT-0004: Sharded/Lock-Free Handle Resolve Fast Path
-
-**Problem**
-- The current handle table uses a global lock on lookup, adding overhead to
-  hot paths (attribute access, list/dict ops, method dispatch).
-- Preliminary handle-table benchmarks show small but measurable deltas; we need
-  a scalable fast path before widening the verified subset.
-
-**Hypotheses**
-- H1: Sharded tables with per-shard locks cut lookup contention to <2% overhead.
-- H2: Lock-free reads with atomic generation checks bring lookup overhead under 1%.
-- H3: A small thread-local handle cache reduces repeated lookups in tight loops.
-
-**Alternatives**
-1) Sharded `RwLock` table keyed by handle index (moderate complexity, good wins).
-2) Lock-free slab with atomic generation + epoch GC (higher complexity, best perf).
-3) Thread-local cache + fallback to global lock (low risk, partial win).
-
-**Research References**
-- Generational index slabs: https://cglab.ca/~abeinges/blah/slab-allocators/
-- Crossbeam epoch-based reclamation: https://docs.rs/crossbeam-epoch/
-- Folly AtomicHashMap (lock-free reads): https://github.com/facebook/folly
-
-**Plan**
-- Phase 0: Re-run handle-table benchmarks (`bench_handle_lock.json`) and expand to
-  a wider suite to quantify overhead.
-- Phase 1: Prototype sharded table with lock striping; measure deltas.
-- Phase 2: Add optional lock-free read path + generation validation.
-- Phase 3: Stabilize with correctness tests + Miri + fuzz.
-
-**Benchmark Matrix**
-- bench_sum.py: expected <=1% overhead vs baseline
-- bench_bytes_find.py: expected <=1% overhead vs baseline
-- bench_list_append.py: expected <=2% overhead
-- bench_dict_set.py: expected <=2% overhead
-- bench_attr_access.py: expected <=2% overhead
-
-**Correctness Plan**
-- New unit tests: generation mismatch, tombstone reuse, concurrent lookup.
-- Differential cases: attribute-heavy class tests + list/dict ops.
-- Guard/fallback behavior: invalid handle always raises or returns None; never
-  dereference freed memory.
-
-**Risk + Rollback**
-- Risk: subtle data races or ABA bugs in lock-free path.
-- Rollback: keep sharded locks only; disable lock-free reads behind feature flag.
-
-**Success Criteria**
-- Handle lookup overhead <=1% on hot-path benchmarks.
-
-### OPT-0005: SIMD Coverage Expansion (Reductions + String/Bytes Kernels)
-
-**Problem**
-- SIMD utilization is limited to integer reductions (sum/min/max) and simdutf UTF-8 counts; string/bytes kernels and prod reductions are largely scalar, and deeply nested loop benches show no vectorized execution.
-
-**Hypotheses**
-- H1: Vectorized byte/substring search/count (memchr/memmem fast paths) will cut string/bytes kernels by 15-30% on large inputs.
-- H2: Expanding reduction lowering to typed buffers (intarray/typed views) will allow wider SIMD kernels (prod, sum/min/max) to run without per-element boxing.
-- H3: Loop pattern lowering for constant-bound counter loops (like deeply nested loops) will eliminate interpreter overhead and deliver >3x speedups without affecting semantics.
-
-**Alternatives**
-1) Add SIMD coverage only in runtime kernels (fastest to ship, medium gain, no compiler changes).
-2) Compiler-driven typed buffer materialization + SIMD kernels (higher complexity, best long-term).
-3) Pattern-based loop strength reduction for constant loops (bench win, limited generality).
-
-**Research References**
-- Highway/SIMD Everywhere (portable SIMD design): https://github.com/google/highway
-- simdutf (UTF-8 counting/validation): https://github.com/simdutf/simdutf
-- CPython specializing interpreter (PEP 659): https://peps.python.org/pep-0659/
-
-**Plan**
-- Phase 0: Add SIMD usage counters + CPU feature reporting (already landed).
-- Phase 1: Extend memchr/memmem instrumentation and add byte/substring SIMD fast paths where safe.
-- Phase 2: Add typed-buffer lowering for integer list reductions (opt-in via trusted hints).
-- Phase 3: Pattern-based loop strength reduction for constant-bound counter loops.
-
-**Benchmark Matrix**
-- bench_str_find.py / bench_bytes_find.py: expected +15-30%
-- bench_str_count.py / bench_str_count_unicode.py: expected +10-20%
-- bench_prod_list.py: expected +1.2-1.5x (typed buffer + SIMD)
-- bench_deeply_nested_loop.py: expected +3-5x (loop strength reduction)
-
-**Correctness Plan**
-- New unit tests for typed buffer reductions and loop strength reduction cases.
-- Differential patterns: nested loops and string/bytes find/count parity.
-- Guard/fallback behavior: SIMD paths only for safe preconditions; fallback to scalar on mismatch.
-
-**Risk + Rollback**
-- Risk: type/overflow edge cases or incorrect loop folding.
-- Rollback: keep SIMD/strength-reduction behind feature flags and fall back to scalar paths.
-
-**Success Criteria**
-- SIMD counters show non-zero usage for string/bytes kernels on representative inputs.
-- ≥15% speedup on string/bytes kernels and ≥3x on deeply nested loop bench, with no regressions >5%.
-- Miri clean under strict provenance; fuzz targets green.
-- Documented tradeoffs in `docs/spec/areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md`.
-
-**Latest Results (2026-01-07, partial suite)**
-- `bench_handle_lock.json` vs `bench_handle_sharded.json`:
-  - bench_sum.py: 0.01177s -> 0.01084s (~8% faster)
-  - bench_bytes_find.py: 0.01334s -> 0.01358s (~2% slower)
-- Next: run full bench matrix to confirm net impact.
-
-### OPT-0005: Monomorphic Direct-Call Fast Path for Recursion (bench_fib)
-
-**Problem**
-- `bench_fib.py` is ~4x slower than CPython, dominated by dynamic call dispatch
-  for a simple self-recursive function.
-
-**Hypotheses**
-- H1: Emitting a direct call to a known local function with an identity guard
-  reduces overhead enough to beat CPython on `bench_fib.py`.
-- H2: A small inline-cache for function objects handles the common case without
-  affecting dynamic semantics.
-
-**Alternatives**
-1) Direct-call lowering with function-identity guard + fallback to generic call.
-2) Inline caching for local/global call sites (guarded, deopt to generic).
-3) Inline expansion for self-recursive calls (higher complexity, code size risk).
-
-**Research References**
-- Deutsch & Schiffman (1984) inline caching (Smalltalk-80).
-- PEP 659 (Specializing Adaptive Interpreter) for call-site specialization ideas.
-
-**Plan**
-- Phase 0: Profile call overhead in `bench_fib.py` and other call-heavy benches.
-- Phase 1: Add IR op for direct call when callee is a known local/global symbol.
-- Phase 2: Guard on function identity; fallback to generic call on mismatch.
-- Phase 3: Evaluate optional inline-cache and recursion inlining.
-
-**Benchmark Matrix**
-- bench_fib.py: expected >=2x improvement
-- bench_deeply_nested_loop.py: no regression (<=3%)
-- bench_struct.py: no regression (<=3%)
-
-**Correctness Plan**
-- Differential tests for function reassignment and recursion correctness.
-- Guard/fallback behavior: identity mismatch falls back to generic call.
-
-**Risk + Rollback**
-- Risk: invalid specialization when functions are rebound.
-- Rollback: keep generic call path as default; gate direct-call behind a flag.
-
-**Success Criteria**
-- `bench_fib.py` >=1.0x vs CPython without regressions elsewhere.
-
-**Latest Profile (2026-01-07)**
-- `bench_fib.py` with `MOLT_PROFILE=1`:
-  - call_dispatch=0 (direct calls are already used)
-  - string_count_cache_hit=0 / miss=0
-  - struct_field_store=0
-- Next: `CALL_GUARDED` op landed to guard direct name calls by fn_ptr; re-benchmark
-  fib and consider arity-checked fallback for mismatched globals.
-- Re-run (2026-01-07): call_dispatch=0 / string_count_cache_hit=0 / miss=0 / struct_field_store=0.
-- Execution checklist:
-  - [x] Re-run `bench_fib.py` with `MOLT_PROFILE=1` and record call_dispatch deltas.
-  - [x] Add differential coverage for rebinding a guarded local/global and verify fallback.
-  - [ ] Decide whether to add arity checks on the guarded fast path.
-- Update (2026-01-07): added stable-module direct-call lowering (no guard) when a function name
-  is only bound once at module scope and not declared global elsewhere; see `call_rebind.py`.
-- Update (2026-01-08): benchmark regression persists despite direct calls:
-  - `bench_fib.py`: 0.9290s (Molt) vs 0.2168s (CPython), 0.23x.
-  - Priority: inspect call dispatch and recursion prologue/epilogue costs; verify IR emits fast
-    path for local recursion and avoid tuple/list allocations for argument passing.
-- Update (2026-01-11): removed sync return-slot list allocation for normal functions.
-  - `bench_fib.py`: 0.0962s (Molt) vs 0.1345s (CPython), 1.40x.
-  - `MOLT_PROFILE=1`: alloc_count 5,385,100 -> 26 on fib recursion.
-
-### OPT-0006: Unicode Count Warm-Cache Fast Path
-
-**Problem**
-- `bench_str_count_unicode_warm.py` is ~4x slower than CPython even with a warm
-  cache, indicating cached index map reuse is not amortizing correctly.
-
-**Hypotheses**
-- H1: Store a prefix codepoint-count table in the cache to make `count` O(n)
-  over matches rather than O(n) over translation each call.
-- H2: Avoid reallocating or recomputing byte->codepoint maps on warm paths.
-
-**Alternatives**
-1) Prefix count table stored alongside the UTF-8 index cache.
-2) SIMD codepoint counting for each call (simpler, more CPU).
-3) Cache per-slice metadata to reuse byte->codepoint offsets.
-
-**Research References**
-- PEP 393 (flexible string representation).
-- simdutf UTF-8 counting/validation (https://github.com/simdutf/simdutf).
-
-**Plan**
-- Phase 0: Inspect cache hit/miss behavior and measure translation overhead.
-- Phase 1: Extend cache entries with prefix count metadata.
-- Phase 2: Add fast path for repeated `count` on same string/haystack.
-- Phase 3: Validate against Unicode differential cases.
-
-**Benchmark Matrix**
-- bench_str_count_unicode_warm.py: expected >=2x improvement
-- bench_str_count_unicode.py: no regression (<=5%)
-- bench_str_find_unicode_warm.py: no regression (<=5%)
-
-**Correctness Plan**
-- Differential tests with mixed-width Unicode and combining characters.
-- Validate count semantics on overlapping patterns.
-
-**Risk + Rollback**
-- Risk: cache memory overhead grows on large strings.
-- Rollback: disable prefix-count caching behind size threshold.
-
-**Success Criteria**
-- `bench_str_count_unicode_warm.py` >=1.0x vs CPython.
-
-**Latest Profile (2026-01-08)**
-- `bench_str_count_unicode_warm.py` with `MOLT_PROFILE=1`:
-  - string_count_cache_hit=25
-  - string_count_cache_miss=1
-  - call_dispatch=0 / struct_field_store=0
-- Update (2026-01-07): added a thread-local fast path for count cache hits to avoid
-  global lock overhead on warm loops.
-- Update (2026-01-08): sharded UTF-8 count cache store to reduce lock contention.
-- Update (2026-01-07): aligned UTF-8 cache block offsets to codepoint boundaries and
-  added `str.count` start/end slicing support with Unicode combining tests.
-- Targeted bench run (2026-01-08, `bench/results/bench_tls_struct.json`):
-  - `bench_str_count_unicode.py`: 0.0296s (Molt) vs 0.0287s (CPython), 1.03x.
-  - `bench_str_count_unicode_warm.py`: 0.2359s (Molt) vs 0.0289s (CPython), 8.16x.
-  - `bench_struct.py`: 0.2188s (Molt) vs 1.6611s (CPython), 0.13x.
-- Execution checklist:
-  - [x] Run unicode count benches and capture warm vs cold delta with `MOLT_PROFILE=1`.
-  - [x] Prototype prefix-count metadata in cache entries and record memory overhead.
-  - [ ] Add Unicode differential cases that exercise combining characters.
-- Update (2026-01-08): full bench run shows warm count ahead of CPython:
-  - `bench_str_count_unicode_warm.py`: 0.0228s (Molt) vs 0.0954s (CPython), 4.18x.
-  - `bench_str_count_unicode.py`: 0.0223s (Molt) vs 0.0449s (CPython), 2.02x.
-- Update (2026-01-08): added prefix-count metadata to `Utf8CountCache` with lazy
-  promotion on slice paths to avoid penalizing full-count hot paths.
-- Update (2026-01-08): current bench run confirms warm/cold wins:
-  - `bench_str_count_unicode_warm.py`: 0.0334s (Molt) vs 0.1453s (CPython), 4.36x.
-  - `bench_str_count_unicode.py`: 0.0347s (Molt) vs 0.0660s (CPython), 1.90x.
-
-### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
-
-**Problem**
-- `bench_struct.py` shows attribute store and object allocation overhead for a
-  simple annotated class, suggesting struct field stores are not hitting a
-  direct slot path.
-
-**Hypotheses**
-- H1: Precompute a fixed layout for classes with field annotations and lower
-  attribute stores to direct slot writes.
-- H2: If objects do not escape the loop, scalar replacement can eliminate
-  allocations entirely.
-
-**Alternatives**
-1) Force structification for annotated classes without dynamic features.
-2) Escape analysis + scalar replacement (higher complexity, best perf).
-3) Inline cache on attribute store for monomorphic classes.
-
-**Research References**
-- "Escape Analysis for Java" (Choi et al.) and similar scalar replacement work.
-- HotSpot scalar replacement notes (public JVM documentation).
-
-**Plan**
-- Phase 0: Confirm class layout inference for annotated classes without __init__.
-- Phase 1: Lower SETATTR to direct slot stores when layout is fixed.
-- Phase 2: Add escape analysis prototype to elide allocations in loops.
-- Phase 3: Validate correctness + update structification rules in docs/spec.
-
-**Latest Profile (2026-01-07)**
-- `bench_struct.py` with `MOLT_PROFILE=1`:
-  - struct_field_store=4,000,000
-  - call_dispatch=0
-- Next: reduce store overhead (guard cost vs direct slot writes) and consider
-  escape-analysis gating for allocation removal.
-- Update: exact-local class tracking now skips guarded setattr for constructor-bound
-  locals with fixed layouts; measure impact on `bench_struct.py`.
-- Re-run (2026-01-07): call_dispatch=0 / struct_field_store=2,000,000 (after store_init defaults).
-- Execution checklist:
-  - [ ] Measure guard vs direct-slot store cost on `bench_struct.py` and record.
-  - [x] Add differential tests for dynamic class mutation that must deopt.
-  - [x] Gate structified stores behind a layout-stability guard.
-- Update (2026-01-07): added `store_init` lowering for immediate defaults to avoid
-  refcount work on freshly allocated objects.
-- Update (2026-01-08): regression still severe after latest benches:
-  - `bench_struct.py`: 1.7825s (Molt) vs 0.5453s (CPython), 0.31x.
-  - Priority: eliminate guard overhead on hot struct stores or move to monomorphic
-    slot stores with layout-stability checks.
-- Update (2026-01-08): added class layout version tracking and guarded slot
-  loads/stores; class mutations now bump version and deopt to generic paths.
-- Update (2026-01-08): fused guarded field ops reduced guard+store calls, but
-  `bench_struct.py` is still 0.07x and `bench_attr_access.py` 0.13x vs CPython.
-- Update (2026-01-09): re-bench shows `bench_struct.py` ~0.12x and
-  `bench_attr_access.py` ~0.20x; guard cost is still dominating.
-- Update (2026-01-09): loop guard caching landed, but `bench_struct.py` remains
-  ~0.12x and `bench_attr_access.py` ~0.21x vs CPython; next step is to hoist
-  class layout guards outside hot loops or memoize per loop iteration to remove
-  redundant guard overhead.
-- Update (2026-01-09): hoisted layout guards outside loop bodies; re-bench still
-  shows `bench_struct.py` ~0.12x and `bench_attr_access.py` ~0.19x vs CPython,
-  so the bottleneck is now direct slot store/load cost rather than guard checks.
-- Update (2026-01-09): inlined struct field load/store in the native backend
-  (skip refcount calls for immediates, conditional profile) and re-bench still
-  shows `bench_struct.py` ~0.12x and `bench_attr_access.py` ~0.20x; likely dominated
-  by allocation + raw-object tracking costs (mutex/HashSet) rather than slot ops.
-- Update (2026-01-11): added a non-pointer fast path for `store` (skip refcount
-  adjustments when old/new values are immediate) and simplified ref adjust tag
-  checks; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 store fast path).
-- Update (2026-01-11): MOLT_PROFILE shows `bench_struct.py` alloc_count ~7.0M and
-  layout_guard ~2.0M; `bench_attr_access.py` alloc_count ~2.5M and
-  layout_guard ~1.0M (≈2x loop iterations). Allocation + guard costs still
-  dominate.
-- Update (2026-01-12): added a TLS object pool for `TYPE_ID_OBJECT` to reduce
-  mutex/HashMap contention in hot allocation loops; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 TLS pool).
-- Update (2026-01-12): set Cranelift `opt_level=speed` for the native backend;
-  re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 Cranelift opt_level).
-- Update (2026-01-12): replaced pool HashMap lookups with fixed 8-byte size
-  buckets (TLS + global) for O(1) size-class reuse; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 size-class buckets).
-- Update (2026-01-12): added header flags to skip payload scans for objects that
-  never stored pointers, plus a static-class allocation path that elides per-
-  instance class refcounts; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 header flags).
-- Update (2026-01-12): added a minimal dead-struct allocation elision pass in the
-  backend (alloc only used by slot stores/object_set_class); re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 alloc elision).
-
-**Benchmark Matrix**
-- bench_struct.py: expected >=2x improvement
-- bench_sum_list.py: no regression (<=3%)
-- bench_deeply_nested_loop.py: no regression (<=3%)
-
-**Correctness Plan**
-- Differential tests for attribute assignment order and class mutation.
-- Guard/fallback behavior: dynamic class changes fall back to generic store.
-
-**Risk + Rollback**
-- Risk: misclassification of dynamic classes leading to wrong attribute behavior.
-- Rollback: require explicit "frozen layout" flag or dataclass lowering.
-
-**Success Criteria**
-- `bench_struct.py` >=1.0x vs CPython with no semantic regressions.
-
-### OPT-0008: Descriptor/Property Access Fast Path (bench_descriptor_property)
-
-**Problem**
-- `bench_descriptor_property.py` is ~4x slower than CPython, dominated by repeated
-  descriptor lookup and attribute resolution overhead.
-
-**Hypotheses**
-- H1: Cache descriptor resolution for monomorphic classes and inline property getter calls.
-- H2: Split data vs non-data descriptor paths earlier to avoid extra dictionary probes.
-
-**Alternatives**
-1) Inline cache for attribute lookup with descriptor classification (data vs non-data).
-2) Pre-resolved descriptor slots on class creation (update on class mutation).
-3) Guarded direct-call lowering for `property.__get__` on known fields.
-
-**Research References**
-- CPython descriptor protocol and attribute lookup order (Objects/typeobject.c).
-- Inline caching for attribute lookup (PIC/IC literature).
-
-**Plan**
-- Phase 0: Profile attribute resolution in `bench_descriptor_property.py`.
-- Phase 1: Add an attribute lookup IC keyed by (class, attr_name) with descriptor kind.
-- Phase 2: Add guarded direct-call for property getters.
-- Phase 3: Deopt on class mutation (mro/attrs change).
-- Update (2026-01-08): added TLS attribute-name cache and descriptor IC keyed by
-   (class bits, attr bits, layout version), with class mutation version bumping.
- - Update (2026-01-08): bench still regresses (`bench_descriptor_property.py` 0.12x);
-   need direct-call lowering and IC that avoids repeated generic lookups.
- - Update (2026-01-09): added a guarded property-get fast path (layout guard +
-   direct getter call) to bypass descriptor lookup in hot loops; re-bench pending
-   (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0008 property-get fast path).
- - Update (2026-01-09): re-bench shows `bench_descriptor_property.py` ~0.10x;
-   guarded property get is not enough without call overhead reduction.
- - Update (2026-01-09): loop guard caching + trivial property inline
-   (`return self.<field>`) improved `bench_descriptor_property.py` to ~0.26x, but
-   call overhead is still dominating; target direct field loads or getter inline
-   without call overhead.
- - Update (2026-01-09): hoisted loop guards did not move the needle; still
-   ~0.27x vs CPython, so we need a non-call, direct-slot property fast path for
-   common `property` patterns or inlined getter bodies.
- - Update (2026-01-09): backend inline load/store did not materially improve
-   `bench_descriptor_property.py` (~0.27x); call overhead is not the only bottleneck.
- - Update (2026-01-12): fixed class layout version mismatch by setting the
-   runtime layout version at class construction; `bench_descriptor_property.py`
-   now ~2.8x vs CPython (guarded field path hits fast load).
-
-**Benchmark Matrix**
-- bench_descriptor_property.py: expected >=2x improvement
-- bench_attr_access.py: expected >=1.5x improvement
-- bench_struct.py: no regression (<=3%)
-
-**Correctness Plan**
-- Differential tests for data vs non-data descriptors.
-- Class mutation tests to ensure deopt correctness.
-
-**Risk + Rollback**
-- Risk: stale IC entries after class mutation.
-- Rollback: guard IC behind class version and disable on mutation.
-
-**Success Criteria**
-- `bench_descriptor_property.py` >=1.0x vs CPython without regressions.
-
-### OPT-0009: String Split/Join Builder Fast Path (bench_str_split, bench_str_join)
-
-**Problem**
-- `bench_str_split.py` and `bench_str_join.py` are <1.0x vs CPython, indicating
-  list builder and allocation overhead for common split/join patterns.
-
-**Hypotheses**
-- H1: Pre-size list/byte buffers and use a single allocation per split.
-- H2: Fast-path ASCII delimiter and whitespace splitting to avoid UTF-8 scanning.
-
-**Alternatives**
-1) Pre-scan delimiter positions + single allocation list builder.
-2) Use memchr/memmem for ASCII delimiter and fall back for Unicode.
-3) Specialized whitespace split (CPython-like) for the default separator.
-
-**Research References**
-- CPython `unicode_split` and `unicode_join` implementations.
-- memchr/memmem optimized substring search techniques.
-
-**Plan**
-- Phase 0: Profile allocation counts in split/join benches.
-- Phase 1: Pre-scan and reserve list capacity; avoid per-element reallocs.
-- Phase 2: ASCII fast paths using memchr/memmem.
-- Phase 3: Validate whitespace split semantics.
- - Update (2026-01-08): removed positions vector in split; now two-pass count +
-   split with memchr/memmem to reduce allocations.
- - Update (2026-01-08): `bench_str_split.py` remains 0.43x and `bench_str_join.py`
-   0.75x; new plan needed for string builder fast paths.
- - Update (2026-01-08): restored single-scan delimiter index capture for split
-   (avoid double memmem pass) and cache join element pointers/lengths for a
-   single copy loop.
- - Update (2026-01-08): `bench_str_join.py` improved to 0.52x; `bench_str_split.py`
-   still 0.27x after keeping the single-byte separator on the count+split path.
- - Update (2026-01-09): added split token reuse cache for short repeated pieces
-   and a join fast path for repeated identical elements using a doubling copy
-   fill strategy; re-bench pending
-   (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0010 join fast path).
- - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.04x and
-   `bench_str_join.py` ~0.95x; split success, join near parity but still <1.0x.
- - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.03x and
-   `bench_str_join.py` ~0.91x; join remains below parity, investigate repeated-
-   element fast path thresholds and allocation behavior.
-
-**Benchmark Matrix**
-- bench_str_split.py: expected >=2x improvement
-- bench_str_join.py: expected >=1.5x improvement
-- bench_str_count.py: no regression (<=3%)
-
-**Correctness Plan**
-- Differential tests for whitespace vs explicit separator.
-- Unicode edge cases with multi-byte separators.
-
-**Risk + Rollback**
-- Risk: incorrect split behavior on Unicode or empty separators.
-- Rollback: fall back to generic path for non-ASCII separators.
-
-**Success Criteria**
-- `bench_str_split.py` >=1.0x and `bench_str_join.py` >=1.0x vs CPython.
-
-### OPT-0010: Vector Reduction Regressions (bench_min_list/bench_max_list/bench_sum_list)
-
-**Problem**
-- Recent benches show regressions on vector reductions vs CPython, indicating
-  that reduction fast paths are not triggering or have overhead regressions.
-
-**Hypotheses**
-- H1: Reduction fast path disabled by type guards or iterator conversions.
-- H2: Avoid boxing/unboxing in hot loops to restore expected speedups.
-
-**Alternatives**
-1) Rework reduction IR to specialize on list/tuple of ints with tight loops.
-2) Add guarded fast path in runtime for homogeneous int vectors.
-3) Inline reduction in frontend with static specialization.
-
-**Research References**
-- CPython `sum`/`min`/`max` C implementations.
-- Loop vectorization and unboxing techniques in JITs.
-
-**Plan**
-- Phase 0: Instrument reduction path to confirm guard hits.
-- Phase 1: Restore direct int vector fast path (no iterator allocations).
-- Phase 2: Add fast path for small tuples/ranges.
-- Phase 3: Update perf gates and regression tests.
-
-**Benchmark Matrix**
-- bench_sum_list.py: expected >=1.5x improvement
-- bench_min_list.py: expected >=1.5x improvement
-- bench_max_list.py: expected >=1.5x improvement
-
-**Correctness Plan**
-- Differential tests for NaN/None comparisons and mixed types.
-- Guard/fallback for non-int sequences.
-
-**Risk + Rollback**
-- Risk: incorrect behavior on mixed-type sequences.
-- Rollback: guard fast path to int-only lists/tuples.
-
-**Success Criteria**
-- Each reduction bench >=1.0x vs CPython with no semantic regressions.
-
-### OPT-0011: Aggressive Monomorphization + Specialization Pipeline
-
-**Problem**
-- Generic lowering leaves hot call sites and arithmetic paths boxed and indirect.
-- We lack a systematic pipeline for cloning specialized versions based on stable types.
-
-**Hypotheses**
-- H1: Monomorphic specializations with guards will reduce dispatch overhead by 2x+ in hot loops.
-- H2: Cloning a small number of specialized variants is cheaper than inline caches for pure numeric code.
-
-**Alternatives**
-1) Call-site driven specialization (guard + fallback, clone per dominant type set).
-2) Whole-function specialization driven by type facts/annotations.
-3) Profile-guided multi-versioning (only for hot functions).
-
-**Research References**
-- Chambers, Ungar, Lee: "An Efficient Implementation of SELF: A Dynamically-Typed Object-Oriented Language Based on Prototypes."
-- CPython PEP 659: Specializing Adaptive Interpreter.
-
-**Plan**
-- Phase 0: Define specialization policy in docs/spec/areas/compiler/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md.
-- Phase 1: Emit guarded monomorphic clones for numeric-heavy locals and known globals.
-- Phase 2: Add multi-version cache keyed by type vector at call sites.
-- Phase 3: Add perf gates and regression detection on type-unstable workloads.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_fib.py: expected +2x
-- tests/benchmarks/bench_matrix_math.py: expected +1.5x
-- tests/benchmarks/bench_sum_list.py: expected +1.5x
-
-**Correctness Plan**
-- Differential tests for mixed-type arithmetic and deopt fallback.
-- Guarded fallback path for unknown or unstable types.
-
-**Risk + Rollback**
-- Risk: code size growth and slower cold-start.
-- Rollback: cap specialization count per function and fall back to generic path.
-
-**Success Criteria**
-- >=1.5x on numeric-heavy benches without regressions >5% on mixed-type benches.
-
-### OPT-0012: Inline Caches for Attribute Access + Call Dispatch
-
-**Problem**
-- Attribute lookup and call dispatch dominate in object-heavy workloads.
-- Layout guards are repeated per access with no reuse across sites.
-
-**Hypotheses**
-- H1: Monomorphic inline caches remove repeated layout checks and dict lookups.
-- H2: Polymorphic inline caches (PICs) reduce cost for small type sets.
-
-**Alternatives**
-1) Monomorphic IC per site with class version tags.
-2) PIC with 2-4 entries and a megamorphic fallback.
-3) Global method cache keyed by (type, name) with epoch invalidation.
-
-**Research References**
-- Holzle, Ungar: "Optimizing Dynamically-Typed Object-Oriented Languages with Polymorphic Inline Caches."
-- CPython method cache and type version tags (Objects/typeobject.c).
-
-**Plan**
-- Phase 0: Add IC counters and invalidation plumbing (type versioning).
-- Phase 1: Monomorphic IC for attribute get/set and call dispatch.
-- Phase 2: PIC expansion + megamorphic fallback.
-- Phase 3: Stabilize guards, document in specs, and add perf gates.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_attr_access.py: expected +2x
-- tests/benchmarks/bench_descriptor_property.py: expected +1.5x
-- tests/benchmarks/bench_struct.py: expected +1.5x
-
-**Correctness Plan**
-- Differential tests for dynamic class mutation and descriptor precedence.
-- Guard/fallback for changes in class dicts or MRO.
-
-**Risk + Rollback**
-- Risk: invalidation bugs causing stale reads.
-- Rollback: disable ICs under debug flag and keep layout guard path.
-
-**Success Criteria**
-- Attribute-heavy benches >=1.5x, no correctness regressions.
-
-### OPT-0013: Layout-Guard Elimination via Shape Stabilization
-
-**Problem**
-- Layout guards are costly and repeated, even when class layout is stable.
-
-**Hypotheses**
-- H1: Dominating guard hoisting can eliminate repeated layout checks in loops.
-- H2: Shape-stable classes can skip guards entirely after validation.
-
-**Alternatives**
-1) Guard hoisting in SSA (loop-invariant checks).
-2) Class version stamps + global shape table (guard once per function).
-3) User-declared "final" classes with static layout guarantees.
-
-**Research References**
-- Self/Strongtalk shape-based optimization techniques.
-- PyPy map/shadow object layout techniques.
-
-**Plan**
-- Phase 0: Add IR dominance analysis for guard hoisting candidates.
-- Phase 1: Hoist guards to block entry and reuse cached results.
-- Phase 2: Add shape-stable class annotation and skip guards under conditions.
-- Phase 3: Perf validation, guard auditing, and spec updates.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_struct.py: expected +1.5x
-- tests/benchmarks/bench_attr_access.py: expected +1.3x
-- tests/benchmarks/bench_descriptor_property.py: expected +1.2x
-
-**Correctness Plan**
-- Differential tests for class mutation after guard.
-- Fallback to guarded path on any shape change.
-
-**Risk + Rollback**
-- Risk: incorrect guard elimination on dynamic mutation.
-- Rollback: keep guard checks and disable hoisting in debug builds.
-
-**Success Criteria**
-- >=1.3x on layout-heavy benches with zero semantic regressions.
-
-### OPT-0014: Escape Analysis + Scalar Replacement
-
-**Problem**
-- Short-lived objects (tuples, lists, small structs) still allocate on the heap.
-
-**Hypotheses**
-- H1: Escape analysis can identify non-escaping allocations for stack or scalar replacement.
-- H2: Scalar replacement will reduce allocation pressure and improve cache locality.
-
-**Alternatives**
-1) SSA-based escape analysis with stack allocation for non-escaping objects.
-2) Region-based allocation for short-lived temps.
-3) Annotated allocation hints (compiler-assisted) for common patterns.
-
-**Research References**
-- "Escape Analysis for Object-Oriented Languages" (Choi et al.).
-- JVM HotSpot scalar replacement and escape analysis docs.
-
-**Plan**
-- Phase 0: Add allocation site IDs and liveness tracing.
-- Phase 1: SSA escape analysis and stack allocation for simple objects.
-- Phase 2: Scalar replacement for tuples/structs in tight loops.
-- Phase 3: Extend to lists/dicts where safe; add perf gates.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_tuple_pack.py: expected +2x
-- tests/benchmarks/bench_struct.py: expected +1.5x
-- tests/benchmarks/bench_list_ops.py: expected +1.3x
-
-**Correctness Plan**
-- Differential tests for object identity, aliasing, and mutation semantics.
-- Guard/fallback when escaping or captured by closures.
-
-**Risk + Rollback**
-- Risk: aliasing bugs or lifetime mismanagement.
-- Rollback: disable escape analysis pass and keep heap allocation.
-
-**Success Criteria**
-- >=1.5x on allocation-heavy benches with no behavioral regressions.
-
-### OPT-0015: PGO/LTO/BOLT Pipeline for Runtime + Stubs
-
-**Problem**
-- Runtime and stubs are compiled without profile-guided or link-time optimization.
-
-**Hypotheses**
-- H1: PGO will improve branch prediction and inline choices in runtime hot paths.
-- H2: LTO/BOLT will reduce call overhead and improve I-cache locality.
-
-**Alternatives**
-1) LLVM PGO for runtime crates and C stubs; keep Cranelift for generated code.
-2) LTO-only for runtime (thin-LTO), no PGO.
-3) BOLT post-link optimization for release artifacts.
-
-**Research References**
-- LLVM PGO and ThinLTO documentation.
-- BOLT optimization tooling: https://github.com/llvm/llvm-project/tree/main/bolt
-
-**Plan**
-- Phase 0: Add scripts to collect profiles on bench suite.
-- Phase 1: Enable thin-LTO in Cargo release profile for runtime crates.
-- Phase 2: Integrate PGO builds for runtime + C stubs.
-- Phase 3: Evaluate BOLT on final artifacts; document tradeoffs.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_dict_ops.py: expected +1.1x
-- tests/benchmarks/bench_str_count.py: expected +1.1x
-- tests/benchmarks/bench_attr_access.py: expected +1.1x
-
-**Correctness Plan**
-- Ensure identical functional output across PGO/LTO builds.
-- Run differential suite after PGO config changes.
-
-**Risk + Rollback**
-- Risk: build complexity and non-reproducible binaries if profiles drift.
-- Rollback: disable PGO/LTO flags and revert to baseline release builds.
-
-**Success Criteria**
-- >=1.1x on multiple benches with no determinism regressions.
-
-### OPT-0016: Single-Module WASM Linking (Zero JS Glue)
-
-**Problem**
-- WASM runs are dominated by JS boundary overhead because output imports runtime
-  intrinsics via JS wrappers; this causes large regressions vs native and makes
-  wasm parity unachievable.
-
-**Hypotheses**
-- H1: Directly linking runtime + output (or at least using direct wasm-to-wasm
-  imports with shared memory/table) removes per-call JS glue and yields multi-x
-  speedups on wasm benches.
-- H2: A true single-module link eliminates the remaining JS stub and enables
-  more aggressive inlining and table specialization later.
-
-**Alternatives**
-1) Direct-link harness: shared memory/table + wasm-to-wasm imports (no JS glue),
-   keep a minimal JS stub for `molt_call_indirect1`.
-2) wasm-ld static link: emit wasm object/module and link runtime + output into
-   one module at build time.
-3) Component model compose: wrap runtime/output as components and compose with
-   `wasm-tools` + wasmtime (higher compatibility cost, better ABI hygiene).
-
-**Research References**
-- WebAssembly module linking proposal: https://github.com/WebAssembly/module-linking
-- Component model overview: https://github.com/WebAssembly/component-model
-- WASI docs: https://github.com/WebAssembly/WASI
-
-**Plan**
-- Phase 0: Implement shared-memory/table direct-link harness (run_wasm.js) and
-  import limits parsing; keep `MOLT_WASM_LEGACY=1` fallback.
-- Phase 1: Add a `tools/wasm_link.py` spike that attempts wasm-ld linking when
-  available and produces `output_linked.wasm`.
-- Phase 2: Update bench harness to time linked wasm when available; compare
-  against direct-link + legacy.
-- Phase 3: Remove JS `molt_call_indirect1` stub by moving indirect calls into
-  runtime or via single-module link.
-- Current blocker: expand wasm-ld validation beyond a single bench, confirm
-  table/element relocation coverage, and remove the JS `molt_call_indirect1`
-  stub once single-module linking is fully reliable.
-
-**Benchmark Matrix**
-- tests/benchmarks/bench_attr_access.py: expected +2x wasm
-- tests/benchmarks/bench_struct.py: expected +2x wasm
-- tests/benchmarks/bench_fib.py: expected +1.5x wasm
-- tests/benchmarks/bench_deeply_nested_loop.py: expected +2x wasm
-
-**Correctness Plan**
-- Run `pytest tests/test_wasm_control_flow.py` and a small differential slice.
-- Validate wasm output exports `molt_memory`/`molt_table` and runtime intrinsics.
-- Compare runtime logs between legacy/direct-link to ensure identical outputs.
-
-**Risk + Rollback**
-- Risk: wasm import-limit mismatches or toolchain availability gaps.
-- Rollback: fall back to legacy wrapper mode (`MOLT_WASM_LEGACY=1`).
-
-**Success Criteria**
-- >=2x improvement on wasm benches with no behavior regressions.
-
-### OPT-0010: Fixed-Size Object Pool for Class Instances (Native + WASM)
-
-**Problem**
-- `bench_struct.py` and wasm attribute-heavy workloads spend significant time allocating/freeing fixed-layout objects.
-- WASM shows large allocation overhead vs CPython due to allocator and refcount churn.
-
-**Hypotheses**
-- H1: Size-bucket pools for fixed-layout TYPE_ID_OBJECT instances reduce allocator overhead by >2x in allocation-heavy loops.
-- H2: Pooling plus zeroed reuse avoids refcount churn regressions when slots are immediate-heavy (int/float/bool).
-
-**Alternatives**
-1) Size-bucket freelist (current direction): simple, low risk, moderate wins.
-2) Per-class pool keyed by class_id (better locality, more metadata, higher complexity).
-3) Arena/bump allocator with epoch reset for non-escaping objects (best perf, higher complexity, needs escape analysis).
-
-**Research References**
-- CPython freelists: https://docs.python.org/3/c-api/structures.html#free-lists
-- jemalloc size classes: https://jemalloc.net/jemalloc.3.html
-- tcmalloc design: https://gperftools.github.io/gperftools/
-
-**Plan**
-- Phase 0: Measure allocation hot paths and size distributions (native + wasm).
-- Phase 1: Implement size-bucket pool with zeroed reuse and caps; measure wins.
-- Phase 2: Add per-class pools + reuse counters; evaluate allocator contention.
-- Phase 3: Integrate with escape analysis for stack/arena allocation when safe.
-
-**Benchmark Matrix**
-- bench_struct.py: expected +1.1x to +1.5x (native); reduce wasm gap by ~20%.
-- bench_attr_access.py: expected +1.05x (less allocator churn).
-- bench_descriptor_property.py: expected +1.05x.
-- wasm parity: reduce allocation-heavy gaps by >20%.
-
-**Correctness Plan**
-- Differential tests with attribute read-before-write (must raise AttributeError).
-- Stress test object alloc/free with pointer and immediate fields.
-- Guard/fallback: pool only for TYPE_ID_OBJECT with poll_fn=0.
-
-**Risk + Rollback**
-- Risk: pooled objects retain stale pointer values if zeroing is missed.
-- Rollback: disable pooling by setting max bucket size to 0 and keep dealloc path.
-
-**Success Criteria**
-- `bench_struct.py` meets or beats CPython; wasm gap <2x.
-- No new memory leaks; refcount stability verified in tests.
-
-**Latest Results (2026-01-11)**
-- Phase 1: size-bucket pool implemented for TYPE_ID_OBJECT with zeroed reuse.
-
-### OPT-0003: Pointer Registry Contention Reduction
-
-**Problem**
-- Pointer registry lookups (strict-provenance handle resolution) currently take a global lock, which adds overhead on hot paths and scales poorly with multi-threaded workloads.
-
-**Hypotheses**
-- H1: Sharding the registry by hash reduces lock contention and drops lookup overhead in multi-threaded runs by >2x.
-- H2: A read-optimized or lock-free structure can approach near-zero overhead for pointer resolution in the steady state.
-
-**Alternatives**
-1) Sharded `HashMap` with N mutexes (simple, low-risk, moderate perf win).
-2) Copy-on-write table with atomic pointer swaps (RCU style) for lock-free reads and locked writes.
-3) Per-thread cache + global registry fallback (small fast path, moderate complexity, potential staleness handling).
-
-**Research References**
-- CLHT: Cache-Line Hash Tables (lock-free hash table design): https://github.com/LPD-EPFL/CLHT
-- Crossbeam epoch-based GC (RCU-style patterns): https://docs.rs/crossbeam-epoch
-- Folly AtomicHashMap (read-optimized, lock-free-ish map): https://github.com/facebook/folly
-
-**Plan**
-- Phase 0: Add microbench harness for pointer registry resolve/insert/remove under thread contention.
-- Phase 1: Implement sharded registry with configurable shard count; measure single-thread overhead.
-- Phase 2: Prototype copy-on-write registry for read-mostly workloads; compare with sharded map.
-- Phase 3: Integrate with runtime init/shutdown and pointer lifecycle tests; document tradeoffs.
-
-**Status**
-- Phase 0 microbench added (`tests/benchmarks/bench_ptr_registry.py`, `runtime/molt-obj-model/benches/ptr_registry.rs`); Phase 1 implemented with a 64-shard registry; benchmarking + alternative designs pending.
-
-**Benchmark Matrix**
-- bench_attr_lookup.py: expected +5-10% in multi-threaded runs.
-- bench_call_dispatch.py: expected +3-8% in multi-threaded runs.
-- bench_async_switch.py: expected +5% in scheduler-heavy scenarios.
-- bench_dict_ops.py: no regression (<=2%).
-
-**Correctness Plan**
-- New unit tests for registry invariants (insert/resolve/release under concurrency).
-- Miri (strict-provenance) stays green; fuzz target covers pointer churn.
-- Guarded fallbacks for failed resolves remain deterministic.
-
-**Risk + Rollback**
-- Risk: subtle races during teardown or handle reuse.
-- Rollback: revert to single-lock registry and keep provenance-safe conversions.
-
-**Success Criteria**
-- >=2x improvement in synthetic multi-thread resolve benchmarks.
-- <=2% overhead regression in single-threaded microbenchmarks.
-- No new Miri/TSAN warnings; spec + STATUS updates recorded.
-
-### OPT-0004: Native WebSocket Readiness Integration (io_poller + mio)
-
-**Problem**
-- Native WebSocket send/recv uses nonblocking tungstenite calls with scheduler polling (pending -> yield), which can spin CPU under load and prevents batching readiness across sockets.
-
-**Hypotheses**
-- H1: Register the underlying WebSocket stream with io_poller/mio and wake tasks on readiness to cut idle CPU and improve scalability for many concurrent sockets.
-- H2: A small per-socket recv queue + batched reads amortizes syscalls and reduces contention in hot paths.
-
-**Alternatives**
-1) io_poller integration using mio readiness on the underlying TcpStream (best scaling, moderate complexity).
-2) Migrate to tokio-tungstenite with a runtime adapter (high compatibility, higher dependency surface, runtime coupling).
-3) Dedicated worker thread per WebSocket (simple, but poor scalability and higher memory cost).
-
-**Research References**
-- mio readiness model and registration APIs.
-- tungstenite/tokio-tungstenite docs for stream integration patterns.
-- epoll/kqueue edge/level-triggered readiness tradeoffs.
-
-**Plan**
-- Phase 0: Identify WebSocket stream handle extraction across TLS variants; add microbench for idle and active echo workloads.
-- Phase 1: Register WebSocket streams with io_poller; map readiness to task wakeups.
-- Phase 2: Add bounded recv queue and batched reads; verify backpressure correctness.
-- Phase 3: Add perf gates + regression tests; document new readiness behavior.
-- Microbench: `MOLT_TRUSTED=1 MOLT_CAPABILITIES=net,net.poll,websocket.connect uv run --python 3.14 python3 tools/bench.py --script tests/benchmarks/bench_ws_wait.py` (set `MOLT_WS_BENCH_URL` to override the built-in echo server).
-
-**Status**
-- Phase 1 implemented for native + wasm websockets via `molt_ws_wait_new`; phase 2 pending.
-- TODO(perf, owner:runtime, milestone:RT3, priority:P2, status:planned): cache mio websocket poll streams/registrations to avoid per-wait `TcpStream` clones.
-
-**Benchmark Matrix**
-- ws_echo_small.py: expected lower latency jitter, >=1.3x throughput.
-- ws_idle_fanout.py: expected >5x reduction in idle CPU.
-- ws_broadcast.py: expected <=5% overhead vs baseline.
-- bench_ws_wait.py (self-contained echo server or external `MOLT_WS_BENCH_URL`): expected lower CPU + reduced tail latency once poll-stream caching lands.
-
-**Correctness Plan**
-- New unit tests for close/ping/pong handling under readiness-driven wakeups.
-- Differential cases for pending send/recv with interleaved close.
-- Guard/fallback behavior: if io_poller registration fails, fall back to polling path.
-
-**Risk + Rollback**
-- Risk: readiness registration leaks or missed wakeups cause hangs.
-- Rollback: disable readiness integration via compile-time feature flag and keep current polling path.
-
-**Success Criteria**
-- Demonstrated CPU reduction on idle workloads and no regressions >5% on active throughput benches.
-- Docs + roadmap updates to reflect readiness integration.
+# Molt Optimization Program (Comprehensive)
+
+Last updated: 2026-02-10
+Owner: compiler + runtime + backend + stdlib + tooling
+Status: Active
+
+## 1. Objectives
+
+- Increase primitive lowering coverage across core Python ops and stdlib so compiled binaries run with minimal dynamic/runtime-call overhead.
+- Improve build throughput and iteration speed without sacrificing determinism.
+- Raise native and wasm performance together, with parity and regression gates.
+- Keep correctness first: no semantic shortcuts, no host-Python fallback.
+
+## 2. Current Baseline (Evidence)
+
+### Benchmarking Canonical Docs
+- [Benchmarking and performance gates](docs/BENCHMARKING.md)
+- [Bench summary (latest combined native+wasm report)](docs/benchmarks/bench_summary.md)
+- [Compile progress tracker](docs/benchmarks/compile_progress.md)
+
+### Build Pipeline
+- Source: [Compile progress tracker](docs/benchmarks/compile_progress.md)
+- `dev` warm cache-hit build: 6.121s (target <= 3.0s, yellow).
+- `dev` warm no-cache daemon-on: 8.150s (target <= 15.0s, green).
+- `release` warm no-cache: 3.033s (target <= 18.0s, green).
+- `release-fast` warm cache-hit: 2.033s (green).
+- `hello.py` native IR size reduced from 40.923MB to 5.289MB; ops from 409900 to 50483 after init-closure tightening.
+
+### Runtime / Performance
+- Source: [Bench summary](docs/benchmarks/bench_summary.md)
+- 45/45 native and 45/45 wasm benches passing.
+- Median native speedup vs CPython: 3.75x.
+- Median wasm speedup vs CPython: 0.47x.
+- Median wasm/native ratio: 4.81x.
+- Native regressions remain in attribute/descriptor/struct/tuple/deep-loop/csv/fib lanes.
+
+### Lowering Coverage Signals
+- Stdlib audit source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+- Audited modules: 112 total.
+- `intrinsic-backed`: 58.
+- `intrinsic-partial`: 16.
+- `probe-only`: 13.
+- `python-only`: 25.
+
+- Core lowering program source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+- Phase 2 (concurrency substrate) is active: `socket` -> `threading` -> `asyncio`.
+
+- Backend call density (current implementation signal):
+  - ~393 imported runtime functions declared in native backend (`runtime/molt-backend/src/lib.rs`).
+  - ~365 unique wasm import ids used (`runtime/molt-backend/src/wasm.rs`).
+  - ~415 wasm import-call sites (`emit_call(... import_ids[...])`).
+- Frontend fast-int hinting is intentionally narrow today (`ADD/SUB/MUL` and selected compares).
+
+## 3. Program Board (End-to-End)
+
+| ID | Track | Priority | Status | Primary KPI | Exit Gate |
+| --- | --- | --- | --- | --- | --- |
+| OPT-1001 | Build Throughput and Determinism | P0 | Active | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
+| OPT-1002 | Core Primitive Lowering Expansion | P0 | Planned | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
+| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Active | `python-only` modules from 25 -> <= 5 (shipped surface) | strict lowering gates green |
+| OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Planned | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
+| OPT-1005 | WASM Lowering and Runtime Parity | P0 | Planned | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
+| OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Planned | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
+| OPT-1007 | Perf Governance and CI Guardrails | P0 | Active | prevent hidden regressions | budget checks enforced in CI and local tooling |
+| OPT-1008 | Friend-Native Benchmark Program | P0 | Active | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
+
+---
+
+## OPT-1001: Build Throughput and Determinism
+
+### Problem Statement
+- Iteration time is still inconsistent under contention even though several no-cache lanes are now green.
+- Developers need predictable and fast inner-loop builds, especially with many concurrent agents.
+
+### Current Evidence
+- `dev` warm cache-hit: 6.121s (target <= 3.0s).
+- Release lanes can hit host-level interruption/timeout in contended runs.
+- Backend/codegen still dominates diagnostics in some runs.
+
+### Hypotheses
+- H1: Build graph invalidation is broader than necessary for warm cache-hit paths.
+- H2: Backend daemon/dispatch queue behavior under contention still causes tail-latency spikes.
+- H3: Shared target/cache lock contention causes avoidable serialization.
+
+### Alternative Implementations
+- A1: Incremental key-scope tightening and finer-grained invalidation for frontend+backend artifacts.
+  - Expected speed impact: +20% to +45% on warm cache-hit.
+  - Memory impact: neutral to mild increase for metadata.
+  - Complexity: medium.
+- A2: Queue-aware backend daemon scheduler (priority lanes for local hot builds).
+  - Expected speed impact: lower p95/p99 latency under contention.
+  - Memory impact: moderate daemon state growth.
+  - Complexity: medium-high.
+- A3: Target-dir sharding by profile/workload class with adaptive lock backoff.
+  - Expected speed impact: better throughput in multi-agent runs.
+  - Memory impact: higher disk footprint.
+  - Complexity: medium.
+
+### Benchmarking Matrix
+- Baseline: `tools/compile_progress.py` full suite.
+- Metrics: median/p95 build latency, cache-hit ratio, timeout/retry count.
+- Workloads: `examples/hello.py`, representative stdlib-heavy script, differential shard build.
+- Expected deltas:
+  - A1: -30% warm cache-hit median (confidence: medium).
+  - A2: -40% p95 tail under contention (confidence: medium).
+  - A3: -20% multi-agent wall-time (confidence: low-medium).
+
+### Risk and Rollback Plan
+- Risks: stale-cache correctness, daemon instability, disk blowup.
+- Mitigations: checksum guardrails, fallback to no-daemon lane, cache pruning policy.
+- Rollback: disable new cache keys/scheduler by env flag and revert to current lock strategy.
+
+### Integration Steps
+1. Add build-key attribution report to diagnostics output.
+2. Ship invalidation tightening in guarded slices (frontend, then backend).
+3. Add queue-aware daemon scheduling and lock telemetry.
+4. Promote only after 7-run stability pass.
+
+### Validation Checklist
+- [ ] Compile progress KPIs green including warm cache-hit target.
+- [ ] No correctness drift in `tools/dev.py test` and differential smoke.
+- [ ] Timeout/retry events reduced in contention probes.
+
+---
+
+## OPT-1002: Core Primitive Lowering Expansion
+
+### Problem Statement
+- A large fraction of core ops still lower to runtime calls rather than primitive inlined lanes.
+- Primitive lowering currently focuses on a narrow subset (notably `ADD/SUB/MUL` and selected comparisons).
+- This limits speedups for loops, tuple-heavy code, bit ops, and numeric branches.
+
+### Current Evidence
+- Frontend `_should_fast_int(...)` is narrow (`ADD`, `SUB`, `MUL`, inplace variants, `LT`, `EQ`, `NE`).
+- Backend includes int fast paths in some arithmetic ops, but many operators still call runtime imports (bitwise, shifts, `div`/`floordiv`/`mod`/`pow`, etc.).
+- Native regressions are concentrated in workloads likely affected by call-heavy dynamic paths.
+
+### Hypotheses
+- H1: Expanding typed/guarded primitive lanes for integer/boolean/control hot ops will reduce dispatch overhead materially.
+- H2: Value-shape/monomorphic guards can keep correctness while still enabling aggressive inlining.
+- H3: Primitive lowering in lockstep for native+wasm avoids widening the current wasm gap.
+
+### Alternative Implementations
+- A1: Extend current `fast_int` style hints + guard blocks to more op families.
+  - Expected speed impact: +10% to +40% in deep-loop and numeric lanes.
+  - Memory impact: small code-size growth.
+  - Complexity: medium.
+- A2: Introduce typed SSA lanes (e.g., `i64`, `bool`) through frontend IR and lower directly in backend.
+  - Expected speed impact: +20% to +60% in core loops and arithmetic chains.
+  - Memory impact: moderate codegen complexity, possible IR size increase initially.
+  - Complexity: high.
+- A3: Hybrid: widen `fast_int` now, then migrate to explicit typed SSA by phase.
+  - Expected speed impact: near-term gains plus long-term maintainability.
+  - Complexity: medium-high, best practical path.
+
+### Benchmarking Matrix
+- Baseline benches: `bench_deeply_nested_loop`, `bench_fib`, `bench_tuple_pack`, `bench_tuple_index`, `bench_try_except`, `bench_sum_list`.
+- Metrics: wall-time, branch miss proxy (where available), generated IR size, runtime call count per op trace.
+- Expected deltas:
+  - A1: +15% median on target set (confidence: medium).
+  - A2: +30% median on target set (confidence: low-medium initially).
+  - A3: +15% then +30% phased (confidence: medium).
+
+### Risk and Rollback Plan
+- Risks: semantic mismatches (overflow/sign/exception behavior), code-size growth.
+- Mitigations: guarded lowering, differential tests by op family, per-op kill-switch flags during rollout.
+- Rollback: disable widened primitive lanes for specific op groups.
+
+### Integration Steps
+1. Expand frontend hint policy to include bitwise/shift/comparison families where safe.
+2. Add backend primitive blocks for those op kinds with strict guards.
+3. Add typed-lane design doc and prototype in one hot path (loop arithmetic).
+4. Roll out to native+wasm together, gated by per-family perf and parity checks.
+
+### Validation Checklist
+- [ ] Differential op-family tests green (3.12/3.13/3.14).
+- [ ] No regression in correctness edge cases (negative shifts/division/mod semantics).
+- [ ] Target regression benches move to >= 1.0x CPython.
+
+---
+
+## OPT-1003: Stdlib Rust Lowering Acceleration
+
+### Problem Statement
+- Too many stdlib modules remain `intrinsic-partial`, `probe-only`, or `python-only`, limiting both capability and performance in compiled mode.
+- Full lowering is mandatory for production-grade compiled execution semantics.
+
+### Current Evidence
+- 58 intrinsic-backed, 16 intrinsic-partial, 13 probe-only, 25 python-only.
+- Program phase sequencing already exists and is active for concurrency substrate.
+
+### Hypotheses
+- H1: Moving high-fanout stdlib dependencies to intrinsic-backed status will reduce import/runtime overhead and unblock more optimizations.
+- H2: Enforcing transitive strict-import closure for critical roots avoids accidental fallback drift and improves determinism.
+
+### Alternative Implementations
+- A1: Strict phase order from spec (socket/selectors -> threading -> asyncio -> P1 families).
+  - Expected speed impact: medium across real workloads via fewer fallback wrappers.
+  - Complexity: medium.
+- A2: Popularity-driven lowering (json/csv/pickle first).
+  - Expected speed impact: strong in data workloads.
+  - Complexity: medium, but higher risk to core runtime sequencing.
+- A3: Blended queue: keep phase order for P0 substrate while running independent P1/P2 modules in parallel owners.
+  - Expected speed impact: highest throughput without violating substrate dependencies.
+  - Complexity: high coordination.
+
+### Benchmarking Matrix
+- Baseline: import latency for core packages, startup and steady-state app workloads, differential stdlib suite.
+- Metrics: import time, runtime allocations, intrinsic miss/failure counts.
+- Expected deltas:
+  - A1: lower risk, steady compatibility gains.
+  - A3: faster total program completion with similar quality.
+
+### Risk and Rollback Plan
+- Risks: partial lowering that looks complete, capability-gating drift.
+- Mitigations: mandatory manifest + generated bindings + strict gates in CI.
+- Rollback: revert module-level lowering changes; keep required-missing intrinsic raising behavior.
+
+### Integration Steps
+1. Keep 0026 program order as canonical.
+2. Create module-family work packets with explicit intrinsic manifests.
+3. Require native+wasm parity test per promoted module.
+4. Reduce `python-only` count every sprint and publish scoreboard.
+
+### Validation Checklist
+- [ ] `tools/check_stdlib_intrinsics.py` and `tools/check_core_lane_lowering.py` green.
+- [ ] Promoted modules documented in status/roadmap.
+- [ ] No host-Python fallback paths introduced.
+
+---
+
+## OPT-1004: Runtime Dispatch/Object Fast Paths
+
+### Problem Statement
+- Attribute access, descriptor/property, struct-like objects, and tuple operations remain major native regressions.
+
+### Current Evidence
+- Regressions: `bench_attr_access` (0.40x), `bench_descriptor_property` (0.44x), `bench_struct` (0.20x), tuple lanes (~0.42x).
+
+### Hypotheses
+- H1: Shape-aware inline caches for attribute and descriptor lookup will remove repeated dynamic lookups.
+- H2: Structified field layout and monomorphic call sites can remove boxing/lookup overhead.
+- H3: Tuple pack/index/slice lanes need specialized kernels and allocation reuse.
+
+### Alternative Implementations
+- A1: PEP659-style adaptive inline caches for load/store attr and method calls.
+- A2: Stronger class-layout metadata with stabilized shapes and direct slot offsets.
+- A3: Combined cache+layout plan with tiered invalidation.
+
+### Benchmarking Matrix
+- Target benches: `bench_attr_access`, `bench_descriptor_property`, `bench_struct`, `bench_tuple_pack`, `bench_tuple_index`.
+- Metrics: runtime, cache hit rate, invalidation frequency, allocation count.
+- Expected deltas:
+  - A1: +25% to +80% in attr/descriptor lanes.
+  - A2: +20% to +70% in struct/tuple-object-heavy lanes.
+
+### Risk and Rollback Plan
+- Risks: stale cache invalidation bugs.
+- Mitigations: guard/version checks on type dict mutation, conservative deopt path.
+- Rollback: disable cache tier via env flag and retain semantic slow path.
+
+### Integration Steps
+1. Add cache instrumentation counters.
+2. Land read-only attr cache tier.
+3. Extend to descriptor/method calls with mutation invalidation.
+4. Add tuple allocation reuse and fixed-layout path.
+
+### Validation Checklist
+- [ ] Target regression lanes reach >= 1.0x CPython.
+- [ ] Differential attribute/descriptor mutation tests green.
+- [ ] Cache invalidation correctness stress tests green.
+
+---
+
+## OPT-1005: WASM Lowering and Runtime Parity
+
+### Problem Statement
+- WASM is far behind native (median wasm/native 4.81x), especially in high-frequency call and string lanes.
+
+### Current Evidence
+- Worst wasm/native ratios include channel throughput and multiple string/search lanes (up to ~44x).
+- Backend currently emits a high number of imported calls in wasm.
+
+### Hypotheses
+- H1: Imported-call density dominates wasm overhead.
+- H2: Primitive lowering expansion and reduced boundary crossings will yield outsized wasm gains.
+- H3: Link-time and table/relocation tuning can reduce runtime overhead and code size.
+
+### Alternative Implementations
+- A1: Lower more core ops directly in wasm backend with guard blocks.
+- A2: Batch/runtime ABI redesign to reduce import-call granularity.
+- A3: Keep A1/A2 plus wasm link/profile tuning (`wasm-ld`, table base, opt passes).
+
+### Benchmarking Matrix
+- Target benches: wasm slowest 10 lanes from bench summary.
+- Metrics: wasm runtime, import-call count, code size, wasm/native ratio.
+- Expected deltas:
+  - A1: -20% to -40% wasm runtime on call-heavy lanes.
+  - A2: -30% to -60% on boundary-heavy lanes.
+
+### Risk and Rollback Plan
+- Risks: wasm-specific semantic drift, ABI churn.
+- Mitigations: shared semantic tests, native+wasm lockstep review for each lowered op family.
+- Rollback: keep compatibility ABI path behind feature switch.
+
+### Integration Steps
+1. Add import-call count to perf diagnostics.
+2. Prioritize lowering for hottest wasm call clusters.
+3. Tune link/profile settings on representative workloads.
+4. Require wasm/native improvement before broad rollout.
+
+### Validation Checklist
+- [ ] wasm/native median ratio < 2.5x on benchmark suite.
+- [ ] No native regressions introduced by shared lowering changes.
+- [ ] wasm differential parity remains green.
+
+---
+
+## OPT-1006: Data/Parsing/Container Kernel Program
+
+### Problem Statement
+- CSV parsing and tuple/loop-heavy paths still underperform despite strong wins in some vector and string kernels.
+
+### Current Evidence
+- `bench_csv_parse`: 0.50x.
+- `bench_csv_parse_wide`: 0.26x.
+- `bench_deeply_nested_loop`: 0.31x.
+- strong existing wins in sum/vector/string lanes show optimization potential.
+
+### Hypotheses
+- H1: Parser/tokenizer and allocation patterns dominate csv and tuple regressions.
+- H2: Loop-carried dynamic dispatch and boxing overhead dominate deep nested loops.
+
+### Alternative Implementations
+- A1: Native parser kernels and fast tokenizer primitives for csv paths.
+- A2: Container specialization for tuple pack/index loops and stack promotion where safe.
+- A3: Workload-driven microkernel approach with per-lane instrumentation and phased landing.
+
+### Benchmarking Matrix
+- Metrics: runtime, allocations, bytes copied, branch behavior, generated IR size.
+- Workloads: csv micro+macro datasets, tuple-heavy synthetic and real scripts.
+- Expected deltas:
+  - A1: +1.5x to +3x in csv lanes.
+  - A2: +1.2x to +2x in tuple/deep-loop lanes.
+
+### Risk and Rollback Plan
+- Risks: spec drift in parser edge cases.
+- Mitigations: strict differential fixture expansion before promotion.
+- Rollback: keep current parser path as strict fallback (still intrinsic-backed only).
+
+### Integration Steps
+1. Build parser/tokenizer profiling corpus.
+2. Implement and benchmark one kernel at a time.
+3. Expand differential edge-case corpus before each rollout.
+4. Promote only with stable gains across both narrow and wide csv workloads.
+
+### Validation Checklist
+- [ ] csv and tuple target benches >= 1.0x CPython.
+- [ ] Parser correctness edge cases green.
+- [ ] No regressions in existing high-win lanes.
+
+---
+
+## OPT-1007: Performance Governance and Guardrails
+
+### Problem Statement
+- Optimization velocity is high; without strong governance, regressions can land unnoticed across lanes or targets.
+
+### Current Evidence
+- Existing summaries are strong but still require manual triage and cross-lane interpretation.
+
+### Hypotheses
+- H1: Automated budget checks per benchmark cluster will reduce regression escape rate.
+- H2: Separate gates for throughput, runtime speed, and lowering coverage will keep priorities balanced.
+
+### Alternative Implementations
+- A1: Static threshold budgets for all benches and compile KPIs.
+- A2: Rolling-window control limits per benchmark (median and p95).
+- A3: Hybrid: static red lines + rolling warning bands.
+
+### Benchmarking Matrix
+- Metrics: speedup ratios, compile times, wasm/native ratio, intrinsic coverage counts.
+- Expected deltas: lower perf-regression incidents and faster triage.
+
+### Risk and Rollback Plan
+- Risks: flaky perf gates causing noisy CI.
+- Mitigations: warmup normalization, rerun policy, lane-specific confidence thresholds.
+- Rollback: convert hard-fail to soft-warn for unstable lanes until stabilized.
+
+### Integration Steps
+1. Define red-line thresholds for critical benchmark families.
+2. Add automated extraction and dashboard from benchmark JSON outputs.
+3. Gate merges for P0 lanes; warn-only for unstable lanes until confidence rises.
+
+### Validation Checklist
+- [ ] CI emits clear pass/fail/warn by lane.
+- [ ] Regression triage time reduced.
+- [ ] Guardrails include build, runtime, wasm parity, and lowering coverage.
+
+---
+
+## OPT-1008: Friend-Native Benchmark Program (Use Their Own Suites)
+
+### Problem Statement
+- Current benchmarking is strong internally, but we need external validity by running Molt against friends on each friend's own benchmark suite.
+- Without this, we can miss workload classes friends optimize for and under-prioritize high-impact gaps.
+
+### Current Evidence
+- Existing baseline workflows are documented in [Benchmarking and performance gates](docs/BENCHMARKING.md).
+- Current bench reports are Molt-centric and do not yet include a standardized friend-owned-suite scoreboard.
+- Phase 1 scaffolding is now implemented: `tools/bench_friends.py`, `bench/friends/manifest.toml`, and published summary target `docs/benchmarks/friend_summary.md`.
+
+### Target Friend Set (Initial)
+- Codon
+- PyPy
+- Nuitka
+- Cython
+- Numba
+
+### Hypotheses
+- H1: Friend-owned suites will expose different hot paths (startup, specialization, object model, parser/tokenizer, numeric kernels) than Molt's current suite.
+- H2: A fair, pinned harness will produce stable comparisons that are actionable for roadmap prioritization.
+- H3: Cross-suite wins will correlate more strongly with real adoption than single-suite microbench improvements.
+
+### Alternative Implementations
+- A1: One unified harness that checks out each friend benchmark suite at pinned commits and runs with a common protocol.
+  - Expected speed impact: none directly; high prioritization quality gain.
+  - Maintenance impact: medium-high.
+- A2: Per-friend adapters first, then unify after method stabilizes.
+  - Expected speed impact: none directly; fastest path to first data.
+  - Maintenance impact: medium.
+- A3: Start with one deep friend lane (Codon), then expand to others after governance settles.
+  - Expected speed impact: none directly; lowest initial complexity.
+  - Maintenance impact: low initially, medium later.
+
+### Fairness and Reproducibility Protocol
+- Pin friend benchmark repo commit SHAs and toolchain versions.
+- Use identical hardware, isolated runs, fixed CPU/power settings where possible, and repeat-count standards (`--super` equivalent where available).
+- Record compile time and run time separately when a friend has compilation.
+- Keep semantic constraints explicit:
+  - `runs_unmodified`
+  - `requires_adapter`
+  - `unsupported_by_molt` (with reason)
+- Publish full command lines and environment in machine-readable metadata.
+
+### Benchmarking Matrix
+- Baseline docs/method: [Benchmarking and performance gates](docs/BENCHMARKING.md)
+- Metrics:
+  - runtime median/p95
+  - compile/build time (if applicable)
+  - throughput/latency where suite defines them
+  - geometric-mean speedup vs CPython and vs friend
+  - pass/fail/unsupported coverage counts
+- Workloads:
+  - friend-owned suites (pinned revisions)
+  - Molt internal suites (for continuity)
+- Expected deltas:
+  - Near-term: better prioritization and clearer optimization ROI.
+  - Mid-term: measurable closing of top friend gaps in shared workload families.
+
+### Risk and Rollback Plan
+- Risks: apples-to-oranges comparisons, benchmark harness drift, friend-suite licensing/compat issues.
+- Mitigations: pinned manifests, transparent scoring rules, per-suite adapter audit logs.
+- Rollback: keep friend results as advisory-only until reproducibility and fairness gates are stable.
+
+### Integration Steps
+1. [x] Add a `bench/friends/manifest.toml` with pinned suites, commits, and canonical run commands.
+2. [x] Add `tools/bench_friends.py` to orchestrate checkout, environment setup, run execution, and artifact capture.
+3. Emit results under `bench/results/friends/<timestamp>/` with JSON + markdown summaries.
+4. Generate `docs/benchmarks/friend_summary.md` with:
+   - top wins/losses
+   - per-suite coverage
+   - reproducibility metadata
+5. Add CI lane (nightly) and local lane (on-demand) with stable rerun policy.
+6. Feed top loss clusters directly into OPT-1002/1004/1006 prioritization.
+
+### Validation Checklist
+- [ ] Friend manifest is fully pinned and reproducible.
+- [ ] At least one full run per friend suite completes with published artifacts.
+- [ ] Summary distinguishes runtime vs compile-time comparisons clearly.
+- [ ] Results are actionable (each top loss mapped to an optimization owner/track).
+
+---
+
+## 4. Primitive-Lowering Expansion Roadmap (What to Add Now)
+
+### Phase A (Immediate, 1-2 weeks)
+- Expand frontend lowering hints beyond current narrow set for clearly safe integer and boolean op families.
+- Add backend guarded primitive paths for bitwise/shift and selected numeric operators where semantics are fully defined.
+- Add instrumentation for runtime import-call density per benchmark run.
+
+### Phase B (Near-term, 2-4 weeks)
+- Introduce typed SSA lanes for hot loop kernels.
+- Apply same lowering lanes in native and wasm backends.
+- Add deopt/guard counters to identify unstable specialization points.
+
+### Phase C (Programmatic, 1-2 months)
+- Convert high-fanout stdlib module families to intrinsic-backed state in phase order.
+- Replace remaining probe-only/python-only modules in shipped surface according to roadmap priorities.
+- Tie lowering-completion milestones to benchmark goals and release gates.
+
+## 5. Success Criteria (Program)
+
+- Build:
+  - `dev` warm cache-hit <= 3.0s sustained on compile progress tracker.
+- Runtime native:
+  - Remove current P0 regressions to >= 1.0x CPython in target lanes.
+- WASM:
+  - Improve median wasm/native ratio from 4.81x to < 2.5x.
+- Lowering:
+  - `python-only` stdlib modules reduced from 25 to <= 5 in shipped compiled surface.
+  - measurable reduction in backend runtime-call/import-call density on hot lanes.
+- Governance:
+  - perf and lowering gates enforced in CI with clear red-line thresholds.
+- Friend benchmarking:
+  - friend-owned suite scorecard published and reproducible with pinned manifests.
+  - top 10 loss clusters mapped into active optimization tracks each sprint.
+
+## 6. Reporting Cadence
+
+- Update this plan at least once per optimization PR touching compiler/backend/runtime/stdlib hot paths.
+- Keep benchmark and compile references synchronized with:
+  - [Benchmarking and performance gates](docs/BENCHMARKING.md)
+  - [Bench summary](docs/benchmarks/bench_summary.md)
+  - [Compile progress tracker](docs/benchmarks/compile_progress.md)
+  - [Stdlib intrinsics audit](docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md)
+  - [Rust lowering program](docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md)

@@ -18,7 +18,7 @@ def main():
             text=True,
         )
         lines = result.stdout.strip().splitlines()
-        print("cwd", os.path.abspath(lines[0]))
+        print("cwd", os.path.abspath(lines[0]) == os.path.abspath(tmp))
         print("env", lines[1])
 
 

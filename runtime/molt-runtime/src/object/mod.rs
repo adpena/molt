@@ -111,6 +111,18 @@ fn debug_oom() -> bool {
     *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
 }
 
+#[inline]
+fn debug_rc_object() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1"))
+}
+
+#[inline]
+fn debug_dec_ref_zero() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_DECREF_ZERO").as_deref() == Ok("1"))
+}
+
 fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
     if handle.write_buf.is_empty() {
         return;
@@ -862,7 +874,7 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         .ref_count
         .fetch_add(1, AtomicOrdering::Relaxed)
         + 1;
-    if std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1") {
+    if debug_rc_object() {
         let header = &*header_ptr;
         if header.type_id == TYPE_ID_OBJECT && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0 {
             eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
@@ -883,7 +895,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         return;
     }
     let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-    if std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1")
+    if debug_rc_object()
         && header.type_id == TYPE_ID_OBJECT
         && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
     {
@@ -895,7 +907,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
     }
     if prev == 1 {
         std::sync::atomic::fence(AtomicOrdering::Acquire);
-        if std::env::var("MOLT_DEBUG_DECREF_ZERO").as_deref() == Ok("1") {
+        if debug_dec_ref_zero() {
             eprintln!(
                 "molt dec_ref_zero ptr=0x{:x} type_id={}",
                 ptr as usize, header.type_id

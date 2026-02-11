@@ -262,6 +262,18 @@ class HTTPErrorProcessor(BaseHandler):
     https_response = http_response
 
 
+class _HTTPErrorResponseAdapter:
+    __slots__ = ("_opener", "_bound")
+
+    def __init__(self, opener, bound):
+        self._opener = opener
+        self._bound = bound
+
+    def __call__(self, request, response):
+        adapted = self._opener._wrap_response(request, response)
+        return self._bound(request, adapted)
+
+
 class OpenerDirector:
     def __init__(self):
         _MOLT_OPENER_INIT(self)
@@ -269,6 +281,27 @@ class OpenerDirector:
         self._molt_raise_on_none = False
 
     def add_handler(self, handler):
+        if isinstance(handler, HTTPErrorProcessor):
+            marker = "_molt_http_response_adapter_wrapped"
+            if not bool(getattr(handler, marker, False)):
+                base_http = getattr(HTTPErrorProcessor, "http_response", None)
+                base_https = getattr(HTTPErrorProcessor, "https_response", None)
+                for method_name, base_method in (
+                    ("http_response", base_http),
+                    ("https_response", base_https),
+                ):
+                    class_method = getattr(type(handler), method_name, None)
+                    if class_method is base_method:
+                        continue
+                    bound = getattr(handler, method_name, None)
+                    if not callable(bound):
+                        continue
+                    setattr(
+                        handler,
+                        method_name,
+                        _HTTPErrorResponseAdapter(self, bound),
+                    )
+                setattr(handler, marker, True)
         _MOLT_OPENER_ADD_HANDLER(self, handler)
 
     def _wrap_response(self, req, out):
@@ -311,7 +344,11 @@ def build_opener(*handlers):
     opener._molt_allow_data_fallback = True
     opener._molt_raise_on_none = True
     opener.add_handler(ProxyHandler())
-    opener.add_handler(HTTPErrorProcessor())
+    has_custom_http_error_processor = any(
+        isinstance(handler, HTTPErrorProcessor) for handler in handlers
+    )
+    if not has_custom_http_error_processor:
+        opener.add_handler(HTTPErrorProcessor())
     for handler in handlers:
         opener.add_handler(handler)
     return opener

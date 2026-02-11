@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Iterable, Iterator, cast
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 __all__ = [
     "Dialect",
     "Error",
@@ -27,6 +29,11 @@ __all__ = [
     "list_dialects",
     "field_size_limit",
 ]
+
+_MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready", globals())
+_MOLT_CSV_RUNTIME_READY()
+
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:in_progress): move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity.
 
 
 QUOTE_MINIMAL = 0

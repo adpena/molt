@@ -83,26 +83,15 @@ MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
 
-DEPYLER_SKIP_BENCHMARKS: dict[str, str] = {
-    "tests/benchmarks/bench_dict_ops.py": "depyler dict typing not stabilized",
-    "tests/benchmarks/bench_dict_views.py": "depyler dict typing not stabilized",
-    "tests/benchmarks/bench_counter_words.py": "Counter not available in depyler runtime",
-    "tests/benchmarks/bench_etl_orders.py": "string parsing + dataclass unsupported in depyler",
-    "tests/benchmarks/bench_csv_parse.py": "string parsing not supported in depyler",
-    "tests/benchmarks/bench_csv_parse_wide.py": "string parsing not supported in depyler",
-    "tests/benchmarks/bench_tuple_index.py": "tuple indexing inference unstable in depyler",
-    "tests/benchmarks/bench_channel_throughput.py": "requires Molt channel intrinsics",
-    "tests/benchmarks/bench_ptr_registry.py": "requires Molt pointer registry intrinsics",
-    "tests/benchmarks/bench_matrix_math.py": "requires molt_buffer runtime module",
-    "tests/benchmarks/bench_parse_msgpack.py": "requires molt_msgpack runtime module",
-    "tests/benchmarks/bench_memoryview_tobytes.py": "requires memoryview cast/tobytes support",
-    "tests/benchmarks/bench_bytes_find.py": "bytes find not available in depyler runtime",
-    "tests/benchmarks/bench_bytes_find_only.py": "bytes find not available in depyler runtime",
-    "tests/benchmarks/bench_bytes_replace.py": "bytes replace not available in depyler runtime",
-    "tests/benchmarks/bench_bytearray_find.py": "bytearray find not available in depyler runtime",
-    "tests/benchmarks/bench_bytearray_replace.py": "bytearray replace not available in depyler runtime",
-    "tests/benchmarks/bench_json_roundtrip.py": "heterogeneous dict/json payload not supported",
-    "tests/benchmarks/bench_ws_wait.py": "requires Molt websocket intrinsics",
+CODON_BENCH_RUNTIME_ARGS_BY_NAME = {
+    "binary_trees.py": ["20"],
+    "chaos.py": ["{DEVNULL}"],
+    "fannkuch.py": ["11"],
+    "nbody.py": ["10000000"],
+    "set_partition.py": ["15"],
+    "primes.py": ["100000"],
+    "taq.py": ["{TAQ_FILE}"],
+    "word_count.py": ["{WORD_FILE}"],
 }
 
 
@@ -111,18 +100,11 @@ class BenchRunner:
     cmd: list[str]
     script: str | None
     env: dict[str, str]
+    build_s: float = 0.0
 
 
 @dataclass(frozen=True)
 class MoltBinary:
-    path: Path
-    temp_dir: tempfile.TemporaryDirectory
-    build_s: float
-    size_kb: float
-
-
-@dataclass(frozen=True)
-class DepylerBinary:
     path: Path
     temp_dir: tempfile.TemporaryDirectory
     build_s: float
@@ -315,10 +297,81 @@ def _prune_backend_daemons() -> None:
         _daemon_ping(socket_path)
 
 
-def measure_runtime(cmd_args, script=None, env=None):
+def _is_codon_bench_script(script: str) -> bool:
+    normalized = Path(script).as_posix()
+    return "codon_benchmarks/bench/codon/" in normalized
+
+
+def _default_codon_taq_file() -> Path:
+    explicit = os.environ.get("MOLT_BENCH_CODON_TAQ_FILE")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    repo_sample = Path("bench/friends/repos/codon_benchmarks/bench/data/taq.txt")
+    if repo_sample.exists():
+        return repo_sample.resolve()
+    generated = Path(tempfile.gettempdir()) / "molt_codon_taq_sample.txt"
+    if generated.exists():
+        return generated.resolve()
+    lines = ["timestamp|source|symbol|price|volume\n"]
+    symbols = ("AAPL", "MSFT", "GOOG")
+    for i in range(6000):
+        timestamp = 1_700_000_000_000 + (i * 1_000_000)
+        symbol = symbols[i % len(symbols)]
+        volume = 100 + (i % 97)
+        lines.append(f"{timestamp}|Q|{symbol}|0|{volume}\n")
+    generated.write_text("".join(lines), encoding="utf-8")
+    return generated.resolve()
+
+
+def _default_codon_word_file() -> Path:
+    explicit = os.environ.get("MOLT_BENCH_CODON_WORD_FILE")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return _default_codon_taq_file()
+
+
+def resolve_benchmark_run_args(script: str) -> list[str]:
+    if not _is_codon_bench_script(script):
+        return []
+    args = CODON_BENCH_RUNTIME_ARGS_BY_NAME.get(Path(script).name, [])
+    resolved: list[str] = []
+    for arg in args:
+        if arg == "{DEVNULL}":
+            resolved.append(os.devnull)
+        elif arg == "{TAQ_FILE}":
+            resolved.append(str(_default_codon_taq_file()))
+        elif arg == "{WORD_FILE}":
+            resolved.append(str(_default_codon_word_file()))
+        else:
+            resolved.append(arg)
+    return resolved
+
+
+def measure_runtime(
+    cmd_args,
+    script=None,
+    env=None,
+    run_args=None,
+    timeout_s: float | None = None,
+    label: str | None = None,
+):
     start = time.perf_counter()
     full_cmd = cmd_args + ([script] if script else [])
-    res = subprocess.run(full_cmd, capture_output=True, text=True, env=env)
+    if run_args:
+        full_cmd.extend(run_args)
+    try:
+        res = subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
+        bench_label = f" for {label}" if label else ""
+        print(f"Benchmark run{bench_label}{msg}.", file=sys.stderr)
+        return None
     end = time.perf_counter()
     if res.returncode != 0:
         return None
@@ -330,15 +383,6 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     if not output_str:
         return None
     output_path = Path(output_str)
-    if output_path.exists():
-        return output_path
-    fallback = output_path.with_suffix(".exe")
-    if fallback.exists():
-        return fallback
-    return None
-
-
-def _resolve_depyler_output(output_path: Path) -> Path | None:
     if output_path.exists():
         return output_path
     fallback = output_path.with_suffix(".exe")
@@ -359,6 +403,7 @@ def prepare_molt_binary(
         "-m",
         "molt.cli",
         "build",
+        "--trusted",
         "--json",
         "--out-dir",
         str(out_dir),
@@ -394,71 +439,37 @@ def prepare_molt_binary(
     return MoltBinary(output_path, temp_dir, build_s, binary_size)
 
 
-def prepare_depyler_binary(
-    script: str,
-    *,
-    env: dict[str, str] | None = None,
-    profile: str = "release",
-    tty: bool = False,
-) -> DepylerBinary | None:
-    env = (env or os.environ.copy()).copy()
-    temp_dir = tempfile.TemporaryDirectory(prefix="depyler-bench-")
-    out_dir = Path(temp_dir.name)
-    output_path = out_dir / Path(script).stem
-    env.setdefault("CARGO_TARGET_DIR", str(out_dir / "cargo-target"))
-    cmd = [
-        "depyler",
-        "compile",
-        script,
-        "--output",
-        str(output_path),
-        "--profile",
-        profile,
-    ]
-    start = time.perf_counter()
-    res = _run_cmd(cmd, env, capture=not tty, tty=tty)
-    build_s = time.perf_counter() - start
-    if res.returncode != 0:
-        err = (res.stderr or res.stdout).strip()
-        if err:
-            print(f"Depyler compile failed for {script}: {err}", file=sys.stderr)
-        temp_dir.cleanup()
-        return None
-    resolved = _resolve_depyler_output(output_path)
-    if resolved is None:
-        temp_dir.cleanup()
-        return None
-    binary_size = resolved.stat().st_size / 1024
-    return DepylerBinary(resolved, temp_dir, build_s, binary_size)
-
-
 def measure_molt_run(
-    binary: Path, env: dict[str, str] | None = None, label: str | None = None
+    binary: Path,
+    env: dict[str, str] | None = None,
+    label: str | None = None,
+    run_args: list[str] | None = None,
+    timeout_s: float | None = None,
 ) -> float | None:
     start = time.perf_counter()
-    res = subprocess.run([str(binary)], capture_output=True, text=True, env=env)
+    cmd = [str(binary)]
+    if run_args:
+        cmd.extend(run_args)
+    try:
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
+        if label:
+            print(f"Molt run timed out for {label}{msg}.", file=sys.stderr)
+        else:
+            print(f"Molt run timed out{msg}.", file=sys.stderr)
+        return None
     end = time.perf_counter()
     if res.returncode != 0:
         err = (res.stderr or res.stdout).strip()
         if err:
             prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
-            print(f"{prefix}{err}", file=sys.stderr)
-        return None
-    return end - start
-
-
-def measure_depyler_run(
-    binary: Path, env: dict[str, str] | None = None, label: str | None = None
-) -> float | None:
-    start = time.perf_counter()
-    res = subprocess.run([str(binary)], capture_output=True, text=True, env=env)
-    end = time.perf_counter()
-    if res.returncode != 0:
-        err = (res.stderr or res.stdout).strip()
-        if err:
-            prefix = (
-                f"Depyler run failed for {label}: " if label else "Depyler run failed: "
-            )
             print(f"{prefix}{err}", file=sys.stderr)
         return None
     return end - start
@@ -531,7 +542,12 @@ def _module_available(name: str) -> bool:
 
 
 def _prepare_cython_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
+    script_path: Path,
+    build_root: Path,
+    base_env: dict[str, str],
+    run_args: list[str],
+    *,
+    tty: bool,
 ) -> BenchRunner | None:
     if not _module_available("pyximport"):
         return None
@@ -561,14 +577,24 @@ mod.bench()
     runner_path.write_text(runner_source)
     env = _prepend_pythonpath(base_env.copy(), str(module_dir))
     env["PYTHONWARNINGS"] = "ignore"
-    warm = _run_cmd([sys.executable, str(runner_path)], env, capture=not tty, tty=tty)
+    warm = _run_cmd(
+        [sys.executable, str(runner_path), *run_args],
+        env,
+        capture=not tty,
+        tty=tty,
+    )
     if warm.returncode != 0:
         return None
     return BenchRunner([sys.executable], str(runner_path), env)
 
 
 def _prepare_numba_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
+    script_path: Path,
+    build_root: Path,
+    base_env: dict[str, str],
+    run_args: list[str],
+    *,
+    tty: bool,
 ) -> BenchRunner | None:
     if not _module_available("numba"):
         return None
@@ -591,7 +617,12 @@ def _prepare_numba_runner(
     env = _prepend_pythonpath(base_env.copy(), str(module_dir))
     env["NUMBA_CACHE_DIR"] = str(module_dir / "cache")
     env["NUMBA_DISABLE_PERFORMANCE_WARNINGS"] = "1"
-    warm = _run_cmd([sys.executable, str(runner_path)], env, capture=not tty, tty=tty)
+    warm = _run_cmd(
+        [sys.executable, str(runner_path), *run_args],
+        env,
+        capture=not tty,
+        tty=tty,
+    )
     if warm.returncode != 0:
         return None
     return BenchRunner([sys.executable], str(runner_path), env)
@@ -620,6 +651,7 @@ def _prepare_codon_runner(
             env["CODON_HOME"] = codon_home
     else:
         codon_home = env.get("CODON_HOME")
+    build_start = time.perf_counter()
     build = _run_cmd(
         arch_prefix
         + [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
@@ -627,6 +659,7 @@ def _prepare_codon_runner(
         capture=not tty,
         tty=tty,
     )
+    build_s = time.perf_counter() - build_start
     if build.returncode != 0:
         return None
     if codon_home:
@@ -634,7 +667,7 @@ def _prepare_codon_runner(
         target = module_dir / "libomp.dylib"
         if libomp.exists() and not target.exists():
             shutil.copy2(libomp, target)
-    return BenchRunner(arch_prefix + [str(binary_path)], None, env)
+    return BenchRunner(arch_prefix + [str(binary_path)], None, env, build_s=build_s)
 
 
 def _pypy_command() -> list[str] | None:
@@ -667,16 +700,19 @@ def bench_results(
     benchmarks,
     samples,
     warmup,
+    use_cpython,
     use_pypy,
     use_cython,
     use_numba,
     use_codon,
-    use_depyler,
     super_run,
+    runtime_timeout_s,
     *,
     tty: bool,
 ):
-    runtimes = {"CPython": [sys.executable]}
+    runtimes = {}
+    if use_cpython:
+        runtimes["CPython"] = [sys.executable]
     if use_pypy:
         pypy_cmd = _pypy_command()
         if pypy_cmd:
@@ -691,15 +727,11 @@ def bench_results(
     if use_codon and not shutil.which("codon"):
         print("Skipping Codon: codon not found.", file=sys.stderr)
         use_codon = False
-    if use_depyler and not shutil.which("depyler"):
-        print("Skipping Depyler: depyler not found.", file=sys.stderr)
-        use_depyler = False
 
     header = (
         f"{'Benchmark':<30} | {'CPython (s)':<12} | {'PyPy (s)':<12} | "
         f"{'Cython (s)':<12} | {'Numba (s)':<12} | {'Codon (s)':<12} | "
-        f"{'Depyler (s)':<12} | {'Molt/Codon':<12} | {'Molt/Depyler':<12} | "
-        f"{'Molt (s)':<10} | "
+        f"{'Molt/Codon':<12} | {'Molt (s)':<10} | "
         f"{'Molt Speedup':<12} | {'Molt Size'}"
     )
     print(header)
@@ -713,12 +745,20 @@ def bench_results(
     data = {}
     for script in benchmarks:
         name = os.path.basename(script)
+        run_args = resolve_benchmark_run_args(script)
         results = {}
         runtime_ok = {}
         stats = {}
         for rt_name, cmd in runtimes.items():
             samples_list, ok = collect_samples(
-                lambda: measure_runtime(cmd, script, env=base_env),
+                lambda: measure_runtime(
+                    cmd,
+                    script,
+                    env=base_env,
+                    run_args=run_args,
+                    timeout_s=runtime_timeout_s,
+                    label=name,
+                ),
                 samples,
                 warmup=warmup,
             )
@@ -731,11 +771,18 @@ def bench_results(
         cython_ok = False
         if use_cython:
             runner = _prepare_cython_runner(
-                Path(script), cython_root, base_env, tty=tty
+                Path(script), cython_root, base_env, run_args, tty=tty
             )
             if runner is not None:
                 cython_samples, cython_ok = collect_samples(
-                    lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [cython]",
+                    ),
                     samples,
                     warmup=warmup,
                 )
@@ -749,10 +796,19 @@ def bench_results(
         numba_time = 0.0
         numba_ok = False
         if use_numba:
-            runner = _prepare_numba_runner(Path(script), numba_root, base_env, tty=tty)
+            runner = _prepare_numba_runner(
+                Path(script), numba_root, base_env, run_args, tty=tty
+            )
             if runner is not None:
                 numba_samples, numba_ok = collect_samples(
-                    lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [numba]",
+                    ),
                     samples,
                     warmup=warmup,
                 )
@@ -764,12 +820,21 @@ def bench_results(
                 print(f"Skipping Numba for {name}.", file=sys.stderr)
 
         codon_time = 0.0
+        codon_build = 0.0
         codon_ok = False
         if use_codon:
             runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
             if runner is not None:
+                codon_build = runner.build_s
                 codon_samples, codon_ok = collect_samples(
-                    lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [codon]",
+                    ),
                     samples,
                     warmup=warmup,
                 )
@@ -780,37 +845,6 @@ def bench_results(
             else:
                 print(f"Skipping Codon for {name}.", file=sys.stderr)
 
-        depyler_time = 0.0
-        depyler_ok = False
-        depyler_build = 0.0
-        depyler_size = 0.0
-        depyler_samples: list[float] = []
-        if use_depyler:
-            skip_reason = DEPYLER_SKIP_BENCHMARKS.get(script)
-            if skip_reason:
-                print(f"Skipping Depyler for {name}: {skip_reason}.", file=sys.stderr)
-            else:
-                depyler_runner = prepare_depyler_binary(script, env=base_env, tty=tty)
-                if depyler_runner is not None:
-                    try:
-                        depyler_samples, depyler_ok = collect_samples(
-                            lambda: measure_depyler_run(
-                                depyler_runner.path, env=base_env, label=name
-                            ),
-                            samples,
-                            warmup=warmup,
-                        )
-                        if depyler_ok:
-                            depyler_time = statistics.mean(depyler_samples)
-                            if super_run:
-                                stats["depyler"] = summarize_samples(depyler_samples)
-                        depyler_build = depyler_runner.build_s
-                        depyler_size = depyler_runner.size_kb
-                    finally:
-                        depyler_runner.temp_dir.cleanup()
-                else:
-                    print(f"Depyler build/run failed for {name}.", file=sys.stderr)
-
         molt_time, molt_size, molt_build = 0.0, 0.0, 0.0
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
         molt_ok = False
@@ -820,7 +854,11 @@ def bench_results(
             try:
                 molt_samples, molt_ok = collect_samples(
                     lambda: measure_molt_run(
-                        molt_runner.path, env=base_env, label=name
+                        molt_runner.path,
+                        env=base_env,
+                        label=name,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
                     ),
                     samples,
                     warmup=warmup,
@@ -836,20 +874,22 @@ def bench_results(
         else:
             print(f"Molt build/run failed for {name}.", file=sys.stderr)
 
-        speedup = results.get("CPython", 0.0) / molt_time if molt_time > 0 else 0.0
+        cpython_time = (
+            results.get("CPython") if runtime_ok.get("CPython", False) else None
+        )
+        speedup = (
+            (cpython_time / molt_time)
+            if (cpython_time is not None and molt_ok and molt_time > 0)
+            else None
+        )
         ratio = (
-            molt_time / results["CPython"]
-            if molt_ok and results.get("CPython", 0.0) > 0
+            molt_time / cpython_time
+            if (molt_ok and cpython_time is not None and cpython_time > 0)
             else None
         )
         codon_ratio = (
             (molt_time / codon_time)
             if molt_ok and codon_ok and codon_time > 0
-            else None
-        )
-        depyler_ratio = (
-            (molt_time / depyler_time)
-            if molt_ok and depyler_ok and depyler_time > 0
             else None
         )
 
@@ -866,44 +906,37 @@ def bench_results(
         cython_cell = f"{cython_time:<12.4f}" if cython_ok else f"{'n/a':<12}"
         numba_cell = f"{numba_time:<12.4f}" if numba_ok else f"{'n/a':<12}"
         codon_cell = f"{codon_time:<12.4f}" if codon_ok else f"{'n/a':<12}"
-        depyler_cell = f"{depyler_time:<12.4f}" if depyler_ok else f"{'n/a':<12}"
         codon_ratio_cell = (
             f"{codon_ratio:<12.2f}x" if codon_ratio is not None else f"{'n/a':<12}"
         )
-        depyler_ratio_cell = (
-            f"{depyler_ratio:<12.2f}x" if depyler_ratio is not None else f"{'n/a':<12}"
-        )
+        speedup_cell = f"{speedup:<12.2f}x" if speedup is not None else f"{'n/a':<12}"
 
         print(
             f"{name:<30} | {cpython_cell} | {pypy_cell} | {cython_cell} | "
-            f"{numba_cell} | {codon_cell} | {depyler_cell} | {codon_ratio_cell} | "
-            f"{depyler_ratio_cell} | "
-            f"{molt_time:<10.4f} | {speedup:<12.2f}x | "
+            f"{numba_cell} | {codon_cell} | {codon_ratio_cell} | {molt_time:<10.4f} | "
+            f"{speedup_cell} | "
             f"{molt_size:.1f} KB"
         )
 
         data[name] = {
-            "cpython_time_s": results.get("CPython", 0.0),
+            "cpython_time_s": cpython_time,
             "pypy_time_s": results.get("PyPy", 0.0),
             "cython_time_s": cython_time,
             "numba_time_s": numba_time,
             "codon_time_s": codon_time,
-            "depyler_time_s": depyler_time,
+            "codon_build_s": codon_build,
             "molt_time_s": molt_time,
             "molt_build_s": molt_build,
             "molt_size_kb": molt_size,
-            "depyler_build_s": depyler_build,
-            "depyler_size_kb": depyler_size,
             "molt_speedup": speedup,
             "molt_cpython_ratio": ratio,
             "molt_codon_ratio": codon_ratio,
-            "molt_depyler_ratio": depyler_ratio,
             "molt_ok": molt_ok,
             "molt_args": molt_args,
+            "run_args": run_args,
             "cython_ok": cython_ok,
             "numba_ok": numba_ok,
             "codon_ok": codon_ok,
-            "depyler_ok": depyler_ok,
         }
         if super_run:
             data[name]["super_stats"] = stats
@@ -950,11 +983,15 @@ def main():
         help="Warmup runs per benchmark before sampling (default: 1, or 0 for --smoke).",
     )
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--no-cpython",
+        action="store_true",
+        help="Skip CPython timing lane (useful when focusing on Molt vs Codon).",
+    )
     parser.add_argument("--no-pypy", action="store_true")
     parser.add_argument("--no-cython", action="store_true")
     parser.add_argument("--no-numba", action="store_true")
     parser.add_argument("--no-codon", action="store_true")
-    parser.add_argument("--no-depyler", action="store_true")
     parser.add_argument(
         "--ws",
         action="store_true",
@@ -974,6 +1011,12 @@ def main():
         "--tty",
         action="store_true",
         help="Attach subprocesses to a pseudo-TTY for immediate output.",
+    )
+    parser.add_argument(
+        "--runtime-timeout-sec",
+        type=float,
+        default=None,
+        help="Optional per-run timeout in seconds for each benchmark process.",
     )
     args = parser.parse_args()
 
@@ -1001,11 +1044,11 @@ def main():
         if args.super
         else (args.samples if args.samples is not None else (1 if args.smoke else 3))
     )
+    use_cpython = not args.no_cpython
     use_pypy = not args.no_pypy
     use_cython = not args.no_cython
     use_numba = not args.no_numba
     use_codon = not args.no_codon
-    use_depyler = not args.no_depyler
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
     _prune_backend_daemons()
@@ -1015,12 +1058,13 @@ def main():
         benchmarks,
         samples,
         warmup,
+        use_cpython,
         use_pypy,
         use_cython,
         use_numba,
         use_codon,
-        use_depyler,
         args.super,
+        args.runtime_timeout_sec,
         tty=use_tty,
     )
 

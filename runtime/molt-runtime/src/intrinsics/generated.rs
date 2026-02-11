@@ -1778,6 +1778,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_statistics_mean",
+        symbol: "molt_statistics_mean",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_stdev",
+        symbol: "molt_statistics_stdev",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_decimal_context_new",
         symbol: "molt_decimal_context_new",
         arity: 0,
@@ -3056,6 +3066,126 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_local_drop",
         symbol: "molt_local_drop",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_new",
+        symbol: "molt_queue_new",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_qsize",
+        symbol: "molt_queue_qsize",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_empty",
+        symbol: "molt_queue_empty",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_full",
+        symbol: "molt_queue_full",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_put",
+        symbol: "molt_queue_put",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_get",
+        symbol: "molt_queue_get",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_task_done",
+        symbol: "molt_queue_task_done",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_join",
+        symbol: "molt_queue_join",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_drop",
+        symbol: "molt_queue_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_runtime_ready",
+        symbol: "molt_logging_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_wsgiref_runtime_ready",
+        symbol: "molt_wsgiref_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_zoneinfo_runtime_ready",
+        symbol: "molt_zoneinfo_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_zipapp_runtime_ready",
+        symbol: "molt_zipapp_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_zlib_runtime_ready",
+        symbol: "molt_zlib_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_xmlrpc_runtime_ready",
+        symbol: "molt_xmlrpc_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_csv_runtime_ready",
+        symbol: "molt_csv_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_datetime_runtime_ready",
+        symbol: "molt_datetime_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_tokenize_runtime_ready",
+        symbol: "molt_tokenize_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_tomllib_runtime_ready",
+        symbol: "molt_tomllib_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_trace_runtime_ready",
+        symbol: "molt_trace_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_unicodedata_runtime_ready",
+        symbol: "molt_unicodedata_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_subprocess_runtime_ready",
+        symbol: "molt_subprocess_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_symtable_runtime_ready",
+        symbol: "molt_symtable_runtime_ready",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_import_smoke_runtime_ready",
+        symbol: "molt_import_smoke_runtime_ready",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_process_spawn",
@@ -5128,6 +5258,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_math_asinh" => Some(crate::molt_math_asinh as *const () as usize as u64),
         "molt_math_acosh" => Some(crate::molt_math_acosh as *const () as usize as u64),
         "molt_math_atanh" => Some(crate::molt_math_atanh as *const () as usize as u64),
+        "molt_statistics_mean" => Some(crate::molt_statistics_mean as *const () as usize as u64),
+        "molt_statistics_stdev" => Some(crate::molt_statistics_stdev as *const () as usize as u64),
         "molt_decimal_context_new" => {
             Some(crate::molt_decimal_context_new as *const () as usize as u64)
         }
@@ -5514,6 +5646,60 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_local_new" => Some(crate::molt_local_new as *const () as usize as u64),
         "molt_local_get_dict" => Some(crate::molt_local_get_dict as *const () as usize as u64),
         "molt_local_drop" => Some(crate::molt_local_drop as *const () as usize as u64),
+        "molt_queue_new" => Some(crate::molt_queue_new as *const () as usize as u64),
+        "molt_queue_qsize" => Some(crate::molt_queue_qsize as *const () as usize as u64),
+        "molt_queue_empty" => Some(crate::molt_queue_empty as *const () as usize as u64),
+        "molt_queue_full" => Some(crate::molt_queue_full as *const () as usize as u64),
+        "molt_queue_put" => Some(crate::molt_queue_put as *const () as usize as u64),
+        "molt_queue_get" => Some(crate::molt_queue_get as *const () as usize as u64),
+        "molt_queue_task_done" => Some(crate::molt_queue_task_done as *const () as usize as u64),
+        "molt_queue_join" => Some(crate::molt_queue_join as *const () as usize as u64),
+        "molt_queue_drop" => Some(crate::molt_queue_drop as *const () as usize as u64),
+        "molt_logging_runtime_ready" => {
+            Some(crate::molt_logging_runtime_ready as *const () as usize as u64)
+        }
+        "molt_wsgiref_runtime_ready" => {
+            Some(crate::molt_wsgiref_runtime_ready as *const () as usize as u64)
+        }
+        "molt_zoneinfo_runtime_ready" => {
+            Some(crate::molt_zoneinfo_runtime_ready as *const () as usize as u64)
+        }
+        "molt_zipapp_runtime_ready" => {
+            Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64)
+        }
+        "molt_zlib_runtime_ready" => {
+            Some(crate::molt_zlib_runtime_ready as *const () as usize as u64)
+        }
+        "molt_xmlrpc_runtime_ready" => {
+            Some(crate::molt_xmlrpc_runtime_ready as *const () as usize as u64)
+        }
+        "molt_csv_runtime_ready" => {
+            Some(crate::molt_csv_runtime_ready as *const () as usize as u64)
+        }
+        "molt_datetime_runtime_ready" => {
+            Some(crate::molt_datetime_runtime_ready as *const () as usize as u64)
+        }
+        "molt_tokenize_runtime_ready" => {
+            Some(crate::molt_tokenize_runtime_ready as *const () as usize as u64)
+        }
+        "molt_tomllib_runtime_ready" => {
+            Some(crate::molt_tomllib_runtime_ready as *const () as usize as u64)
+        }
+        "molt_trace_runtime_ready" => {
+            Some(crate::molt_trace_runtime_ready as *const () as usize as u64)
+        }
+        "molt_unicodedata_runtime_ready" => {
+            Some(crate::molt_unicodedata_runtime_ready as *const () as usize as u64)
+        }
+        "molt_subprocess_runtime_ready" => {
+            Some(crate::molt_subprocess_runtime_ready as *const () as usize as u64)
+        }
+        "molt_symtable_runtime_ready" => {
+            Some(crate::molt_symtable_runtime_ready as *const () as usize as u64)
+        }
+        "molt_import_smoke_runtime_ready" => {
+            Some(crate::molt_import_smoke_runtime_ready as *const () as usize as u64)
+        }
         "molt_process_spawn" => Some(crate::molt_process_spawn as *const () as usize as u64),
         "molt_process_wait_future" => {
             Some(crate::molt_process_wait_future as *const () as usize as u64)

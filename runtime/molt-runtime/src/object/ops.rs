@@ -128,6 +128,78 @@ fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
     }
 }
 
+fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
+    unsafe {
+        let start = to_i64(obj_from_bits(range_start_bits(ptr)))?;
+        let stop = to_i64(obj_from_bits(range_stop_bits(ptr)))?;
+        let step = to_i64(obj_from_bits(range_step_bits(ptr)))?;
+        if step == 0 {
+            return None;
+        }
+        Some((start, stop, step))
+    }
+}
+
+fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
+    if step == 0 {
+        return 0;
+    }
+    let start_i = start as i128;
+    let stop_i = stop as i128;
+    let step_i = step as i128;
+    if step_i > 0 {
+        if start_i >= stop_i {
+            return 0;
+        }
+        let span = stop_i - start_i - 1;
+        return 1 + span / step_i;
+    }
+    if start_i <= stop_i {
+        return 0;
+    }
+    let step_abs = -step_i;
+    let span = start_i - stop_i - 1;
+    1 + span / step_abs
+}
+
+fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Option<i64> {
+    if idx < 0 {
+        return None;
+    }
+    let step_i = step as i128;
+    let val = (start as i128).checked_add(step_i.checked_mul(idx)?)?;
+    if step_i > 0 {
+        if val >= stop as i128 {
+            return None;
+        }
+    } else if step_i < 0 {
+        if val <= stop as i128 {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    i64::try_from(val).ok()
+}
+
+#[inline]
+fn debug_index_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1"))
+}
+
+#[inline]
+fn debug_index_list_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX_LIST").as_deref() == Ok("1"))
+}
+
+#[inline]
+fn debug_store_index_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_STORE_INDEX").as_deref() == Ok("1"))
+}
+
 fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
     if step.is_zero() {
         return BigInt::from(0);
@@ -4547,6 +4619,13 @@ fn vec_sum_result(_py: &PyToken<'_>, sum_bits: u64, ok: bool) -> u64 {
     MoltObject::from_ptr(tuple_ptr).bits()
 }
 
+fn vec_sum_i64_result(_py: &PyToken<'_>, value: i64, ok: bool) -> u64 {
+    let value_bits = int_bits_from_i64(_py, value);
+    let out = vec_sum_result(_py, value_bits, ok);
+    dec_ref_bits(_py, value_bits);
+    out
+}
+
 fn sum_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
     let mut sum = acc;
     for &bits in elems {
@@ -5416,20 +5495,20 @@ pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+                return vec_sum_i64_result(_py, acc, false);
             };
             if let Some(sum) = sum_ints_checked(elems, acc) {
-                return vec_sum_result(_py, MoltObject::from_int(sum).bits(), true);
+                return vec_sum_i64_result(_py, sum, true);
             }
         }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+        vec_sum_i64_result(_py, acc, false)
     })
 }
 
@@ -5444,17 +5523,17 @@ pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+                return vec_sum_i64_result(_py, acc, false);
             };
             let sum = sum_ints_trusted(elems, acc);
-            vec_sum_result(_py, MoltObject::from_int(sum).bits(), true)
+            vec_sum_i64_result(_py, sum, true)
         }
     })
 }
@@ -5631,6 +5710,21 @@ pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
     })
 }
 
+fn sum_int_range_arith_checked(start: i64, stop: i64, step: i64, acc: i64) -> Option<i64> {
+    let len = range_len_i128(start, stop, step);
+    if len <= 0 {
+        return Some(acc);
+    }
+    let n = len;
+    let first = i128::from(start);
+    let stride = i128::from(step);
+    let last = first.checked_add(stride.checked_mul(n.checked_sub(1)?)?)?;
+    let two_term_sum = first.checked_add(last)?;
+    let range_sum = n.checked_mul(two_term_sum)?.checked_div(2)?;
+    let total = i128::from(acc).checked_add(range_sum)?;
+    i64::try_from(total).ok()
+}
+
 #[no_mangle]
 pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -5642,30 +5736,30 @@ pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bit
         let start_obj = obj_from_bits(start_bits);
         let start = match start_obj.as_int() {
             Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            return vec_sum_i64_result(_py, acc, false);
         }
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+                return vec_sum_i64_result(_py, acc, false);
             };
             let start_idx = (start as usize).min(elems.len());
             let slice = &elems[start_idx..];
             if let Some(sum) = sum_ints_checked(slice, acc) {
-                return vec_sum_result(_py, MoltObject::from_int(sum).bits(), true);
+                return vec_sum_i64_result(_py, sum, true);
             }
         }
-        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+        vec_sum_i64_result(_py, acc, false)
     })
 }
 
@@ -5684,28 +5778,80 @@ pub extern "C" fn molt_vec_sum_int_range_trusted(
         let start_obj = obj_from_bits(start_bits);
         let start = match start_obj.as_int() {
             Some(val) => val,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         if start < 0 {
-            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            return vec_sum_i64_result(_py, acc, false);
         }
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+            None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
-                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+                return vec_sum_i64_result(_py, acc, false);
             };
             let start_idx = (start as usize).min(elems.len());
             let slice = &elems[start_idx..];
             let sum = sum_ints_trusted(slice, acc);
-            vec_sum_result(_py, MoltObject::from_int(sum).bits(), true)
+            vec_sum_i64_result(_py, sum, true)
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_int_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match obj_from_bits(acc_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_i64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match obj_from_bits(acc_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_i64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_sum_i64_result(_py, acc, false)
     })
 }
 
@@ -7073,6 +7219,38 @@ pub extern "C" fn molt_getpid() -> u64 {
         #[cfg(not(target_arch = "wasm32"))]
         {
             MoltObject::from_int(std::process::id() as i64).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_signal_raise(sig_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(sig) = to_i64(obj_from_bits(sig_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "signal number must be int");
+        };
+        if sig < i32::MIN as i64 || sig > i32::MAX as i64 {
+            return raise_exception::<_>(_py, "ValueError", "signal number out of range");
+        }
+        let sig_i32 = sig as i32;
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let rc = unsafe { libc::raise(sig_i32) };
+            if rc != 0 {
+                return raise_exception::<_>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::last_os_error().to_string(),
+                );
+            }
+            return MoltObject::none().bits();
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            if sig_i32 == 2 {
+                return raise_exception::<_>(_py, "KeyboardInterrupt", "signal interrupt");
+            }
+            MoltObject::none().bits()
         }
     })
 }
@@ -10556,14 +10734,23 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
             let pair_bits = molt_iter_next(iter_obj);
             let pair_obj = obj_from_bits(pair_bits);
             let Some(pair_ptr) = pair_obj.as_ptr() else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
             };
             unsafe {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
                 let elems = seq_vec_ref(pair_ptr);
                 if elems.len() < 2 {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
                 let val_bits = elems[0];
@@ -10590,14 +10777,23 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
             let pair_bits = molt_iter_next(iter_obj);
             let pair_obj = obj_from_bits(pair_bits);
             let Some(pair_ptr) = pair_obj.as_ptr() else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
             };
             unsafe {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
                 let elems = seq_vec_ref(pair_ptr);
                 if elems.len() < 2 {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
                 let val_bits = elems[0];
@@ -11560,6 +11756,12 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
+            if obj.is_int() || obj.is_bool() {
+                if let Some(func_bits) = crate::builtins::methods::int_method_bits(_py, &attr_name)
+                {
+                    return crate::molt_bound_method_new(func_bits, obj_bits);
+                }
+            }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
     })
@@ -24496,12 +24698,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             return MoltObject::from_ptr(out_ptr).bits();
                         }
                     }
-                    let type_err = format!(
-                        "list indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
-                        return MoltObject::none().bits();
+                    let idx = if let Some(i) = to_i64(key) {
+                        i
+                    } else {
+                        let type_err = format!(
+                            "list indices must be integers or slices, not {}",
+                            type_name(_py, key)
+                        );
+                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        i
                     };
                     let len = list_len(ptr) as i64;
                     let mut i = idx;
@@ -24509,7 +24717,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         i += len;
                     }
                     if i < 0 || i >= len {
-                        if std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1") {
+                        if debug_index_enabled() {
                             let task = crate::current_task_key()
                                 .map(|slot| slot.0 as usize)
                                 .unwrap_or(0);
@@ -24522,7 +24730,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                     let elems = seq_vec_ref(ptr);
                     let val = elems[i as usize];
-                    if std::env::var("MOLT_DEBUG_INDEX_LIST").as_deref() == Ok("1") {
+                    if debug_index_list_enabled() {
                         let val_obj = obj_from_bits(val);
                         eprintln!(
                             "molt_index list obj=0x{:x} idx={} val_type={} val_bits=0x{:x}",
@@ -24571,12 +24779,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             return MoltObject::from_ptr(out_ptr).bits();
                         }
                     }
-                    let type_err = format!(
-                        "tuple indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
-                        return MoltObject::none().bits();
+                    let idx = if let Some(i) = to_i64(key) {
+                        i
+                    } else {
+                        let type_err = format!(
+                            "tuple indices must be integers or slices, not {}",
+                            type_name(_py, key)
+                        );
+                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        i
                     };
                     let len = tuple_len(ptr) as i64;
                     let mut i = idx;
@@ -24584,7 +24798,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         i += len;
                     }
                     if i < 0 || i >= len {
-                        if std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1") {
+                        if debug_index_enabled() {
                             let task = crate::current_task_key()
                                 .map(|slot| slot.0 as usize)
                                 .unwrap_or(0);
@@ -24601,6 +24815,44 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return val;
                 }
                 if type_id == TYPE_ID_RANGE {
+                    if let Some((start_i64, stop_i64, step_i64)) = range_components_i64(ptr) {
+                        if let Some(mut idx_i64) = to_i64(key) {
+                            if idx_i64 < 0 {
+                                let len = range_len_i128(start_i64, stop_i64, step_i64);
+                                let adj = (idx_i64 as i128) + len;
+                                if adj < 0 {
+                                    return raise_exception::<_>(
+                                        _py,
+                                        "IndexError",
+                                        "range object index out of range",
+                                    );
+                                }
+                                idx_i64 = match i64::try_from(adj) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return raise_exception::<_>(
+                                            _py,
+                                            "IndexError",
+                                            "range object index out of range",
+                                        );
+                                    }
+                                };
+                            }
+                            if let Some(value) = range_value_at_index_i64(
+                                start_i64,
+                                stop_i64,
+                                step_i64,
+                                idx_i64 as i128,
+                            ) {
+                                return MoltObject::from_int(value).bits();
+                            }
+                            return raise_exception::<_>(
+                                _py,
+                                "IndexError",
+                                "range object index out of range",
+                            );
+                        }
+                    }
                     let type_err = format!(
                         "range indices must be integers or slices, not {}",
                         type_name(_py, key)
@@ -24771,14 +25023,20 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             return obj_bits;
                         }
                     }
-                    let type_err = format!(
-                        "list indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
-                        return MoltObject::none().bits();
+                    let idx = if let Some(i) = to_i64(key) {
+                        i
+                    } else {
+                        let type_err = format!(
+                            "list indices must be integers or slices, not {}",
+                            type_name(_py, key)
+                        );
+                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        i
                     };
-                    if std::env::var("MOLT_DEBUG_STORE_INDEX").as_deref() == Ok("1") {
+                    if debug_store_index_enabled() {
                         let val_obj = obj_from_bits(val_bits);
                         eprintln!(
                             "molt_store_index list obj=0x{:x} idx={} val_type={} val_bits=0x{:x}",
@@ -28129,18 +28387,16 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         vals.push(val_bits);
                     }
-                    let res_bits = if vals.len() == 1 {
-                        call_callable1(_py, func_bits, vals[0])
-                    } else {
-                        let builder_bits = molt_callargs_new(vals.len() as u64, 0);
-                        if builder_bits == 0 {
-                            return MoltObject::none().bits();
-                        }
-                        for &val_bits in &vals {
-                            let _ = molt_callargs_push_pos(builder_bits, val_bits);
-                        }
-                        molt_call_bind(func_bits, builder_bits)
-                    };
+                    // Route map callable invocation through bind so Python
+                    // function defaults are honored (e.g. def f(x, y=...)).
+                    let builder_bits = molt_callargs_new(vals.len() as u64, 0);
+                    if builder_bits == 0 {
+                        return MoltObject::none().bits();
+                    }
+                    for &val_bits in &vals {
+                        let _ = molt_callargs_push_pos(builder_bits, val_bits);
+                    }
+                    let res_bits = molt_call_bind(func_bits, builder_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, res_bits);
                         return MoltObject::none().bits();
@@ -28615,6 +28871,42 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return MoltObject::from_ptr(tuple_ptr).bits();
                     }
                     if target_type == TYPE_ID_RANGE {
+                        if let Some((start_i64, stop_i64, step_i64)) =
+                            range_components_i64(target_ptr)
+                        {
+                            if idx == ITER_EXHAUSTED {
+                                let none_bits = MoltObject::none().bits();
+                                let done_bits = MoltObject::from_bool(true).bits();
+                                let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                                if tuple_ptr.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                return MoltObject::from_ptr(tuple_ptr).bits();
+                            }
+                            if let Some(value) =
+                                range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
+                            {
+                                let val_bits = MoltObject::from_int(value).bits();
+                                let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                                iter_set_index(ptr, next_idx);
+                                let done_bits = MoltObject::from_bool(false).bits();
+                                let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
+                                if tuple_ptr.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                return MoltObject::from_ptr(tuple_ptr).bits();
+                            }
+                            let len = range_len_i128(start_i64, stop_i64, step_i64);
+                            let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
+                            iter_set_index(ptr, len_usize);
+                            let none_bits = MoltObject::none().bits();
+                            let done_bits = MoltObject::from_bool(true).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
+                        }
                         let Some((start, stop, step)) = range_components_bigint(target_ptr) else {
                             return MoltObject::none().bits();
                         };

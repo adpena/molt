@@ -480,13 +480,14 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                     false
                 };
                 if !is_valid_module {
-                    let got = type_name(_py, module_obj);
+                    // Isolate import should only yield module-like objects. If we
+                    // get a scalar/status payload instead, treat this as a missing
+                    // module for `import` semantics instead of surfacing an
+                    // internal payload type to user code.
+                    // TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:missing): implement native import-only `queue` stdlib module so queue differential cases move from ImportError to parity behavior.
                     dec_ref_bits(_py, module_bits);
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        &format!("import returned non-module payload: {got}"),
-                    );
+                    let msg = format!("No module named '{name}'");
+                    return raise_exception::<_>(_py, "ImportError", &msg);
                 }
 
                 // Keep sys.modules synchronized with successful runtime imports so

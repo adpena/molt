@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 import enum as _enum
 from types import ModuleType
 from typing import cast
+
+_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_SIGNAL_RAISE = _require_intrinsic("molt_signal_raise", globals())
 
 _capabilities: ModuleType | None
 try:
@@ -21,6 +25,7 @@ __all__ = [
     "Signals",
     "default_int_handler",
     "getsignal",
+    "raise_signal",
     "signal",
 ]
 
@@ -70,3 +75,19 @@ def signal(sig: int, handler: object) -> object:
     prev = _handlers.get(sig_num, SIG_DFL)
     _handlers[sig_num] = handler
     return prev
+
+
+def raise_signal(sig: int) -> None:
+    _require_cap()
+    sig_num = int(sig)
+    handler = getsignal(sig_num)
+    if handler is SIG_IGN:
+        return
+    if handler is SIG_DFL or handler is default_int_handler:
+        _MOLT_SIGNAL_RAISE(sig_num)
+        if sig_num == SIGINT:
+            raise KeyboardInterrupt
+        return
+    if not callable(handler):
+        raise TypeError("signal handler must be callable")
+    handler(sig_num, None)

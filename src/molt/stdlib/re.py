@@ -757,7 +757,20 @@ def _is_word_char(ch: str, flags: int) -> bool:
     return ord(ch) >= 128 and not _is_space(ch)
 
 
-def _class_matches(node: _CharClass, ch: str, flags: int) -> bool:
+def _class_matches(node, ch, flags):
+    # Fast path for common compiled classes like [A-Za-z]+.
+    if not node.negated and not node.chars and not node.categories:
+        if flags & IGNORECASE:
+            ch_cmp = _casefold(ch)
+            for start, end in node.ranges:
+                if _casefold(start) <= ch_cmp and ch_cmp <= _casefold(end):
+                    return True
+            return False
+        for start, end in node.ranges:
+            if start <= ch and ch <= end:
+                return True
+        return False
+
     hit = False
     if flags & IGNORECASE:
         ch_cmp = _casefold(ch)
@@ -767,7 +780,7 @@ def _class_matches(node: _CharClass, ch: str, flags: int) -> bool:
                 break
         if not hit:
             for start, end in node.ranges:
-                if _casefold(start) <= ch_cmp <= _casefold(end):
+                if _casefold(start) <= ch_cmp and ch_cmp <= _casefold(end):
                     hit = True
                     break
     else:
@@ -775,7 +788,7 @@ def _class_matches(node: _CharClass, ch: str, flags: int) -> bool:
             hit = True
         if not hit:
             for start, end in node.ranges:
-                if start <= ch <= end:
+                if start <= ch and ch <= end:
                     hit = True
                     break
     if not hit:

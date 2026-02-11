@@ -148,7 +148,7 @@ class UUID:
 
     @property
     def int(self) -> Int:
-        return int(self._int)
+        return _builtins.int(self._int)
 
     @property
     def urn(self) -> str:
@@ -317,7 +317,7 @@ def _validate_field(value: int, bits: int, index: int) -> int:
 
 
 def _apply_version_variant(value: int, version: int) -> int:
-    data = bytearray(_int_to_bytes(value, 16))
+    data = _builtins.bytearray(_int_to_bytes(value, 16))
     data[6] = (data[6] & 0x0F) | ((version & 0x0F) << 4)
     data[8] = (data[8] & 0x3F) | 0x80
     return _int_from_bytes(data)
@@ -333,26 +333,29 @@ def _int_from_hex(text: str) -> int:
     if len(value) != 32:
         raise ValueError("badly formed hexadecimal UUID string")
     try:
-        return int(value, 16)
+        return _builtins.int(value, 16)
     except ValueError as exc:
         raise ValueError("badly formed hexadecimal UUID string") from exc
 
 
 def _int_from_bytes(data: _builtins.bytes | bytearray) -> Int:
-    value = 0
-    for byte in data:
-        value = (value << 8) | int(byte)
-    return value
+    return _builtins.int.from_bytes(data, "big")
 
 
 def _int_to_bytes(value: int, length: int) -> bytes:
     if value < 0:
         raise ValueError("value must be non-negative")
-    out = bytearray(length)
-    for idx in range(length - 1, -1, -1):
-        out[idx] = value & 0xFF
-        value >>= 8
-    return bytes(out)
+    width = length * 2
+    hex_text = _builtins.format(value, "x")
+    if len(hex_text) > width:
+        hex_text = hex_text[-width:]
+    if len(hex_text) < width:
+        hex_text = ("0" * (width - len(hex_text))) + hex_text
+    out = _builtins.bytearray(length)
+    for idx in _builtins.range(length):
+        start = idx * 2
+        out[idx] = _builtins.int(hex_text[start : start + 2], 16)
+    return _builtins.bytes(out)
 
 
 def _bytes_le_to_bytes(data: bytes) -> bytes:
@@ -366,7 +369,7 @@ def _bytes_to_bytes_le(data: bytes) -> bytes:
 def _bytes_to_hex(data: bytes) -> str:
     chars = []
     for byte in data:
-        chars.append(format(int(byte), "02x"))
+        chars.append(_builtins.format(_builtins.int(byte), "02x"))
     return "".join(chars)
 
 

@@ -20,6 +20,21 @@ _MOLT_CONTENT_TOO_SHORT_INIT = _require_intrinsic(
 )
 
 
+def _coerce_response_fp(fp: object) -> object:
+    if not (isinstance(fp, tuple) and len(fp) == 2):
+        return fp
+    marker, handle = fp
+    if marker not in ("__molt_urllib_response__", b"__molt_urllib_response__"):
+        return fp
+    if isinstance(handle, float) and handle.is_integer():
+        handle = int(handle)
+    if not isinstance(handle, int):
+        return fp
+    from urllib.request import addinfourl
+
+    return addinfourl(handle)
+
+
 class URLError(OSError):
     reason: object
     filename: object
@@ -60,6 +75,12 @@ class HTTPError(URLError):
             )
         return out
 
+    def _fp_obj(self) -> object:
+        fp = _coerce_response_fp(self.fp)
+        if fp is not self.fp:
+            self.fp = fp
+        return fp
+
     @property
     def headers(self) -> object:
         return self.hdrs
@@ -69,7 +90,7 @@ class HTTPError(URLError):
         self.hdrs = headers
 
     def read(self, size: int = -1) -> object:
-        fp = self.fp
+        fp = self._fp_obj()
         if fp is None:
             return b""
         read = getattr(fp, "read", None)
@@ -78,7 +99,7 @@ class HTTPError(URLError):
         return b""
 
     def close(self) -> None:
-        fp = self.fp
+        fp = self._fp_obj()
         if fp is None:
             return
         close = getattr(fp, "close", None)

@@ -3,7 +3,7 @@ use crate::{MoltObject, PyToken};
 #[cfg(not(target_arch = "wasm32"))]
 use super::current_thread_id;
 #[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
@@ -166,6 +166,21 @@ struct BarrierState {
 #[cfg(not(target_arch = "wasm32"))]
 struct MoltLocal {
     state: Mutex<HashMap<u64, u64>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct MoltQueue {
+    state: Mutex<QueueState>,
+    not_empty: Condvar,
+    not_full: Condvar,
+    all_tasks_done: Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct QueueState {
+    items: VecDeque<u64>,
+    maxsize: i64,
+    unfinished_tasks: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -493,6 +508,156 @@ impl MoltSemaphore {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl MoltQueue {
+    fn new(maxsize: i64) -> Self {
+        Self {
+            state: Mutex::new(QueueState {
+                items: VecDeque::new(),
+                maxsize,
+                unfinished_tasks: 0,
+            }),
+            not_empty: Condvar::new(),
+            not_full: Condvar::new(),
+            all_tasks_done: Condvar::new(),
+        }
+    }
+
+    fn qsize(&self) -> i64 {
+        self.state.lock().unwrap().items.len() as i64
+    }
+
+    fn empty(&self) -> bool {
+        self.state.lock().unwrap().items.is_empty()
+    }
+
+    fn full(&self) -> bool {
+        let guard = self.state.lock().unwrap();
+        guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
+    }
+
+    fn put(&self, item_bits: u64, blocking: bool, timeout: Option<Duration>) -> bool {
+        let mut guard = self.state.lock().unwrap();
+        if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+            guard.items.push_back(item_bits);
+            guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+            self.not_empty.notify_one();
+            return true;
+        }
+        if !blocking {
+            return false;
+        }
+        match timeout {
+            Some(wait) if wait == Duration::ZERO => false,
+            Some(wait) => {
+                let start = Instant::now();
+                let mut remaining = wait;
+                loop {
+                    let (next, timed) = self.not_full.wait_timeout(guard, remaining).unwrap();
+                    guard = next;
+                    if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                        guard.items.push_back(item_bits);
+                        guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+                        self.not_empty.notify_one();
+                        return true;
+                    }
+                    if timed.timed_out() {
+                        return false;
+                    }
+                    let elapsed = start.elapsed();
+                    if elapsed >= wait {
+                        return false;
+                    }
+                    remaining = wait.saturating_sub(elapsed);
+                }
+            }
+            None => loop {
+                guard = self.not_full.wait(guard).unwrap();
+                if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                    guard.items.push_back(item_bits);
+                    guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+                    self.not_empty.notify_one();
+                    return true;
+                }
+            },
+        }
+    }
+
+    fn get(&self, blocking: bool, timeout: Option<Duration>) -> Option<u64> {
+        let mut guard = self.state.lock().unwrap();
+        if let Some(item_bits) = guard.items.pop_front() {
+            if guard.maxsize > 0 {
+                self.not_full.notify_one();
+            }
+            return Some(item_bits);
+        }
+        if !blocking {
+            return None;
+        }
+        match timeout {
+            Some(wait) if wait == Duration::ZERO => None,
+            Some(wait) => {
+                let start = Instant::now();
+                let mut remaining = wait;
+                loop {
+                    let (next, timed) = self.not_empty.wait_timeout(guard, remaining).unwrap();
+                    guard = next;
+                    if let Some(item_bits) = guard.items.pop_front() {
+                        if guard.maxsize > 0 {
+                            self.not_full.notify_one();
+                        }
+                        return Some(item_bits);
+                    }
+                    if timed.timed_out() {
+                        return None;
+                    }
+                    let elapsed = start.elapsed();
+                    if elapsed >= wait {
+                        return None;
+                    }
+                    remaining = wait.saturating_sub(elapsed);
+                }
+            }
+            None => loop {
+                guard = self.not_empty.wait(guard).unwrap();
+                if let Some(item_bits) = guard.items.pop_front() {
+                    if guard.maxsize > 0 {
+                        self.not_full.notify_one();
+                    }
+                    return Some(item_bits);
+                }
+            },
+        }
+    }
+
+    fn task_done(&self) -> bool {
+        let mut guard = self.state.lock().unwrap();
+        if guard.unfinished_tasks == 0 {
+            return false;
+        }
+        guard.unfinished_tasks = guard.unfinished_tasks.saturating_sub(1);
+        if guard.unfinished_tasks == 0 {
+            self.all_tasks_done.notify_all();
+        }
+        true
+    }
+
+    fn join(&self) {
+        let mut guard = self.state.lock().unwrap();
+        while guard.unfinished_tasks > 0 {
+            guard = self.all_tasks_done.wait(guard).unwrap();
+        }
+    }
+
+    fn drop_items(&self, _py: &PyToken<'_>) {
+        let mut guard = self.state.lock().unwrap();
+        while let Some(bits) = guard.items.pop_front() {
+            dec_ref_bits(_py, bits);
+        }
+        guard.unfinished_tasks = 0;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl MoltBarrier {
     fn new(parties: u64, timeout: Option<Duration>) -> Self {
         Self {
@@ -694,6 +859,20 @@ fn local_from_bits(bits: u64) -> Option<Arc<MoltLocal>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn queue_from_bits(bits: u64) -> Option<Arc<MoltQueue>> {
+    let ptr = ptr_from_bits(bits);
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        let arc = Arc::from_raw(ptr as *const MoltQueue);
+        let cloned = arc.clone();
+        let _ = Arc::into_raw(arc);
+        Some(cloned)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_timeout(
     _py: &PyToken<'_>,
     timeout_bits: u64,
@@ -769,6 +948,38 @@ fn parse_optional_timeout(_py: &PyToken<'_>, timeout_bits: u64) -> Result<Option
             _py,
             "ValueError",
             "timeout value must be a non-negative number",
+        ));
+    }
+    Ok(Some(Duration::from_secs_f64(timeout)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_queue_timeout(
+    _py: &PyToken<'_>,
+    blocking: bool,
+    timeout_bits: u64,
+    op_name: &str,
+) -> Result<Option<Duration>, u64> {
+    let timeout_obj = obj_from_bits(timeout_bits);
+    if timeout_obj.is_none() {
+        return Ok(None);
+    }
+    if !blocking {
+        let msg = format!("can't specify a timeout for a non-blocking {op_name}");
+        return Err(raise_exception::<_>(_py, "ValueError", &msg));
+    }
+    let Some(timeout) = to_f64(timeout_obj) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "timeout value must be a float",
+        ));
+    };
+    if !timeout.is_finite() || timeout < 0.0 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ValueError",
+            "'timeout' must be a non-negative number",
         ));
     }
     Ok(Some(Duration::from_secs_f64(timeout)))
@@ -1451,12 +1662,159 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Arc::new(MoltQueue::new(maxsize));
+        let raw = Arc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_int(queue.qsize()).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.empty()).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.full()).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_put(
+    handle_bits: u64,
+    item_bits: u64,
+    blocking_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
+        let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "put") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        inc_ref_bits(_py, item_bits);
+        let pushed = {
+            let _release = GilReleaseGuard::new();
+            queue.put(item_bits, blocking, timeout)
+        };
+        if !pushed {
+            dec_ref_bits(_py, item_bits);
+        }
+        MoltObject::from_bool(pushed).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_get(
+    handle_bits: u64,
+    blocking_bits: u64,
+    timeout_bits: u64,
+    sentinel_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
+        let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "get") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let out = {
+            let _release = GilReleaseGuard::new();
+            queue.get(blocking, timeout)
+        };
+        match out {
+            Some(bits) => bits,
+            None => {
+                inc_ref_bits(_py, sentinel_bits);
+                sentinel_bits
+            }
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.task_done()).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        {
+            let _release = GilReleaseGuard::new();
+            queue.join();
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = ptr_from_bits(handle_bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        release_ptr(ptr);
+        let queue = Arc::from_raw(ptr as *const MoltQueue);
+        queue.drop_items(_py);
+        MoltObject::none().bits()
+    })
+}
+
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
@@ -1581,6 +1939,116 @@ impl MoltLocal {
 }
 
 #[cfg(target_arch = "wasm32")]
+impl MoltQueue {
+    fn new(maxsize: i64) -> Self {
+        Self {
+            state: RefCell::new(QueueStateWasm {
+                items: VecDeque::new(),
+                maxsize,
+                unfinished_tasks: 0,
+            }),
+        }
+    }
+
+    fn qsize(&self) -> i64 {
+        self.state.borrow().items.len() as i64
+    }
+
+    fn empty(&self) -> bool {
+        self.state.borrow().items.is_empty()
+    }
+
+    fn full(&self) -> bool {
+        let guard = self.state.borrow();
+        guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
+    }
+
+    fn put(&self, item_bits: u64, blocking: bool, timeout: Option<f64>) -> bool {
+        {
+            let mut guard = self.state.borrow_mut();
+            if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                guard.items.push_back(item_bits);
+                guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+                return true;
+            }
+        }
+        if !blocking {
+            return false;
+        }
+        let start = WasmInstant::now();
+        loop {
+            {
+                let mut guard = self.state.borrow_mut();
+                if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                    guard.items.push_back(item_bits);
+                    guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+                    return true;
+                }
+            }
+            if let Some(limit) = timeout {
+                if start.elapsed().as_secs_f64() >= limit {
+                    return false;
+                }
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    fn get(&self, blocking: bool, timeout: Option<f64>) -> Option<u64> {
+        {
+            let mut guard = self.state.borrow_mut();
+            if let Some(bits) = guard.items.pop_front() {
+                return Some(bits);
+            }
+        }
+        if !blocking {
+            return None;
+        }
+        let start = WasmInstant::now();
+        loop {
+            {
+                let mut guard = self.state.borrow_mut();
+                if let Some(bits) = guard.items.pop_front() {
+                    return Some(bits);
+                }
+            }
+            if let Some(limit) = timeout {
+                if start.elapsed().as_secs_f64() >= limit {
+                    return None;
+                }
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    fn task_done(&self) -> bool {
+        let mut guard = self.state.borrow_mut();
+        if guard.unfinished_tasks == 0 {
+            return false;
+        }
+        guard.unfinished_tasks = guard.unfinished_tasks.saturating_sub(1);
+        true
+    }
+
+    fn join(&self) {
+        loop {
+            if self.state.borrow().unfinished_tasks == 0 {
+                return;
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    fn drop_items(&self, _py: &PyToken<'_>) {
+        let mut guard = self.state.borrow_mut();
+        while let Some(bits) = guard.items.pop_front() {
+            dec_ref_bits(_py, bits);
+        }
+        guard.unfinished_tasks = 0;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 struct MoltRLock {
     locked: Cell<bool>,
     owner: Cell<u64>,
@@ -1616,6 +2084,18 @@ struct MoltBarrier {
 #[cfg(target_arch = "wasm32")]
 struct MoltLocal {
     storage: RefCell<HashMap<u64, u64>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct MoltQueue {
+    state: RefCell<QueueStateWasm>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct QueueStateWasm {
+    items: VecDeque<u64>,
+    maxsize: i64,
+    unfinished_tasks: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1793,6 +2273,20 @@ fn local_from_bits(bits: u64) -> Option<Rc<MoltLocal>> {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn queue_from_bits(bits: u64) -> Option<Rc<MoltQueue>> {
+    let ptr = ptr_from_bits(bits);
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        let rc = Rc::from_raw(ptr as *const MoltQueue);
+        let cloned = rc.clone();
+        let _ = Rc::into_raw(rc);
+        Some(cloned)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn parse_timeout(_py: &PyToken<'_>, timeout_bits: u64, blocking: bool) -> Result<Option<f64>, u64> {
     let timeout_obj = obj_from_bits(timeout_bits);
     if timeout_obj.is_none() {
@@ -1864,6 +2358,38 @@ fn parse_optional_timeout(_py: &PyToken<'_>, timeout_bits: u64) -> Result<Option
             _py,
             "ValueError",
             "timeout value must be a non-negative number",
+        ));
+    }
+    Ok(Some(timeout))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_queue_timeout(
+    _py: &PyToken<'_>,
+    blocking: bool,
+    timeout_bits: u64,
+    op_name: &str,
+) -> Result<Option<f64>, u64> {
+    let timeout_obj = obj_from_bits(timeout_bits);
+    if timeout_obj.is_none() {
+        return Ok(None);
+    }
+    if !blocking {
+        let msg = format!("can't specify a timeout for a non-blocking {op_name}");
+        return Err(raise_exception::<_>(_py, "ValueError", &msg));
+    }
+    let Some(timeout) = to_f64(timeout_obj) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "timeout value must be a float",
+        ));
+    };
+    if !timeout.is_finite() || timeout < 0.0 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ValueError",
+            "'timeout' must be a non-negative number",
         ));
     }
     Ok(Some(timeout))
@@ -2624,6 +3150,143 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
             dec_ref_bits(_py, bits);
         }
         local.storage.borrow_mut().clear();
+        MoltObject::none().bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Rc::new(MoltQueue::new(maxsize));
+        let raw = Rc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_int(queue.qsize()).bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.empty()).bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.full()).bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_put(
+    handle_bits: u64,
+    item_bits: u64,
+    blocking_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
+        let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "put") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        inc_ref_bits(_py, item_bits);
+        let pushed = queue.put(item_bits, blocking, timeout);
+        if !pushed {
+            dec_ref_bits(_py, item_bits);
+        }
+        MoltObject::from_bool(pushed).bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_get(
+    handle_bits: u64,
+    blocking_bits: u64,
+    timeout_bits: u64,
+    sentinel_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
+        let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "get") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        match queue.get(blocking, timeout) {
+            Some(bits) => bits,
+            None => {
+                inc_ref_bits(_py, sentinel_bits);
+                sentinel_bits
+            }
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.task_done()).bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        queue.join();
+        MoltObject::none().bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = ptr_from_bits(handle_bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        release_ptr(ptr);
+        let queue = Rc::from_raw(ptr as *const MoltQueue);
+        queue.drop_items(_py);
         MoltObject::none().bits()
     })
 }
