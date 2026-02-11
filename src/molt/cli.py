@@ -3397,6 +3397,23 @@ def _resolve_cargo_profile_name(
     return profile_name, None
 
 
+def _native_arch_perf_requested() -> bool:
+    profile = os.environ.get("MOLT_PERF_PROFILE", "").strip().lower()
+    if profile in {"native-arch", "native_arch", "native"}:
+        return True
+    raw = os.environ.get("MOLT_NATIVE_ARCH_PERF", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _enable_native_arch_rustflags() -> bool:
+    flag = "-C target-cpu=native"
+    existing = os.environ.get("RUSTFLAGS", "")
+    if flag in existing:
+        return False
+    _append_rustflags(os.environ, flag)
+    return True
+
+
 def _backend_daemon_enabled() -> bool:
     if os.name != "posix":
         return False
@@ -4972,6 +4989,15 @@ def build(
 
     stdlib_root = _stdlib_root_path()
     warnings: list[str] = []
+    native_arch_perf_enabled = False
+    if _native_arch_perf_requested():
+        if target != "native":
+            warnings.append(
+                "Native-arch perf profile requested, but non-native target selected; ignoring."
+            )
+        else:
+            _enable_native_arch_rustflags()
+            native_arch_perf_enabled = True
     cwd_root = _find_project_root(Path.cwd())
     project_root = (
         _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
@@ -6556,6 +6582,7 @@ def build(
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
+                "native_arch_perf": native_arch_perf_enabled,
                 "linked": linked,
                 "require_linked": require_linked,
             }
@@ -6611,6 +6638,7 @@ def build(
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
+                "native_arch_perf": native_arch_perf_enabled,
                 "artifacts": {"object": str(output_obj)},
             }
             if diagnostics_payload is not None:
@@ -6943,6 +6971,7 @@ int main(int argc, char** argv) {
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
+                "native_arch_perf": native_arch_perf_enabled,
             }
             if diagnostics_payload is not None:
                 data["compile_diagnostics"] = diagnostics_payload
@@ -6976,6 +7005,7 @@ int main(int argc, char** argv) {
                 "returncode": link_process.returncode,
                 "emit": emit_mode,
                 "profile": profile,
+                "native_arch_perf": native_arch_perf_enabled,
                 "trusted": trusted,
             }
             if pgo_profile_payload is not None:

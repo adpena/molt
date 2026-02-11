@@ -178,9 +178,18 @@ struct MoltQueue {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct QueueState {
+    kind: QueueKind,
     items: VecDeque<u64>,
     maxsize: i64,
     unfinished_tasks: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueueKind {
+    Fifo,
+    Lifo,
+    Priority,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -509,9 +518,10 @@ impl MoltSemaphore {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl MoltQueue {
-    fn new(maxsize: i64) -> Self {
+    fn new(maxsize: i64, kind: QueueKind) -> Self {
         Self {
             state: Mutex::new(QueueState {
+                kind,
                 items: VecDeque::new(),
                 maxsize,
                 unfinished_tasks: 0,
@@ -535,8 +545,42 @@ impl MoltQueue {
         guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
     }
 
+    fn kind(&self) -> QueueKind {
+        self.state.lock().unwrap().kind
+    }
+
+    fn pop_item_locked(guard: &mut QueueState) -> Option<u64> {
+        match guard.kind {
+            QueueKind::Fifo | QueueKind::Priority => guard.items.pop_front(),
+            QueueKind::Lifo => guard.items.pop_back(),
+        }
+    }
+
+    fn priority_insert_locked(
+        _py: &PyToken<'_>,
+        guard: &mut QueueState,
+        item_bits: u64,
+    ) -> Result<(), u64> {
+        let mut insert_index = guard.items.len();
+        for (idx, existing_bits) in guard.items.iter().copied().enumerate() {
+            let lt_bits = crate::molt_lt(item_bits, existing_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            if is_truthy(_py, obj_from_bits(lt_bits)) {
+                insert_index = idx;
+                break;
+            }
+        }
+        guard.items.insert(insert_index, item_bits);
+        Ok(())
+    }
+
     fn put(&self, item_bits: u64, blocking: bool, timeout: Option<Duration>) -> bool {
         let mut guard = self.state.lock().unwrap();
+        if guard.kind == QueueKind::Priority {
+            return false;
+        }
         if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
             guard.items.push_back(item_bits);
             guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
@@ -582,9 +626,90 @@ impl MoltQueue {
         }
     }
 
+    fn try_put_priority(&self, _py: &PyToken<'_>, item_bits: u64) -> Result<bool, u64> {
+        let mut guard = self.state.lock().unwrap();
+        if guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize {
+            return Ok(false);
+        }
+        Self::priority_insert_locked(_py, &mut guard, item_bits)?;
+        guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
+        self.not_empty.notify_one();
+        Ok(true)
+    }
+
+    fn wait_not_full(&self, timeout: Option<Duration>) -> bool {
+        let mut guard = self.state.lock().unwrap();
+        if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+            return true;
+        }
+        match timeout {
+            Some(wait) if wait == Duration::ZERO => false,
+            Some(wait) => {
+                let start = Instant::now();
+                let mut remaining = wait;
+                loop {
+                    let (next, timed) = self.not_full.wait_timeout(guard, remaining).unwrap();
+                    guard = next;
+                    if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                        return true;
+                    }
+                    if timed.timed_out() {
+                        return false;
+                    }
+                    let elapsed = start.elapsed();
+                    if elapsed >= wait {
+                        return false;
+                    }
+                    remaining = wait.saturating_sub(elapsed);
+                }
+            }
+            None => loop {
+                guard = self.not_full.wait(guard).unwrap();
+                if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
+                    return true;
+                }
+            },
+        }
+    }
+
+    fn put_priority(
+        &self,
+        _py: &PyToken<'_>,
+        item_bits: u64,
+        blocking: bool,
+        timeout: Option<Duration>,
+    ) -> Result<bool, u64> {
+        let start = Instant::now();
+        loop {
+            if self.try_put_priority(_py, item_bits)? {
+                return Ok(true);
+            }
+            if !blocking {
+                return Ok(false);
+            }
+            let wait_for = match timeout {
+                Some(total) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= total {
+                        return Ok(false);
+                    }
+                    Some(total.saturating_sub(elapsed))
+                }
+                None => None,
+            };
+            let ready = {
+                let _release = GilReleaseGuard::new();
+                self.wait_not_full(wait_for)
+            };
+            if !ready {
+                return Ok(false);
+            }
+        }
+    }
+
     fn get(&self, blocking: bool, timeout: Option<Duration>) -> Option<u64> {
         let mut guard = self.state.lock().unwrap();
-        if let Some(item_bits) = guard.items.pop_front() {
+        if let Some(item_bits) = Self::pop_item_locked(&mut guard) {
             if guard.maxsize > 0 {
                 self.not_full.notify_one();
             }
@@ -601,7 +726,7 @@ impl MoltQueue {
                 loop {
                     let (next, timed) = self.not_empty.wait_timeout(guard, remaining).unwrap();
                     guard = next;
-                    if let Some(item_bits) = guard.items.pop_front() {
+                    if let Some(item_bits) = Self::pop_item_locked(&mut guard) {
                         if guard.maxsize > 0 {
                             self.not_full.notify_one();
                         }
@@ -619,7 +744,7 @@ impl MoltQueue {
             }
             None => loop {
                 guard = self.not_empty.wait(guard).unwrap();
-                if let Some(item_bits) = guard.items.pop_front() {
+                if let Some(item_bits) = Self::pop_item_locked(&mut guard) {
                     if guard.maxsize > 0 {
                         self.not_full.notify_one();
                     }
@@ -1669,7 +1794,33 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
         };
-        let queue = Arc::new(MoltQueue::new(maxsize));
+        let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Fifo));
+        let raw = Arc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Lifo));
+        let raw = Arc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Priority));
         let raw = Arc::into_raw(queue) as *mut u8;
         bits_from_ptr(raw)
     })
@@ -1726,9 +1877,19 @@ pub unsafe extern "C" fn molt_queue_put(
             Err(bits) => return bits,
         };
         inc_ref_bits(_py, item_bits);
-        let pushed = {
-            let _release = GilReleaseGuard::new();
-            queue.put(item_bits, blocking, timeout)
+        let pushed = if queue.kind() == QueueKind::Priority {
+            match queue.put_priority(_py, item_bits, blocking, timeout) {
+                Ok(value) => value,
+                Err(err_bits) => {
+                    dec_ref_bits(_py, item_bits);
+                    return err_bits;
+                }
+            }
+        } else {
+            {
+                let _release = GilReleaseGuard::new();
+                queue.put(item_bits, blocking, timeout)
+            }
         };
         if !pushed {
             dec_ref_bits(_py, item_bits);
@@ -1940,9 +2101,10 @@ impl MoltLocal {
 
 #[cfg(target_arch = "wasm32")]
 impl MoltQueue {
-    fn new(maxsize: i64) -> Self {
+    fn new(maxsize: i64, kind: QueueKindWasm) -> Self {
         Self {
             state: RefCell::new(QueueStateWasm {
+                kind,
                 items: VecDeque::new(),
                 maxsize,
                 unfinished_tasks: 0,
@@ -1963,31 +2125,72 @@ impl MoltQueue {
         guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
     }
 
-    fn put(&self, item_bits: u64, blocking: bool, timeout: Option<f64>) -> bool {
+    fn pop_item_locked(guard: &mut QueueStateWasm) -> Option<u64> {
+        match guard.kind {
+            QueueKindWasm::Fifo | QueueKindWasm::Priority => guard.items.pop_front(),
+            QueueKindWasm::Lifo => guard.items.pop_back(),
+        }
+    }
+
+    fn priority_insert_locked(
+        _py: &PyToken<'_>,
+        guard: &mut QueueStateWasm,
+        item_bits: u64,
+    ) -> Result<(), u64> {
+        let mut insert_index = guard.items.len();
+        for (idx, existing_bits) in guard.items.iter().copied().enumerate() {
+            let lt_bits = crate::molt_lt(item_bits, existing_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            if is_truthy(_py, obj_from_bits(lt_bits)) {
+                insert_index = idx;
+                break;
+            }
+        }
+        guard.items.insert(insert_index, item_bits);
+        Ok(())
+    }
+
+    fn put(
+        &self,
+        _py: &PyToken<'_>,
+        item_bits: u64,
+        blocking: bool,
+        timeout: Option<f64>,
+    ) -> Result<bool, u64> {
         {
             let mut guard = self.state.borrow_mut();
             if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
-                guard.items.push_back(item_bits);
+                if guard.kind == QueueKindWasm::Priority {
+                    Self::priority_insert_locked(_py, &mut guard, item_bits)?;
+                } else {
+                    guard.items.push_back(item_bits);
+                }
                 guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
-                return true;
+                return Ok(true);
             }
         }
         if !blocking {
-            return false;
+            return Ok(false);
         }
         let start = WasmInstant::now();
         loop {
             {
                 let mut guard = self.state.borrow_mut();
                 if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
-                    guard.items.push_back(item_bits);
+                    if guard.kind == QueueKindWasm::Priority {
+                        Self::priority_insert_locked(_py, &mut guard, item_bits)?;
+                    } else {
+                        guard.items.push_back(item_bits);
+                    }
                     guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
-                    return true;
+                    return Ok(true);
                 }
             }
             if let Some(limit) = timeout {
                 if start.elapsed().as_secs_f64() >= limit {
-                    return false;
+                    return Ok(false);
                 }
             }
             std::hint::spin_loop();
@@ -1997,7 +2200,7 @@ impl MoltQueue {
     fn get(&self, blocking: bool, timeout: Option<f64>) -> Option<u64> {
         {
             let mut guard = self.state.borrow_mut();
-            if let Some(bits) = guard.items.pop_front() {
+            if let Some(bits) = Self::pop_item_locked(&mut guard) {
                 return Some(bits);
             }
         }
@@ -2008,7 +2211,7 @@ impl MoltQueue {
         loop {
             {
                 let mut guard = self.state.borrow_mut();
-                if let Some(bits) = guard.items.pop_front() {
+                if let Some(bits) = Self::pop_item_locked(&mut guard) {
                     return Some(bits);
                 }
             }
@@ -2093,9 +2296,18 @@ struct MoltQueue {
 
 #[cfg(target_arch = "wasm32")]
 struct QueueStateWasm {
+    kind: QueueKindWasm,
     items: VecDeque<u64>,
     maxsize: i64,
     unfinished_tasks: u64,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueueKindWasm {
+    Fifo,
+    Lifo,
+    Priority,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3161,7 +3373,33 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
         };
-        let queue = Rc::new(MoltQueue::new(maxsize));
+        let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Fifo));
+        let raw = Rc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Lifo));
+        let raw = Rc::into_raw(queue) as *mut u8;
+        bits_from_ptr(raw)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+        };
+        let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Priority));
         let raw = Rc::into_raw(queue) as *mut u8;
         bits_from_ptr(raw)
     })
@@ -3218,7 +3456,13 @@ pub unsafe extern "C" fn molt_queue_put(
             Err(bits) => return bits,
         };
         inc_ref_bits(_py, item_bits);
-        let pushed = queue.put(item_bits, blocking, timeout);
+        let pushed = match queue.put(_py, item_bits, blocking, timeout) {
+            Ok(value) => value,
+            Err(err_bits) => {
+                dec_ref_bits(_py, item_bits);
+                return err_bits;
+            }
+        };
         if !pushed {
             dec_ref_bits(_py, item_bits);
         }

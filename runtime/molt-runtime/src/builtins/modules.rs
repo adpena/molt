@@ -367,14 +367,31 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-            Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "module name must be str");
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+            }
+        }
+        let name_bytes =
+            unsafe { std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr)) };
+        let name_owned;
+        let name = if let Ok(val) = std::str::from_utf8(name_bytes) {
+            val
+        } else {
+            name_owned = match string_obj_to_owned(name_obj) {
+                Some(val) => val,
+                None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+            };
+            name_owned.as_str()
         };
         let trace = trace_module_cache();
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         let guard = cache.lock().unwrap();
-        if let Some(bits) = guard.get(&name) {
+        if let Some(bits) = guard.get(name) {
             inc_ref_bits(_py, *bits);
             if trace {
                 eprintln!("module cache hit: {name}");
@@ -484,7 +501,6 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                     // get a scalar/status payload instead, treat this as a missing
                     // module for `import` semantics instead of surfacing an
                     // internal payload type to user code.
-                    // TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:missing): implement native import-only `queue` stdlib module so queue differential cases move from ImportError to parity behavior.
                     dec_ref_bits(_py, module_bits);
                     let msg = format!("No module named '{name}'");
                     return raise_exception::<_>(_py, "ImportError", &msg);

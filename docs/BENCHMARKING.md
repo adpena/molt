@@ -142,6 +142,18 @@ Validate native + WASM parity for the same cases.
 
 Use `molt profile <script.py>` to generate flamegraphs and identify bottlenecks in the compiler or runtime.
 
+### Native-Arch Perf Profile (Opt-In)
+
+For production-grade native benchmark runs, enable the native-arch profile:
+
+```bash
+MOLT_PERF_PROFILE=native-arch \
+uv run --python 3.14 python3 tools/bench.py --compare codon
+```
+
+Equivalent toggle: `MOLT_NATIVE_ARCH_PERF=1`.
+When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFLAGS`.
+
 ## Compile Throughput Tuning
 
 - Bootstrap a consistent throughput environment first:

@@ -45,8 +45,17 @@ Planned milestones:
 - TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
 
 ## Performance
-- Vector reduction kernels now cover `sum`/`prod`/`min`/`max` with trusted fast paths; next up: float reductions and typed-buffer kernels (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): float reductions + typed-buffer kernels).
+- Vector reduction kernels now cover `sum`/`prod`/`min`/`max` plus float `sum` lanes (list/tuple/range variants), with adaptive lane gating counters (`MOLT_ADAPTIVE_VEC_LANES`) to reduce failed-probe overhead while preserving generic fallbacks.
+- Range materialization now has a dedicated runtime lane (`list_from_range`) used by `list(range(...))` and simple `[i for i in range(...)]` comprehensions to remove generator/list-append call overhead from hot loops.
+- Dict increment idioms (`d[k] = d.get(k, 0) + delta`) now lower to a dedicated runtime lane (`dict_inc`) with int fast path + generic add fallback.
+- Fused split+count lanes (`string_split_ws_dict_inc`, `string_split_sep_dict_inc`) now include a string-key dict probe fast path (hash+byte compare) with explicit fallback to generic dict semantics for mixed/non-string-key maps.
+- Iterable element hints now propagate through for-loop lowering (including `file_text`/`file_bytes` iterables), unlocking broader split/find/count primitive lowering in ETL-style loops without manual type hints.
+- `statistics.mean/stdev` on slice expressions now lower to dedicated runtime lanes (`statistics_mean_slice`, `statistics_stdev_slice`) with list/tuple fast paths and runtime-owned generic fallback for non-list/tuple inputs.
+- Slice statistics lanes now include int/float element fast-coercion in hot loops (generic numeric fallback preserved).
+- `abs(...)` now lowers to a dedicated runtime lane (`abs`) to remove dynamic-call overhead from numeric hot loops.
+- `dict.setdefault(key, [])` now lowers to a dedicated lane (`dict_setdefault_empty_list`) that avoids eager empty-list allocation and reduces grouping overhead in ETL-style loops.
 - String kernel SIMD paths cover find/split/replace with Unicode-safe index translation; next: Unicode index caches and wider SIMD (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): Unicode index caches + wider SIMD).
+- TODO(perf, owner:compiler, milestone:RT2, priority:P1, status:planned): reduce startup/import-path dispatch overhead for stdlib-heavy scripts (bind intrinsic-backed imports at lower cost and trim module-init call traffic) so wins translate to short-lived CLI/data scripts as well as long-running services.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): implement sharded/lock-free handle resolution and track lock-sensitive benchmark deltas (attr access, container ops).
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` using iterable length hints to reduce rehashing.
@@ -202,6 +211,9 @@ Sign-off criteria:
 - Implemented: wasm/non-Unix socket host ABI now carries ancillary payload buffers + recvmsg `msg_flags` for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into`; wasm runtime paths no longer hardcode `msg_flags=0`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete cross-platform ancillary parity for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue `re` parser/matcher lowering into Rust intrinsics; literal/any/char-class advancement, char/range/category matching, anchor/backref/scoped-flag matcher nodes, group capture/value materialization, and replacement expansion are intrinsic-backed, while remaining lookaround variants, verbose parser edge cases, and full Unicode class/casefold parity are pending.
+- Implemented: `queue` now lowers `LifoQueue` and `PriorityQueue` construction/ordering through runtime intrinsics (`molt_queue_lifo_new`, `molt_queue_priority_new`) on top of existing intrinsic-backed queue operations.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete queue edge-case/API parity (task accounting corners, comparator/error-path fidelity, and broader CPython coverage).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand advanced hashlib/hmac digestmod parity tests.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): `struct` intrinsics cover `pack`/`unpack`/`calcsize` + `pack_into`/`unpack_from`/`iter_unpack` across the CPython 3.12 format table (including half-float) with C-contiguous nested-memoryview windows; remaining gaps are exact CPython diagnostic-text parity on selected edge cases.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (`timegm`) + deterministic clock policy.

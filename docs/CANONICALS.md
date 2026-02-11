@@ -8,6 +8,7 @@ These are the must-read documents for anyone adding or reviewing functionality.
 - `AGENTS.md`
 - `CONTRIBUTING.md`
 - `docs/DEVELOPER_GUIDE.md`
+- In `docs/DEVELOPER_GUIDE.md`, treat "Rules Of Thumb For New Work" and "Coverage And Optimization Strategy" as mandatory execution policy for parity + optimization work.
 - `docs/OPERATIONS.md`
 - `docs/INDEX.md`
 - Platform pitfalls: `README.md`, `docs/DEVELOPER_GUIDE.md`, and `docs/OPERATIONS.md` (macOS/Linux/Windows/WASM notes).

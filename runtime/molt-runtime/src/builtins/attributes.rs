@@ -20,6 +20,7 @@ use crate::*;
 
 static PROPERTY_DOCS: OnceLock<Mutex<HashMap<PtrSlot, u64>>> = OnceLock::new();
 static PROPERTY_DOC_NAME: AtomicU64 = AtomicU64::new(0);
+static ATTR_SITE_NAME_CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
 
 fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
     matches!(
@@ -30,6 +31,58 @@ fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
 
 fn property_docs() -> &'static Mutex<HashMap<PtrSlot, u64>> {
     PROPERTY_DOCS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
+    ATTR_SITE_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
+    let mut cache = attr_site_name_cache().lock().unwrap();
+    for (_site, bits) in cache.drain() {
+        if bits != 0 {
+            dec_ref_bits(_py, bits);
+        }
+    }
+}
+
+fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
+    let site = obj_from_bits(site_bits);
+    if let Some(i) = site.as_int() {
+        return u64::try_from(i).ok();
+    }
+    if site.is_bool() {
+        return Some(if site.as_bool().unwrap_or(false) {
+            1
+        } else {
+            0
+        });
+    }
+    if site.is_ptr() || site.is_none() || site.is_pending() {
+        return None;
+    }
+    Some(site_bits)
+}
+
+unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
+    let mut cache = attr_site_name_cache().lock().unwrap();
+    if let Some(bits) = cache.get(&site_id).copied() {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            if object_type_id(ptr) == TYPE_ID_STRING {
+                let cached = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                if cached == slice {
+                    inc_ref_bits(_py, bits);
+                    return Some(bits);
+                }
+            }
+        }
+        dec_ref_bits(_py, bits);
+        cache.remove(&site_id);
+    }
+    let bits = attr_name_bits_from_bytes(_py, slice)?;
+    inc_ref_bits(_py, bits);
+    cache.insert(site_id, bits);
+    Some(bits)
 }
 
 fn property_doc_bits(_py: &PyToken<'_>, prop_ptr: *mut u8) -> u64 {
@@ -4282,6 +4335,30 @@ pub unsafe extern "C" fn molt_get_attr_object(
             }
         }
         attr_error(_py, type_name(_py, obj), attr_name)
+    })
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn molt_get_attr_object_ic(
+    obj_bits: u64,
+    attr_name_ptr: *const u8,
+    attr_name_len_bits: u64,
+    site_bits: u64,
+) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let Some(site_id) = ic_site_from_bits(site_bits) else {
+            return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
+        };
+        let attr_name_len = usize_from_bits(attr_name_len_bits);
+        let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
+        let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
+            return MoltObject::none().bits() as i64;
+        };
+        let out = molt_get_attr_name(obj_bits, name_bits);
+        dec_ref_bits(_py, name_bits);
+        out as i64
     })
 }
 

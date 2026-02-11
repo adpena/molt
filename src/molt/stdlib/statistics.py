@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import math as _math
-from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any
+else:
+    Any = object
 
 __all__ = [
     "StatisticsError",

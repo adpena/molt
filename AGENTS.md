@@ -24,6 +24,11 @@
 - Before ending a turn, provide a short Rust-lowering audit for touched stdlib modules:
 module path, intrinsic names used, and confirmation that no host-Python fallback path was added.
 
+## Rules Of Thumb For New Work (Non-Negotiable)
+- Add or extend a runtime/compiler primitive when the behavior is a reusable low-level hot semantic.
+- Expose that primitive capability to stdlib through a Rust intrinsic (manifested and registered canonically).
+- Expose user-facing language/core behavior through builtins and stdlib APIs that call intrinsics/primitives, not Python reimplementations of runtime semantics.
+
 ## Mission (Non-Negotiable)
 Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
 
