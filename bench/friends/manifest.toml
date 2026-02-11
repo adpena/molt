@@ -1,0 +1,120 @@
+schema_version = 1
+
+[defaults]
+repeat = 5
+timeout_sec = 1800
+
+# Friend suite records are intentionally disabled until:
+# 1) repo_ref is pinned to an immutable commit/tag
+# 2) runner commands are confirmed on your host
+# 3) suite adapters (if needed) are implemented
+#
+# Semantic mode:
+# - runs_unmodified
+# - requires_adapter
+# - unsupported_by_molt
+
+[[suite]]
+id = "codon_benchmarks"
+enabled = false
+friend = "codon"
+display_name = "Codon Benchmarks"
+source = "git"
+repo_url = "https://github.com/exaloop/codon.git"
+repo_ref = "PINNED_COMMIT_REQUIRED"
+semantic_mode = "requires_adapter"
+adapter_notes = "Wire Codon's benchmark harness and classify unsupported Molt semantics per case."
+tags = ["native", "compiler", "microbench"]
+
+[suite.runners.cpython]
+skip_reason = "Configure cpython run_cmd for this suite before enabling."
+
+[suite.runners.molt]
+skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+
+[suite.runners.friend]
+skip_reason = "Configure codon run_cmd (and optional build_cmd) before enabling."
+
+[[suite]]
+id = "pypy_benchmarks"
+enabled = false
+friend = "pypy"
+display_name = "PyPy Benchmarks"
+source = "git"
+repo_url = "https://github.com/pypy/benchmarks.git"
+repo_ref = "PINNED_COMMIT_REQUIRED"
+semantic_mode = "requires_adapter"
+adapter_notes = "Map PyPy benchmark driver commands into cpython/molt/friend runner lanes."
+tags = ["native", "interpreter", "microbench"]
+
+[suite.runners.cpython]
+skip_reason = "Configure cpython run_cmd for this suite before enabling."
+
+[suite.runners.molt]
+skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+
+[suite.runners.friend]
+skip_reason = "Configure pypy run_cmd before enabling."
+
+[[suite]]
+id = "nuitka_benchmarks"
+enabled = false
+friend = "nuitka"
+display_name = "Nuitka Benchmarks"
+source = "git"
+repo_url = "https://github.com/Nuitka/Nuitka.git"
+repo_ref = "PINNED_COMMIT_REQUIRED"
+semantic_mode = "requires_adapter"
+adapter_notes = "Split Nuitka compile and run phases explicitly in runner commands."
+tags = ["native", "compiler", "compile-time"]
+
+[suite.runners.cpython]
+skip_reason = "Configure cpython run_cmd for this suite before enabling."
+
+[suite.runners.molt]
+skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+
+[suite.runners.friend]
+skip_reason = "Configure nuitka build_cmd/run_cmd before enabling."
+
+[[suite]]
+id = "cython_benchmarks"
+enabled = false
+friend = "cython"
+display_name = "Cython Benchmarks"
+source = "git"
+repo_url = "https://github.com/cython/cython.git"
+repo_ref = "PINNED_COMMIT_REQUIRED"
+semantic_mode = "requires_adapter"
+adapter_notes = "Track Cython build vs run time separately and pin compiler flags."
+tags = ["native", "compiler", "compile-time"]
+
+[suite.runners.cpython]
+skip_reason = "Configure cpython run_cmd for this suite before enabling."
+
+[suite.runners.molt]
+skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+
+[suite.runners.friend]
+skip_reason = "Configure cython build_cmd/run_cmd before enabling."
+
+[[suite]]
+id = "numba_benchmarks"
+enabled = false
+friend = "numba"
+display_name = "Numba Benchmarks"
+source = "git"
+repo_url = "https://github.com/numba/numba.git"
+repo_ref = "PINNED_COMMIT_REQUIRED"
+semantic_mode = "requires_adapter"
+adapter_notes = "Pin Numba/llvmlite versions and isolate first-run JIT warmup from steady-state."
+tags = ["native", "jit", "numeric"]
+
+[suite.runners.cpython]
+skip_reason = "Configure cpython run_cmd for this suite before enabling."
+
+[suite.runners.molt]
+skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+
+[suite.runners.friend]
+skip_reason = "Configure numba run_cmd and warmup policy before enabling."

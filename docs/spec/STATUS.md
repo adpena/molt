@@ -79,6 +79,8 @@ README/ROADMAP in sync.
 - Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/encoding paths (`molt_enum_init_member`, `molt_pickle_encode_protocol0`) while retaining partial stdlib shims; `enum_basic.py` and `pickle_basic.py` are green in the differential basic lane with `--build-profile dev`.
+- Implemented: `statistics` now has intrinsic-backed `mean`/`stdev` (`molt_statistics_mean`, `molt_statistics_stdev`) with shim-level `StatisticsError` mapping; Codon `taq.py` import/runtime path is unblocked.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `statistics` module parity beyond `mean`/`stdev` coverage.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -514,6 +516,7 @@ README/ROADMAP in sync.
 - Dev build throughput controls are available and enabled by default: `--profile dev` routes to Cargo `dev-fast`; native backend compiles use a persistent backend daemon with lock-coordinated restart/retry; shared build state (locks/fingerprints) lives under `<CARGO_TARGET_DIR>/.molt_state/` (override with `MOLT_BUILD_STATE_DIR`) while daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
 - Throughput tooling is available for repeatable setup + measurement: `tools/throughput_env.sh`, `tools/throughput_matrix.py`, and `tools/molt_cache_prune.py`.
 - Release compile iteration lane is available via Cargo profile override `MOLT_RELEASE_CARGO_PROFILE=release-fast`; `tools/compile_progress.py` includes dedicated `release_fast_cold`, `release_fast_warm`, and `release_fast_nocache_warm` cases for measurement and regression tracking.
+- Friend-suite benchmarking harness is available via `tools/bench_friends.py` with pinned manifest configuration in `bench/friends/manifest.toml`; runs emit reproducible JSON/markdown artifacts and can publish `docs/benchmarks/friend_summary.md`.
 - On macOS arm64, uv runs that target Python 3.14 force `--no-managed-python` and
   require a system `python3.14` to avoid uv-managed hangs.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
@@ -521,6 +524,7 @@ README/ROADMAP in sync.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane with multi-job compile API + richer health telemetry under high multi-agent contention.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): add function-level object caching and batch diff compile server mode to reduce repeated backend compiles across unchanged functions/tests.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add import-graph-aware diff scheduling and distributed cache playbooks for multi-host agent fleets.
+- TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend-owned suite adapters (Codon/PyPy/Nuitka/Cython/Numba), pin immutable suite refs/commands, and enable nightly friend scorecard publication.
 
 ## Known Gaps
 - Browser host harness is available under `wasm/browser_host.html` with

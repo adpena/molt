@@ -213,6 +213,16 @@ unsafe fn call_type_with_builder(
                 }
             }
         }
+        if class_bits == builtins.string_io {
+            if let Some(ptr) = args_ptr {
+                if !(*ptr).kw_names.is_empty() {
+                    if let Some(bound_args) = bind_builtin_class_string_io(_py, &*ptr) {
+                        return call_class_init_with_args(_py, call_ptr, &bound_args);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
         if let Some(ptr) = args_ptr {
             if !(*ptr).kw_names.is_empty() {
                 let class_name = class_name_for_error(class_bits);
@@ -2163,6 +2173,49 @@ unsafe fn bind_builtin_class_text_io_wrapper(
         if slot.is_none() {
             *slot = Some(MoltObject::from_bool(false).bits());
         }
+    }
+    Some(values.into_iter().flatten().collect())
+}
+
+unsafe fn bind_builtin_class_string_io(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+    const NAMES: [&str; 2] = ["initial_value", "newline"];
+    if args.pos.len() > NAMES.len() {
+        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+    }
+    let mut values: [Option<u64>; 2] = [None; 2];
+    for (idx, &val) in args.pos.iter().enumerate() {
+        values[idx] = Some(val);
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let mut matched = false;
+        for (idx, expected) in NAMES.iter().enumerate() {
+            if name_str == *expected {
+                if values[idx].is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                values[idx] = Some(val_bits);
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            let msg = format!("got an unexpected keyword '{name_str}'");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+    }
+    if values[0].is_none() {
+        values[0] = Some(MoltObject::none().bits());
+    }
+    if values[1].is_none() {
+        values[1] = Some(MoltObject::none().bits());
     }
     Some(values.into_iter().flatten().collect())
 }

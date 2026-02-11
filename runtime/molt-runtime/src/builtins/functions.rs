@@ -7638,3 +7638,78 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits
         MoltObject::none().bits()
     })
 }
+
+#[no_mangle]
+pub extern "C" fn molt_csv_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_logging_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_trace_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}

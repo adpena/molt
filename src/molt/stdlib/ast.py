@@ -9,6 +9,7 @@ from typing import Any, Iterable, Iterator
 __all__ = [
     "AST",
     "Add",
+    "Assign",
     "BinOp",
     "Constant",
     "Expr",
@@ -18,9 +19,11 @@ __all__ = [
     "Module",
     "Name",
     "Return",
+    "Store",
     "arg",
     "arguments",
     "get_docstring",
+    "iter_child_nodes",
     "iter_fields",
     "parse",
     "walk",
@@ -110,6 +113,15 @@ class Expr(AST):
         self.value = value
 
 
+class Assign(AST):
+    _fields = ("targets", "value", "type_comment")
+
+    def __init__(self, targets: list[AST], value: AST) -> None:
+        self.targets = list(targets)
+        self.value = value
+        self.type_comment: str | None = None
+
+
 class Name(AST):
     _fields = ("id", "ctx")
 
@@ -119,6 +131,10 @@ class Name(AST):
 
 
 class Load(AST):
+    _fields: tuple[str, ...] = ()
+
+
+class Store(AST):
     _fields: tuple[str, ...] = ()
 
 
@@ -160,12 +176,28 @@ _AST_PARSE_CTORS = (
     Constant,
     Add,
     BinOp,
+    Assign,
+    Store,
 )
 
 
 def iter_fields(node: AST) -> Iterable[tuple[str, Any]]:
-    for name in getattr(node, "_fields", ()):
+    fields = getattr(type(node), "_fields", ())
+    if not isinstance(fields, (list, tuple)):
+        return
+    for name in fields:
         yield name, getattr(node, name)
+
+
+def iter_child_nodes(node: AST) -> Iterator[AST]:
+    for _field_name, value in iter_fields(node):
+        if isinstance(value, AST):
+            yield value
+            continue
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, AST):
+                    yield item
 
 
 def walk(node: AST) -> Iterator[AST]:

@@ -15,20 +15,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/start":
             self.send_response(303)
             self.send_header("Location", "/target")
+            self.send_header("Content-Length", "0")
             self.end_headers()
         else:
             methods.append("POST")
             self.send_response(200)
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
     def do_GET(self) -> None:
         if self.path == "/target":
             methods.append("GET")
+            body = b"ok"
             self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(b"ok")
+            self.wfile.write(body)
         else:
             self.send_response(404)
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
     def log_message(self, _fmt, *_args):

@@ -3470,6 +3470,13 @@ def _remove_backend_daemon_pid(pid_path: Path) -> None:
         pass
 
 
+def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
+    try:
+        return backend_bin.stat().st_mtime > (pid_path.stat().st_mtime + 1e-6)
+    except OSError:
+        return False
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -3585,18 +3592,29 @@ def _start_backend_daemon(
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
         if _pid_alive(existing_pid):
-            if socket_path.exists():
-                if _backend_daemon_ping(socket_path, timeout=1.5):
-                    return True
-                if not json_output:
-                    print(
-                        "Backend daemon is running but not responsive; "
-                        "skipping daemon restart for this build.",
-                        file=sys.stderr,
-                    )
-                return False
-            _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-        _remove_backend_daemon_pid(pid_path)
+            if _backend_daemon_binary_is_newer(backend_bin, pid_path):
+                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+                _remove_backend_daemon_pid(pid_path)
+                try:
+                    if socket_path.exists():
+                        socket_path.unlink()
+                except OSError:
+                    pass
+                existing_pid = None
+            else:
+                if socket_path.exists():
+                    if _backend_daemon_ping(socket_path, timeout=1.5):
+                        return True
+                    if not json_output:
+                        print(
+                            "Backend daemon is running but not responsive; "
+                            "skipping daemon restart for this build.",
+                            file=sys.stderr,
+                        )
+                    return False
+                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+        if existing_pid is not None:
+            _remove_backend_daemon_pid(pid_path)
     try:
         if socket_path.exists():
             if _backend_daemon_ping(socket_path, timeout=1.5):
@@ -4503,13 +4521,44 @@ def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
 ) -> tuple[Path, Path, Path]:
-    artifacts_root = _default_build_root(output_base)
-    bin_root = out_dir if out_dir is not None else _default_molt_bin()
-    output_root = out_dir if out_dir is not None else project_root
-    artifacts_root.mkdir(parents=True, exist_ok=True)
-    bin_root.mkdir(parents=True, exist_ok=True)
+    if out_dir is not None:
+        # Keep `--out-dir` builds self-contained so ephemeral/benchmark runs do
+        # not depend on global ~/.molt state.
+        artifacts_root = out_dir / ".molt_build" / _safe_output_base(output_base)
+        bin_root = out_dir
+        output_root = out_dir
+    else:
+        artifacts_root = _default_build_root(output_base)
+        bin_root = _default_molt_bin()
+        output_root = project_root
+
+    def _repair_broken_symlink_parents(path: Path) -> bool:
+        repaired = False
+        chain = list(path.parents)
+        chain.reverse()
+        for parent in chain:
+            try:
+                if parent.is_symlink() and not parent.exists():
+                    parent.unlink()
+                    parent.mkdir(parents=True, exist_ok=True)
+                    repaired = True
+            except OSError:
+                continue
+        return repaired
+
+    def _mkdir_resilient(path: Path) -> None:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError):
+            if _repair_broken_symlink_parents(path):
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                raise
+
+    _mkdir_resilient(artifacts_root)
+    _mkdir_resilient(bin_root)
     if output_root != bin_root:
-        output_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_resilient(output_root)
     return artifacts_root, bin_root, output_root
 
 
@@ -6241,6 +6290,22 @@ def build(
                     except ValueError:
                         pass
                 with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
+                    pid_path = _backend_daemon_pid_path(
+                        molt_root, backend_cargo_profile
+                    )
+                    existing_pid = _read_backend_daemon_pid(pid_path)
+                    if (
+                        existing_pid is not None
+                        and _pid_alive(existing_pid)
+                        and _backend_daemon_binary_is_newer(backend_bin, pid_path)
+                    ):
+                        _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+                        _remove_backend_daemon_pid(pid_path)
+                        try:
+                            if daemon_socket.exists():
+                                daemon_socket.unlink()
+                        except OSError:
+                            pass
                     daemon_ready = _backend_daemon_ping(daemon_socket, timeout=1.5)
                     if not daemon_ready:
                         daemon_ready = _start_backend_daemon(

@@ -679,6 +679,7 @@ MOLT_DIRECT_CALLS = {
         "warn",
         "warn_explicit",
     },
+    "wsgiref.simple_server": {"make_server"},
 }
 
 MOLT_DIRECT_CALL_BIND_ALWAYS = {
@@ -1529,7 +1530,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "INPLACE_ADD",
             "INPLACE_SUB",
             "INPLACE_MUL",
+            "BIT_OR",
+            "BIT_AND",
+            "BIT_XOR",
+            "INPLACE_BIT_OR",
+            "INPLACE_BIT_AND",
+            "INPLACE_BIT_XOR",
+            "LSHIFT",
+            "RSHIFT",
+            "DIV",
+            "FLOORDIV",
+            "MOD",
             "LT",
+            "LE",
+            "GT",
+            "GE",
             "EQ",
             "NE",
         }:
@@ -7669,16 +7684,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         step_const = self.const_ints.get(step.name)
         self._emit_range_step_zero_guard(step, step_const)
         guard_map = self._emit_hoisted_loop_guards(node.body)
+        simple_name_target = isinstance(target, ast.Name)
 
         def emit_range_loop_body() -> None:
             if step_const is not None and step_const != 0:
+                with self._suppress_check_exception(emit_on_exit=False):
+                    idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+                    cond = MoltValue(self.next_var(), type_hint="bool")
+                    if step_const > 0:
+                        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+                    else:
+                        self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                    self.emit(
+                        MoltOp(
+                            kind="LOOP_BREAK_IF_FALSE",
+                            args=[cond],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    if simple_name_target:
+                        self._emit_assign_target(target, idx, None)
+                if not simple_name_target:
+                    self._emit_assign_target(target, idx, None)
+                self.range_loop_stack.append((idx, step))
+                self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+                self.range_loop_stack.pop()
+                with self._suppress_check_exception(emit_on_exit=False):
+                    next_idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                    self.emit(
+                        MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx)
+                    )
+                    self.emit(
+                        MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                    )
+                    self.emit(
+                        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
+                    )
+                return None
+            with self._suppress_check_exception(emit_on_exit=False):
+                one = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                zero = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                step_pos = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
+            self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
+            with self._suppress_check_exception(emit_on_exit=False):
                 idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                 cond = MoltValue(self.next_var(), type_hint="bool")
-                if step_const > 0:
-                    self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-                else:
-                    self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
                 self.emit(
                     MoltOp(
                         kind="LOOP_BREAK_IF_FALSE",
@@ -7686,10 +7743,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=MoltValue("none"),
                     )
                 )
+                if simple_name_target:
+                    self._emit_assign_target(target, idx, None)
+            if not simple_name_target:
                 self._emit_assign_target(target, idx, None)
-                self.range_loop_stack.append((idx, step))
-                self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
-                self.range_loop_stack.pop()
+            self.range_loop_stack.append((idx, step))
+            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+            self.range_loop_stack.pop()
+            with self._suppress_check_exception(emit_on_exit=False):
                 next_idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
                 self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
@@ -7697,60 +7758,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
                 self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-                return None
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            step_pos = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
-            self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-            cond = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond],
-                    result=MoltValue("none"),
-                )
-            )
-            self._emit_assign_target(target, idx, None)
-            self.range_loop_stack.append((idx, step))
-            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
-            self.range_loop_stack.pop()
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            step_neg = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
+            with self._suppress_check_exception(emit_on_exit=False):
+                step_neg = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
             self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
-            idx_neg = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
-            cond_neg = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond_neg],
-                    result=MoltValue("none"),
+            with self._suppress_check_exception(emit_on_exit=False):
+                idx_neg = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
+                cond_neg = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_FALSE",
+                        args=[cond_neg],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
-            self._emit_assign_target(target, idx_neg, None)
+                if simple_name_target:
+                    self._emit_assign_target(target, idx_neg, None)
+            if not simple_name_target:
+                self._emit_assign_target(target, idx_neg, None)
             self.range_loop_stack.append((idx_neg, step))
             self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
             self.range_loop_stack.pop()
-            next_idx_neg = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
-            self.emit(
-                MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
-            )
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            with self._suppress_check_exception(emit_on_exit=False):
+                next_idx_neg = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
+                self.emit(
+                    MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
+                )
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -14739,7 +14780,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         )
                                     )
                                     return res
-            if method == "find":
+            if method == "find" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("find expects 1-3 arguments")
                 needle = self.visit(node.args[0])
@@ -20868,79 +20909,94 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 reduction = None
             else:
                 seq_val = self.locals.get(seq_name) or self.globals.get(seq_name)
-                if seq_val and seq_val.type_hint in {"list", "tuple"}:
+                if seq_val and seq_val.type_hint in {"list", "tuple", "range"}:
                     acc_val = self._load_local_value(acc_name)
                     if acc_val is not None:
-                        elem_hint = self._container_elem_hint(seq_val)
-                        vec_kind = {
-                            "sum": "VEC_SUM_INT",
-                            "prod": "VEC_PROD_INT",
-                            "min": "VEC_MIN_INT",
-                            "max": "VEC_MAX_INT",
-                        }.get(kind, "VEC_SUM_INT")
                         seq_arg = seq_val
-                        if kind == "prod" and elem_hint == "int":
-                            seq_arg = self._emit_intarray_from_seq(seq_val)
-                        if start_expr is not None:
-                            vec_kind = f"{vec_kind}_RANGE"
-                        if self.type_hint_policy == "trust" and elem_hint == "int":
-                            vec_kind = f"{vec_kind}_TRUSTED"
-                        zero = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                        one = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                        pair = MoltValue(self.next_var(), type_hint="tuple")
                         args = [seq_arg, acc_val]
-                        if start_expr is not None:
-                            start_val = self.visit(start_expr)
-                            if start_val is None:
-                                raise NotImplementedError(
-                                    "Unsupported range start for vector reduction"
+                        vec_kind: str | None = None
+                        elem_hint = self._container_elem_hint(seq_val)
+                        if seq_val.type_hint == "range":
+                            if kind == "sum" and start_expr is None:
+                                vec_kind = "VEC_SUM_INT_RANGE_ITER"
+                                if self.type_hint_policy == "trust":
+                                    vec_kind = f"{vec_kind}_TRUSTED"
+                        else:
+                            vec_kind = {
+                                "sum": "VEC_SUM_INT",
+                                "prod": "VEC_PROD_INT",
+                                "min": "VEC_MIN_INT",
+                                "max": "VEC_MAX_INT",
+                            }.get(kind, "VEC_SUM_INT")
+                            if kind == "prod" and elem_hint == "int":
+                                seq_arg = self._emit_intarray_from_seq(seq_val)
+                                args[0] = seq_arg
+                            if start_expr is not None:
+                                vec_kind = f"{vec_kind}_RANGE"
+                            if self.type_hint_policy == "trust" and elem_hint == "int":
+                                vec_kind = f"{vec_kind}_TRUSTED"
+                        if vec_kind is None:
+                            pass
+                        else:
+                            zero = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                            one = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                            pair = MoltValue(self.next_var(), type_hint="tuple")
+                            if start_expr is not None:
+                                start_val = self.visit(start_expr)
+                                if start_val is None:
+                                    raise NotImplementedError(
+                                        "Unsupported range start for vector reduction"
+                                    )
+                                args.append(start_val)
+                            self.emit(MoltOp(kind=vec_kind, args=args, result=pair))
+                            sum_val = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(
+                                MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
+                            )
+                            ok_val = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(kind="INDEX", args=[pair, one], result=ok_val)
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="IF", args=[ok_val], result=MoltValue("none")
                                 )
-                            args.append(start_val)
-                        self.emit(MoltOp(kind=vec_kind, args=args, result=pair))
-                        sum_val = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(
-                            MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
-                        )
-                        ok_val = MoltValue(self.next_var(), type_hint="bool")
-                        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=ok_val))
-                        self.emit(
-                            MoltOp(kind="IF", args=[ok_val], result=MoltValue("none"))
-                        )
-                        self._store_local_value(acc_name, sum_val)
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        range_args = self._parse_range_call(node.iter)
-                        if range_args is not None:
-                            start, stop, step, lowerable = range_args
-                            if lowerable:
-                                self._emit_range_loop(
-                                    node,
-                                    start,
-                                    stop,
-                                    step,
-                                    loop_break_flag=break_name,
-                                )
+                            )
+                            self._store_local_value(acc_name, sum_val)
+                            self.emit(
+                                MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
+                            )
+                            range_args = self._parse_range_call(node.iter)
+                            if range_args is not None:
+                                start, stop, step, lowerable = range_args
+                                if lowerable:
+                                    self._emit_range_loop(
+                                        node,
+                                        start,
+                                        stop,
+                                        step,
+                                        loop_break_flag=break_name,
+                                    )
+                                else:
+                                    iterable = self._emit_range_obj_from_args(
+                                        start, stop, step
+                                    )
+                                    self._emit_for_loop(
+                                        node, iterable, loop_break_flag=break_name
+                                    )
                             else:
-                                iterable = self._emit_range_obj_from_args(
-                                    start, stop, step
-                                )
+                                iterable = self._load_local_value(seq_name) or seq_val
                                 self._emit_for_loop(
                                     node, iterable, loop_break_flag=break_name
                                 )
-                        else:
-                            iterable = self._load_local_value(seq_name) or seq_val
-                            self._emit_for_loop(
-                                node, iterable, loop_break_flag=break_name
+                            self.emit(
+                                MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
                             )
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        if break_name is not None:
-                            self._emit_loop_orelse(break_name, node.orelse)
-                        return None
+                            if break_name is not None:
+                                self._emit_loop_orelse(break_name, node.orelse)
+                            return None
         range_args = self._parse_range_call(node.iter)
         if range_args is not None:
             start, stop, step, lowerable = range_args
@@ -20966,42 +21022,54 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             vector_info = minmax_info
         if (
             vector_info
-            and iterable.type_hint in {"list", "tuple"}
+            and iterable.type_hint in {"list", "tuple", "range"}
             and self._iterable_is_indexable(iterable)
         ):
             acc_name, _, kind = vector_info
             acc_val = self._load_local_value(acc_name)
             if acc_val is not None:
-                elem_hint = self._container_elem_hint(iterable)
-                vec_kind = {
-                    "sum": "VEC_SUM_INT",
-                    "prod": "VEC_PROD_INT",
-                    "min": "VEC_MIN_INT",
-                    "max": "VEC_MAX_INT",
-                }.get(kind, "VEC_SUM_INT")
                 seq_arg = iterable
-                if kind == "prod" and elem_hint == "int":
-                    seq_arg = self._emit_intarray_from_seq(iterable)
-                if self.type_hint_policy == "trust" and elem_hint == "int":
-                    vec_kind = f"{vec_kind}_TRUSTED"
-                zero = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                one = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                pair = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind=vec_kind, args=[seq_arg, acc_val], result=pair))
-                sum_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=sum_val))
-                ok_val = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one], result=ok_val))
-                self.emit(MoltOp(kind="IF", args=[ok_val], result=MoltValue("none")))
-                self._store_local_value(acc_name, sum_val)
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self._emit_for_loop(node, iterable, loop_break_flag=break_name)
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                if break_name is not None:
-                    self._emit_loop_orelse(break_name, node.orelse)
-                return None
+                vec_kind: str | None = None
+                if iterable.type_hint == "range":
+                    if kind == "sum":
+                        vec_kind = "VEC_SUM_INT_RANGE_ITER"
+                        if self.type_hint_policy == "trust":
+                            vec_kind = f"{vec_kind}_TRUSTED"
+                else:
+                    elem_hint = self._container_elem_hint(iterable)
+                    vec_kind = {
+                        "sum": "VEC_SUM_INT",
+                        "prod": "VEC_PROD_INT",
+                        "min": "VEC_MIN_INT",
+                        "max": "VEC_MAX_INT",
+                    }.get(kind, "VEC_SUM_INT")
+                    if kind == "prod" and elem_hint == "int":
+                        seq_arg = self._emit_intarray_from_seq(iterable)
+                    if self.type_hint_policy == "trust" and elem_hint == "int":
+                        vec_kind = f"{vec_kind}_TRUSTED"
+                if vec_kind is not None:
+                    zero = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                    one = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                    pair = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(
+                        MoltOp(kind=vec_kind, args=[seq_arg, acc_val], result=pair)
+                    )
+                    sum_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=sum_val))
+                    ok_val = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="INDEX", args=[pair, one], result=ok_val))
+                    self.emit(
+                        MoltOp(kind="IF", args=[ok_val], result=MoltValue("none"))
+                    )
+                    self._store_local_value(acc_name, sum_val)
+                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                    self._emit_for_loop(node, iterable, loop_break_flag=break_name)
+                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                    if break_name is not None:
+                        self._emit_loop_orelse(break_name, node.orelse)
+                    return None
 
         self._emit_for_loop(node, iterable, loop_break_flag=break_name)
         if break_name is not None:
@@ -25253,29 +25321,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     mul_entry["fast_int"] = True
                 json_ops.append(mul_entry)
             elif op.kind == "DIV":
-                json_ops.append(
-                    {
-                        "kind": "div",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                div_entry: dict[str, Any] = {
+                    "kind": "div",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    div_entry["fast_int"] = True
+                json_ops.append(div_entry)
             elif op.kind == "FLOORDIV":
-                json_ops.append(
-                    {
-                        "kind": "floordiv",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                floordiv_entry: dict[str, Any] = {
+                    "kind": "floordiv",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    floordiv_entry["fast_int"] = True
+                json_ops.append(floordiv_entry)
             elif op.kind == "MOD":
-                json_ops.append(
-                    {
-                        "kind": "mod",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                mod_entry: dict[str, Any] = {
+                    "kind": "mod",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    mod_entry["fast_int"] = True
+                json_ops.append(mod_entry)
             elif op.kind == "POW":
                 json_ops.append(
                     {
@@ -25285,69 +25356,77 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "BIT_OR":
-                json_ops.append(
-                    {
-                        "kind": "bit_or",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_or_entry: dict[str, Any] = {
+                    "kind": "bit_or",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_or_entry["fast_int"] = True
+                json_ops.append(bit_or_entry)
             elif op.kind == "INPLACE_BIT_OR":
-                json_ops.append(
-                    {
-                        "kind": "inplace_bit_or",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_or_entry = {
+                    "kind": "inplace_bit_or",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_or_entry["fast_int"] = True
+                json_ops.append(bit_or_entry)
             elif op.kind == "BIT_AND":
-                json_ops.append(
-                    {
-                        "kind": "bit_and",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_and_entry: dict[str, Any] = {
+                    "kind": "bit_and",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_and_entry["fast_int"] = True
+                json_ops.append(bit_and_entry)
             elif op.kind == "INPLACE_BIT_AND":
-                json_ops.append(
-                    {
-                        "kind": "inplace_bit_and",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_and_entry = {
+                    "kind": "inplace_bit_and",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_and_entry["fast_int"] = True
+                json_ops.append(bit_and_entry)
             elif op.kind == "BIT_XOR":
-                json_ops.append(
-                    {
-                        "kind": "bit_xor",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_xor_entry: dict[str, Any] = {
+                    "kind": "bit_xor",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_xor_entry["fast_int"] = True
+                json_ops.append(bit_xor_entry)
             elif op.kind == "INPLACE_BIT_XOR":
-                json_ops.append(
-                    {
-                        "kind": "inplace_bit_xor",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                bit_xor_entry = {
+                    "kind": "inplace_bit_xor",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    bit_xor_entry["fast_int"] = True
+                json_ops.append(bit_xor_entry)
             elif op.kind == "LSHIFT":
-                json_ops.append(
-                    {
-                        "kind": "lshift",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                lshift_entry: dict[str, Any] = {
+                    "kind": "lshift",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    lshift_entry["fast_int"] = True
+                json_ops.append(lshift_entry)
             elif op.kind == "RSHIFT":
-                json_ops.append(
-                    {
-                        "kind": "rshift",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                rshift_entry: dict[str, Any] = {
+                    "kind": "rshift",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    rshift_entry["fast_int"] = True
+                json_ops.append(rshift_entry)
             elif op.kind == "MATMUL":
                 json_ops.append(
                     {
@@ -25390,29 +25469,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     lt_entry["fast_int"] = True
                 json_ops.append(lt_entry)
             elif op.kind == "LE":
-                json_ops.append(
-                    {
-                        "kind": "le",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                le_entry: dict[str, Any] = {
+                    "kind": "le",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    le_entry["fast_int"] = True
+                json_ops.append(le_entry)
             elif op.kind == "GT":
-                json_ops.append(
-                    {
-                        "kind": "gt",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                gt_entry: dict[str, Any] = {
+                    "kind": "gt",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    gt_entry["fast_int"] = True
+                json_ops.append(gt_entry)
             elif op.kind == "GE":
-                json_ops.append(
-                    {
-                        "kind": "ge",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                ge_entry: dict[str, Any] = {
+                    "kind": "ge",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    ge_entry["fast_int"] = True
+                json_ops.append(ge_entry)
             elif op.kind == "EQ":
                 eq_entry: dict[str, Any] = {
                     "kind": "eq",
@@ -27186,6 +27268,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "vec_sum_int_range_trusted",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_INT_RANGE_ITER":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_int_range_iter",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_INT_RANGE_ITER_TRUSTED":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_int_range_iter_trusted",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

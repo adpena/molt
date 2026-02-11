@@ -39,15 +39,18 @@ uv run --python 3.14 python3 tools/bench.py --compare cpython
 ## Native Baselines (Optional)
 
 `tools/bench.py` can compare Molt against optional native baselines using the
-same benchmark scripts (no Depyler-specific tests):
+same benchmark scripts:
 
 - **PyPy**: auto-probed via `uv run --python pypy@3.11` (skipped if unavailable).
 - **Cython/Numba**: install with `uv sync --group bench --python 3.12` (also included in the `dev` group).
 - **Codon**: install `codon` and ensure it is on PATH.
-- **Depyler**: install via `cargo install depyler`.
 
 Disable any baseline with `--no-pypy`, `--no-cython`, `--no-numba`, `--no-codon`,
-or `--no-depyler`.
+respectively.
+Use `--no-cpython` when you want a direct Molt-vs-friend comparison lane without
+paying the CPython runtime cost.
+Use `--runtime-timeout-sec <seconds>` to cap per-process runtime for long suites
+and keep partial runs bounded/reproducible.
 
 ## Combined Native + WASM Report
 
@@ -62,6 +65,39 @@ uv run --python 3.14 python3 tools/bench_report.py
 This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
 the JSON results to keep native and WASM performance tracking aligned.
 Add `--update-readme` to refresh the Performance & Comparisons block in `README.md`.
+
+## Friend-Owned Suite Benchmarking
+
+For apples-to-apples validation against friend priorities, use the
+friend manifest harness:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --include-disabled \
+  --dry-run
+```
+
+Then enable and run pinned suites:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite codon_benchmarks \
+  --checkout \
+  --fetch \
+  --update-doc
+```
+
+Artifacts:
+- machine-readable: `results.json`
+- human summary: `summary.md`
+- published summary: `docs/benchmarks/friend_summary.md` (`--update-doc`)
+
+Rules:
+- Pin friend repos to immutable `repo_ref` values before enabling suites.
+- Record compile and run phases separately when friends compile ahead of run.
+- Classify cases as `runs_unmodified`, `requires_adapter`, or `unsupported_by_molt`.
 
 ## Binary Size & Cold-Start (Optional)
 

@@ -319,6 +319,9 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
         let old = std::mem::take(&mut *guard);
         old.into_values().map(|ptr| ptr.0).collect::<Vec<_>>()
     };
+    state
+        .task_last_exception_pending
+        .store(false, AtomicOrdering::Relaxed);
     for ptr in pointers {
         let bits = MoltObject::from_ptr(ptr).bits();
         dec_ref_bits(_py, bits);

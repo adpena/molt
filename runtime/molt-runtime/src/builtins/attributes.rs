@@ -608,6 +608,15 @@ pub(crate) unsafe fn attr_lookup_ptr(
     if type_id == TYPE_ID_MODULE {
         return module_attr_lookup(_py, obj_ptr, attr_bits);
     }
+    if type_id == TYPE_ID_BIGINT {
+        let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
+            return None;
+        };
+        if let Some(func_bits) = int_method_bits(_py, name.as_str()) {
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return Some(molt_bound_method_new(func_bits, self_bits));
+        }
+    }
     if type_id == TYPE_ID_BOUND_METHOD {
         let name = string_obj_to_owned(obj_from_bits(attr_bits));
         if let Some(name) = name.as_deref() {
@@ -4423,6 +4432,11 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
+            if obj.is_int() || obj.is_bool() {
+                if let Some(func_bits) = int_method_bits(_py, &attr_name) {
+                    return molt_bound_method_new(func_bits, obj_bits);
+                }
+            }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
     })
@@ -4456,6 +4470,8 @@ pub extern "C" fn molt_get_attr_name_default(
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 return raise_attr_name_type_error(_py, name_bits);
             }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits) {
                     if matches!(
@@ -4510,6 +4526,12 @@ pub extern "C" fn molt_get_attr_name_default(
                 }
                 inc_ref_bits(_py, default_bits);
                 return default_bits;
+            }
+            let obj = obj_from_bits(obj_bits);
+            if obj.is_int() || obj.is_bool() {
+                if let Some(func_bits) = int_method_bits(_py, &attr_name) {
+                    return molt_bound_method_new(func_bits, obj_bits);
+                }
             }
         }
         inc_ref_bits(_py, default_bits);

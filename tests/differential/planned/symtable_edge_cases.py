@@ -21,4 +21,4 @@ outer = children[0]
 inner = outer.get_children()[0]
 print(outer.is_nested())
 print(inner.is_nested())
-print(inner.get_free_vars())
+print(inner.get_frees())
