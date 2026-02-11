@@ -261,6 +261,66 @@ pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64
 }
 
 #[no_mangle]
+pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let range_bits = molt_range_new(start_bits, stop_bits, step_bits);
+        if obj_from_bits(range_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let Some(range_ptr) = obj_from_bits(range_bits).as_ptr() else {
+            dec_ref_bits(_py, range_bits);
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(range_ptr) != TYPE_ID_RANGE {
+                dec_ref_bits(_py, range_bits);
+                return MoltObject::none().bits();
+            }
+            if let Some((start, stop, step)) = range_components_i64(range_ptr) {
+                let len = range_len_i128(start, stop, step);
+                if len <= 0 {
+                    dec_ref_bits(_py, range_bits);
+                    let list_ptr = alloc_list(_py, &[]);
+                    return if list_ptr.is_null() {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_ptr(list_ptr).bits()
+                    };
+                }
+                if len <= usize::MAX as i128 {
+                    let len_usize = len as usize;
+                    let mut out = Vec::with_capacity(len_usize);
+                    let mut cur = start;
+                    for idx in 0..len_usize {
+                        out.push(MoltObject::from_int(cur).bits());
+                        if idx + 1 < len_usize {
+                            let Some(next) = cur.checked_add(step) else {
+                                let out_bits = list_from_iter_bits(_py, range_bits)
+                                    .unwrap_or_else(|| MoltObject::none().bits());
+                                dec_ref_bits(_py, range_bits);
+                                return out_bits;
+                            };
+                            cur = next;
+                        }
+                    }
+                    dec_ref_bits(_py, range_bits);
+                    let list_ptr = alloc_list(_py, out.as_slice());
+                    return if list_ptr.is_null() {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_ptr(list_ptr).bits()
+                    };
+                }
+            }
+            let out_bits =
+                list_from_iter_bits(_py, range_bits).unwrap_or_else(|| MoltObject::none().bits());
+            dec_ref_bits(_py, range_bits);
+            out_bits
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_slice_obj(_py, start_bits, stop_bits, step_bits);
@@ -4626,6 +4686,39 @@ fn vec_sum_i64_result(_py: &PyToken<'_>, value: i64, ok: bool) -> u64 {
     out
 }
 
+fn vec_sum_f64_result(_py: &PyToken<'_>, value: f64, ok: bool) -> u64 {
+    vec_sum_result(_py, MoltObject::from_float(value).bits(), ok)
+}
+
+fn number_as_f64(obj: MoltObject) -> Option<f64> {
+    if let Some(f) = obj.as_float() {
+        return Some(f);
+    }
+    obj.as_int().map(|i| i as f64)
+}
+
+fn sum_floats_scalar(elems: &[u64], acc: f64) -> Option<f64> {
+    let mut sum = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        sum += number_as_f64(obj)?;
+    }
+    Some(sum)
+}
+
+fn sum_float_range_arith_checked(start: i64, stop: i64, step: i64, acc: f64) -> Option<f64> {
+    let len = range_len_i128(start, stop, step);
+    if len <= 0 {
+        return Some(acc);
+    }
+    let n = len as f64;
+    let first = start as f64;
+    let stride = step as f64;
+    let last = first + stride * (n - 1.0);
+    let total = acc + (n * (first + last) * 0.5);
+    total.is_finite().then_some(total)
+}
+
 fn sum_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
     let mut sum = acc;
     for &bits in elems {
@@ -4637,6 +4730,51 @@ fn sum_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
         }
     }
     Some(sum)
+}
+
+const VEC_LANE_WARMUP_SAMPLES: u64 = 128;
+const VEC_LANE_MISS_RATIO_LIMIT: u64 = 4;
+
+static VEC_SUM_INT_HITS: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_INT_MISSES: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_FLOAT_HITS: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_FLOAT_MISSES: AtomicU64 = AtomicU64::new(0);
+
+fn adaptive_vec_lanes_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("MOLT_ADAPTIVE_VEC_LANES")
+            .ok()
+            .map(|raw| {
+                let norm = raw.trim().to_ascii_lowercase();
+                !matches!(norm.as_str(), "0" | "false" | "off" | "no")
+            })
+            .unwrap_or(true)
+    })
+}
+
+fn vec_lane_allowed(hits: &AtomicU64, misses: &AtomicU64) -> bool {
+    if !adaptive_vec_lanes_enabled() {
+        return true;
+    }
+    let hit = hits.load(AtomicOrdering::Relaxed);
+    let miss = misses.load(AtomicOrdering::Relaxed);
+    let samples = hit.saturating_add(miss);
+    if samples < VEC_LANE_WARMUP_SAMPLES {
+        return true;
+    }
+    miss <= hit.saturating_mul(VEC_LANE_MISS_RATIO_LIMIT)
+}
+
+fn vec_lane_record(hits: &AtomicU64, misses: &AtomicU64, success: bool) {
+    if !adaptive_vec_lanes_enabled() {
+        return;
+    }
+    if success {
+        hits.fetch_add(1, AtomicOrdering::Relaxed);
+    } else {
+        misses.fetch_add(1, AtomicOrdering::Relaxed);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -5492,22 +5630,31 @@ pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
         };
+        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
+            return vec_sum_i64_result(_py, acc, false);
+        }
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
+            None => {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            }
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
                 return vec_sum_i64_result(_py, acc, false);
             };
             if let Some(sum) = sum_ints_checked(elems, acc) {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
                 return vec_sum_i64_result(_py, sum, true);
             }
         }
+        vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
         vec_sum_i64_result(_py, acc, false)
     })
 }
@@ -5520,19 +5667,27 @@ pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
         };
+        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
+            return vec_sum_i64_result(_py, acc, false);
+        }
         let seq_obj = obj_from_bits(seq_bits);
         let ptr = match seq_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return vec_sum_i64_result(_py, acc, false),
+            None => {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            }
         };
         unsafe {
             let type_id = object_type_id(ptr);
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
                 return vec_sum_i64_result(_py, acc, false);
             };
             let sum = sum_ints_trusted(elems, acc);
+            vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
             vec_sum_i64_result(_py, sum, true)
         }
     })
@@ -5852,6 +6007,202 @@ pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u
             }
         }
         vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_floats_scalar(elems, acc) {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_floats_scalar(elems, acc) {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start = match obj_from_bits(start_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(sum) = sum_floats_scalar(slice, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start = match obj_from_bits(start_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(sum) = sum_floats_scalar(slice, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_f64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_float_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_f64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
     })
 }
 
@@ -26628,6 +26979,901 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
 }
 
 #[no_mangle]
+pub extern "C" fn molt_dict_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+        };
+        unsafe {
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            }
+            if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
+                return MoltObject::none().bits();
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+        };
+        unsafe {
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            }
+            if let Some(done) =
+                dict_inc_prehashed_string_key_in_place(_py, dict_ptr, key_bits, delta_bits)
+            {
+                if !done {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::none().bits();
+            }
+            if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
+                return MoltObject::none().bits();
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+unsafe fn dict_inc_in_place(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    delta_bits: u64,
+) -> bool {
+    if !ensure_hashable(_py, key_bits) {
+        return false;
+    }
+    let current_bits =
+        dict_get_in_place(_py, dict_ptr, key_bits).unwrap_or(MoltObject::from_int(0).bits());
+    if exception_pending(_py) {
+        return false;
+    }
+
+    if let (Some(current), Some(delta)) = (
+        obj_from_bits(current_bits).as_int(),
+        obj_from_bits(delta_bits).as_int(),
+    ) {
+        if let Some(sum) = current.checked_add(delta) {
+            let sum_bits = MoltObject::from_int(sum).bits();
+            dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
+            return !exception_pending(_py);
+        }
+    }
+
+    let sum_bits = molt_add(current_bits, delta_bits);
+    if obj_from_bits(sum_bits).is_none() {
+        return false;
+    }
+    dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
+    dec_ref_bits(_py, sum_bits);
+    !exception_pending(_py)
+}
+
+unsafe fn dict_inc_prehashed_string_key_in_place(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    delta_bits: u64,
+) -> Option<bool> {
+    let key_obj = obj_from_bits(key_bits);
+    let key_ptr = key_obj.as_ptr()?;
+    if object_type_id(key_ptr) != TYPE_ID_STRING {
+        return None;
+    }
+    let delta = bits_as_int(delta_bits)?;
+    let key_bytes = std::slice::from_raw_parts(string_bytes(key_ptr), string_len(key_ptr));
+    let hash = hash_string_bytes(_py, key_bytes) as u64;
+
+    let order = dict_order(dict_ptr);
+    let table = dict_table(dict_ptr);
+    if !table.is_empty() {
+        let mask = table.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        loop {
+            let entry = table[slot];
+            if entry == 0 {
+                break;
+            }
+            let entry_idx = entry - 1;
+            let entry_key_bits = order[entry_idx * 2];
+            let mut keys_match = entry_key_bits == key_bits;
+            if !keys_match {
+                let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
+                    // continue probing
+                    slot = (slot + 1) & mask;
+                    continue;
+                };
+                if object_type_id(entry_key_ptr) == TYPE_ID_STRING {
+                    let entry_len = string_len(entry_key_ptr);
+                    if entry_len == key_bytes.len() {
+                        let entry_bytes =
+                            std::slice::from_raw_parts(string_bytes(entry_key_ptr), entry_len);
+                        keys_match = entry_bytes == key_bytes;
+                    }
+                }
+            }
+            if keys_match {
+                let val_idx = entry_idx * 2 + 1;
+                let current_bits = order[val_idx];
+                let sum_bits: u64;
+                let mut sum_owned = false;
+                if let Some(current) = obj_from_bits(current_bits).as_int() {
+                    if let Some(sum) = current.checked_add(delta) {
+                        sum_bits = MoltObject::from_int(sum).bits();
+                    } else {
+                        sum_bits = molt_add(current_bits, delta_bits);
+                        if obj_from_bits(sum_bits).is_none() {
+                            return Some(false);
+                        }
+                        sum_owned = true;
+                    }
+                } else {
+                    sum_bits = molt_add(current_bits, delta_bits);
+                    if obj_from_bits(sum_bits).is_none() {
+                        return Some(false);
+                    }
+                    sum_owned = true;
+                }
+                if current_bits != sum_bits {
+                    dec_ref_bits(_py, current_bits);
+                    inc_ref_bits(_py, sum_bits);
+                    order[val_idx] = sum_bits;
+                }
+                if sum_owned {
+                    dec_ref_bits(_py, sum_bits);
+                }
+                return Some(!exception_pending(_py));
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    let sum_bits = MoltObject::from_int(delta).bits();
+    let new_entries = (order.len() / 2) + 1;
+    let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
+    if needs_resize {
+        let capacity = dict_table_capacity(new_entries);
+        dict_rebuild(_py, order, table, capacity);
+        if exception_pending(_py) {
+            return Some(false);
+        }
+    }
+    order.push(key_bits);
+    order.push(sum_bits);
+    inc_ref_bits(_py, key_bits);
+    inc_ref_bits(_py, sum_bits);
+    let entry_idx = order.len() / 2 - 1;
+    dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    Some(!exception_pending(_py))
+}
+
+fn bits_as_int(bits: u64) -> Option<i64> {
+    obj_from_bits(bits).as_int()
+}
+
+unsafe fn dict_inc_with_string_token_fallback(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    token: &[u8],
+    delta_bits: u64,
+    last_bits: &mut u64,
+    had_any: &mut bool,
+) -> bool {
+    let key_ptr = alloc_string(_py, token);
+    if key_ptr.is_null() {
+        return false;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    if let Some(done) = dict_inc_prehashed_string_key_in_place(_py, dict_ptr, key_bits, delta_bits)
+    {
+        if !done {
+            dec_ref_bits(_py, key_bits);
+            return false;
+        }
+    } else if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
+        dec_ref_bits(_py, key_bits);
+        return false;
+    }
+    if *had_any && !obj_from_bits(*last_bits).is_none() {
+        dec_ref_bits(_py, *last_bits);
+    }
+    inc_ref_bits(_py, key_bits);
+    *last_bits = key_bits;
+    *had_any = true;
+    dec_ref_bits(_py, key_bits);
+    true
+}
+
+unsafe fn dict_inc_with_string_token(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    token: &[u8],
+    delta_bits: u64,
+    last_bits: &mut u64,
+    had_any: &mut bool,
+) -> bool {
+    let hash = hash_string_bytes(_py, token) as u64;
+    {
+        let order = dict_order(dict_ptr);
+        let table = dict_table(dict_ptr);
+        if !table.is_empty() {
+            let mask = table.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            loop {
+                let entry = table[slot];
+                if entry == 0 {
+                    break;
+                }
+                let entry_idx = entry - 1;
+                let entry_key_bits = order[entry_idx * 2];
+                let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
+                    return dict_inc_with_string_token_fallback(
+                        _py, dict_ptr, token, delta_bits, last_bits, had_any,
+                    );
+                };
+                if object_type_id(entry_key_ptr) != TYPE_ID_STRING {
+                    return dict_inc_with_string_token_fallback(
+                        _py, dict_ptr, token, delta_bits, last_bits, had_any,
+                    );
+                }
+                let entry_len = string_len(entry_key_ptr);
+                if entry_len == token.len() {
+                    let entry_bytes =
+                        std::slice::from_raw_parts(string_bytes(entry_key_ptr), entry_len);
+                    if entry_bytes == token {
+                        let val_idx = entry_idx * 2 + 1;
+                        let current_bits = order[val_idx];
+                        let sum_bits: u64;
+                        let mut sum_owned = false;
+                        if let (Some(current), Some(delta)) = (
+                            obj_from_bits(current_bits).as_int(),
+                            obj_from_bits(delta_bits).as_int(),
+                        ) {
+                            if let Some(sum) = current.checked_add(delta) {
+                                sum_bits = MoltObject::from_int(sum).bits();
+                            } else {
+                                sum_bits = molt_add(current_bits, delta_bits);
+                                if obj_from_bits(sum_bits).is_none() {
+                                    return false;
+                                }
+                                sum_owned = true;
+                            }
+                        } else {
+                            sum_bits = molt_add(current_bits, delta_bits);
+                            if obj_from_bits(sum_bits).is_none() {
+                                return false;
+                            }
+                            sum_owned = true;
+                        }
+                        if current_bits != sum_bits {
+                            dec_ref_bits(_py, current_bits);
+                            inc_ref_bits(_py, sum_bits);
+                            order[val_idx] = sum_bits;
+                        }
+                        if sum_owned {
+                            dec_ref_bits(_py, sum_bits);
+                        }
+                        if *had_any && !obj_from_bits(*last_bits).is_none() {
+                            dec_ref_bits(_py, *last_bits);
+                        }
+                        inc_ref_bits(_py, entry_key_bits);
+                        *last_bits = entry_key_bits;
+                        *had_any = true;
+                        return true;
+                    }
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+    }
+
+    let key_ptr = alloc_string(_py, token);
+    if key_ptr.is_null() {
+        return false;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    let zero_bits = MoltObject::from_int(0).bits();
+    let sum_bits: u64;
+    let mut sum_owned = false;
+    if let Some(delta) = obj_from_bits(delta_bits).as_int() {
+        sum_bits = MoltObject::from_int(delta).bits();
+    } else {
+        sum_bits = molt_add(zero_bits, delta_bits);
+        if obj_from_bits(sum_bits).is_none() {
+            dec_ref_bits(_py, key_bits);
+            return false;
+        }
+        sum_owned = true;
+    }
+    let order = dict_order(dict_ptr);
+    let table = dict_table(dict_ptr);
+    let new_entries = (order.len() / 2) + 1;
+    let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
+    if needs_resize {
+        let capacity = dict_table_capacity(new_entries);
+        dict_rebuild(_py, order, table, capacity);
+        if exception_pending(_py) {
+            if sum_owned {
+                dec_ref_bits(_py, sum_bits);
+            }
+            dec_ref_bits(_py, key_bits);
+            return false;
+        }
+    }
+    order.push(key_bits);
+    order.push(sum_bits);
+    inc_ref_bits(_py, key_bits);
+    inc_ref_bits(_py, sum_bits);
+    let entry_idx = order.len() / 2 - 1;
+    dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    if sum_owned {
+        dec_ref_bits(_py, sum_bits);
+    }
+    if *had_any && !obj_from_bits(*last_bits).is_none() {
+        dec_ref_bits(_py, *last_bits);
+    }
+    inc_ref_bits(_py, key_bits);
+    *last_bits = key_bits;
+    *had_any = true;
+    dec_ref_bits(_py, key_bits);
+    true
+}
+
+unsafe fn dict_setdefault_empty_list_with_string_token(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    token: &[u8],
+) -> Option<u64> {
+    let hash = hash_string_bytes(_py, token) as u64;
+    {
+        let order = dict_order(dict_ptr);
+        let table = dict_table(dict_ptr);
+        if !table.is_empty() {
+            let mask = table.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            loop {
+                let entry = table[slot];
+                if entry == 0 {
+                    break;
+                }
+                let entry_idx = entry - 1;
+                let entry_key_bits = order[entry_idx * 2];
+                let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
+                    slot = (slot + 1) & mask;
+                    continue;
+                };
+                if object_type_id(entry_key_ptr) == TYPE_ID_STRING {
+                    let entry_len = string_len(entry_key_ptr);
+                    if entry_len == token.len() {
+                        let entry_bytes =
+                            std::slice::from_raw_parts(string_bytes(entry_key_ptr), entry_len);
+                        if entry_bytes == token {
+                            let val_bits = order[entry_idx * 2 + 1];
+                            inc_ref_bits(_py, val_bits);
+                            return Some(val_bits);
+                        }
+                    }
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+    }
+
+    let key_ptr = alloc_string(_py, token);
+    if key_ptr.is_null() {
+        return None;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    let default_ptr = alloc_list(_py, &[]);
+    if default_ptr.is_null() {
+        dec_ref_bits(_py, key_bits);
+        return None;
+    }
+    let default_bits = MoltObject::from_ptr(default_ptr).bits();
+    let order = dict_order(dict_ptr);
+    let table = dict_table(dict_ptr);
+    let new_entries = (order.len() / 2) + 1;
+    let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
+    if needs_resize {
+        let capacity = dict_table_capacity(new_entries);
+        dict_rebuild(_py, order, table, capacity);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, default_bits);
+            dec_ref_bits(_py, key_bits);
+            return None;
+        }
+    }
+    order.push(key_bits);
+    order.push(default_bits);
+    inc_ref_bits(_py, key_bits);
+    inc_ref_bits(_py, default_bits);
+    let entry_idx = order.len() / 2 - 1;
+    dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, default_bits);
+        dec_ref_bits(_py, key_bits);
+        return None;
+    }
+    inc_ref_bits(_py, default_bits);
+    dec_ref_bits(_py, default_bits);
+    dec_ref_bits(_py, key_bits);
+    Some(default_bits)
+}
+
+unsafe fn split_dict_inc_result_tuple(_py: &PyToken<'_>, last_bits: u64, had_any: bool) -> u64 {
+    let had_any_bits = MoltObject::from_bool(had_any).bits();
+    let pair_ptr = alloc_tuple(_py, &[last_bits, had_any_bits]);
+    if pair_ptr.is_null() {
+        if had_any && !obj_from_bits(last_bits).is_none() {
+            dec_ref_bits(_py, last_bits);
+        }
+        return MoltObject::none().bits();
+    }
+    if had_any && !obj_from_bits(last_bits).is_none() {
+        dec_ref_bits(_py, last_bits);
+    }
+    MoltObject::from_ptr(pair_ptr).bits()
+}
+
+fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
+    let mut start = 0usize;
+    let mut end = field.len();
+    while start < end && field[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && field[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let trimmed = &field[start..end];
+    if trimmed.is_empty() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "invalid literal for int() with base 10: ''",
+        );
+        return None;
+    }
+    let mut idx = 0usize;
+    let mut neg = false;
+    if trimmed[0] == b'+' {
+        idx = 1;
+    } else if trimmed[0] == b'-' {
+        neg = true;
+        idx = 1;
+    }
+    if idx >= trimmed.len() {
+        let shown = String::from_utf8_lossy(trimmed);
+        let msg = format!("invalid literal for int() with base 10: '{shown}'");
+        raise_exception::<()>(_py, "ValueError", &msg);
+        return None;
+    }
+    let mut value: i128 = 0;
+    while idx < trimmed.len() {
+        let b = trimmed[idx];
+        if !b.is_ascii_digit() {
+            let shown = String::from_utf8_lossy(trimmed);
+            let msg = format!("invalid literal for int() with base 10: '{shown}'");
+            raise_exception::<()>(_py, "ValueError", &msg);
+            return None;
+        }
+        value = value * 10 + i128::from((b - b'0') as i64);
+        idx += 1;
+    }
+    if neg {
+        value = -value;
+    }
+    if value < i128::from(i64::MIN) || value > i128::from(i64::MAX) {
+        let shown = String::from_utf8_lossy(trimmed);
+        let msg = format!("invalid literal for int() with base 10: '{shown}'");
+        raise_exception::<()>(_py, "ValueError", &msg);
+        None
+    } else {
+        Some(value as i64)
+    }
+}
+
+#[inline]
+fn is_ascii_split_whitespace_byte(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\n' | b'\r' | b'\t' | 0x0b | 0x0c)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn find_ascii_split_whitespace_sse2(bytes: &[u8], start: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = start;
+    let len = bytes.len();
+    let sp = _mm_set1_epi8(b' ' as i8);
+    let nl = _mm_set1_epi8(b'\n' as i8);
+    let cr = _mm_set1_epi8(b'\r' as i8);
+    let tab = _mm_set1_epi8(b'\t' as i8);
+    let vt = _mm_set1_epi8(0x0b_i8);
+    let ff = _mm_set1_epi8(0x0c_i8);
+    while i + 16 <= len {
+        let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+        let mut mask_vec = _mm_or_si128(_mm_cmpeq_epi8(chunk, sp), _mm_cmpeq_epi8(chunk, nl));
+        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, cr));
+        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, tab));
+        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, vt));
+        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, ff));
+        let mask = _mm_movemask_epi8(mask_vec) as u32;
+        if mask != 0 {
+            return i + mask.trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    while i < len {
+        if is_ascii_split_whitespace_byte(bytes[i]) {
+            return i;
+        }
+        i += 1;
+    }
+    len
+}
+
+fn find_ascii_split_whitespace(bytes: &[u8], start: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { find_ascii_split_whitespace_sse2(bytes, start) };
+        }
+    }
+    let mut i = start;
+    while i < bytes.len() {
+        if is_ascii_split_whitespace_byte(bytes[i]) {
+            return i;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+unsafe fn split_ascii_whitespace_dict_inc_tokens(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    line_bytes: &[u8],
+    delta_bits: u64,
+    last_bits: &mut u64,
+    had_any: &mut bool,
+) -> bool {
+    let mut idx = 0usize;
+    let len = line_bytes.len();
+    while idx < len {
+        while idx < len && is_ascii_split_whitespace_byte(line_bytes[idx]) {
+            idx += 1;
+        }
+        if idx >= len {
+            break;
+        }
+        let token_start = idx;
+        let token_end = find_ascii_split_whitespace(line_bytes, token_start);
+        if !dict_inc_with_string_token(
+            _py,
+            dict_ptr,
+            &line_bytes[token_start..token_end],
+            delta_bits,
+            last_bits,
+            had_any,
+        ) {
+            return false;
+        }
+        idx = token_end;
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn molt_string_split_ws_dict_inc(
+    line_bits: u64,
+    dict_bits: u64,
+    delta_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let line_obj = obj_from_bits(line_bits);
+        let dict_obj = obj_from_bits(dict_bits);
+        let Some(line_ptr) = line_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "split expects str");
+        };
+        let Some(dict_ptr_raw) = dict_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+        };
+        unsafe {
+            if object_type_id(line_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "split expects str");
+            }
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, dict_ptr_raw) else {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            }
+            let line_bytes =
+                std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
+            let mut last_bits = MoltObject::none().bits();
+            let mut had_any = false;
+            if line_bytes.is_ascii() {
+                if !split_ascii_whitespace_dict_inc_tokens(
+                    _py,
+                    dict_ptr,
+                    line_bytes,
+                    delta_bits,
+                    &mut last_bits,
+                    &mut had_any,
+                ) {
+                    return MoltObject::none().bits();
+                }
+            } else {
+                let Ok(line_str) = std::str::from_utf8(line_bytes) else {
+                    return MoltObject::none().bits();
+                };
+                for part in line_str.split_whitespace() {
+                    if !dict_inc_with_string_token(
+                        _py,
+                        dict_ptr,
+                        part.as_bytes(),
+                        delta_bits,
+                        &mut last_bits,
+                        &mut had_any,
+                    ) {
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+            split_dict_inc_result_tuple(_py, last_bits, had_any)
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_string_split_sep_dict_inc(
+    line_bits: u64,
+    sep_bits: u64,
+    dict_bits: u64,
+    delta_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let line_obj = obj_from_bits(line_bits);
+        let sep_obj = obj_from_bits(sep_bits);
+        let dict_obj = obj_from_bits(dict_bits);
+        let Some(line_ptr) = line_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "split expects str");
+        };
+        let Some(sep_ptr) = sep_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "must be str or None");
+        };
+        let Some(dict_ptr_raw) = dict_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+        };
+        unsafe {
+            if object_type_id(line_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "split expects str");
+            }
+            if object_type_id(sep_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "must be str or None");
+            }
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, dict_ptr_raw) else {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
+            }
+
+            let line_bytes =
+                std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
+            let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
+            if sep_bytes.is_empty() {
+                return raise_exception::<_>(_py, "ValueError", "empty separator");
+            }
+            let mut last_bits = MoltObject::none().bits();
+            let mut had_any = false;
+            let mut start = 0usize;
+            if sep_bytes.len() == 1 {
+                for idx in memchr::memchr_iter(sep_bytes[0], line_bytes) {
+                    if !dict_inc_with_string_token(
+                        _py,
+                        dict_ptr,
+                        &line_bytes[start..idx],
+                        delta_bits,
+                        &mut last_bits,
+                        &mut had_any,
+                    ) {
+                        return MoltObject::none().bits();
+                    }
+                    start = idx + 1;
+                }
+            } else {
+                let finder = memmem::Finder::new(sep_bytes);
+                for idx in finder.find_iter(line_bytes) {
+                    if !dict_inc_with_string_token(
+                        _py,
+                        dict_ptr,
+                        &line_bytes[start..idx],
+                        delta_bits,
+                        &mut last_bits,
+                        &mut had_any,
+                    ) {
+                        return MoltObject::none().bits();
+                    }
+                    start = idx + sep_bytes.len();
+                }
+            }
+            if !dict_inc_with_string_token(
+                _py,
+                dict_ptr,
+                &line_bytes[start..],
+                delta_bits,
+                &mut last_bits,
+                &mut had_any,
+            ) {
+                return MoltObject::none().bits();
+            }
+            split_dict_inc_result_tuple(_py, last_bits, had_any)
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_taq_ingest_line(
+    dict_bits: u64,
+    line_bits: u64,
+    bucket_size_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let dict_obj = obj_from_bits(dict_bits);
+        let line_obj = obj_from_bits(line_bits);
+        let Some(dict_ptr_raw) = dict_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "TAQ ingest expects dict");
+        };
+        let Some(line_ptr) = line_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "TAQ ingest expects str");
+        };
+        let Some(bucket_size) = obj_from_bits(bucket_size_bits).as_int() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "TAQ ingest expects integer bucket size",
+            );
+        };
+        if bucket_size == 0 {
+            return raise_exception::<_>(
+                _py,
+                "ZeroDivisionError",
+                "integer division or modulo by zero",
+            );
+        }
+        unsafe {
+            if object_type_id(line_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "TAQ ingest expects str");
+            }
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, dict_ptr_raw) else {
+                return raise_exception::<_>(_py, "TypeError", "TAQ ingest expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "TAQ ingest expects dict");
+            }
+
+            let line_bytes =
+                std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
+            let mut field_idx = 0usize;
+            let mut field_start = 0usize;
+            let mut ts_field: Option<&[u8]> = None;
+            let mut sym_field: Option<&[u8]> = None;
+            let mut vol_field: Option<&[u8]> = None;
+            for idx in 0..=line_bytes.len() {
+                if idx == line_bytes.len() || line_bytes[idx] == b'|' {
+                    let field = &line_bytes[field_start..idx];
+                    match field_idx {
+                        0 => ts_field = Some(field),
+                        2 => sym_field = Some(field),
+                        4 => {
+                            vol_field = Some(field);
+                            break;
+                        }
+                        _ => {}
+                    }
+                    field_idx += 1;
+                    field_start = idx + 1;
+                }
+            }
+            let Some(ts_field) = ts_field else {
+                return raise_exception::<_>(_py, "IndexError", "list index out of range");
+            };
+            let Some(sym_field) = sym_field else {
+                return raise_exception::<_>(_py, "IndexError", "list index out of range");
+            };
+            let Some(vol_field) = vol_field else {
+                return raise_exception::<_>(_py, "IndexError", "list index out of range");
+            };
+            if ts_field == b"END" || vol_field == b"ENDP" {
+                return MoltObject::from_bool(false).bits();
+            }
+            let Some(timestamp) = parse_ascii_i64_field(_py, ts_field) else {
+                return MoltObject::none().bits();
+            };
+            let Some(volume) = parse_ascii_i64_field(_py, vol_field) else {
+                return MoltObject::none().bits();
+            };
+            let Some(series_bits) =
+                dict_setdefault_empty_list_with_string_token(_py, dict_ptr, sym_field)
+            else {
+                return MoltObject::none().bits();
+            };
+            let bucket_bits = MoltObject::from_int(timestamp.div_euclid(bucket_size)).bits();
+            let volume_bits = MoltObject::from_int(volume).bits();
+            let pair_ptr = alloc_tuple(_py, &[bucket_bits, volume_bits]);
+            if pair_ptr.is_null() {
+                dec_ref_bits(_py, series_bits);
+                return MoltObject::none().bits();
+            }
+            let pair_bits = MoltObject::from_ptr(pair_ptr).bits();
+            let appended = if let Some(series_ptr) = obj_from_bits(series_bits).as_ptr() {
+                if object_type_id(series_ptr) == TYPE_ID_LIST {
+                    let _ = molt_list_append(series_bits, pair_bits);
+                    !exception_pending(_py)
+                } else {
+                    let Some(append_name_bits) = attr_name_bits_from_bytes(_py, b"append") else {
+                        dec_ref_bits(_py, pair_bits);
+                        dec_ref_bits(_py, series_bits);
+                        return MoltObject::none().bits();
+                    };
+                    let method_bits = attr_lookup_ptr(_py, series_ptr, append_name_bits);
+                    dec_ref_bits(_py, append_name_bits);
+                    let Some(method_bits) = method_bits else {
+                        dec_ref_bits(_py, pair_bits);
+                        dec_ref_bits(_py, series_bits);
+                        return MoltObject::none().bits();
+                    };
+                    let out_bits = call_callable1(_py, method_bits, pair_bits);
+                    if maybe_ptr_from_bits(out_bits).is_some() {
+                        dec_ref_bits(_py, out_bits);
+                    }
+                    !exception_pending(_py)
+                }
+            } else {
+                false
+            };
+            dec_ref_bits(_py, pair_bits);
+            dec_ref_bits(_py, series_bits);
+            if !appended {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_bool(true).bits()
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_dict_pop(
     dict_bits: u64,
     key_bits: u64,
@@ -26708,6 +27954,46 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
             }
             dict_set_in_place(_py, dict_ptr, key_bits, default_bits);
             if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            inc_ref_bits(_py, default_bits);
+            default_bits
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let dict_obj = obj_from_bits(dict_bits);
+        let Some(ptr) = dict_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
+        };
+        unsafe {
+            let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
+            }
+            if !ensure_hashable(_py, key_bits) {
+                return MoltObject::none().bits();
+            }
+            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
+                inc_ref_bits(_py, val);
+                return val;
+            }
+            let default_ptr = alloc_list(_py, &[]);
+            if default_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let default_bits = MoltObject::from_ptr(default_ptr).bits();
+            dict_set_in_place(_py, dict_ptr, key_bits, default_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, default_bits);
                 return MoltObject::none().bits();
             }
             inc_ref_bits(_py, default_bits);

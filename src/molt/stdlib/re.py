@@ -19,7 +19,18 @@ def _require_callable_intrinsic(name: str):
     return value
 
 
-_molt_re_literal_matches = _require_callable_intrinsic("molt_re_literal_matches")
+_molt_re_literal_advance = _require_callable_intrinsic("molt_re_literal_advance")
+_molt_re_any_advance = _require_callable_intrinsic("molt_re_any_advance")
+_molt_re_anchor_matches = _require_callable_intrinsic("molt_re_anchor_matches")
+_molt_re_group_is_set = _require_callable_intrinsic("molt_re_group_is_set")
+_molt_re_backref_group_advance = _require_callable_intrinsic(
+    "molt_re_backref_group_advance"
+)
+_molt_re_apply_scoped_flags = _require_callable_intrinsic("molt_re_apply_scoped_flags")
+_molt_re_group_capture = _require_callable_intrinsic("molt_re_group_capture")
+_molt_re_charclass_advance = _require_callable_intrinsic("molt_re_charclass_advance")
+_molt_re_group_values = _require_callable_intrinsic("molt_re_group_values")
+_molt_re_expand_replacement = _require_callable_intrinsic("molt_re_expand_replacement")
 
 
 __all__ = [
@@ -52,7 +63,7 @@ __all__ = [
     "subn",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete native re parity (lookarounds, backreferences, named groups, verbose/ASCII flags, and Unicode casefold/class semantics).
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete native re parity and continue migrating parser/matcher execution into Rust (remaining lookaround variants, named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics).
 
 ASCII = 256
 DOTALL = 16
@@ -727,93 +738,6 @@ def _ensure_text(string: Any) -> str:
     return string
 
 
-def _casefold(text: str) -> str:
-    casefold = getattr(text, "casefold", None)
-    if casefold is not None:
-        return casefold()
-    return text.lower()
-
-
-def _is_ascii_digit(ch: str) -> bool:
-    return "0" <= ch <= "9"
-
-
-def _is_ascii_alpha(ch: str) -> bool:
-    return ("a" <= ch <= "z") or ("A" <= ch <= "Z")
-
-
-def _is_space(ch: str) -> bool:
-    return ch in " \t\n\r\f\v"
-
-
-def _is_word_char(ch: str, flags: int) -> bool:
-    if ch == "_":
-        return True
-    if _is_ascii_alpha(ch) or _is_ascii_digit(ch):
-        return True
-    if flags & ASCII:
-        return False
-    # Unicode fallback: treat non-ASCII, non-space runes as word-ish.
-    return ord(ch) >= 128 and not _is_space(ch)
-
-
-def _class_matches(node, ch, flags):
-    # Fast path for common compiled classes like [A-Za-z]+.
-    if not node.negated and not node.chars and not node.categories:
-        if flags & IGNORECASE:
-            ch_cmp = _casefold(ch)
-            for start, end in node.ranges:
-                if _casefold(start) <= ch_cmp and ch_cmp <= _casefold(end):
-                    return True
-            return False
-        for start, end in node.ranges:
-            if start <= ch and ch <= end:
-                return True
-        return False
-
-    hit = False
-    if flags & IGNORECASE:
-        ch_cmp = _casefold(ch)
-        for item in node.chars:
-            if ch_cmp == _casefold(item):
-                hit = True
-                break
-        if not hit:
-            for start, end in node.ranges:
-                if _casefold(start) <= ch_cmp and ch_cmp <= _casefold(end):
-                    hit = True
-                    break
-    else:
-        if ch in node.chars:
-            hit = True
-        if not hit:
-            for start, end in node.ranges:
-                if start <= ch and ch <= end:
-                    hit = True
-                    break
-    if not hit:
-        for category in node.categories:
-            if category == "d" or category == "digit":
-                if _is_ascii_digit(ch):
-                    hit = True
-                    break
-            elif category == "w" or category == "word":
-                if _is_word_char(ch, flags):
-                    hit = True
-                    break
-            elif category == "s" or category == "space":
-                if _is_space(ch):
-                    hit = True
-                    break
-            elif category.startswith("posix:"):
-                # CPython currently treats POSIX classes as nested set syntax and
-                # does not implement them as active character categories.
-                continue
-    if node.negated:
-        return not hit
-    return hit
-
-
 def _match_empty(
     _node: _Empty,
     _text: str,
@@ -835,13 +759,10 @@ def _match_literal(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    results: list[tuple[int, tuple[tuple[int, int] | None, ...]]] = []
-    length = len(node.text)
-    if pos + length <= end:
-        segment = text[pos : pos + length]
-        if _molt_re_literal_matches(segment, node.text, flags):
-            results.append((pos + length, groups))
-    return results
+    new_pos = _molt_re_literal_advance(text, pos, end, node.text, flags)
+    if new_pos < 0:
+        return []
+    return [(new_pos, groups)]
 
 
 def _match_any(
@@ -853,8 +774,9 @@ def _match_any(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    if pos < end and (flags & DOTALL or text[pos] != "\n"):
-        return [(pos + 1, groups)]
+    new_pos = _molt_re_any_advance(text, pos, end, flags)
+    if new_pos >= 0:
+        return [(new_pos, groups)]
     return []
 
 
@@ -867,20 +789,9 @@ def _match_anchor(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    results: list[tuple[int, tuple[tuple[int, int] | None, ...]]] = []
-    if node.kind == "start":
-        if pos == origin or (
-            flags & MULTILINE and pos > origin and text[pos - 1] == "\n"
-        ):
-            results.append((pos, groups))
-    else:
-        if flags & MULTILINE:
-            if pos == end or (pos < end and text[pos] == "\n"):
-                results.append((pos, groups))
-        else:
-            if pos == end or (pos == end - 1 and end > origin and text[pos] == "\n"):
-                results.append((pos, groups))
-    return results
+    if _molt_re_anchor_matches(node.kind, text, pos, end, origin, flags):
+        return [(pos, groups)]
+    return []
 
 
 def _match_charclass(
@@ -892,9 +803,12 @@ def _match_charclass(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    if pos < end and _class_matches(node, text[pos], flags):
-        return [(pos + 1, groups)]
-    return []
+    new_pos = _molt_re_charclass_advance(
+        text, pos, end, node.negated, node.chars, node.ranges, node.categories, flags
+    )
+    if new_pos < 0:
+        return []
+    return [(new_pos, groups)]
 
 
 def _match_group(
@@ -910,9 +824,8 @@ def _match_group(
     for new_pos, new_groups in _match_node(
         node.node, text, pos, end, origin, groups, flags
     ):
-        updated = list(new_groups)
-        updated[node.index] = (pos, new_pos)
-        results.append((new_pos, tuple(updated)))
+        updated = _molt_re_group_capture(new_groups, node.index, pos, new_pos)
+        results.append((new_pos, updated))
     return results
 
 
@@ -925,20 +838,10 @@ def _match_backref(
     groups: tuple[tuple[int, int] | None, ...],
     _flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    if node.index <= 0 or node.index >= len(groups):
+    new_pos = _molt_re_backref_group_advance(text, pos, end, groups, node.index)
+    if new_pos < 0:
         return []
-    span = groups[node.index]
-    if span is None:
-        return []
-    start_ref, end_ref = span
-    if start_ref < 0 or end_ref < start_ref:
-        return []
-    value = text[start_ref:end_ref]
-    if pos + len(value) > end:
-        return []
-    if text[pos : pos + len(value)] != value:
-        return []
-    return [(pos + len(value), groups)]
+    return [(new_pos, groups)]
 
 
 def _match_look(
@@ -983,7 +886,7 @@ def _match_scoped_flags(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    scoped = (flags | node.add_flags) & ~node.clear_flags
+    scoped = _molt_re_apply_scoped_flags(flags, node.add_flags, node.clear_flags)
     return _match_node(node.node, text, pos, end, origin, groups, scoped)
 
 
@@ -996,9 +899,7 @@ def _match_conditional(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
-    matched = False
-    if 0 < node.group_index < len(groups):
-        matched = groups[node.group_index] is not None
+    matched = _molt_re_group_is_set(groups, node.group_index)
     branch = node.yes if matched else node.no
     return _match_node(branch, text, pos, end, origin, groups, flags)
 
@@ -1275,44 +1176,16 @@ def _findall(
     return out
 
 
+def _match_group_values(match_obj: Match) -> tuple[object, ...]:
+    return _molt_re_group_values(match_obj._string, match_obj._groups)
+
+
 def _expand_replacement(repl: object, match_obj: Match) -> str:
     if callable(repl):
         return str(repl(match_obj))
     if not isinstance(repl, str):
         repl = str(repl)
-    text = repl
-    out = []
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "\\" and i + 1 < n:
-            nxt = text[i + 1]
-            if "0" <= nxt <= "9":
-                j = i + 1
-                while j < n and "0" <= text[j] <= "9":
-                    j += 1
-                idx = int(text[i + 1 : j])
-                value = match_obj.group(idx)
-                if value is None:
-                    value = ""
-                out.append(value)
-                i = j
-                continue
-            escapes = {
-                "n": "\n",
-                "t": "\t",
-                "r": "\r",
-                "f": "\f",
-                "v": "\v",
-                "\\": "\\",
-            }
-            out.append(escapes.get(nxt, nxt))
-            i += 2
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
+    return _molt_re_expand_replacement(repl, _match_group_values(match_obj))
 
 
 def _subn(

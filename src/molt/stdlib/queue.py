@@ -9,6 +9,8 @@ import sys as _sys
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_QUEUE_NEW = _require_intrinsic("molt_queue_new", globals())
+_MOLT_QUEUE_LIFO_NEW = _require_intrinsic("molt_queue_lifo_new", globals())
+_MOLT_QUEUE_PRIORITY_NEW = _require_intrinsic("molt_queue_priority_new", globals())
 _MOLT_QUEUE_QSIZE = _require_intrinsic("molt_queue_qsize", globals())
 _MOLT_QUEUE_EMPTY = _require_intrinsic("molt_queue_empty", globals())
 _MOLT_QUEUE_FULL = _require_intrinsic("molt_queue_full", globals())
@@ -147,15 +149,15 @@ class SimpleQueue:
 
 
 class LifoQueue(Queue):
-    def __init__(self, _maxsize: int = 0) -> None:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add native LIFO queue ordering intrinsics for queue.LifoQueue.
-        raise RuntimeError("queue.LifoQueue intrinsic unavailable")
+    def __init__(self, maxsize: int = 0) -> None:
+        self.maxsize = int(maxsize)
+        self._handle = _MOLT_QUEUE_LIFO_NEW(self.maxsize)
 
 
 class PriorityQueue(Queue):
-    def __init__(self, _maxsize: int = 0) -> None:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add native heap-priority queue intrinsics for queue.PriorityQueue.
-        raise RuntimeError("queue.PriorityQueue intrinsic unavailable")
+    def __init__(self, maxsize: int = 0) -> None:
+        self.maxsize = int(maxsize)
+        self._handle = _MOLT_QUEUE_PRIORITY_NEW(self.maxsize)
 
 
 _module = _sys.modules.get(__name__)

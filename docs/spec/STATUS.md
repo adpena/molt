@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-07
+Last updated: 2026-02-11
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -39,10 +39,19 @@ README/ROADMAP in sync.
 - Format mini-language for ints/floats + `__format__` dispatch + `str.format` field resolution (positional/keyword, attr/index, conversion flags, nested format specs).
 - memoryview exposes `format`/`shape`/`strides`/`nbytes`, `cast`, tuple scalar indexing, and 1D slicing/assignment for bytes/bytearray-backed views.
 - `str.find`/`str.count`/`str.startswith`/`str.endswith` support start/end slices with Unicode-aware offsets; `str.split`/`str.rsplit` support `None` separators and `maxsplit` for str/bytes/bytearray; `str.replace` supports `count`; `str.strip`/`str.lstrip`/`str.rstrip` support default whitespace and `chars` argument; `str.join` accepts arbitrary iterables.
+- Range materialization lowering now emits a dedicated runtime fast path (`list_from_range`) for `list(range(...))` and simple `[i for i in range(...)]` comprehensions, avoiding generator/list-append call overhead on hot loops.
+- Dict increment idioms of the form `d[k] = d.get(k, 0) + delta` now lower to a dedicated runtime op (`dict_inc`) with int fast path + generic add fallback.
+- Fused split+count lanes (`string_split_ws_dict_inc`, `string_split_sep_dict_inc`) now include a string-key dict probe fast path (hash+byte compare) with explicit fallback to generic dict semantics when mixed/non-string keys are encountered.
+- Adaptive vector lane selection is enabled for `vec_sum_int*` and `vec_sum_float*` via runtime counters (`MOLT_ADAPTIVE_VEC_LANES`, default on), preserving generic fallback semantics while reducing wasted probe overhead in mixed workloads.
+- For-loop element hint propagation now carries iterable element types (including `file_text`/`file_bytes`) into loop targets, enabling broader lowering of string/bytes method calls (for example split-heavy ETL loops) without host fallback paths.
+- `statistics.mean`/`statistics.stdev` calls over slice expressions now lower to dedicated runtime ops (`statistics_mean_slice`, `statistics_stdev_slice`) with list/tuple fast paths and runtime-owned generic fallback semantics; hot loops avoid intermediate slice list allocations where possible.
+- `statistics_mean_slice`/`statistics_stdev_slice` now use int/float element fast coercion lanes inside the slice loops (fallback preserved for generic numeric objects).
+- `abs(...)` builtin now lowers directly to a dedicated runtime op (`abs`) instead of dynamic call dispatch in hot loops.
+- `dict.setdefault(key, [])` now has a dedicated lowering/runtime lane (`dict_setdefault_empty_list`) that avoids eager empty-list allocation while preserving `dict.setdefault` behavior.
 - `str.lower`/`str.upper`/`str.capitalize`, list methods (`append`/`extend`/`insert`/`remove`/`pop`/`count`/`index` with start/stop + parity errors, `clear`/`copy`/`reverse`/`sort`),
   and `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`/`dict.fromkeys`.
 - List dunder arithmetic methods (`__add__`/`__mul__`/`__rmul__`/`__iadd__`/`__imul__`) are available for dynamic access and follow CPython error behavior.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): advance native `re` engine to full syntax/flags/groups; native engine supports literals, `.`, char classes/ranges (`\\d`/`\\w`/`\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL` flags; advanced features/flags raise `NotImplementedError` (no host fallback).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): advance native `re` engine to full syntax/flags/groups; native engine supports literals, `.`, char classes/ranges (`\\d`/`\\w`/`\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL` flags. Matcher hot paths for literal/any/char-class advancement, char/range/category checks, anchors, backreference/group-presence resolution, scoped-flag math, group capture/value materialization, and replacement expansion are intrinsic-backed; remaining advanced features/flags still raise `NotImplementedError` (no host fallback).
 - Builtin containers expose `__iter__`/`__len__`/`__contains__`/`__reversed__` (where defined) for list/dict/str/bytes/bytearray, including class-level access to builtin methods. Item dunder access via getattr is available for dict/list/bytearray/memoryview (`__getitem__`/`__setitem__`/`__delitem__`).
 - Implemented: dict subclass storage is separate from instance `__dict__`, avoiding attribute leakage and matching CPython mapping/attribute separation.
 - Membership tests (`in`) honor `__contains__` and iterate via `__iter__`/`__getitem__` fallbacks for user-defined objects.
@@ -79,7 +88,9 @@ README/ROADMAP in sync.
 - Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/encoding paths (`molt_enum_init_member`, `molt_pickle_encode_protocol0`) while retaining partial stdlib shims; `enum_basic.py` and `pickle_basic.py` are green in the differential basic lane with `--build-profile dev`.
+- Implemented: `queue` now has intrinsic-backed `LifoQueue` and `PriorityQueue` constructors/ordering (`molt_queue_lifo_new`, `molt_queue_priority_new`) on top of existing intrinsic-backed FIFO queue operations.
 - Implemented: `statistics` now has intrinsic-backed `mean`/`stdev` (`molt_statistics_mean`, `molt_statistics_stdev`) with shim-level `StatisticsError` mapping; Codon `taq.py` import/runtime path is unblocked.
+- Implemented: runtime-backed slice statistics intrinsics (`molt_statistics_mean_slice`, `molt_statistics_stdev_slice`) are wired for native+wasm lowering paths and preserve generic fallback behavior via runtime-owned slicing/iteration.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `statistics` module parity beyond `mean`/`stdev` coverage.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.

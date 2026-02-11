@@ -8,7 +8,7 @@ use crate::{
     dec_ref_bits, exception_pending, inc_ref_bits, intern_static_name, is_truthy,
     maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul, obj_from_bits, object_type_id,
     raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, to_i64, type_of_bits,
-    MoltObject, TYPE_ID_TUPLE,
+    MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE,
 };
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -655,6 +655,234 @@ fn kahan_sum(values: &[f64]) -> f64 {
         sum = t;
     }
     sum
+}
+
+fn kahan_sum_sq_diff(values: &[f64], mean: f64) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut compensation = 0.0_f64;
+    for value in values {
+        let diff = *value - mean;
+        let term = diff * diff;
+        let y = term - compensation;
+        let t = sum + y;
+        compensation = (t - sum) - y;
+        sum = t;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn sum_f64_simd_x86_avx(values: &[f64]) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut acc = _mm256_setzero_pd();
+    while i + 4 <= values.len() {
+        let v = _mm256_loadu_pd(values.as_ptr().add(i));
+        acc = _mm256_add_pd(acc, v);
+        i += 4;
+    }
+    let mut lanes = [0.0_f64; 4];
+    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes.iter().sum::<f64>();
+    for &v in &values[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn sum_f64_simd_x86_sse2(values: &[f64]) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut acc = _mm_setzero_pd();
+    while i + 2 <= values.len() {
+        let v = _mm_loadu_pd(values.as_ptr().add(i));
+        acc = _mm_add_pd(acc, v);
+        i += 2;
+    }
+    let mut lanes = [0.0_f64; 2];
+    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes[0] + lanes[1];
+    for &v in &values[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_f64_simd_aarch64(values: &[f64]) -> f64 {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut acc = vdupq_n_f64(0.0);
+    while i + 2 <= values.len() {
+        let v = vld1q_f64(values.as_ptr().add(i));
+        acc = vaddq_f64(acc, v);
+        i += 2;
+    }
+    let mut lanes = [0.0_f64; 2];
+    vst1q_f64(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes[0] + lanes[1];
+    for &v in &values[i..] {
+        sum += v;
+    }
+    sum
+}
+
+fn sum_f64_simd(values: &[f64]) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return unsafe { sum_f64_simd_x86_avx(values) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { sum_f64_simd_x86_sse2(values) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { sum_f64_simd_aarch64(values) };
+        }
+    }
+    kahan_sum(values)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn sum_sq_diff_f64_simd_x86_avx(values: &[f64], mean: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mean_v = _mm256_set1_pd(mean);
+    let mut i = 0usize;
+    let mut acc = _mm256_setzero_pd();
+    while i + 4 <= values.len() {
+        let v = _mm256_loadu_pd(values.as_ptr().add(i));
+        let d = _mm256_sub_pd(v, mean_v);
+        acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
+        i += 4;
+    }
+    let mut lanes = [0.0_f64; 4];
+    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes.iter().sum::<f64>();
+    for &v in &values[i..] {
+        let d = v - mean;
+        sum += d * d;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mean_v = _mm_set1_pd(mean);
+    let mut i = 0usize;
+    let mut acc = _mm_setzero_pd();
+    while i + 2 <= values.len() {
+        let v = _mm_loadu_pd(values.as_ptr().add(i));
+        let d = _mm_sub_pd(v, mean_v);
+        acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
+        i += 2;
+    }
+    let mut lanes = [0.0_f64; 2];
+    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes[0] + lanes[1];
+    for &v in &values[i..] {
+        let d = v - mean;
+        sum += d * d;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f64(mean);
+    let mut i = 0usize;
+    let mut acc = vdupq_n_f64(0.0);
+    while i + 2 <= values.len() {
+        let v = vld1q_f64(values.as_ptr().add(i));
+        let d = vsubq_f64(v, mean_v);
+        acc = vaddq_f64(acc, vmulq_f64(d, d));
+        i += 2;
+    }
+    let mut lanes = [0.0_f64; 2];
+    vst1q_f64(lanes.as_mut_ptr(), acc);
+    let mut sum = lanes[0] + lanes[1];
+    for &v in &values[i..] {
+        let d = v - mean;
+        sum += d * d;
+    }
+    sum
+}
+
+fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return unsafe { sum_sq_diff_f64_simd_x86_avx(values, mean) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { sum_sq_diff_f64_simd_x86_sse2(values, mean) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { sum_sq_diff_f64_simd_aarch64(values, mean) };
+        }
+    }
+    kahan_sum_sq_diff(values, mean)
+}
+
+fn clamp_slice_step1_index(raw: i64, len: usize) -> usize {
+    let len_i = len as i128;
+    let mut idx = raw as i128;
+    if idx < 0 {
+        idx += len_i;
+        if idx < 0 {
+            idx = 0;
+        }
+    }
+    if idx > len_i {
+        idx = len_i;
+    }
+    idx as usize
+}
+
+fn normalize_slice_step1_bounds(
+    _py: &PyToken<'_>,
+    len: usize,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> Option<(usize, usize)> {
+    let index_msg = "slice indices must be integers or None or have an __index__ method";
+    let has_start = is_truthy(_py, obj_from_bits(has_start_bits));
+    let has_end = is_truthy(_py, obj_from_bits(has_end_bits));
+    let start = if has_start {
+        let idx = index_i64_from_obj(_py, start_bits, index_msg);
+        if exception_pending(_py) {
+            return None;
+        }
+        clamp_slice_step1_index(idx, len)
+    } else {
+        0
+    };
+    let end = if has_end {
+        let idx = index_i64_from_obj(_py, end_bits, index_msg);
+        if exception_pending(_py) {
+            return None;
+        }
+        clamp_slice_step1_index(idx, len)
+    } else {
+        len
+    };
+    Some((start, end))
 }
 
 #[no_mangle]
@@ -2172,64 +2400,246 @@ pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
+fn statistics_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<f64> {
+    let values = collect_real_vec(_py, data_bits)?;
+    if values.is_empty() {
+        raise_exception::<()>(_py, "ValueError", "mean requires at least one data point");
+        return None;
+    }
+    Some(sum_f64_simd(&values) / values.len() as f64)
+}
+
+fn statistics_stdev_value(_py: &PyToken<'_>, data_bits: u64, xbar_bits: u64) -> Option<f64> {
+    let values = collect_real_vec(_py, data_bits)?;
+    let n = values.len();
+    if n < 2 {
+        raise_exception::<()>(_py, "ValueError", "stdev requires at least two data points");
+        return None;
+    }
+    let mean = if obj_from_bits(xbar_bits).is_none() {
+        sum_f64_simd(&values) / n as f64
+    } else {
+        let value = coerce_real_named(_py, xbar_bits, "stdev")?;
+        coerce_to_f64(_py, value)?
+    };
+    let sum_sq = sum_sq_diff_f64_simd(&values, mean);
+    let variance = if sum_sq < 0.0 && sum_sq > -f64::EPSILON {
+        0.0
+    } else {
+        sum_sq / (n - 1) as f64
+    };
+    Some(math_sqrt(variance))
+}
+
+fn statistics_coerce_elem_fast_f64(_py: &PyToken<'_>, val_bits: u64, name: &str) -> Option<f64> {
+    let val = obj_from_bits(val_bits);
+    if let Some(i) = val.as_int() {
+        return Some(i as f64);
+    }
+    if let Some(f) = val.as_float() {
+        return Some(f);
+    }
+    let real = coerce_real_named(_py, val_bits, name)?;
+    coerce_to_f64(_py, real)
+}
+
+fn materialize_statistics_slice(
+    _py: &PyToken<'_>,
+    data_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> Option<u64> {
+    let none_bits = MoltObject::none().bits();
+    let start_obj = if is_truthy(_py, obj_from_bits(has_start_bits)) {
+        start_bits
+    } else {
+        none_bits
+    };
+    let end_obj = if is_truthy(_py, obj_from_bits(has_end_bits)) {
+        end_bits
+    } else {
+        none_bits
+    };
+    let slice_bits = crate::molt_slice_new(start_obj, end_obj, none_bits);
+    if exception_pending(_py) {
+        return None;
+    }
+    let sliced_bits = crate::molt_index(data_bits, slice_bits);
+    if maybe_ptr_from_bits(slice_bits).is_some() {
+        dec_ref_bits(_py, slice_bits);
+    }
+    if exception_pending(_py) {
+        return None;
+    }
+    Some(sliced_bits)
+}
+
 #[no_mangle]
 pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(values) = collect_real_vec(_py, data_bits) else {
+        let Some(mean) = statistics_mean_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
-        if values.is_empty() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "mean requires at least one data point",
-            );
-        }
-        let total = kahan_sum(&values);
-        MoltObject::from_float(total / values.len() as f64).bits()
+        MoltObject::from_float(mean).bits()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(values) = collect_real_vec(_py, data_bits) else {
+        let Some(stdev) = statistics_stdev_value(_py, data_bits, xbar_bits) else {
             return MoltObject::none().bits();
         };
-        let n = values.len();
-        if n < 2 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "stdev requires at least two data points",
-            );
+        MoltObject::from_float(stdev).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_mean_slice(
+    data_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = obj_from_bits(data_bits);
+        if let Some(data_ptr) = data.as_ptr() {
+            unsafe {
+                let ty = object_type_id(data_ptr);
+                if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(data_ptr);
+                    let Some((start, end)) = normalize_slice_step1_bounds(
+                        _py,
+                        elems.len(),
+                        start_bits,
+                        end_bits,
+                        has_start_bits,
+                        has_end_bits,
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    if start >= end {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "mean requires at least one data point",
+                        );
+                    }
+                    let mut sum = 0.0_f64;
+                    let mut compensation = 0.0_f64;
+                    let mut count: usize = 0;
+                    for &val_bits in &elems[start..end] {
+                        let Some(f) = statistics_coerce_elem_fast_f64(_py, val_bits, "mean") else {
+                            return MoltObject::none().bits();
+                        };
+                        let y = f - compensation;
+                        let t = sum + y;
+                        compensation = (t - sum) - y;
+                        sum = t;
+                        count += 1;
+                    }
+                    return MoltObject::from_float(sum / count as f64).bits();
+                }
+            }
         }
-        let mean = if obj_from_bits(xbar_bits).is_none() {
-            kahan_sum(&values) / n as f64
-        } else {
-            let Some(value) = coerce_real_named(_py, xbar_bits, "stdev") else {
-                return MoltObject::none().bits();
-            };
-            let Some(f) = coerce_to_f64(_py, value) else {
-                return MoltObject::none().bits();
-            };
-            f
+        let Some(sliced_bits) = materialize_statistics_slice(
+            _py,
+            data_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        ) else {
+            return MoltObject::none().bits();
         };
-        let mut sum_sq = 0.0_f64;
-        let mut compensation = 0.0_f64;
-        for sample in &values {
-            let diff = *sample - mean;
-            let term = diff * diff;
-            let y = term - compensation;
-            let t = sum_sq + y;
-            compensation = (t - sum_sq) - y;
-            sum_sq = t;
+        let out = match statistics_mean_value(_py, sliced_bits) {
+            Some(mean) => MoltObject::from_float(mean).bits(),
+            None => MoltObject::none().bits(),
+        };
+        if maybe_ptr_from_bits(sliced_bits).is_some() {
+            dec_ref_bits(_py, sliced_bits);
         }
-        let variance = if sum_sq < 0.0 && sum_sq > -f64::EPSILON {
-            0.0
-        } else {
-            sum_sq / (n - 1) as f64
+        out
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_stdev_slice(
+    data_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = obj_from_bits(data_bits);
+        if let Some(data_ptr) = data.as_ptr() {
+            unsafe {
+                let ty = object_type_id(data_ptr);
+                if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(data_ptr);
+                    let Some((start, end)) = normalize_slice_step1_bounds(
+                        _py,
+                        elems.len(),
+                        start_bits,
+                        end_bits,
+                        has_start_bits,
+                        has_end_bits,
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let n = end.saturating_sub(start);
+                    if n < 2 {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "stdev requires at least two data points",
+                        );
+                    }
+                    let mut count = 0.0_f64;
+                    let mut mean = 0.0_f64;
+                    let mut m2 = 0.0_f64;
+                    for &val_bits in &elems[start..end] {
+                        let Some(x) = statistics_coerce_elem_fast_f64(_py, val_bits, "stdev")
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        count += 1.0;
+                        let delta = x - mean;
+                        mean += delta / count;
+                        let delta2 = x - mean;
+                        m2 += delta * delta2;
+                    }
+                    let variance = if m2 < 0.0 && m2 > -f64::EPSILON {
+                        0.0
+                    } else {
+                        m2 / (count - 1.0)
+                    };
+                    return MoltObject::from_float(math_sqrt(variance)).bits();
+                }
+            }
+        }
+        let Some(sliced_bits) = materialize_statistics_slice(
+            _py,
+            data_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        ) else {
+            return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_sqrt(variance)).bits()
+        let none_bits = MoltObject::none().bits();
+        let out = match statistics_stdev_value(_py, sliced_bits, none_bits) {
+            Some(stdev) => MoltObject::from_float(stdev).bits(),
+            None => MoltObject::none().bits(),
+        };
+        if maybe_ptr_from_bits(sliced_bits).is_some() {
+            dec_ref_bits(_py, sliced_bits);
+        }
+        out
     })
 }

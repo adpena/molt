@@ -130,6 +130,13 @@ Use this map when deciding where a change belongs and what else it touches.
    - Paths: `docs/spec/`, `docs/spec/STATUS.md`, `docs/ROADMAP.md`
    - Examples: `docs/spec/areas/core/0000-vision.md`, `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 
+### Rules Of Thumb For New Work
+Use this decision order for both parity work and optimization work:
+
+1. Add or extend a primitive when behavior is a reusable low-level hot semantic.
+2. Expose that capability to stdlib through a Rust intrinsic.
+3. Expose user-facing language/core behavior through builtins or stdlib APIs that call intrinsics/primitives (do not reimplement runtime semantics in Python shims).
+
 ### Recommended Spec Reading Order
 
 The `docs/spec/areas/` directory contains the detailed engineering specifications.
@@ -180,6 +187,11 @@ Use this checklist to ensure you touch the right layers and docs.
 5. **Document the integration points**:
    - Add notes to `docs/DEVELOPER_GUIDE.md` if a new module changes the map.
    - Update `README.md` only when user-facing behavior changes.
+
+## Coverage And Optimization Strategy
+- Keep the architecture order intact while closing parity gaps: primitive -> intrinsic -> builtin/stdlib API.
+- For remaining stdlib coverage, favor moving semantics into runtime intrinsics and keep Python wrappers to argument normalization, error mapping, and capability gating.
+- For optimization, prioritize wins at primitive/intrinsic layers (fewer crossings, less dynamic dispatch, more deterministic behavior); avoid Python-shim micro-optimizations that duplicate runtime logic.
 
 ## Getting Started for Developers
 

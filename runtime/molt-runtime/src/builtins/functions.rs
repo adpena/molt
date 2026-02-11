@@ -27,8 +27,14 @@ use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 
+#[derive(Clone)]
 struct MoltEmailMessage {
     headers: Vec<(String, String)>,
+    body: String,
+    content_type: String,
+    filename: Option<String>,
+    parts: Vec<MoltEmailMessage>,
+    multipart_subtype: Option<String>,
 }
 
 #[derive(Clone)]
@@ -83,7 +89,82 @@ static URLLIB_RESPONSE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltUrllibResponse>
 static URLLIB_RESPONSE_NEXT: AtomicU64 = AtomicU64::new(1);
 static COOKIEJAR_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltCookieJar>>> = OnceLock::new();
 static COOKIEJAR_NEXT: AtomicU64 = AtomicU64::new(1);
+static EMAIL_MESSAGE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltEmailMessage>>> = OnceLock::new();
+static EMAIL_MESSAGE_NEXT: AtomicU64 = AtomicU64::new(1);
+fn email_message_registry() -> &'static Mutex<HashMap<u64, MoltEmailMessage>> {
+    EMAIL_MESSAGE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn email_message_register(message: MoltEmailMessage) -> u64 {
+    let id = EMAIL_MESSAGE_NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut registry = email_message_registry()
+        .lock()
+        .expect("email message registry lock poisoned");
+    registry.insert(id, message);
+    id
+}
+
+fn email_message_handle_tag(id: u64) -> String {
+    format!("molt-email-message-{id}")
+}
+
+fn email_message_bits_from_id(_py: &crate::PyToken<'_>, id: u64) -> u64 {
+    let tag = email_message_handle_tag(id);
+    let ptr = alloc_string(_py, tag.as_bytes());
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn email_message_id_from_bits(_py: &crate::PyToken<'_>, message_bits: u64) -> Result<u64, u64> {
+    if let Some(text) = string_obj_to_owned(obj_from_bits(message_bits)) {
+        if let Some(raw) = text.strip_prefix("molt-email-message-") {
+            if let Ok(id) = raw.parse::<u64>() {
+                if id > 0 {
+                    return Ok(id);
+                }
+            }
+        }
+    }
+    let Some(raw) = to_i64(obj_from_bits(message_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "email message handle is invalid",
+        ));
+    };
+    if raw <= 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "email message handle is invalid",
+        ));
+    }
+    let Ok(id) = u64::try_from(raw) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "email message handle is invalid",
+        ));
+    };
+    Ok(id)
+}
 static SOCKETSERVER_RUNTIME: OnceLock<Mutex<MoltSocketServerRuntime>> = OnceLock::new();
+
+const RE_IGNORECASE: i64 = 2;
+const RE_DOTALL: i64 = 16;
+const RE_MULTILINE: i64 = 8;
+const RE_ASCII: i64 = 256;
+
+fn re_literal_matches_impl(segment: &str, literal: &str, flags: i64) -> bool {
+    if flags & RE_IGNORECASE != 0 {
+        segment.to_lowercase() == literal.to_lowercase()
+    } else {
+        segment == literal
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn molt_re_literal_matches(
@@ -101,13 +182,1033 @@ pub extern "C" fn molt_re_literal_matches(
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "flags must be int");
         };
-        const RE_IGNORECASE: i64 = 2;
-        let matched = if flags & RE_IGNORECASE != 0 {
-            segment.to_lowercase() == literal.to_lowercase()
-        } else {
-            segment == literal
-        };
+        let matched = re_literal_matches_impl(&segment, &literal, flags);
         MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_literal_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    literal_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(literal) = string_obj_to_owned(obj_from_bits(literal_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "literal must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let advanced = re_literal_advance_impl(&text, pos, end, &literal, flags);
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_any_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let advanced = re_any_advance_impl(&text, pos, end, flags);
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+fn re_is_ascii_digit(ch: char) -> bool {
+    ch.is_ascii_digit()
+}
+
+fn re_is_ascii_alpha(ch: char) -> bool {
+    ch.is_ascii_alphabetic()
+}
+
+fn re_is_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}')
+}
+
+fn re_is_word_char(ch: &str, flags: i64) -> bool {
+    let mut chars = ch.chars();
+    let Some(c) = chars.next() else {
+        return false;
+    };
+    if chars.next().is_some() {
+        return false;
+    }
+    if c == '_' {
+        return true;
+    }
+    if re_is_ascii_alpha(c) || re_is_ascii_digit(c) {
+        return true;
+    }
+    if flags & RE_ASCII != 0 {
+        return false;
+    }
+    (c as u32) >= 128 && !re_is_space(c)
+}
+
+fn re_category_matches_impl(ch: &str, category: &str, flags: i64) -> bool {
+    let mut ch_chars = ch.chars();
+    let Some(c) = ch_chars.next() else {
+        return false;
+    };
+    if ch_chars.next().is_some() {
+        return false;
+    }
+    match category {
+        "d" | "digit" => {
+            if flags & RE_ASCII != 0 {
+                c.is_ascii_digit()
+            } else {
+                c.is_ascii_digit() || c.is_numeric()
+            }
+        }
+        "w" | "word" => re_is_word_char(ch, flags),
+        "s" | "space" => {
+            if flags & RE_ASCII != 0 {
+                re_is_space(c)
+            } else {
+                c.is_whitespace()
+            }
+        }
+        _ => false,
+    }
+}
+
+fn re_char_in_range_impl(ch: &str, start: &str, end: &str, flags: i64) -> bool {
+    if flags & RE_IGNORECASE != 0 {
+        let ch_cmp = ch.to_lowercase();
+        let start_cmp = start.to_lowercase();
+        let end_cmp = end.to_lowercase();
+        start_cmp <= ch_cmp && ch_cmp <= end_cmp
+    } else {
+        start <= ch && ch <= end
+    }
+}
+
+fn re_char_at(chars: &[char], index: i64) -> Option<char> {
+    let idx = usize::try_from(index).ok()?;
+    chars.get(idx).copied()
+}
+
+fn re_anchor_matches_impl(
+    kind: &str,
+    text: &str,
+    pos: i64,
+    end: i64,
+    origin: i64,
+    flags: i64,
+) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let text_len = i64::try_from(chars.len()).unwrap_or(i64::MAX);
+    if pos < 0 || end < 0 || origin < 0 {
+        return false;
+    }
+    if origin > end || end > text_len || pos > end {
+        return false;
+    }
+    if kind == "start" {
+        if pos == origin {
+            return true;
+        }
+        if flags & RE_MULTILINE != 0 && pos > origin {
+            return re_char_at(&chars, pos - 1) == Some('\n');
+        }
+        return false;
+    }
+    if flags & RE_MULTILINE != 0 {
+        if pos == end {
+            return true;
+        }
+        if pos < end {
+            return re_char_at(&chars, pos) == Some('\n');
+        }
+        return false;
+    }
+    if pos == end {
+        return true;
+    }
+    if end > origin && pos == end - 1 {
+        return re_char_at(&chars, pos) == Some('\n');
+    }
+    false
+}
+
+fn re_backref_advance_impl(text: &str, pos: i64, end: i64, start_ref: i64, end_ref: i64) -> i64 {
+    let chars: Vec<char> = text.chars().collect();
+    let text_len = i64::try_from(chars.len()).unwrap_or(i64::MAX);
+    if pos < 0 || end < 0 || start_ref < 0 || end_ref < start_ref {
+        return -1;
+    }
+    if end > text_len || pos > end || end_ref > text_len {
+        return -1;
+    }
+    let ref_len = end_ref - start_ref;
+    let Some(pos_end) = pos.checked_add(ref_len) else {
+        return -1;
+    };
+    if pos_end > end {
+        return -1;
+    }
+    let Some(start_idx) = usize::try_from(start_ref).ok() else {
+        return -1;
+    };
+    let Some(pos_idx) = usize::try_from(pos).ok() else {
+        return -1;
+    };
+    let Some(ref_len_usize) = usize::try_from(ref_len).ok() else {
+        return -1;
+    };
+    for i in 0..ref_len_usize {
+        if chars[start_idx + i] != chars[pos_idx + i] {
+            return -1;
+        }
+    }
+    pos_end
+}
+
+fn re_apply_scoped_flags_impl(flags: i64, add_flags: i64, clear_flags: i64) -> i64 {
+    (flags | add_flags) & !clear_flags
+}
+
+fn re_extract_range_pairs(
+    _py: &crate::PyToken<'_>,
+    ranges_bits: u64,
+) -> Result<Vec<(String, String)>, u64> {
+    let iter_bits = molt_iter(ranges_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    loop {
+        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
+        if done {
+            break;
+        }
+        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "ranges must contain (start, end) pairs",
+            ));
+        };
+        let is_sequence = unsafe {
+            let ty = object_type_id(item_ptr);
+            ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST
+        };
+        if !is_sequence {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "ranges must contain (start, end) pairs",
+            ));
+        }
+        let pair = unsafe { seq_vec_ref(item_ptr) };
+        if pair.len() < 2 {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "ranges must contain (start, end) pairs",
+            ));
+        }
+        let Some(start) = string_obj_to_owned(obj_from_bits(pair[0])) else {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "range start must be str",
+            ));
+        };
+        let Some(end) = string_obj_to_owned(obj_from_bits(pair[1])) else {
+            dec_ref_bits(_py, item_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "range end must be str",
+            ));
+        };
+        dec_ref_bits(_py, item_bits);
+        out.push((start, end));
+    }
+    Ok(out)
+}
+
+fn re_charclass_matches_impl(
+    ch: &str,
+    negated: bool,
+    chars: &[String],
+    ranges: &[(String, String)],
+    categories: &[String],
+    flags: i64,
+) -> bool {
+    let mut hit = false;
+    if flags & RE_IGNORECASE != 0 {
+        for item in chars {
+            if ch.to_lowercase() == item.to_lowercase() {
+                hit = true;
+                break;
+            }
+        }
+    } else {
+        for item in chars {
+            if ch == item {
+                hit = true;
+                break;
+            }
+        }
+    }
+    if !hit {
+        for (start, end) in ranges {
+            if re_char_in_range_impl(ch, start.as_str(), end.as_str(), flags) {
+                hit = true;
+                break;
+            }
+        }
+    }
+    if !hit {
+        for category in categories {
+            if category.starts_with("posix:") {
+                continue;
+            }
+            if re_category_matches_impl(ch, category.as_str(), flags) {
+                hit = true;
+                break;
+            }
+        }
+    }
+    if negated {
+        !hit
+    } else {
+        hit
+    }
+}
+
+fn re_charclass_advance_impl(
+    text: &str,
+    pos: i64,
+    end: i64,
+    negated: bool,
+    chars: &[String],
+    ranges: &[(String, String)],
+    categories: &[String],
+    flags: i64,
+) -> i64 {
+    let text_chars: Vec<char> = text.chars().collect();
+    let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
+    if pos < 0 || end < 0 || pos >= end || end > text_len {
+        return -1;
+    }
+    let Some(ch) = re_char_at(&text_chars, pos) else {
+        return -1;
+    };
+    let mut buf = [0u8; 4];
+    let ch_str = ch.encode_utf8(&mut buf);
+    if re_charclass_matches_impl(ch_str, negated, chars, ranges, categories, flags) {
+        pos.saturating_add(1)
+    } else {
+        -1
+    }
+}
+
+fn re_group_values_from_sequence(
+    _py: &crate::PyToken<'_>,
+    group_values_bits: u64,
+) -> Result<Vec<Option<String>>, u64> {
+    let group_values_obj = obj_from_bits(group_values_bits);
+    let Some(group_values_ptr) = group_values_obj.as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "group_values must be a sequence",
+        ));
+    };
+    let group_values_ty = unsafe { object_type_id(group_values_ptr) };
+    if group_values_ty != TYPE_ID_LIST && group_values_ty != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "group_values must be a sequence",
+        ));
+    }
+    let mut out: Vec<Option<String>> = Vec::new();
+    let elems = unsafe { seq_vec_ref(group_values_ptr) };
+    for &elem_bits in elems.iter() {
+        let elem_obj = obj_from_bits(elem_bits);
+        if elem_obj.is_none() {
+            out.push(None);
+            continue;
+        }
+        let Some(value) = string_obj_to_owned(elem_obj) else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group_values must contain str or None",
+            ));
+        };
+        out.push(Some(value));
+    }
+    Ok(out)
+}
+
+fn re_expand_replacement_impl(repl: &str, group_values: &[Option<String>]) -> Result<String, ()> {
+    let mut out = String::new();
+    let chars: Vec<char> = repl.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < chars.len() {
+            let nxt = chars[i + 1];
+            if nxt.is_ascii_digit() {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                let idx_str: String = chars[i + 1..j].iter().collect();
+                let idx = idx_str.parse::<usize>().unwrap_or(usize::MAX);
+                if idx >= group_values.len() {
+                    return Err(());
+                }
+                if let Some(value) = &group_values[idx] {
+                    out.push_str(value.as_str());
+                }
+                i = j;
+                continue;
+            }
+            let escaped = match nxt {
+                'n' => Some('\n'),
+                't' => Some('\t'),
+                'r' => Some('\r'),
+                'f' => Some('\u{000C}'),
+                'v' => Some('\u{000B}'),
+                '\\' => Some('\\'),
+                _ => None,
+            };
+            if let Some(mapped) = escaped {
+                out.push(mapped);
+            } else {
+                out.push(nxt);
+            }
+            i += 2;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    Ok(out)
+}
+
+fn re_group_spans_from_sequence(
+    _py: &crate::PyToken<'_>,
+    groups_bits: u64,
+) -> Result<Vec<Option<(i64, i64)>>, u64> {
+    let groups_obj = obj_from_bits(groups_bits);
+    let Some(groups_ptr) = groups_obj.as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "groups must be a sequence",
+        ));
+    };
+    let groups_ty = unsafe { object_type_id(groups_ptr) };
+    if groups_ty != TYPE_ID_LIST && groups_ty != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "groups must be a sequence",
+        ));
+    }
+    let mut out: Vec<Option<(i64, i64)>> = Vec::new();
+    let elems = unsafe { seq_vec_ref(groups_ptr) };
+    for &elem_bits in elems.iter() {
+        let elem_obj = obj_from_bits(elem_bits);
+        if elem_obj.is_none() {
+            out.push(None);
+            continue;
+        }
+        let Some(elem_ptr) = elem_obj.as_ptr() else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group span must be tuple[int, int] or None",
+            ));
+        };
+        let elem_ty = unsafe { object_type_id(elem_ptr) };
+        if elem_ty != TYPE_ID_LIST && elem_ty != TYPE_ID_TUPLE {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group span must be tuple[int, int] or None",
+            ));
+        }
+        let span = unsafe { seq_vec_ref(elem_ptr) };
+        if span.len() < 2 {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group span must contain start/end",
+            ));
+        }
+        let Some(start) = to_i64(obj_from_bits(span[0])) else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group span start must be int",
+            ));
+        };
+        let Some(end) = to_i64(obj_from_bits(span[1])) else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "group span end must be int",
+            ));
+        };
+        out.push(Some((start, end)));
+    }
+    Ok(out)
+}
+
+fn re_alloc_group_spans(
+    _py: &crate::PyToken<'_>,
+    spans: &[Option<(i64, i64)>],
+) -> Result<u64, u64> {
+    let mut elem_bits: Vec<u64> = Vec::with_capacity(spans.len());
+    let mut owned_bits: Vec<u64> = Vec::new();
+    for span in spans {
+        if let Some((start, end)) = span {
+            let start_bits = MoltObject::from_int(*start).bits();
+            let end_bits = MoltObject::from_int(*end).bits();
+            let pair_ptr = alloc_tuple(_py, &[start_bits, end_bits]);
+            if pair_ptr.is_null() {
+                for bits in owned_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return Err(MoltObject::none().bits());
+            }
+            let pair_bits = MoltObject::from_ptr(pair_ptr).bits();
+            elem_bits.push(pair_bits);
+            owned_bits.push(pair_bits);
+        } else {
+            elem_bits.push(MoltObject::none().bits());
+        }
+    }
+    let out_ptr = alloc_tuple(_py, &elem_bits);
+    for bits in owned_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if out_ptr.is_null() {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(MoltObject::from_ptr(out_ptr).bits())
+    }
+}
+
+fn re_slice_char_bounds(index: i64, text_len: i64) -> i64 {
+    if index < 0 {
+        let shifted = text_len + index;
+        if shifted < 0 {
+            0
+        } else {
+            shifted
+        }
+    } else if index > text_len {
+        text_len
+    } else {
+        index
+    }
+}
+
+fn re_group_values_from_spans(text: &str, spans: &[Option<(i64, i64)>]) -> Vec<Option<String>> {
+    let text_chars: Vec<char> = text.chars().collect();
+    let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
+    let mut out: Vec<Option<String>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        let Some((start, end)) = span else {
+            out.push(None);
+            continue;
+        };
+        let start_idx = re_slice_char_bounds(*start, text_len);
+        let end_idx = re_slice_char_bounds(*end, text_len);
+        let slice = if end_idx <= start_idx {
+            String::new()
+        } else {
+            let s = usize::try_from(start_idx).unwrap_or(0);
+            let e = usize::try_from(end_idx).unwrap_or(s);
+            text_chars[s..e].iter().collect()
+        };
+        out.push(Some(slice));
+    }
+    out
+}
+
+fn re_alloc_group_values(_py: &crate::PyToken<'_>, values: &[Option<String>]) -> Result<u64, u64> {
+    let mut elem_bits: Vec<u64> = Vec::with_capacity(values.len());
+    let mut owned_bits: Vec<u64> = Vec::new();
+    for value in values {
+        if let Some(text) = value {
+            let ptr = alloc_string(_py, text.as_bytes());
+            if ptr.is_null() {
+                for bits in owned_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return Err(MoltObject::none().bits());
+            }
+            let bits = MoltObject::from_ptr(ptr).bits();
+            elem_bits.push(bits);
+            owned_bits.push(bits);
+        } else {
+            elem_bits.push(MoltObject::none().bits());
+        }
+    }
+    let out_ptr = alloc_tuple(_py, &elem_bits);
+    for bits in owned_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if out_ptr.is_null() {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(MoltObject::from_ptr(out_ptr).bits())
+    }
+}
+
+fn re_literal_advance_impl(text: &str, pos: i64, end: i64, literal: &str, flags: i64) -> i64 {
+    let text_chars: Vec<char> = text.chars().collect();
+    let literal_chars: Vec<char> = literal.chars().collect();
+    let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
+    if pos < 0 || end < 0 || pos > end || end > text_len {
+        return -1;
+    }
+    let literal_len = i64::try_from(literal_chars.len()).unwrap_or(i64::MAX);
+    let Some(stop) = pos.checked_add(literal_len) else {
+        return -1;
+    };
+    if stop > end {
+        return -1;
+    }
+    let Some(start_idx) = usize::try_from(pos).ok() else {
+        return -1;
+    };
+    let Some(stop_idx) = usize::try_from(stop).ok() else {
+        return -1;
+    };
+    let segment: String = text_chars[start_idx..stop_idx].iter().collect();
+    if re_literal_matches_impl(segment.as_str(), literal, flags) {
+        stop
+    } else {
+        -1
+    }
+}
+
+fn re_any_advance_impl(text: &str, pos: i64, end: i64, flags: i64) -> i64 {
+    let text_chars: Vec<char> = text.chars().collect();
+    let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
+    if pos < 0 || end < 0 || pos >= end || end > text_len {
+        return -1;
+    }
+    let Some(ch) = re_char_at(&text_chars, pos) else {
+        return -1;
+    };
+    if flags & RE_DOTALL != 0 || ch != '\n' {
+        pos + 1
+    } else {
+        -1
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_char_in_range(
+    ch_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let Some(start) = string_obj_to_owned(obj_from_bits(start_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start must be str");
+        };
+        let Some(end) = string_obj_to_owned(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_char_in_range_impl(&ch, &start, &end, flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_category_matches(
+    ch_bits: u64,
+    category_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let Some(category) = string_obj_to_owned(obj_from_bits(category_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "category must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        if category.starts_with("posix:") {
+            return MoltObject::from_bool(false).bits();
+        }
+        let matched = re_category_matches_impl(&ch, category.as_str(), flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_anchor_matches(
+    kind_bits: u64,
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    origin_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "kind must be str");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(origin) = to_i64(obj_from_bits(origin_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "origin must be int");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_anchor_matches_impl(kind.as_str(), &text, pos, end, origin, flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_group_is_set(groups_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let is_set = if let Ok(index_usize) = usize::try_from(index) {
+            index_usize < spans.len() && spans[index_usize].is_some()
+        } else {
+            false
+        };
+        MoltObject::from_bool(is_set).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_backref_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    start_ref_bits: u64,
+    end_ref_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(start_ref) = to_i64(obj_from_bits(start_ref_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start_ref must be int");
+        };
+        let Some(end_ref) = to_i64(obj_from_bits(end_ref_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end_ref must be int");
+        };
+        let advanced = re_backref_advance_impl(&text, pos, end, start_ref, end_ref);
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_backref_group_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    groups_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let advanced = if let Ok(index_usize) = usize::try_from(index) {
+            if let Some(Some((start_ref, end_ref))) = spans.get(index_usize) {
+                re_backref_advance_impl(&text, pos, end, *start_ref, *end_ref)
+            } else {
+                -1
+            }
+        } else {
+            -1
+        };
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_apply_scoped_flags(
+    flags_bits: u64,
+    add_flags_bits: u64,
+    clear_flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let Some(add_flags) = to_i64(obj_from_bits(add_flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "add_flags must be int");
+        };
+        let Some(clear_flags) = to_i64(obj_from_bits(clear_flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "clear_flags must be int");
+        };
+        let scoped = re_apply_scoped_flags_impl(flags, add_flags, clear_flags);
+        MoltObject::from_int(scoped).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_charclass_matches(
+    ch_bits: u64,
+    negated_bits: u64,
+    chars_bits: u64,
+    ranges_bits: u64,
+    categories_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let negated = is_truthy(_py, obj_from_bits(negated_bits));
+        let chars = match iterable_to_string_vec(_py, chars_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ranges = match re_extract_range_pairs(_py, ranges_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let categories = match iterable_to_string_vec(_py, categories_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_charclass_matches_impl(
+            &ch,
+            negated,
+            chars.as_slice(),
+            ranges.as_slice(),
+            categories.as_slice(),
+            flags,
+        );
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_charclass_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    negated_bits: u64,
+    chars_bits: u64,
+    ranges_bits: u64,
+    categories_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let negated = is_truthy(_py, obj_from_bits(negated_bits));
+        let chars = match iterable_to_string_vec(_py, chars_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ranges = match re_extract_range_pairs(_py, ranges_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let categories = match iterable_to_string_vec(_py, categories_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let advanced = re_charclass_advance_impl(
+            &text,
+            pos,
+            end,
+            negated,
+            chars.as_slice(),
+            ranges.as_slice(),
+            categories.as_slice(),
+            flags,
+        );
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_group_capture(
+    groups_bits: u64,
+    index_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let Some(start) = to_i64(obj_from_bits(start_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(index_usize) = usize::try_from(index).ok() else {
+            return raise_exception::<_>(_py, "IndexError", "no such group");
+        };
+        if index_usize >= spans.len() {
+            return raise_exception::<_>(_py, "IndexError", "no such group");
+        }
+        spans[index_usize] = Some((start, end));
+        match re_alloc_group_spans(_py, spans.as_slice()) {
+            Ok(bits) => bits,
+            Err(err_bits) => err_bits,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let values = re_group_values_from_spans(text.as_str(), spans.as_slice());
+        match re_alloc_group_values(_py, values.as_slice()) {
+            Ok(bits) => bits,
+            Err(err_bits) => err_bits,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_expand_replacement(repl_bits: u64, group_values_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(repl) = string_obj_to_owned(obj_from_bits(repl_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "repl must be str");
+        };
+        let group_values = match re_group_values_from_sequence(_py, group_values_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let expanded = match re_expand_replacement_impl(repl.as_str(), group_values.as_slice()) {
+            Ok(value) => value,
+            Err(()) => return raise_exception::<_>(_py, "IndexError", "no such group"),
+        };
+        let out_ptr = alloc_string(_py, expanded.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
     })
 }
 
@@ -3650,13 +4751,421 @@ fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
     success
 }
 
+static EMAIL_MSGID_NEXT: AtomicU64 = AtomicU64::new(1);
+
+fn email_message_default() -> MoltEmailMessage {
+    MoltEmailMessage {
+        headers: Vec::new(),
+        body: String::new(),
+        content_type: "text/plain".to_string(),
+        filename: None,
+        parts: Vec::new(),
+        multipart_subtype: None,
+    }
+}
+
+fn email_header_get(headers: &[(String, String)], name: &str) -> Option<String> {
+    for (header_name, value) in headers.iter().rev() {
+        if header_name.eq_ignore_ascii_case(name) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn email_fold_header(name: &str, value: &str) -> String {
+    let prefix = format!("{name}: ");
+    if prefix.len() + value.len() <= 78 {
+        return format!("{prefix}{value}");
+    }
+    let mut out = prefix;
+    let mut remaining = value.trim();
+    let mut first = true;
+    while !remaining.is_empty() {
+        let max_len = if first { 72 } else { 74 };
+        let take = remaining
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_len)
+            .last()
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .unwrap_or_else(|| remaining.len().min(max_len));
+        let (chunk, rest) = remaining.split_at(take);
+        if !first {
+            out.push(' ');
+        }
+        out.push_str(chunk.trim_end());
+        if !rest.is_empty() {
+            out.push('\n');
+            first = false;
+        }
+        remaining = rest.trim_start();
+    }
+    out
+}
+
+fn email_serialize_message(message: &MoltEmailMessage) -> String {
+    let mut out = String::new();
+    for (name, value) in &message.headers {
+        out.push_str(&email_fold_header(name, value));
+        out.push('\n');
+    }
+    if message.parts.is_empty() {
+        out.push_str(&format!("Content-Type: {}\n", message.content_type));
+        if let Some(filename) = &message.filename {
+            out.push_str(&format!(
+                "Content-Disposition: attachment; filename=\"{}\"\n",
+                filename
+            ));
+        }
+        out.push('\n');
+        out.push_str(&message.body);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        return out;
+    }
+    let subtype = message
+        .multipart_subtype
+        .as_deref()
+        .unwrap_or("mixed")
+        .to_string();
+    let boundary = "==MOLT_BOUNDARY==";
+    out.push_str(&format!(
+        "Content-Type: multipart/{}; boundary=\"{}\"\n\n",
+        subtype, boundary
+    ));
+    for part in &message.parts {
+        out.push_str(&format!("--{}\n", boundary));
+        out.push_str(&format!("Content-Type: {}\n", part.content_type));
+        if let Some(filename) = &part.filename {
+            out.push_str(&format!(
+                "Content-Disposition: attachment; filename=\"{}\"\n",
+                filename
+            ));
+        }
+        out.push('\n');
+        out.push_str(&part.body);
+        if !part.body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(&format!("--{}--\n", boundary));
+    out
+}
+
+fn email_parse_simple_message(raw: &str) -> MoltEmailMessage {
+    let mut message = email_message_default();
+    let normalized = raw.replace("\r\n", "\n");
+    let mut split = normalized.splitn(2, "\n\n");
+    let header_block = split.next().unwrap_or_default();
+    let body_block = split.next().unwrap_or_default();
+    let mut last_header: Option<usize> = None;
+    for line in header_block.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(idx) = last_header {
+                if let Some((_, value)) = message.headers.get_mut(idx) {
+                    value.push(' ');
+                    value.push_str(line.trim());
+                }
+            }
+            continue;
+        }
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        let name = line[..colon].trim().to_string();
+        let value = line[colon + 1..].trim().to_string();
+        if name.eq_ignore_ascii_case("content-type") {
+            let base = value
+                .split(';')
+                .next()
+                .unwrap_or(value.as_str())
+                .trim()
+                .to_string();
+            message.content_type = if base.is_empty() {
+                "text/plain".to_string()
+            } else {
+                base
+            };
+            continue;
+        }
+        message.headers.push((name, value));
+        last_header = Some(message.headers.len().saturating_sub(1));
+    }
+    message.body = body_block.to_string();
+    message
+}
+
+fn email_month_number(token: &str) -> Option<i64> {
+    match token.to_ascii_lowercase().as_str() {
+        "jan" => Some(1),
+        "feb" => Some(2),
+        "mar" => Some(3),
+        "apr" => Some(4),
+        "may" => Some(5),
+        "jun" => Some(6),
+        "jul" => Some(7),
+        "aug" => Some(8),
+        "sep" => Some(9),
+        "oct" => Some(10),
+        "nov" => Some(11),
+        "dec" => Some(12),
+        _ => None,
+    }
+}
+
+fn email_month_name(month: i64) -> &'static str {
+    match month {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "Jan",
+    }
+}
+
+fn email_weekday_mon0(year: i64, month: i64, day: i64) -> i64 {
+    // Sakamoto algorithm (returns 0=Sunday..6=Saturday).
+    let t = [0i64, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let mut y = year;
+    if month < 3 {
+        y -= 1;
+    }
+    let m_index = usize::try_from(month.saturating_sub(1))
+        .unwrap_or(0)
+        .min(t.len().saturating_sub(1));
+    let sun0 = (y + y / 4 - y / 100 + y / 400 + t[m_index] + day).rem_euclid(7);
+    // Convert Sunday=0..Saturday=6 to Monday=0..Sunday=6.
+    (sun0 + 6).rem_euclid(7)
+}
+
+fn email_weekday_name_mon0(mon0: i64) -> &'static str {
+    match mon0 {
+        0 => "Mon",
+        1 => "Tue",
+        2 => "Wed",
+        3 => "Thu",
+        4 => "Fri",
+        5 => "Sat",
+        6 => "Sun",
+        _ => "Mon",
+    }
+}
+
+fn email_day_of_year0(year: i64, month: i64, day: i64) -> i64 {
+    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let month_lengths = [
+        31i64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut sum = 0i64;
+    let month_index = usize::try_from(month.saturating_sub(1)).unwrap_or(0);
+    for len in month_lengths
+        .iter()
+        .take(month_index.min(month_lengths.len()))
+    {
+        sum += *len;
+    }
+    sum + day.saturating_sub(1)
+}
+
+fn email_parse_datetime_like(value: &str) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
+    let mut text = value.trim();
+    if let Some(comma) = text.find(',') {
+        text = text[comma + 1..].trim();
+    }
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    let day = parts[0].parse::<i64>().ok()?;
+    let month = email_month_number(parts[1])?;
+    let year = parts[2].parse::<i64>().ok()?;
+    let mut time_iter = parts[3].split(':');
+    let hour = time_iter.next()?.parse::<i64>().ok()?;
+    let minute = time_iter.next()?.parse::<i64>().ok()?;
+    let second = time_iter.next()?.parse::<i64>().ok()?;
+    let tz = parts[4];
+    if tz.len() != 5 {
+        return None;
+    }
+    let sign = match &tz[0..1] {
+        "+" => 1i64,
+        "-" => -1i64,
+        _ => return None,
+    };
+    let tz_hours = tz[1..3].parse::<i64>().ok()?;
+    let tz_minutes = tz[3..5].parse::<i64>().ok()?;
+    let offset = sign * (tz_hours * 3600 + tz_minutes * 60);
+    Some((year, month, day, hour, minute, second, offset))
+}
+
+fn email_utils_format_datetime_impl(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) -> String {
+    let wday = email_weekday_mon0(year, month, day);
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} +0000",
+        email_weekday_name_mon0(wday),
+        day,
+        email_month_name(month),
+        year,
+        hour,
+        minute,
+        second
+    )
+}
+
+fn email_utils_parse_addresses(values: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for value in values {
+        for token in value.split(',') {
+            let entry = token.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let (Some(start), Some(end)) = (entry.rfind('<'), entry.rfind('>')) {
+                if start < end {
+                    let name = entry[..start].trim().trim_matches('"').to_string();
+                    let addr = entry[start + 1..end].trim().to_string();
+                    out.push((name, addr));
+                    continue;
+                }
+            }
+            out.push((String::new(), entry.to_string()));
+        }
+    }
+    out
+}
+
+fn email_header_encode_word_impl(text: &str, charset: Option<&str>) -> Result<String, String> {
+    let active = charset.unwrap_or("utf-8");
+    let lower = active.to_ascii_lowercase();
+    if text.is_ascii() && (charset.is_none() || lower == "ascii" || lower == "us-ascii") {
+        return Ok(text.to_string());
+    }
+    match lower.as_str() {
+        "utf-8" | "utf8" => {
+            let encoded = urllib_base64_encode(text.as_bytes());
+            Ok(format!("=?utf-8?b?{}?=", encoded))
+        }
+        "ascii" | "us-ascii" => {
+            if text.is_ascii() {
+                Ok(text.to_string())
+            } else {
+                Err("non-ASCII header text with ASCII charset".to_string())
+            }
+        }
+        _ => Err("unsupported email header charset".to_string()),
+    }
+}
+
+fn email_address_addr_spec_impl(username: &str, domain: &str) -> String {
+    if !username.is_empty() && !domain.is_empty() {
+        format!("{username}@{domain}")
+    } else if !domain.is_empty() {
+        format!("@{domain}")
+    } else {
+        username.to_string()
+    }
+}
+
+fn email_address_format_impl(display_name: &str, username: &str, domain: &str) -> String {
+    let addr_spec = email_address_addr_spec_impl(username, domain);
+    if !display_name.is_empty() && !addr_spec.is_empty() {
+        format!("{display_name} <{addr_spec}>")
+    } else if !display_name.is_empty() {
+        display_name.to_string()
+    } else {
+        addr_spec
+    }
+}
+
+fn email_get_int_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<i64, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if value_bits == missing {
+        let name_text = std::str::from_utf8(name).unwrap_or("attribute");
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            &format!("datetime object missing {name_text}"),
+        ));
+    }
+    let Some(value) = to_i64(obj_from_bits(value_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "datetime field must be int",
+        ));
+    };
+    Ok(value)
+}
+
 #[no_mangle]
 pub extern "C" fn molt_email_message_new() -> u64 {
     crate::with_gil_entry!(_py, {
-        let msg = Box::new(MoltEmailMessage {
-            headers: Vec::new(),
-        });
-        bits_from_ptr(Box::into_raw(msg) as *mut u8)
+        let id = email_message_register(email_message_default());
+        email_message_bits_from_id(_py, id)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_from_bytes(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let raw = if let Some(ptr) = obj_from_bits(data_bits).as_ptr() {
+            if let Some(bytes) = (unsafe { bytes_like_slice(ptr) }) {
+                String::from_utf8_lossy(bytes).into_owned()
+            } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+                text
+            } else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "message_from_bytes argument must be bytes-like",
+                );
+            }
+        } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+            text
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "message_from_bytes argument must be bytes-like",
+            );
+        };
+        let id = email_message_register(email_parse_simple_message(&raw));
+        email_message_bits_from_id(_py, id)
     })
 }
 
@@ -3667,30 +5176,344 @@ pub extern "C" fn molt_email_message_set(
     value_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let message_ptr = ptr_from_bits(message_bits);
-        if message_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        }
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "header name must be str");
         };
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "header value must be str");
         };
-        let message = unsafe { &mut *(message_ptr as *mut MoltEmailMessage) };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
         message.headers.push((name, value));
         MoltObject::none().bits()
     })
 }
 
 #[no_mangle]
+pub extern "C" fn molt_email_message_get(message_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if let Some(value) = email_header_get(&message.headers, &name) {
+            let value_ptr = alloc_string(_py, value.as_bytes());
+            if value_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(value_ptr).bits()
+        } else {
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_set_content(message_bits: u64, content_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let Some(content) = string_obj_to_owned(obj_from_bits(content_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "content must be str");
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        message.body = content;
+        message.content_type = "text/plain".to_string();
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_add_alternative(
+    message_bits: u64,
+    content_bits: u64,
+    subtype_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let Some(content) = string_obj_to_owned(obj_from_bits(content_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "alternative content must be str");
+        };
+        let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "alternative subtype must be str");
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if message.parts.is_empty() {
+            let mut first = email_message_default();
+            first.content_type = "text/plain".to_string();
+            first.body = message.body.clone();
+            message.parts.push(first);
+            message.body.clear();
+        }
+        let mut alt = email_message_default();
+        alt.content_type = format!("text/{}", subtype);
+        alt.body = content;
+        message.parts.push(alt);
+        message.content_type = "multipart/alternative".to_string();
+        message.multipart_subtype = Some("alternative".to_string());
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_add_attachment(
+    message_bits: u64,
+    data_bits: u64,
+    maintype_bits: u64,
+    subtype_bits: u64,
+    filename_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let payload = if let Some(ptr) = obj_from_bits(data_bits).as_ptr() {
+            if let Some(bytes) = (unsafe { bytes_like_slice(ptr) }) {
+                String::from_utf8_lossy(bytes).into_owned()
+            } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+                text
+            } else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "attachment payload must be bytes-like or str",
+                );
+            }
+        } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+            text
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "attachment payload must be bytes-like or str",
+            );
+        };
+        let Some(maintype) = string_obj_to_owned(obj_from_bits(maintype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maintype must be str");
+        };
+        let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "subtype must be str");
+        };
+        let filename = if obj_from_bits(filename_bits).is_none() {
+            None
+        } else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+                return raise_exception::<_>(_py, "TypeError", "filename must be str or None");
+            };
+            Some(value)
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if message.parts.is_empty() {
+            let mut first = email_message_default();
+            first.content_type = "text/plain".to_string();
+            first.body = message.body.clone();
+            message.parts.push(first);
+            message.body.clear();
+        }
+        let mut part = email_message_default();
+        part.content_type = format!("{}/{}", maintype, subtype);
+        part.body = payload;
+        part.filename = filename;
+        message.parts.push(part);
+        message.content_type = "multipart/mixed".to_string();
+        message.multipart_subtype = Some("mixed".to_string());
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_is_multipart(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        MoltObject::from_bool(!message.parts.is_empty()).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_payload(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let (body, parts) = {
+            let registry = email_message_registry()
+                .lock()
+                .expect("email message registry lock poisoned");
+            let Some(message) = registry.get(&id) else {
+                return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            };
+            (message.body.clone(), message.parts.clone())
+        };
+        if parts.is_empty() {
+            let body_ptr = alloc_string(_py, body.as_bytes());
+            if body_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(body_ptr).bits();
+        }
+        let mut handles: Vec<u64> = Vec::with_capacity(parts.len());
+        for part in parts {
+            let handle = email_message_register(part);
+            handles.push(email_message_bits_from_id(_py, handle));
+        }
+        let list_ptr = alloc_list_with_capacity(_py, handles.as_slice(), handles.len());
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_content(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        let out_ptr = alloc_string(_py, message.body.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_content_type(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        let out_ptr = alloc_string(_py, message.content_type.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_filename(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if let Some(filename) = &message.filename {
+            let out_ptr = alloc_string(_py, filename.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
+        } else {
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        let rendered = email_serialize_message(message);
+        let out_ptr = alloc_string(_py, rendered.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let message_ptr = ptr_from_bits(message_bits);
-        if message_ptr.is_null() {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get(&id) else {
             return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        }
-        let message = unsafe { &*(message_ptr as *mut MoltEmailMessage) };
+        };
         let mut pair_bits: Vec<u64> = Vec::with_capacity(message.headers.len());
         for (name, value) in &message.headers {
             let name_ptr = alloc_string(_py, name.as_bytes());
@@ -3737,13 +5560,357 @@ pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_email_message_drop(message_bits: u64) {
     crate::with_gil_entry!(_py, {
-        let message_ptr = ptr_from_bits(message_bits);
-        if message_ptr.is_null() {
+        let Ok(id) = email_message_id_from_bits(_py, message_bits) else {
             return;
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        registry.remove(&id);
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_utils_make_msgid(domain_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let domain = if obj_from_bits(domain_bits).is_none() {
+            "localhost".to_string()
+        } else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
+                return raise_exception::<_>(_py, "TypeError", "domain must be str or None");
+            };
+            value
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros();
+        let seq = EMAIL_MSGID_NEXT.fetch_add(1, Ordering::Relaxed);
+        let out = format!("<{}.{}@{}>", now, seq, domain);
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
         }
-        unsafe {
-            drop(Box::from_raw(message_ptr as *mut MoltEmailMessage));
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_utils_getaddresses(values_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let values = match iterable_to_string_vec(_py, values_bits) {
+            Ok(v) => v,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
+        let pairs = email_utils_parse_addresses(values.as_slice());
+        let mut out_bits: Vec<u64> = Vec::with_capacity(pairs.len());
+        for (name, addr) in pairs {
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                for bits in out_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let addr_ptr = alloc_string(_py, addr.as_bytes());
+            if addr_ptr.is_null() {
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                dec_ref_bits(_py, name_bits);
+                for bits in out_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let addr_bits = MoltObject::from_ptr(addr_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[name_bits, addr_bits]);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, addr_bits);
+            if tuple_ptr.is_null() {
+                for bits in out_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            out_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list_with_capacity(_py, out_bits.as_slice(), out_bits.len());
+        for bits in out_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_utils_parsedate_tz(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "date value must be str");
+        };
+        let Some((year, month, day, hour, minute, second, offset)) =
+            email_parse_datetime_like(value.as_str())
+        else {
+            return MoltObject::none().bits();
+        };
+        // Match CPython email.utils.parsedate_tz behavior: slots 6/7 default to
+        // (weekday=0, yearday=1) rather than computed calendar values.
+        let wday = 0i64;
+        let yday = 1i64;
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                MoltObject::from_int(year).bits(),
+                MoltObject::from_int(month).bits(),
+                MoltObject::from_int(day).bits(),
+                MoltObject::from_int(hour).bits(),
+                MoltObject::from_int(minute).bits(),
+                MoltObject::from_int(second).bits(),
+                MoltObject::from_int(wday).bits(),
+                MoltObject::from_int(yday).bits(),
+                MoltObject::from_int(-1).bits(),
+                MoltObject::from_int(offset).bits(),
+            ],
+        );
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_utils_format_datetime(dt_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let year = match email_get_int_attr(_py, dt_bits, b"year") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let month = match email_get_int_attr(_py, dt_bits, b"month") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let day = match email_get_int_attr(_py, dt_bits, b"day") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let hour = match email_get_int_attr(_py, dt_bits, b"hour") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let minute = match email_get_int_attr(_py, dt_bits, b"minute") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let second = match email_get_int_attr(_py, dt_bits, b"second") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let out = email_utils_format_datetime_impl(year, month, day, hour, minute, second);
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "date value must be str");
+        };
+        let Some((year, month, day, hour, minute, second, offset)) =
+            email_parse_datetime_like(value.as_str())
+        else {
+            return raise_exception::<_>(_py, "ValueError", "invalid date value");
+        };
+        if offset != 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "non-UTC email date offsets are not yet supported",
+            );
+        }
+        let module_name_ptr = alloc_string(_py, b"datetime");
+        if module_name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+        let module_bits = crate::molt_module_import(module_name_bits);
+        dec_ref_bits(_py, module_name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(datetime_name_bits) = attr_name_bits_from_bytes(_py, b"datetime") else {
+            dec_ref_bits(_py, module_bits);
+            return MoltObject::none().bits();
+        };
+        let Some(timezone_name_bits) = attr_name_bits_from_bytes(_py, b"timezone") else {
+            dec_ref_bits(_py, datetime_name_bits);
+            dec_ref_bits(_py, module_bits);
+            return MoltObject::none().bits();
+        };
+        let missing = missing_bits(_py);
+        let datetime_class_bits = molt_getattr_builtin(module_bits, datetime_name_bits, missing);
+        let timezone_class_bits = molt_getattr_builtin(module_bits, timezone_name_bits, missing);
+        dec_ref_bits(_py, datetime_name_bits);
+        dec_ref_bits(_py, timezone_name_bits);
+        dec_ref_bits(_py, module_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if datetime_class_bits == missing || timezone_class_bits == missing {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "datetime module is missing required classes",
+            );
+        }
+        let Some(utc_name_bits) = attr_name_bits_from_bytes(_py, b"utc") else {
+            dec_ref_bits(_py, datetime_class_bits);
+            dec_ref_bits(_py, timezone_class_bits);
+            return MoltObject::none().bits();
+        };
+        let utc_bits = molt_getattr_builtin(timezone_class_bits, utc_name_bits, missing);
+        dec_ref_bits(_py, utc_name_bits);
+        dec_ref_bits(_py, timezone_class_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, datetime_class_bits);
+            return MoltObject::none().bits();
+        }
+        if utc_bits == missing {
+            dec_ref_bits(_py, datetime_class_bits);
+            return raise_exception::<_>(_py, "RuntimeError", "datetime.timezone.utc missing");
+        }
+        let Some(datetime_class_ptr) = obj_from_bits(datetime_class_bits).as_ptr() else {
+            dec_ref_bits(_py, utc_bits);
+            dec_ref_bits(_py, datetime_class_bits);
+            return raise_exception::<_>(_py, "TypeError", "datetime class is invalid");
+        };
+        let out_bits = unsafe {
+            call_class_init_with_args(
+                _py,
+                datetime_class_ptr,
+                &[
+                    MoltObject::from_int(year).bits(),
+                    MoltObject::from_int(month).bits(),
+                    MoltObject::from_int(day).bits(),
+                    MoltObject::from_int(hour).bits(),
+                    MoltObject::from_int(minute).bits(),
+                    MoltObject::from_int(second).bits(),
+                    MoltObject::from_int(0).bits(),
+                    utc_bits,
+                ],
+            )
+        };
+        dec_ref_bits(_py, utc_bits);
+        dec_ref_bits(_py, datetime_class_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        out_bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_policy_new(name_bits: u64, utf8_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "policy name must be str");
+        };
+        let utf8 = is_truthy(_py, obj_from_bits(utf8_bits));
+        let name_ptr = alloc_string(_py, name.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let name_obj_bits = MoltObject::from_ptr(name_ptr).bits();
+        let tuple_ptr = alloc_tuple(_py, &[name_obj_bits, MoltObject::from_bool(utf8).bits()]);
+        dec_ref_bits(_py, name_obj_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_header_encode_word(text_bits: u64, charset_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header text must be str");
+        };
+        let charset = if obj_from_bits(charset_bits).is_none() {
+            None
+        } else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(charset_bits)) else {
+                return raise_exception::<_>(_py, "TypeError", "charset must be str or None");
+            };
+            Some(value)
+        };
+        let encoded = match email_header_encode_word_impl(text.as_str(), charset.as_deref()) {
+            Ok(value) => value,
+            Err(msg) => return raise_exception::<_>(_py, "RuntimeError", &msg),
+        };
+        let out_ptr = alloc_string(_py, encoded.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_address_addr_spec(username_bits: u64, domain_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "username must be str");
+        };
+        let Some(domain) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "domain must be str");
+        };
+        let out = email_address_addr_spec_impl(username.as_str(), domain.as_str());
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_address_format(
+    display_name_bits: u64,
+    username_bits: u64,
+    domain_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(display_name) = string_obj_to_owned(obj_from_bits(display_name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "display_name must be str");
+        };
+        let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "username must be str");
+        };
+        let Some(domain) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "domain must be str");
+        };
+        let out =
+            email_address_format_impl(display_name.as_str(), username.as_str(), domain.as_str());
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
     })
 }
 

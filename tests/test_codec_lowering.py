@@ -183,11 +183,170 @@ for x in [1, 2]:
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "vec_sum_int" in kinds
-    assert "loop_index_start" in kinds
-    assert "loop_index_next" in kinds
-    assert "loop_break_if_false" in kinds
+    has_iter_loop = "loop_start" in kinds and "loop_break_if_true" in kinds
+    has_index_loop = (
+        "loop_index_start" in kinds
+        and "loop_index_next" in kinds
+        and "loop_break_if_false" in kinds
+    )
+    assert has_iter_loop or has_index_loop
     assert "loop_continue" in kinds
     assert "loop_end" in kinds
+
+
+def test_for_loop_float_reduction_lowering():
+    src = """
+total = 1.5
+values = [1.0, 2.5, 3]
+for x in values:
+    total += x
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "vec_sum_float" in kinds
+
+
+def test_for_loop_float_range_reduction_lowering():
+    src = """
+total = 0.5
+for i in range(10):
+    total += i
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "vec_sum_float_range_iter" in kinds
+
+
+def test_for_file_text_loop_item_hint_enables_string_split():
+    src = """
+with open("sample.txt") as f:
+    for line in f:
+        parts = line.split("|")
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "string_split" in kinds
+
+
+def test_for_file_bytes_loop_item_hint_enables_bytes_split():
+    src = """
+with open("sample.bin", "rb") as f:
+    for chunk in f:
+        parts = chunk.split(b"|")
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "bytes_split" in kinds
+
+
+def test_simple_range_listcomp_lowering():
+    src = "x = [i for i in range(5)]"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "list_from_range" in kinds
+
+
+def test_dict_increment_lowering():
+    src = """
+counts = {}
+key = "molt"
+counts[key] = counts.get(key, 0) + 1
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "dict_inc" in kinds or "dict_str_int_inc" in kinds
+
+
+def test_dict_str_int_increment_lowering():
+    src = """
+counts: dict[str, int] = {}
+key = "molt"
+counts[key] = counts.get(key, 0) + 1
+"""
+    ir = compile_to_tir(src, type_hint_policy="check")
+    kinds = _op_kinds(ir)
+    assert "dict_str_int_inc" in kinds
+
+
+def test_for_split_whitespace_dict_increment_fused():
+    src = """
+counts = {}
+line = "a b a"
+for word in line.split():
+    counts[word] = counts.get(word, 0) + 1
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "string_split_ws_dict_inc" in kinds
+
+
+def test_for_split_separator_dict_increment_fused():
+    src = """
+counts = {}
+line = "a|b|a"
+for word in line.split("|"):
+    counts[word] = counts.get(word, 0) + 2
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "string_split_sep_dict_inc" in kinds
+
+
+def test_taq_ingest_line_fused():
+    src = """
+BUCKET_SIZE = 1_000_000_000
+data = {}
+header = True
+for line in ["header", "100|X|AAPL|X|200"]:
+    if header:
+        header = False
+        continue
+    x = line.split("|")
+    if x[0] == "END" or x[4] == "ENDP":
+        continue
+    timestamp = int(x[0])
+    symbol = x[2]
+    volume = int(x[4])
+    series = data.setdefault(symbol, [])
+    series.append((timestamp // BUCKET_SIZE, volume))
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "taq_ingest_line" in kinds
+
+
+def test_statistics_slice_lowering():
+    src = """
+from statistics import mean, stdev
+values = [1.0, 2.0, 3.0, 4.0]
+m = mean(values[1:3])
+s = stdev(values[1:4])
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "statistics_mean_slice" in kinds
+    assert "statistics_stdev_slice" in kinds
+
+
+def test_dict_setdefault_empty_list_lowering():
+    src = """
+data = {}
+series = data.setdefault("k", [])
+series.append(1)
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "dict_setdefault_empty_list" in kinds
+
+
+def test_abs_builtin_lowering():
+    src = """
+x = abs(-7)
+y = abs(-3.5)
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "abs" in kinds
 
 
 def test_nested_constant_while_strength_reduction():
@@ -327,5 +486,4 @@ def test_range_lowering():
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "range_new" in kinds
-    assert "loop_index_start" in kinds
-    assert "list_append" in kinds
+    assert "list_from_range" in kinds

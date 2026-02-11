@@ -3194,6 +3194,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self.container_elem_hints[value.name]
         return self.global_elem_hints.get(value.name)
 
+    def _dict_key_hint(self, value: MoltValue) -> str | None:
+        if value.name in self.dict_key_hints:
+            return self.dict_key_hints[value.name]
+        return self.global_dict_key_hints.get(value.name)
+
+    def _iterable_element_hint(self, iterable: MoltValue) -> str | None:
+        hint = iterable.type_hint
+        if hint in {"range", "intarray"}:
+            return "int"
+        if hint == "str":
+            return "str"
+        if hint in {"bytes", "bytearray"}:
+            return "int"
+        if hint == "file_text":
+            return "str"
+        if hint == "file_bytes":
+            return "bytes"
+        if hint == "dict":
+            return self._dict_key_hint(iterable)
+        return self._container_elem_hint(iterable)
+
+    def _reduction_acc_numeric_hint(self, name: str, value: MoltValue) -> str | None:
+        hint = self.boxed_local_hints.get(name) or value.type_hint
+        if hint in {"int", "float"}:
+            return hint
+        return None
+
     def _dict_value_hint(self, value: MoltValue) -> str | None:
         if value.name in self.dict_value_hints:
             return self.dict_value_hints[value.name]
@@ -7357,6 +7384,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         loop_break_flag: int | str | None = None,
     ) -> None:
         target = node.target
+        item_hint = self._iterable_element_hint(iterable) or "Any"
         if self.is_async():
             iter_obj = self._emit_iter_new(iterable)
             iter_slot = self._async_local_offset(f"__for_iter_{len(self.async_locals)}")
@@ -7391,7 +7419,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            item = MoltValue(self.next_var(), type_hint="Any")
+            item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
             self._visit_loop_body(node.body, guard_map, loop_break_flag=loop_break_flag)
@@ -7418,7 +7446,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            item = MoltValue(self.next_var(), type_hint="Any")
+            item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
             self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
@@ -7447,6 +7475,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         loop_break_flag: int | str | None = None,
     ) -> None:
         target = node.target
+        item_hint = self._iterable_element_hint(iterable) or "Any"
         if self.is_async():
             seq_slot = self._async_local_offset(f"__for_seq_{len(self.async_locals)}")
             self.emit(
@@ -7513,7 +7542,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            item = MoltValue(self.next_var(), type_hint="Any")
+            item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
             self._emit_assign_target(target, item, None)
             self.async_index_loop_stack.append(idx_slot)
@@ -7562,7 +7591,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            item = MoltValue(self.next_var(), type_hint="Any")
+            item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[iterable, idx], result=item))
             self._emit_assign_target(target, item, None)
             self.range_loop_stack.append((idx, one))
@@ -7815,78 +7844,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self, start: MoltValue, stop: MoltValue, step: MoltValue
     ) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
-        step_const = self.const_ints.get(step.name)
-        self._emit_range_step_zero_guard(step, step_const)
-        if step_const is not None and step_const != 0:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-            cond = MoltValue(self.next_var(), type_hint="bool")
-            if step_const > 0:
-                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-            else:
-                self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none")
-                )
-            )
-            self.emit(
-                MoltOp(kind="LIST_APPEND", args=[res, idx], result=MoltValue("none"))
-            )
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            return res
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        step_pos = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
-        self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
-
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-        cond = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
-        )
-        self.emit(MoltOp(kind="LIST_APPEND", args=[res, idx], result=MoltValue("none")))
-        next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        step_neg = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
-        self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
-        idx_neg = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
-        cond_neg = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
-        self.emit(
-            MoltOp(
-                kind="LOOP_BREAK_IF_FALSE",
-                args=[cond_neg],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(
-            MoltOp(kind="LIST_APPEND", args=[res, idx_neg], result=MoltValue("none"))
-        )
-        next_idx_neg = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LIST_FROM_RANGE", args=[start, stop, step], result=res))
         return res
+
+    def _match_simple_range_list_comp(
+        self, node: ast.ListComp
+    ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
+        if len(node.generators) != 1:
+            return None
+        comp = node.generators[0]
+        if comp.is_async or comp.ifs:
+            return None
+        if not isinstance(comp.target, ast.Name):
+            return None
+        if not isinstance(node.elt, ast.Name) or node.elt.id != comp.target.id:
+            return None
+        parsed = self._parse_range_call(comp.iter)
+        if parsed is None:
+            return None
+        start, stop, step, _ = parsed
+        return start, stop, step
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
@@ -9788,6 +9765,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
+        if not async_needed:
+            simple_range = self._match_simple_range_list_comp(node)
+            if simple_range is not None:
+                start, stop, step = simple_range
+                return self._emit_range_list(start, stop, step)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
@@ -13260,6 +13242,59 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
+    def _lower_statistics_slice_call(
+        self, func_id: str, node: ast.Call
+    ) -> MoltValue | None:
+        if func_id not in {"mean", "stdev"}:
+            return None
+        if node.keywords or len(node.args) != 1:
+            return None
+        data_arg = node.args[0]
+        if not isinstance(data_arg, ast.Subscript):
+            return None
+        data_slice = data_arg.slice
+        if not isinstance(data_slice, ast.Slice):
+            return None
+        if data_slice.step is not None:
+            return None
+        seq = self.visit(data_arg.value)
+        if seq is None:
+            return None
+        if data_slice.lower is None:
+            start = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=start))
+            has_start = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=has_start))
+        else:
+            start = self.visit(data_slice.lower)
+            if start is None:
+                return None
+            has_start = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_start))
+        if data_slice.upper is None:
+            end = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=end))
+            has_end = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=has_end))
+        else:
+            end = self.visit(data_slice.upper)
+            if end is None:
+                return None
+            has_end = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_end))
+        kind = (
+            "STATISTICS_MEAN_SLICE" if func_id == "mean" else "STATISTICS_STDEV_SLICE"
+        )
+        res = MoltValue(self.next_var(), type_hint="float")
+        self.emit(
+            MoltOp(
+                kind=kind,
+                args=[seq, start, end, has_start, has_end],
+                result=res,
+            )
+        )
+        return res
+
     def visit_Call(self, node: ast.Call) -> Any:
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):
@@ -14035,6 +14070,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "dict.setdefault expects 1 or 2 arguments"
                     )
                 key = self.visit(node.args[0])
+                if (
+                    len(node.args) == 2
+                    and isinstance(node.args[1], ast.List)
+                    and not node.args[1].elts
+                ):
+                    res_type = "Any"
+                    if self.type_hint_policy == "trust":
+                        hint = self._dict_value_hint(receiver)
+                        if hint is not None:
+                            res_type = hint
+                    res = MoltValue(self.next_var(), type_hint=res_type)
+                    self.emit(
+                        MoltOp(
+                            kind="DICT_SETDEFAULT_EMPTY_LIST",
+                            args=[receiver, key],
+                            result=res,
+                        )
+                    )
+                    return res
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
                 else:
@@ -15025,7 +15079,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
-            imported_from = self.imported_names.get(func_id)
+            imported_binding = self.imported_names.get(func_id)
+            imported_from = imported_binding
             target_info = self.locals.get(func_id) or self.globals.get(func_id)
             is_local = func_id in self.locals or func_id in self.boxed_locals
             if self.is_async() and func_id in self.async_locals:
@@ -15033,13 +15088,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if loaded is not None:
                     target_info = loaded
                 is_local = True
-            if is_local:
+            if is_local and imported_binding is None:
                 imported_from = None
             if imported_from:
                 normalized = self._normalize_allowlist_module(imported_from)
                 allowlist_key = normalized or imported_from
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
+                if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:
+                    lowered_stats = self._lower_statistics_slice_call(func_id, node)
+                    if lowered_stats is not None:
+                        return lowered_stats
             if (
                 target_info is None
                 and self.current_func_name != "molt_main"
@@ -15105,6 +15164,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         return None
                     args.append(arg_val)
                 return self._emit_exception_new_from_args(func_id, args)
+            if func_id == "abs" and len(node.args) == 1 and not node.keywords:
+                value = self.visit(node.args[0])
+                if value is None:
+                    raise NotImplementedError("abs expects a lowerable operand")
+                if value.type_hint in {"bool", "int"}:
+                    result_hint = "int"
+                elif value.type_hint == "float":
+                    result_hint = "float"
+                else:
+                    result_hint = "Any"
+                res = MoltValue(self.next_var(), type_hint=result_hint)
+                self.emit(MoltOp(kind="ABS", args=[value], result=res))
+                return res
             if func_id == "globals":
                 if node.args or node.keywords:
                     count = len(node.args) + len(node.keywords)
@@ -19110,6 +19182,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return
         if isinstance(target, ast.Name):
+            self.imported_names.pop(target.id, None)
+            self.imported_modules.pop(target.id, None)
+            if self.current_func_name == "molt_main":
+                self.global_imported_names.pop(target.id, None)
+                self.global_imported_modules.pop(target.id, None)
             if (
                 self.current_func_name == "molt_main"
                 or target.id not in self.global_decls
@@ -19177,10 +19254,421 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self._maybe_record_module_overrides(node.targets, node.value)
+        dict_inc_match = self._match_dict_increment_assign(node)
+        if dict_inc_match is not None:
+            dict_expr, key_expr, delta_expr = dict_inc_match
+            dict_obj = self.visit(dict_expr)
+            key_obj = self.visit(key_expr)
+            delta_obj = self.visit(delta_expr)
+            if dict_obj is not None and key_obj is not None and delta_obj is not None:
+                self.emit(
+                    MoltOp(
+                        kind="DICT_STR_INT_INC",
+                        args=[dict_obj, key_obj, delta_obj],
+                        result=MoltValue("none"),
+                    )
+                )
+                return None
         value_node = self.visit(node.value)
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
         return None
+
+    def _match_dict_increment_assign(
+        self, node: ast.Assign
+    ) -> tuple[ast.expr, ast.expr, ast.expr] | None:
+        if len(node.targets) != 1:
+            return None
+        target = node.targets[0]
+        if not isinstance(target, ast.Subscript) or isinstance(target.slice, ast.Slice):
+            return None
+        if not isinstance(target.value, ast.Name):
+            return None
+        target_key = target.slice
+        if not isinstance(target_key, (ast.Name, ast.Constant)):
+            return None
+        if not isinstance(node.value, ast.BinOp) or not isinstance(
+            node.value.op, ast.Add
+        ):
+            return None
+
+        dict_name = target.value.id
+        key_dump = ast.dump(target_key, include_attributes=False)
+
+        def is_matching_get(expr: ast.expr) -> bool:
+            if not isinstance(expr, ast.Call) or expr.keywords:
+                return False
+            if not isinstance(expr.func, ast.Attribute) or expr.func.attr != "get":
+                return False
+            if (
+                not isinstance(expr.func.value, ast.Name)
+                or expr.func.value.id != dict_name
+            ):
+                return False
+            if len(expr.args) == 1:
+                key_expr = expr.args[0]
+                default_expr: ast.expr = ast.Constant(value=0)
+            elif len(expr.args) == 2:
+                key_expr, default_expr = expr.args
+            else:
+                return False
+            if ast.dump(key_expr, include_attributes=False) != key_dump:
+                return False
+            return (
+                isinstance(default_expr, ast.Constant)
+                and isinstance(default_expr.value, int)
+                and default_expr.value == 0
+            )
+
+        if is_matching_get(node.value.left):
+            delta_expr = node.value.right
+        elif is_matching_get(node.value.right):
+            delta_expr = node.value.left
+        else:
+            return None
+        return target.value, target_key, delta_expr
+
+    def _match_split_dict_increment_for_loop(
+        self, node: ast.For
+    ) -> tuple[ast.expr, ast.expr, ast.expr | None, ast.expr] | None:
+        if self.is_async():
+            return None
+        if not isinstance(node.target, ast.Name):
+            return None
+        if len(node.body) != 1 or not isinstance(node.body[0], ast.Assign):
+            return None
+        iter_call = node.iter
+        if not isinstance(iter_call, ast.Call) or iter_call.keywords:
+            return None
+        if (
+            not isinstance(iter_call.func, ast.Attribute)
+            or iter_call.func.attr != "split"
+        ):
+            return None
+        if len(iter_call.args) > 1:
+            return None
+        assign = node.body[0]
+        match = self._match_dict_increment_assign(assign)
+        if match is None:
+            return None
+        dict_expr, key_expr, delta_expr = match
+        if not isinstance(key_expr, ast.Name) or key_expr.id != node.target.id:
+            return None
+        if not isinstance(dict_expr, ast.Name):
+            return None
+        sep_expr: ast.expr | None = None
+        if iter_call.args:
+            sep_expr = iter_call.args[0]
+        return dict_expr, iter_call.func.value, sep_expr, delta_expr
+
+    def _emit_split_dict_increment_for_loop(self, node: ast.For) -> bool:
+        match = self._match_split_dict_increment_for_loop(node)
+        if match is None:
+            return False
+        dict_expr, line_expr, sep_expr, delta_expr = match
+        dict_obj = self.visit(dict_expr)
+        line_obj = self.visit(line_expr)
+        delta_obj = self.visit(delta_expr)
+        if dict_obj is None or line_obj is None or delta_obj is None:
+            return False
+        pair = MoltValue(self.next_var(), type_hint="tuple")
+        if sep_expr is None:
+            self.emit(
+                MoltOp(
+                    kind="STRING_SPLIT_WS_DICT_INC",
+                    args=[line_obj, dict_obj, delta_obj],
+                    result=pair,
+                )
+            )
+        else:
+            sep_obj = self.visit(sep_expr)
+            if sep_obj is None:
+                return False
+            self.emit(
+                MoltOp(
+                    kind="STRING_SPLIT_SEP_DICT_INC",
+                    args=[line_obj, sep_obj, dict_obj, delta_obj],
+                    result=pair,
+                )
+            )
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        last_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=last_val))
+        has_any = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=has_any))
+        self.emit(MoltOp(kind="IF", args=[has_any], result=MoltValue("none")))
+        self._emit_assign_target(node.target, last_val, None)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        if node.orelse:
+            self._visit_block(node.orelse)
+        return True
+
+    def _is_taq_header_guard(self, stmt: ast.stmt) -> str | None:
+        if not isinstance(stmt, ast.If):
+            return None
+        if stmt.orelse:
+            return None
+        if not isinstance(stmt.test, ast.Name):
+            return None
+        if len(stmt.body) != 2:
+            return None
+        assign, cont = stmt.body
+        if not isinstance(cont, ast.Continue):
+            return None
+        if not isinstance(assign, ast.Assign):
+            return None
+        if len(assign.targets) != 1 or not isinstance(assign.targets[0], ast.Name):
+            return None
+        if assign.targets[0].id != stmt.test.id:
+            return None
+        if (
+            not isinstance(assign.value, ast.Constant)
+            or assign.value.value is not False
+        ):
+            return None
+        return stmt.test.id
+
+    def _match_taq_ingest_loop_body(
+        self, body: list[ast.stmt]
+    ) -> tuple[str | None, str, str, str, ast.expr] | None:
+        if self.is_async():
+            return None
+        idx = 0
+        header_name: str | None = None
+        if body:
+            header_name = self._is_taq_header_guard(body[0])
+            if header_name is not None:
+                idx = 1
+        rest = body[idx:]
+        if len(rest) != 7:
+            return None
+
+        split_stmt = rest[0]
+        guard_stmt = rest[1]
+        ts_stmt = rest[2]
+        sym_stmt = rest[3]
+        vol_stmt = rest[4]
+        setdefault_stmt = rest[5]
+        append_stmt = rest[6]
+
+        if not isinstance(split_stmt, ast.Assign):
+            return None
+        if len(split_stmt.targets) != 1 or not isinstance(
+            split_stmt.targets[0], ast.Name
+        ):
+            return None
+        split_name = split_stmt.targets[0].id
+        if not isinstance(split_stmt.value, ast.Call) or split_stmt.value.keywords:
+            return None
+        split_call = split_stmt.value
+        if len(split_call.args) != 1:
+            return None
+        if (
+            not isinstance(split_call.func, ast.Attribute)
+            or split_call.func.attr != "split"
+        ):
+            return None
+        if not isinstance(split_call.func.value, ast.Name):
+            return None
+        line_name = split_call.func.value.id
+        if not (
+            isinstance(split_call.args[0], ast.Constant)
+            and split_call.args[0].value == "|"
+        ):
+            return None
+
+        def match_sub(name: str, index: int, expr: ast.expr) -> bool:
+            return (
+                isinstance(expr, ast.Subscript)
+                and not isinstance(expr.slice, ast.Slice)
+                and isinstance(expr.value, ast.Name)
+                and expr.value.id == name
+                and isinstance(expr.slice, ast.Constant)
+                and expr.slice.value == index
+            )
+
+        if not isinstance(guard_stmt, ast.If):
+            return None
+        if guard_stmt.orelse or len(guard_stmt.body) != 1:
+            return None
+        if not isinstance(guard_stmt.body[0], ast.Continue):
+            return None
+        guard_test = guard_stmt.test
+        if not isinstance(guard_test, ast.BoolOp) or not isinstance(
+            guard_test.op, ast.Or
+        ):
+            return None
+        if len(guard_test.values) != 2:
+            return None
+        checks: set[tuple[int, str]] = set()
+        for clause in guard_test.values:
+            if not isinstance(clause, ast.Compare):
+                return None
+            if len(clause.ops) != 1 or not isinstance(clause.ops[0], ast.Eq):
+                return None
+            if len(clause.comparators) != 1:
+                return None
+            rhs = clause.comparators[0]
+            if not isinstance(rhs, ast.Constant) or not isinstance(rhs.value, str):
+                return None
+            if not isinstance(clause.left, ast.Subscript):
+                return None
+            if not isinstance(clause.left.value, ast.Name):
+                return None
+            if clause.left.value.id != split_name:
+                return None
+            if not isinstance(clause.left.slice, ast.Constant):
+                return None
+            idx_val = clause.left.slice.value
+            if idx_val not in (0, 4):
+                return None
+            checks.add((int(idx_val), rhs.value))
+        if checks != {(0, "END"), (4, "ENDP")}:
+            return None
+
+        if not isinstance(ts_stmt, ast.Assign):
+            return None
+        if len(ts_stmt.targets) != 1 or not isinstance(ts_stmt.targets[0], ast.Name):
+            return None
+        ts_name = ts_stmt.targets[0].id
+        if (
+            not isinstance(ts_stmt.value, ast.Call)
+            or ts_stmt.value.keywords
+            or len(ts_stmt.value.args) != 1
+            or not isinstance(ts_stmt.value.func, ast.Name)
+            or ts_stmt.value.func.id != "int"
+            or not match_sub(split_name, 0, ts_stmt.value.args[0])
+        ):
+            return None
+
+        if not isinstance(sym_stmt, ast.Assign):
+            return None
+        if len(sym_stmt.targets) != 1 or not isinstance(sym_stmt.targets[0], ast.Name):
+            return None
+        sym_name = sym_stmt.targets[0].id
+        if not match_sub(split_name, 2, sym_stmt.value):
+            return None
+
+        if not isinstance(vol_stmt, ast.Assign):
+            return None
+        if len(vol_stmt.targets) != 1 or not isinstance(vol_stmt.targets[0], ast.Name):
+            return None
+        vol_name = vol_stmt.targets[0].id
+        if (
+            not isinstance(vol_stmt.value, ast.Call)
+            or vol_stmt.value.keywords
+            or len(vol_stmt.value.args) != 1
+            or not isinstance(vol_stmt.value.func, ast.Name)
+            or vol_stmt.value.func.id != "int"
+            or not match_sub(split_name, 4, vol_stmt.value.args[0])
+        ):
+            return None
+
+        if not isinstance(setdefault_stmt, ast.Assign):
+            return None
+        if len(setdefault_stmt.targets) != 1 or not isinstance(
+            setdefault_stmt.targets[0], ast.Name
+        ):
+            return None
+        series_name = setdefault_stmt.targets[0].id
+        if (
+            not isinstance(setdefault_stmt.value, ast.Call)
+            or setdefault_stmt.value.keywords
+            or len(setdefault_stmt.value.args) != 2
+            or not isinstance(setdefault_stmt.value.func, ast.Attribute)
+            or setdefault_stmt.value.func.attr != "setdefault"
+            or not isinstance(setdefault_stmt.value.func.value, ast.Name)
+            or not isinstance(setdefault_stmt.value.args[0], ast.Name)
+            or not isinstance(setdefault_stmt.value.args[1], ast.List)
+            or setdefault_stmt.value.args[1].elts
+        ):
+            return None
+        data_name = setdefault_stmt.value.func.value.id
+        if setdefault_stmt.value.args[0].id != sym_name:
+            return None
+
+        if not isinstance(append_stmt, ast.Expr) or not isinstance(
+            append_stmt.value, ast.Call
+        ):
+            return None
+        append_call = append_stmt.value
+        if (
+            append_call.keywords
+            or len(append_call.args) != 1
+            or not isinstance(append_call.func, ast.Attribute)
+            or append_call.func.attr != "append"
+            or not isinstance(append_call.func.value, ast.Name)
+            or append_call.func.value.id != series_name
+        ):
+            return None
+        arg0 = append_call.args[0]
+        if not isinstance(arg0, ast.Tuple) or len(arg0.elts) != 2:
+            return None
+        first, second = arg0.elts
+        if not (
+            isinstance(first, ast.BinOp)
+            and isinstance(first.op, ast.FloorDiv)
+            and isinstance(first.left, ast.Name)
+            and first.left.id == ts_name
+            and isinstance(second, ast.Name)
+            and second.id == vol_name
+        ):
+            return None
+
+        return header_name, data_name, line_name, split_name, first.right
+
+    def _emit_taq_ingest_loop_body(
+        self,
+        body: list[ast.stmt],
+    ) -> bool:
+        match = self._match_taq_ingest_loop_body(body)
+        if match is None:
+            return False
+        header_name, data_name, line_name, _split_name, bucket_expr = match
+        if header_name is not None:
+            header_val = self._load_local_value(header_name)
+            if header_val is None:
+                header_val = self.locals.get(header_name) or self.globals.get(
+                    header_name
+                )
+            if header_val is None:
+                return False
+            self.emit(MoltOp(kind="IF", args=[header_val], result=MoltValue("none")))
+            header_false = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=header_false))
+            self._emit_assign_target(
+                ast.Name(id=header_name, ctx=ast.Store()),
+                header_false,
+                None,
+            )
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        data_val = self._load_local_value(data_name)
+        if data_val is None:
+            data_val = self.locals.get(data_name) or self.globals.get(data_name)
+        if data_val is None:
+            return False
+        line_val = self._load_local_value(line_name)
+        if line_val is None:
+            line_val = self.locals.get(line_name) or self.globals.get(line_name)
+        if line_val is None:
+            return False
+        bucket_val = self.visit(bucket_expr)
+        if bucket_val is None:
+            return False
+        res = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(
+                kind="TAQ_INGEST_LINE",
+                args=[data_val, line_val, bucket_val],
+                result=res,
+            )
+        )
+        return True
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:
         value_node = self.visit(node.value)
@@ -20606,7 +21094,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         self.try_scopes.append(scope)
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
-        enter_val = MoltValue(self.next_var(), type_hint="Any")
+        enter_hint = (
+            ctx_val.type_hint
+            if ctx_val.type_hint in {"file_text", "file_bytes"}
+            else "Any"
+        )
+        enter_val = MoltValue(self.next_var(), type_hint=enter_hint)
         self.emit(MoltOp(kind="CONTEXT_ENTER", args=[ctx_ref], result=enter_val))
         self._emit_raise_if_pending()
         if item.optional_vars is not None:
@@ -20845,6 +21338,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_For(self, node: ast.For) -> None:
+        if self._emit_split_dict_increment_for_loop(node):
+            return None
         break_name = None
         if node.orelse:
             while True:
@@ -20916,24 +21411,48 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         args = [seq_arg, acc_val]
                         vec_kind: str | None = None
                         elem_hint = self._container_elem_hint(seq_val)
+                        acc_num_hint = self._reduction_acc_numeric_hint(
+                            acc_name, acc_val
+                        )
                         if seq_val.type_hint == "range":
                             if kind == "sum" and start_expr is None:
-                                vec_kind = "VEC_SUM_INT_RANGE_ITER"
+                                if acc_num_hint == "float":
+                                    vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
+                                else:
+                                    vec_kind = "VEC_SUM_INT_RANGE_ITER"
                                 if self.type_hint_policy == "trust":
                                     vec_kind = f"{vec_kind}_TRUSTED"
                         else:
-                            vec_kind = {
-                                "sum": "VEC_SUM_INT",
-                                "prod": "VEC_PROD_INT",
-                                "min": "VEC_MIN_INT",
-                                "max": "VEC_MAX_INT",
-                            }.get(kind, "VEC_SUM_INT")
+                            if kind == "sum" and acc_num_hint == "float":
+                                if elem_hint in {None, "int", "float"}:
+                                    vec_kind = "VEC_SUM_FLOAT"
+                                    if start_expr is not None:
+                                        vec_kind = "VEC_SUM_FLOAT_RANGE"
+                                    if self.type_hint_policy == "trust":
+                                        vec_kind = f"{vec_kind}_TRUSTED"
+                            else:
+                                vec_kind = {
+                                    "sum": "VEC_SUM_INT",
+                                    "prod": "VEC_PROD_INT",
+                                    "min": "VEC_MIN_INT",
+                                    "max": "VEC_MAX_INT",
+                                }.get(kind, "VEC_SUM_INT")
                             if kind == "prod" and elem_hint == "int":
                                 seq_arg = self._emit_intarray_from_seq(seq_val)
                                 args[0] = seq_arg
-                            if start_expr is not None:
+                            if (
+                                start_expr is not None
+                                and vec_kind is not None
+                                and vec_kind.startswith("VEC_")
+                                and "FLOAT" not in vec_kind
+                            ):
                                 vec_kind = f"{vec_kind}_RANGE"
-                            if self.type_hint_policy == "trust" and elem_hint == "int":
+                            if (
+                                self.type_hint_policy == "trust"
+                                and elem_hint == "int"
+                                and vec_kind is not None
+                                and "FLOAT" not in vec_kind
+                            ):
                                 vec_kind = f"{vec_kind}_TRUSTED"
                         if vec_kind is None:
                             pass
@@ -20951,7 +21470,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                     )
                                 args.append(start_val)
                             self.emit(MoltOp(kind=vec_kind, args=args, result=pair))
-                            sum_val = MoltValue(self.next_var(), type_hint="int")
+                            sum_hint = (
+                                "float"
+                                if vec_kind is not None and "FLOAT" in vec_kind
+                                else "int"
+                            )
+                            sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
                             self.emit(
                                 MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
                             )
@@ -21001,6 +21525,71 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if range_args is not None:
             start, stop, step, lowerable = range_args
             if lowerable:
+                vector_info = (
+                    None if self.is_async() else self._match_vector_reduction_loop(node)
+                )
+                minmax_info = (
+                    None if self.is_async() else self._match_vector_minmax_loop(node)
+                )
+                if vector_info is None:
+                    vector_info = minmax_info
+                if vector_info:
+                    acc_name, item_name, kind = vector_info
+                    if kind == "sum" and item_name == node.target.id:
+                        acc_val = self._load_local_value(acc_name)
+                        if acc_val is not None:
+                            seq_arg = self._emit_range_obj_from_args(start, stop, step)
+                            acc_num_hint = self._reduction_acc_numeric_hint(
+                                acc_name, acc_val
+                            )
+                            vec_kind = "VEC_SUM_INT_RANGE_ITER"
+                            if acc_num_hint == "float":
+                                vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
+                            if self.type_hint_policy == "trust":
+                                vec_kind = f"{vec_kind}_TRUSTED"
+                            zero = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                            one = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                            pair = MoltValue(self.next_var(), type_hint="tuple")
+                            self.emit(
+                                MoltOp(
+                                    kind=vec_kind,
+                                    args=[seq_arg, acc_val],
+                                    result=pair,
+                                )
+                            )
+                            sum_hint = "float" if "FLOAT" in vec_kind else "int"
+                            sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
+                            self.emit(
+                                MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
+                            )
+                            ok_val = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(kind="INDEX", args=[pair, one], result=ok_val)
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="IF", args=[ok_val], result=MoltValue("none")
+                                )
+                            )
+                            self._store_local_value(acc_name, sum_val)
+                            self.emit(
+                                MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
+                            )
+                            self._emit_range_loop(
+                                node,
+                                start,
+                                stop,
+                                step,
+                                loop_break_flag=break_name,
+                            )
+                            self.emit(
+                                MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
+                            )
+                            if break_name is not None:
+                                self._emit_loop_orelse(break_name, node.orelse)
+                            return None
                 self._emit_range_loop(
                     node, start, stop, step, loop_break_flag=break_name
                 )
@@ -21030,23 +21619,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if acc_val is not None:
                 seq_arg = iterable
                 vec_kind: str | None = None
+                acc_num_hint = self._reduction_acc_numeric_hint(acc_name, acc_val)
                 if iterable.type_hint == "range":
                     if kind == "sum":
-                        vec_kind = "VEC_SUM_INT_RANGE_ITER"
+                        if acc_num_hint == "float":
+                            vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
+                        else:
+                            vec_kind = "VEC_SUM_INT_RANGE_ITER"
                         if self.type_hint_policy == "trust":
                             vec_kind = f"{vec_kind}_TRUSTED"
                 else:
                     elem_hint = self._container_elem_hint(iterable)
-                    vec_kind = {
-                        "sum": "VEC_SUM_INT",
-                        "prod": "VEC_PROD_INT",
-                        "min": "VEC_MIN_INT",
-                        "max": "VEC_MAX_INT",
-                    }.get(kind, "VEC_SUM_INT")
-                    if kind == "prod" and elem_hint == "int":
-                        seq_arg = self._emit_intarray_from_seq(iterable)
-                    if self.type_hint_policy == "trust" and elem_hint == "int":
-                        vec_kind = f"{vec_kind}_TRUSTED"
+                    if kind == "sum" and acc_num_hint == "float":
+                        if elem_hint in {None, "int", "float"}:
+                            vec_kind = "VEC_SUM_FLOAT"
+                            if self.type_hint_policy == "trust":
+                                vec_kind = f"{vec_kind}_TRUSTED"
+                    else:
+                        vec_kind = {
+                            "sum": "VEC_SUM_INT",
+                            "prod": "VEC_PROD_INT",
+                            "min": "VEC_MIN_INT",
+                            "max": "VEC_MAX_INT",
+                        }.get(kind, "VEC_SUM_INT")
+                        if kind == "prod" and elem_hint == "int":
+                            seq_arg = self._emit_intarray_from_seq(iterable)
+                        if self.type_hint_policy == "trust" and elem_hint == "int":
+                            vec_kind = f"{vec_kind}_TRUSTED"
                 if vec_kind is not None:
                     zero = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[0], result=zero))
@@ -21056,7 +21655,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(
                         MoltOp(kind=vec_kind, args=[seq_arg, acc_val], result=pair)
                     )
-                    sum_val = MoltValue(self.next_var(), type_hint="int")
+                    sum_hint = (
+                        "float"
+                        if vec_kind is not None and "FLOAT" in vec_kind
+                        else "int"
+                    )
+                    sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
                     self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=sum_val))
                     ok_val = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(MoltOp(kind="INDEX", args=[pair, one], result=ok_val))
@@ -21308,6 +21912,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prefill: dict[str, tuple[str, MoltValue]] | None = None,
         loop_break_flag: int | str | None = None,
     ) -> None:
+        if not self.is_async() and self._emit_taq_ingest_loop_body(body):
+            return
         if not self.is_async():
             guard_map = dict(prefill) if prefill else {}
             self.loop_layout_guards.append(guard_map)
@@ -22281,7 +22887,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         result = self.visit(node.values[0])
         if result is None:
             raise NotImplementedError("Unsupported bool op operand")
-        use_phi = self.enable_phi and not self.is_async()
+        # TODO(core-lowering, owner:compiler, milestone:TL2, priority:P1, status:in-progress): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
+        use_phi = False
         for value in node.values[1:]:
             if isinstance(node.op, ast.And):
                 if use_phi:
@@ -25200,6 +25807,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return result
 
     def map_ops_to_json(self, ops: list[MoltOp]) -> list[dict[str, Any]]:
+        ops = self._coalesce_check_exception_ops(ops)
         json_ops: list[dict[str, Any]] = []
 
         def field_offset(expected_class: str, attr: str) -> int | None:
@@ -25541,6 +26149,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "not",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ABS":
+                json_ops.append(
+                    {
+                        "kind": "abs",
                         "args": [op.args[0].name],
                         "out": op.result.name,
                     }
@@ -26752,6 +27368,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "LIST_FROM_RANGE":
+                json_ops.append(
+                    {
+                        "kind": "list_from_range",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "TUPLE_NEW":
                 json_ops.append(
                     {
@@ -26976,6 +27600,46 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "DICT_INC":
+                json_ops.append(
+                    {
+                        "kind": "dict_inc",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_STR_INT_INC":
+                json_ops.append(
+                    {
+                        "kind": "dict_str_int_inc",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "STRING_SPLIT_WS_DICT_INC":
+                json_ops.append(
+                    {
+                        "kind": "string_split_ws_dict_inc",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "STRING_SPLIT_SEP_DICT_INC":
+                json_ops.append(
+                    {
+                        "kind": "string_split_sep_dict_inc",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "TAQ_INGEST_LINE":
+                json_ops.append(
+                    {
+                        "kind": "taq_ingest_line",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "DICT_POP":
                 json_ops.append(
                     {
@@ -26988,6 +27652,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "dict_setdefault",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_SETDEFAULT_EMPTY_LIST":
+                json_ops.append(
+                    {
+                        "kind": "dict_setdefault_empty_list",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -27284,6 +27956,54 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "vec_sum_int_range_iter_trusted",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT_TRUSTED":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float_trusted",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT_RANGE":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float_range",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT_RANGE_TRUSTED":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float_range_trusted",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT_RANGE_ITER":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float_range_iter",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "VEC_SUM_FLOAT_RANGE_ITER_TRUSTED":
+                json_ops.append(
+                    {
+                        "kind": "vec_sum_float_range_iter_trusted",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -27768,6 +28488,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "STATISTICS_MEAN_SLICE":
+                json_ops.append(
+                    {
+                        "kind": "statistics_mean_slice",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "STATISTICS_STDEV_SLICE":
+                json_ops.append(
+                    {
+                        "kind": "statistics_stdev_slice",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "BYTES_REPLACE":
                 json_ops.append(
                     {
@@ -28124,6 +28860,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if ops and ops[-1].kind != "ret":
             json_ops.append({"kind": "ret_void"})
         return json_ops
+
+    def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
+        safe_after_check = {
+            "CONST",
+            "CONST_BIGINT",
+            "CONST_BOOL",
+            "CONST_FLOAT",
+            "CONST_STR",
+            "CONST_BYTES",
+            "CONST_NONE",
+            "CONST_NOT_IMPLEMENTED",
+            "CONST_ELLIPSIS",
+            "MISSING",
+            "LINE",
+        }
+        out: list[MoltOp] = []
+        pending_check: MoltOp | None = None
+        for op in ops:
+            if op.kind == "CHECK_EXCEPTION":
+                pending_check = op
+                continue
+            if pending_check is not None and op.kind not in safe_after_check:
+                out.append(pending_check)
+                pending_check = None
+            out.append(op)
+        if pending_check is not None:
+            out.append(pending_check)
+        return out
 
     def _finalize_code_ids(self) -> None:
         for data in self.funcs_map.values():

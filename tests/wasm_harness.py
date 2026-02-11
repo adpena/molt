@@ -7027,6 +7027,84 @@ BASE_IMPORTS = """\
   vec_sum_int_trusted: () => boxNone(),
   vec_sum_int_range: () => boxNone(),
   vec_sum_int_range_trusted: () => boxNone(),
+  vec_sum_float: () => boxNone(),
+  vec_sum_float_trusted: () => boxNone(),
+  vec_sum_float_range: () => boxNone(),
+  vec_sum_float_range_trusted: () => boxNone(),
+  vec_sum_float_range_iter: () => boxNone(),
+  vec_sum_float_range_iter_trusted: () => boxNone(),
+  statistics_mean_slice: (seqBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const list = getList(seqBits);
+    const tuple = getTuple(seqBits);
+    const items = list ? list.items : tuple ? tuple.items : null;
+    if (!items) {
+      throw new Error('TypeError: mean() argument must be list or tuple');
+    }
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      items.length,
+    );
+    if (bounds === null) return boxNone();
+    const { start, end } = bounds;
+    if (start >= end) {
+      throw new Error('ValueError: mean requires at least one data point');
+    }
+    let sum = 0.0;
+    let compensation = 0.0;
+    let count = 0;
+    for (let idx = start; idx < end; idx += 1) {
+      const value = numberFromVal(items[idx]);
+      if (value === null) {
+        throw new Error('TypeError: mean requires numeric data');
+      }
+      const y = value - compensation;
+      const t = sum + y;
+      compensation = (t - sum) - y;
+      sum = t;
+      count += 1;
+    }
+    return boxFloat(sum / count);
+  },
+  statistics_stdev_slice: (seqBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const list = getList(seqBits);
+    const tuple = getTuple(seqBits);
+    const items = list ? list.items : tuple ? tuple.items : null;
+    if (!items) {
+      throw new Error('TypeError: stdev() argument must be list or tuple');
+    }
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      items.length,
+    );
+    if (bounds === null) return boxNone();
+    const { start, end } = bounds;
+    const n = end - start;
+    if (n < 2) {
+      throw new Error('ValueError: stdev requires at least two data points');
+    }
+    let count = 0;
+    let mean = 0.0;
+    let m2 = 0.0;
+    for (let idx = start; idx < end; idx += 1) {
+      const value = numberFromVal(items[idx]);
+      if (value === null) {
+        throw new Error('TypeError: stdev requires numeric data');
+      }
+      count += 1;
+      const delta = value - mean;
+      mean += delta / count;
+      const delta2 = value - mean;
+      m2 += delta * delta2;
+    }
+    const variance = m2 / (count - 1);
+    return boxFloat(Math.sqrt(variance));
+  },
   vec_prod_int: () => boxNone(),
   vec_prod_int_trusted: () => boxNone(),
   vec_prod_int_range: () => boxNone(),
@@ -8019,6 +8097,8 @@ BASE_IMPORTS = """\
     }
     return getAttrValue(obj, name);
   },
+  get_attr_object_ic: (obj, namePtr, nameLen, _siteBits) =>
+    baseImports.get_attr_object(obj, namePtr, nameLen),
   get_attr_special: (obj, namePtr, nameLen) =>
     getAttrSpecialValue(obj, readUtf8(namePtr, nameLen)),
   set_attr_ptr: (obj, namePtr, nameLen, val) => {
@@ -9056,6 +9136,31 @@ BASE_IMPORTS = """\
   slice_new: (start, stop, step) =>
     boxPtr({ type: 'slice', start, stop, step }),
   range_new: () => boxNone(),
+  list_from_range: (startBits, stopBits, stepBits) => {
+    const startErr = `'${typeName(startBits)}' object cannot be interpreted as an integer`;
+    const stopErr = `'${typeName(stopBits)}' object cannot be interpreted as an integer`;
+    const stepErr = `'${typeName(stepBits)}' object cannot be interpreted as an integer`;
+    const start = indexBigIntFromBits(startBits, startErr);
+    if (start === null) return boxNone();
+    const stop = indexBigIntFromBits(stopBits, stopErr);
+    if (stop === null) return boxNone();
+    const step = indexBigIntFromBits(stepBits, stepErr);
+    if (step === null) return boxNone();
+    if (step === 0n) {
+      throw new Error('ValueError: range() arg 3 must not be zero');
+    }
+    const out = [];
+    if (step > 0n) {
+      for (let cur = start; cur < stop; cur += step) {
+        out.push(boxInt(cur));
+      }
+    } else {
+      for (let cur = start; cur > stop; cur += step) {
+        out.push(boxInt(cur));
+      }
+    }
+    return listFromArray(out);
+  },
   list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
   list_builder_append: (builder, val) => {
     const obj = getObj(builder);
@@ -9344,6 +9449,125 @@ BASE_IMPORTS = """\
     const val = dictGetValue(dict, keyBits);
     return val === null ? defaultBits : val;
   },
+  dict_inc: (dictBits, keyBits, deltaBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const current = dictGetValue(dict, keyBits) ?? boxInt(0);
+    let next;
+    if (isIntLike(current) && isIntLike(deltaBits)) {
+      next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
+    } else {
+      next = baseImports.add(current, deltaBits);
+      if (exceptionPending() !== 0n) return boxNone();
+    }
+    dictSetValue(dict, keyBits, next);
+    return boxNone();
+  },
+  dict_str_int_inc: (dictBits, keyBits, deltaBits) =>
+    baseImports.dict_inc(dictBits, keyBits, deltaBits),
+  string_split_ws_dict_inc: (lineBits, dictBits, deltaBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const line = getStrObj(lineBits);
+    if (line === null) return boxNone();
+    let lastBits = boxNone();
+    let hadAny = false;
+    const parts = stringSplitWhitespaceMax(line, -1);
+    for (const part of parts) {
+      const keyBits = boxPtr({ type: 'str', value: part });
+      const current = dictGetValue(dict, keyBits) ?? boxInt(0);
+      let next;
+      if (isIntLike(current) && isIntLike(deltaBits)) {
+        next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
+      } else {
+        next = baseImports.add(current, deltaBits);
+        if (exceptionPending() !== 0n) return boxNone();
+      }
+      dictSetValue(dict, keyBits, next);
+      lastBits = keyBits;
+      hadAny = true;
+    }
+    return tupleFromArray([lastBits, boxBool(hadAny)]);
+  },
+  string_split_sep_dict_inc: (lineBits, sepBits, dictBits, deltaBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const line = getStrObj(lineBits);
+    if (line === null) return boxNone();
+    const sep = getStrObj(sepBits);
+    if (sep === null) return boxNone();
+    if (sep.length === 0) {
+      throw new Error('ValueError: empty separator');
+    }
+    let lastBits = boxNone();
+    let hadAny = false;
+    const parts = stringSplitSepMax(line, sep, -1);
+    for (const part of parts) {
+      const keyBits = boxPtr({ type: 'str', value: part });
+      const current = dictGetValue(dict, keyBits) ?? boxInt(0);
+      let next;
+      if (isIntLike(current) && isIntLike(deltaBits)) {
+        next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
+      } else {
+        next = baseImports.add(current, deltaBits);
+        if (exceptionPending() !== 0n) return boxNone();
+      }
+      dictSetValue(dict, keyBits, next);
+      lastBits = keyBits;
+      hadAny = true;
+    }
+    return tupleFromArray([lastBits, boxBool(hadAny)]);
+  },
+  taq_ingest_line: (dictBits, lineBits, bucketSizeBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) {
+      throw new Error('TypeError: TAQ ingest expects dict');
+    }
+    const line = getStrObj(lineBits);
+    if (line === null) {
+      throw new Error('TypeError: TAQ ingest expects str');
+    }
+    if (!isIntLike(bucketSizeBits)) {
+      throw new Error('TypeError: TAQ ingest expects integer bucket size');
+    }
+    const bucketSize = Number(unboxIntLike(bucketSizeBits));
+    if (bucketSize === 0) {
+      throw new Error('ZeroDivisionError: integer division or modulo by zero');
+    }
+    const fields = line.split('|');
+    if (fields.length <= 4) return boxNone();
+    const tsRaw = fields[0];
+    const symRaw = fields[2];
+    const volRaw = fields[4];
+    if (symRaw === 'END' || symRaw === 'ENDP') {
+      return boxNone();
+    }
+    if (
+      tsRaw.trim().length === 0 ||
+      symRaw.trim().length === 0 ||
+      volRaw.trim().length === 0
+    ) {
+      return boxNone();
+    }
+    const ts = Number.parseInt(tsRaw, 10);
+    const vol = Number.parseInt(volRaw, 10);
+    if (!Number.isFinite(ts) || !Number.isFinite(vol)) {
+      throw new Error('ValueError: invalid literal for int() with base 10');
+    }
+    const groupTs = ts - (ts % bucketSize);
+    const keyBits = boxPtr({ type: 'str', value: `${groupTs}|${symRaw}` });
+    let bucketBits = dictGetValue(dict, keyBits);
+    if (bucketBits === null) {
+      bucketBits = boxPtr({ type: 'list', items: [] });
+      dictSetValue(dict, keyBits, bucketBits);
+    }
+    const bucket = getList(bucketBits);
+    if (!bucket) {
+      throw new Error('TypeError: TAQ ingest bucket must be list');
+    }
+    bucket.items.push(tupleFromArray([boxInt(ts), boxInt(vol)]));
+    return boxNone();
+  },
   dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
@@ -9379,6 +9603,17 @@ BASE_IMPORTS = """\
       return defaultBits;
     }
     return val;
+  },
+  dict_setdefault_empty_list: (dictBits, keyBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const val = dictGetValue(dict, keyBits);
+    if (val !== null) {
+      return val;
+    }
+    const listBits = boxPtr({ type: 'list', items: [] });
+    dictSetValue(dict, keyBits, listBits);
+    return listBits;
   },
   dict_update: (dictBits, otherBits) => {
     const dict = getDict(dictBits);
@@ -10270,6 +10505,8 @@ BASE_IMPORTS = """\
     }
     return callFunctionBits(funcBits, finalArgs);
   },
+  call_bind_ic: (_siteBits, callBits, builderBits) =>
+    baseImports.call_bind(callBits, builderBits),
   is_callable: (val) => {
     if (getFunction(val) || getBoundMethod(val)) return boxBool(true);
     const attr = lookupAttr(val, '__call__');

@@ -268,6 +268,76 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_re_literal_advance",
+        symbol: "molt_re_literal_advance",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_re_any_advance",
+        symbol: "molt_re_any_advance",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_re_char_in_range",
+        symbol: "molt_re_char_in_range",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_re_category_matches",
+        symbol: "molt_re_category_matches",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_re_anchor_matches",
+        symbol: "molt_re_anchor_matches",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_re_group_is_set",
+        symbol: "molt_re_group_is_set",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_re_backref_advance",
+        symbol: "molt_re_backref_advance",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_re_backref_group_advance",
+        symbol: "molt_re_backref_group_advance",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_re_apply_scoped_flags",
+        symbol: "molt_re_apply_scoped_flags",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_re_group_capture",
+        symbol: "molt_re_group_capture",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_re_charclass_matches",
+        symbol: "molt_re_charclass_matches",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_re_charclass_advance",
+        symbol: "molt_re_charclass_advance",
+        arity: 8,
+    },
+    IntrinsicSpec {
+        name: "molt_re_group_values",
+        symbol: "molt_re_group_values",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_re_expand_replacement",
+        symbol: "molt_re_expand_replacement",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_shlex_quote",
         symbol: "molt_shlex_quote",
         arity: 1,
@@ -928,9 +998,64 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_email_message_from_bytes",
+        symbol: "molt_email_message_from_bytes",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_email_message_set",
         symbol: "molt_email_message_set",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_get",
+        symbol: "molt_email_message_get",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_set_content",
+        symbol: "molt_email_message_set_content",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_add_alternative",
+        symbol: "molt_email_message_add_alternative",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_add_attachment",
+        symbol: "molt_email_message_add_attachment",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_is_multipart",
+        symbol: "molt_email_message_is_multipart",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_payload",
+        symbol: "molt_email_message_payload",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_content",
+        symbol: "molt_email_message_content",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_content_type",
+        symbol: "molt_email_message_content_type",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_filename",
+        symbol: "molt_email_message_filename",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_message_as_string",
+        symbol: "molt_email_message_as_string",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_email_message_items",
@@ -941,6 +1066,51 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_email_message_drop",
         symbol: "molt_email_message_drop",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_utils_make_msgid",
+        symbol: "molt_email_utils_make_msgid",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_utils_getaddresses",
+        symbol: "molt_email_utils_getaddresses",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_utils_parsedate_tz",
+        symbol: "molt_email_utils_parsedate_tz",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_utils_format_datetime",
+        symbol: "molt_email_utils_format_datetime",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_utils_parsedate_to_datetime",
+        symbol: "molt_email_utils_parsedate_to_datetime",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_policy_new",
+        symbol: "molt_email_policy_new",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_header_encode_word",
+        symbol: "molt_email_header_encode_word",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_address_addr_spec",
+        symbol: "molt_email_address_addr_spec",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_address_format",
+        symbol: "molt_email_address_format",
+        arity: 3,
     },
     IntrinsicSpec {
         name: "molt_asyncgen_shutdown",
@@ -2043,6 +2213,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_signal_raise",
+        symbol: "molt_signal_raise",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_env_get",
         symbol: "molt_env_get",
         arity: 2,
@@ -3070,6 +3245,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_queue_new",
         symbol: "molt_queue_new",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_lifo_new",
+        symbol: "molt_queue_lifo_new",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_queue_priority_new",
+        symbol: "molt_queue_priority_new",
         arity: 1,
     },
     IntrinsicSpec {
@@ -4580,6 +4765,38 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_re_literal_matches" => {
             Some(crate::molt_re_literal_matches as *const () as usize as u64)
         }
+        "molt_re_literal_advance" => {
+            Some(crate::molt_re_literal_advance as *const () as usize as u64)
+        }
+        "molt_re_any_advance" => Some(crate::molt_re_any_advance as *const () as usize as u64),
+        "molt_re_char_in_range" => Some(crate::molt_re_char_in_range as *const () as usize as u64),
+        "molt_re_category_matches" => {
+            Some(crate::molt_re_category_matches as *const () as usize as u64)
+        }
+        "molt_re_anchor_matches" => {
+            Some(crate::molt_re_anchor_matches as *const () as usize as u64)
+        }
+        "molt_re_group_is_set" => Some(crate::molt_re_group_is_set as *const () as usize as u64),
+        "molt_re_backref_advance" => {
+            Some(crate::molt_re_backref_advance as *const () as usize as u64)
+        }
+        "molt_re_backref_group_advance" => {
+            Some(crate::molt_re_backref_group_advance as *const () as usize as u64)
+        }
+        "molt_re_apply_scoped_flags" => {
+            Some(crate::molt_re_apply_scoped_flags as *const () as usize as u64)
+        }
+        "molt_re_group_capture" => Some(crate::molt_re_group_capture as *const () as usize as u64),
+        "molt_re_charclass_matches" => {
+            Some(crate::molt_re_charclass_matches as *const () as usize as u64)
+        }
+        "molt_re_charclass_advance" => {
+            Some(crate::molt_re_charclass_advance as *const () as usize as u64)
+        }
+        "molt_re_group_values" => Some(crate::molt_re_group_values as *const () as usize as u64),
+        "molt_re_expand_replacement" => {
+            Some(crate::molt_re_expand_replacement as *const () as usize as u64)
+        }
         "molt_shlex_quote" => Some(crate::molt_shlex_quote as *const () as usize as u64),
         "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
         "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
@@ -4908,14 +5125,72 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_email_message_new" => {
             Some(crate::molt_email_message_new as *const () as usize as u64)
         }
+        "molt_email_message_from_bytes" => {
+            Some(crate::molt_email_message_from_bytes as *const () as usize as u64)
+        }
         "molt_email_message_set" => {
             Some(crate::molt_email_message_set as *const () as usize as u64)
+        }
+        "molt_email_message_get" => {
+            Some(crate::molt_email_message_get as *const () as usize as u64)
+        }
+        "molt_email_message_set_content" => {
+            Some(crate::molt_email_message_set_content as *const () as usize as u64)
+        }
+        "molt_email_message_add_alternative" => {
+            Some(crate::molt_email_message_add_alternative as *const () as usize as u64)
+        }
+        "molt_email_message_add_attachment" => {
+            Some(crate::molt_email_message_add_attachment as *const () as usize as u64)
+        }
+        "molt_email_message_is_multipart" => {
+            Some(crate::molt_email_message_is_multipart as *const () as usize as u64)
+        }
+        "molt_email_message_payload" => {
+            Some(crate::molt_email_message_payload as *const () as usize as u64)
+        }
+        "molt_email_message_content" => {
+            Some(crate::molt_email_message_content as *const () as usize as u64)
+        }
+        "molt_email_message_content_type" => {
+            Some(crate::molt_email_message_content_type as *const () as usize as u64)
+        }
+        "molt_email_message_filename" => {
+            Some(crate::molt_email_message_filename as *const () as usize as u64)
+        }
+        "molt_email_message_as_string" => {
+            Some(crate::molt_email_message_as_string as *const () as usize as u64)
         }
         "molt_email_message_items" => {
             Some(crate::molt_email_message_items as *const () as usize as u64)
         }
         "molt_email_message_drop" => {
             Some(crate::molt_email_message_drop as *const () as usize as u64)
+        }
+        "molt_email_utils_make_msgid" => {
+            Some(crate::molt_email_utils_make_msgid as *const () as usize as u64)
+        }
+        "molt_email_utils_getaddresses" => {
+            Some(crate::molt_email_utils_getaddresses as *const () as usize as u64)
+        }
+        "molt_email_utils_parsedate_tz" => {
+            Some(crate::molt_email_utils_parsedate_tz as *const () as usize as u64)
+        }
+        "molt_email_utils_format_datetime" => {
+            Some(crate::molt_email_utils_format_datetime as *const () as usize as u64)
+        }
+        "molt_email_utils_parsedate_to_datetime" => {
+            Some(crate::molt_email_utils_parsedate_to_datetime as *const () as usize as u64)
+        }
+        "molt_email_policy_new" => Some(crate::molt_email_policy_new as *const () as usize as u64),
+        "molt_email_header_encode_word" => {
+            Some(crate::molt_email_header_encode_word as *const () as usize as u64)
+        }
+        "molt_email_address_addr_spec" => {
+            Some(crate::molt_email_address_addr_spec as *const () as usize as u64)
+        }
+        "molt_email_address_format" => {
+            Some(crate::molt_email_address_format as *const () as usize as u64)
         }
         "molt_asyncgen_shutdown" => {
             Some(crate::molt_asyncgen_shutdown as *const () as usize as u64)
@@ -5349,6 +5624,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_name" => Some(crate::molt_os_name as *const () as usize as u64),
         "molt_getcwd" => Some(crate::molt_getcwd as *const () as usize as u64),
         "molt_getpid" => Some(crate::molt_getpid as *const () as usize as u64),
+        "molt_signal_raise" => Some(crate::molt_signal_raise as *const () as usize as u64),
         "molt_env_get" => Some(crate::molt_env_get as *const () as usize as u64),
         "molt_env_snapshot" => Some(crate::molt_env_snapshot as *const () as usize as u64),
         "molt_env_set" => Some(crate::molt_env_set as *const () as usize as u64),
@@ -5647,6 +5923,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_local_get_dict" => Some(crate::molt_local_get_dict as *const () as usize as u64),
         "molt_local_drop" => Some(crate::molt_local_drop as *const () as usize as u64),
         "molt_queue_new" => Some(crate::molt_queue_new as *const () as usize as u64),
+        "molt_queue_lifo_new" => Some(crate::molt_queue_lifo_new as *const () as usize as u64),
+        "molt_queue_priority_new" => {
+            Some(crate::molt_queue_priority_new as *const () as usize as u64)
+        }
         "molt_queue_qsize" => Some(crate::molt_queue_qsize as *const () as usize as u64),
         "molt_queue_empty" => Some(crate::molt_queue_empty as *const () as usize as u64),
         "molt_queue_full" => Some(crate::molt_queue_full as *const () as usize as u64),

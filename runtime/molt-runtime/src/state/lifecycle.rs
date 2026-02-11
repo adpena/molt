@@ -1,4 +1,6 @@
 use crate::builtins::attr::clear_attr_tls_caches;
+use crate::builtins::attributes::clear_attr_site_name_cache;
+use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::utf8_cache::{
     clear_utf8_count_tls, Utf8CacheStore, Utf8CountCacheStore, UTF8_CACHE_MAX_ENTRIES,
     UTF8_COUNT_CACHE_SHARDS,
@@ -119,6 +121,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_interned_names(_py, state);
     trace_shutdown("clear_method_cache");
     clear_method_cache(_py, state);
+    trace_shutdown("clear_call_bind_ic_cache");
+    clear_call_bind_ic_cache();
+    trace_shutdown("clear_attr_site_name_cache");
+    clear_attr_site_name_cache(_py);
     trace_shutdown("clear_special_cache");
     clear_special_cache(_py, state);
     trace_shutdown("clear_utf8_caches");
