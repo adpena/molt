@@ -65,8 +65,8 @@ Bootstrap/import-core status:
 2. regression coverage:
    - `tests/test_stdlib_importlib_machinery.py` for module-name coercion (`module name must be str`) path.
    - differential pass confirmation:
-     - `tests/differential/basic/importlib_find_spec_path_importer_cache_intrinsic.py`
-     - `tests/differential/basic/importlib_find_spec_path_hooks_intrinsic.py`
+     - `tests/differential/stdlib/importlib_find_spec_path_importer_cache_intrinsic.py`
+     - `tests/differential/stdlib/importlib_find_spec_path_hooks_intrinsic.py`
 3. checker hardening:
    - intrinsic-partial ratchet gate in `tools/check_stdlib_intrinsics.py`,
    - ratchet budget file: `tools/stdlib_intrinsics_ratchet.json`,

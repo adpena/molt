@@ -7,7 +7,7 @@ Generated on 2026-01-23.
 
 Legend:
 - basic: covered by tests/differential/basic
-- planned: covered only by tests/differential/planned
+- stdlib: covered by tests/differential/stdlib
 - missing: no mapped tests
 
 | API | Status | Evidence |
@@ -23,7 +23,7 @@ Legend:
 | async generator `__aiter__`/`__anext__` | basic | `tests/differential/basic/async_for_iter.py`, `tests/differential/basic/async_generator_protocol.py` |
 | async generator `asend`/`athrow`/`aclose` | basic | `tests/differential/basic/async_generator_protocol.py`, `tests/differential/basic/async_generator_post_stop_edges.py`, `tests/differential/basic/async_generator_completion_more.py` |
 | async generator `ag_code`/`ag_frame`/`ag_running`/`ag_await` | basic | `tests/differential/basic/async_generator_introspection.py` |
-| `inspect.getasyncgenstate` | basic | `tests/differential/basic/inspect_getasyncgenstate.py`, `tests/differential/basic/async_generator_introspection.py` |
+| `inspect.getasyncgenstate` | basic | `tests/differential/stdlib/inspect_getasyncgenstate.py`, `tests/differential/basic/async_generator_introspection.py` |
 | `inspect.getasyncgenlocals` | basic | `tests/differential/basic/async_generator_introspection.py` |
 | async generator reentrancy errors | basic | `tests/differential/basic/async_generator_reentrancy.py` |
 | `sys.get_asyncgen_hooks`/`sys.set_asyncgen_hooks` | basic | `tests/differential/basic/asyncgen_hooks_api.py` |

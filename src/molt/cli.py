@@ -29,7 +29,7 @@ import zipfile
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, NamedTuple, cast
+from typing import Any, Iterable, Literal, MutableMapping, NamedTuple, cast
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -2466,11 +2466,15 @@ def _build_midend_diagnostics_payload(
         for event in raw_outcome.get("degrade_events", []):
             if not isinstance(event, dict):
                 continue
+            reason = str(event.get("reason", ""))
+            stage = str(event.get("stage", ""))
+            action = str(event.get("action", ""))
+            spent_ms = float(event.get("spent_ms", 0.0))
             normalized_event = {
-                "reason": str(event.get("reason", "")),
-                "stage": str(event.get("stage", "")),
-                "action": str(event.get("action", "")),
-                "spent_ms": float(event.get("spent_ms", 0.0)),
+                "reason": reason,
+                "stage": stage,
+                "action": action,
+                "spent_ms": spent_ms,
             }
             if "value" in event:
                 normalized_event["value"] = event["value"]
@@ -2479,13 +2483,12 @@ def _build_midend_diagnostics_payload(
                 {
                     "module": module_name,
                     "function": function_name or module_name,
-                    "reason": normalized_event["reason"],
-                    "stage": normalized_event["stage"],
-                    "action": normalized_event["action"],
-                    "spent_ms": round(max(0.0, normalized_event["spent_ms"]), 6),
+                    "reason": reason,
+                    "stage": stage,
+                    "action": action,
+                    "spent_ms": round(max(0.0, spent_ms), 6),
                 }
             )
-            reason = normalized_event["reason"]
             if reason:
                 reason_summary[reason] = reason_summary.get(reason, 0) + 1
         profile = str(raw_outcome.get("profile", ""))
@@ -4558,7 +4561,7 @@ def _ensure_runtime_lib(
     return True
 
 
-def _append_rustflags(env: dict[str, str], flags: str) -> None:
+def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:
     existing = env.get("RUSTFLAGS", "")
     joined = f"{existing} {flags}".strip()
     env["RUSTFLAGS"] = joined

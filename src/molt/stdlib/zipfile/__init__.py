@@ -39,6 +39,7 @@ _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
 
 _MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+_MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32", globals())
 
 
 class ZipInfo:
@@ -83,30 +84,7 @@ def _read_u64(blob: bytes, offset: int) -> int:
 
 
 def _crc32(data: bytes) -> int:
-    table = _CRC_TABLE[0]
-    if table is None:
-        table = _build_crc_table()
-        _CRC_TABLE[0] = table
-    crc = 0xFFFFFFFF
-    for value in data:
-        crc = (crc >> 8) ^ table[(crc ^ value) & 0xFF]
-    return crc ^ 0xFFFFFFFF
-
-
-def _build_crc_table():
-    table = [0] * 256
-    for idx in range(256):
-        crc = idx
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xEDB88320
-            else:
-                crc >>= 1
-        table[idx] = crc
-    return table
-
-
-_CRC_TABLE = [None]
+    return int(_MOLT_ZIPFILE_CRC32(data))
 
 
 class ZipFile:
@@ -212,24 +190,40 @@ class ZipFile:
 
     def namelist(self) -> list[str]:
         if self.mode == "w":
-            return [entry[0].decode("utf-8") for entry in self._entries]
-        return list(self._index.keys())
+            entries = getattr(self, "_entries", None)
+            if not isinstance(entries, list):
+                raise BadZipFile("zip writer state unavailable")
+            return [entry[0].decode("utf-8") for entry in entries]
+        index = getattr(self, "_index", None)
+        if not isinstance(index, dict):
+            data = getattr(self, "_data", None)
+            if not isinstance(data, (bytes, bytearray)):
+                raise BadZipFile("zip index unavailable")
+            index = _parse_central_directory(bytes(data))
+            self._index = index
+        return list(index.keys())
 
     def read(self, name: str) -> bytes:
         if self.mode != "r":
             raise ValueError("read requires mode='r'")
-        if self._data is None:
+        data = getattr(self, "_data", None)
+        if not isinstance(data, (bytes, bytearray)):
             raise BadZipFile("missing zip data")
-        entry = self._index.get(name)
+        index = getattr(self, "_index", None)
+        if not isinstance(index, dict):
+            index = _parse_central_directory(bytes(data))
+            self._index = index
+        entry = index.get(name)
         if entry is None:
             raise KeyError(name)
         offset, comp_size, comp_method, name_len, _uncomp_size = entry
         header_offset = offset
-        if self._data[header_offset : header_offset + 4] != _LOCAL_SIG:
+        data_bytes = bytes(data)
+        if data_bytes[header_offset : header_offset + 4] != _LOCAL_SIG:
             raise BadZipFile("invalid local header signature")
-        extra_len = _read_u16(self._data, header_offset + 28)
+        extra_len = _read_u16(data_bytes, header_offset + 28)
         data_start = header_offset + 30 + name_len + extra_len
-        payload = self._data[data_start : data_start + comp_size]
+        payload = data_bytes[data_start : data_start + comp_size]
         if comp_method == ZIP_STORED:
             return payload
         if comp_method == ZIP_DEFLATED:
@@ -393,7 +387,9 @@ def _parse_central_directory(data: bytes) -> dict[str, _IndexEntry]:
 
 def _find_eocd(data: bytes) -> int:
     max_comment = 65535
-    start = max(0, len(data) - (22 + max_comment))
+    start = len(data) - (22 + max_comment)
+    if start < 0:
+        start = 0
     return data.rfind(_EOCD_SIG, start)
 
 

@@ -63,8 +63,8 @@ def test_manifest_expected_failure_marks_exec_eval_cases(
         "STDLIB_FULLY_COVERED_MODULES = ()\n"
         "STDLIB_REQUIRED_INTRINSICS_BY_MODULE = {}\n"
         "TOO_DYNAMIC_EXPECTED_FAILURE_TESTS = (\n"
-        "  'tests/differential/planned/exec_locals_scope.py',\n"
-        "  'tests/differential/planned/eval_locals_scope.py',\n"
+        "  'tests/differential/basic/exec_locals_scope.py',\n"
+        "  'tests/differential/basic/eval_locals_scope.py',\n"
         ")\n",
         encoding="utf-8",
     )
@@ -72,29 +72,25 @@ def test_manifest_expected_failure_marks_exec_eval_cases(
     module._too_dynamic_expected_failure_tests.cache_clear()
 
     assert module._manifest_marks_expected_failure(
-        "tests/differential/planned/exec_locals_scope.py"
+        "tests/differential/basic/exec_locals_scope.py"
     )
     assert module._manifest_marks_expected_failure(
-        "tests/differential/planned/eval_locals_scope.py"
+        "tests/differential/basic/eval_locals_scope.py"
     )
     assert not module._manifest_marks_expected_failure(
         "tests/differential/basic/arith.py"
     )
 
 
-def test_repo_manifest_covers_all_planned_exec_eval_cases() -> None:
+def test_repo_manifest_covers_all_exec_eval_cases() -> None:
     module = _load_diff_module()
     module._too_dynamic_expected_failure_tests.cache_clear()
     declared = module._too_dynamic_expected_failure_tests()
 
-    planned_dir = REPO_ROOT / "tests" / "differential" / "planned"
+    basic_dir = REPO_ROOT / "tests" / "differential" / "basic"
     required = {
-        f"tests/differential/planned/{path.name}"
-        for path in planned_dir.glob("exec*.py")
-    } | {
-        f"tests/differential/planned/{path.name}"
-        for path in planned_dir.glob("eval*.py")
-    }
+        f"tests/differential/basic/{path.name}" for path in basic_dir.glob("exec*.py")
+    } | {f"tests/differential/basic/{path.name}" for path in basic_dir.glob("eval*.py")}
 
     missing = sorted(required - declared)
     assert not missing
@@ -109,3 +105,48 @@ def test_repo_manifest_dynamic_policy_docs_exist() -> None:
     assert docs
     missing = [doc for doc in docs if not (REPO_ROOT / doc).exists()]
     assert not missing
+
+
+def test_rss_top_entries_use_final_file_status_after_retries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_diff_module()
+    run_id = "rss_status_regression"
+    metrics_path = tmp_path / "rss_metrics.jsonl"
+    metrics_path.write_text(
+        "\n".join(
+            (
+                '{"run_id":"rss_status_regression","timestamp":1.0,'
+                '"file":"tests/differential/stdlib/zipimport_basic.py",'
+                '"status":"run_failed","build":{"max_rss":700000},'
+                '"run":{"max_rss":20000},"build_rc":0,"run_rc":1}',
+                '{"run_id":"rss_status_regression","timestamp":2.0,'
+                '"file":"tests/differential/stdlib/zipimport_basic.py",'
+                '"status":"ok","build":{"max_rss":680000},'
+                '"run":{"max_rss":15000},"build_rc":0,"run_rc":0}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", "1")
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path))
+
+    top = module._top_rss_entries(run_id, 5, phase="run")
+    assert len(top) == 1
+    assert top[0]["status"] == "ok"
+    # Keep max RSS from all attempts for worst-case memory visibility.
+    assert top[0]["run"]["max_rss"] == 20000
+
+
+def test_rss_display_status_prefers_final_diff_status() -> None:
+    module = _load_diff_module()
+    entry = {
+        "file": "tests/differential/stdlib/zipimport_basic.py",
+        "status": "run_failed",
+    }
+    resolved = module._rss_display_status(
+        entry,
+        {"tests/differential/stdlib/zipimport_basic.py": "pass"},
+    )
+    assert resolved == "pass"

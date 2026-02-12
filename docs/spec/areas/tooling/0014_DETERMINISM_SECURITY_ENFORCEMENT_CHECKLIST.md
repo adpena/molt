@@ -25,7 +25,7 @@ lockfiles, SBOM/signature posture, and capability gating.
 ## 3) Capability Gating Enforcement
 - [ ] New or changed I/O/network/process behavior is capability-gated and documented.
 - [ ] Differential parity lanes include non-trusted validation when security-sensitive behavior changed:
-  - Example: `MOLT_DEV_TRUSTED=0 MOLT_DIFF_MEASURE_RSS=1 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`
+  - Example: `MOLT_DEV_TRUSTED=0 MOLT_DIFF_MEASURE_RSS=1 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic tests/differential/stdlib`
 - [ ] No hidden host-Python fallback path is introduced for compiled binaries.
 
 ## 4) SBOM/Signing And Supply-Chain Evidence

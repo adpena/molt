@@ -35,10 +35,17 @@ document the chosen target in specs/tests and keep the differential suite aligne
 For complex tests, we use `molt.dump_state()` to export a JSON representation of global variables and compare the JSON output between runs.
 
 ### 1.3 Curated Parity Suite
-Basic parity cases live in `tests/differential/basic/`. Run the full suite via:
+Differential cases are organized by lane:
+- `tests/differential/basic/`: core language + builtins parity.
+- `tests/differential/stdlib/`: stdlib module/submodule parity.
+- `tests/differential/moltlib/`: Molt-specific library surface (optional lane; add only for non-CPython APIs).
+
+Run lane sweeps via:
 ```
 uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
+uv run --python 3.12 python3 tests/molt_diff.py tests/differential/stdlib
 ```
+
 The verified subset contract uses `tools/verified_subset.py` to validate and run
 these suites in CI.
 
@@ -48,6 +55,11 @@ Generate metadata coverage summaries from `# MOLT_META` headers:
 uv run --python 3.12 python3 tools/diff_coverage.py
 ```
 The report is written to `tests/differential/COVERAGE_REPORT.md` by default.
+
+Validate lane organization + coverage index integrity:
+```
+python3 tools/check_differential_suite_layout.py
+```
 
 ### 1.5 Expected-Failure Policy For Too-Dynamic Cases
 - Use this only for intentionally unsupported semantics called out by the

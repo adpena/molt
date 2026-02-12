@@ -2350,6 +2350,68 @@ def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
     }
 
 
+def _aggregate_rss_entries_by_file(
+    entries: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Collapse per-attempt RSS entries into one record per test file.
+
+    The diff harness can emit multiple records for a single file when retry lanes
+    run (dyld/cache/isolated fallback). Top-RSS reporting should keep max RSS
+    per file but use the final status for that file, so pass/fail reporting
+    matches the actual differential outcome.
+    """
+
+    by_file: dict[str, dict[str, object]] = {}
+    for payload in entries:
+        file_path = payload.get("file")
+        if not isinstance(file_path, str) or not file_path:
+            continue
+
+        current = by_file.get(file_path)
+        if current is None:
+            current = {
+                "file": file_path,
+                "status": payload.get("status"),
+                "build": {},
+                "run": {},
+                "_last_ts": payload.get("timestamp", 0.0),
+            }
+            by_file[file_path] = current
+
+        # Final status should come from the latest record for this file.
+        ts = payload.get("timestamp", 0.0)
+        prev_ts = current.get("_last_ts", 0.0)
+        if isinstance(ts, (int, float)) and isinstance(prev_ts, (int, float)):
+            if ts >= prev_ts:
+                current["status"] = payload.get("status")
+                current["_last_ts"] = ts
+
+        def _merge_block(name: str) -> None:
+            src = payload.get(name)
+            if not isinstance(src, dict):
+                return
+            dst = current.get(name)
+            if not isinstance(dst, dict):
+                dst = {}
+                current[name] = dst
+            for key in ("max_rss", "peak_footprint"):
+                value = src.get(key)
+                if not isinstance(value, int):
+                    continue
+                old = dst.get(key)
+                if not isinstance(old, int) or value > old:
+                    dst[key] = value
+
+        _merge_block("build")
+        _merge_block("run")
+
+    out: list[dict[str, object]] = []
+    for payload in by_file.values():
+        payload.pop("_last_ts", None)
+        out.append(payload)
+    return out
+
+
 def _top_rss_entries(
     run_id: str, limit: int, *, phase: str = "run"
 ) -> list[dict[str, object]]:
@@ -2381,12 +2443,29 @@ def _top_rss_entries(
                 return value
         return 0
 
-    ranked = [entry for entry in entries if metric(entry) > 0]
+    aggregated = _aggregate_rss_entries_by_file(entries)
+    ranked = [entry for entry in aggregated if metric(entry) > 0]
     ranked.sort(key=metric, reverse=True)
     return ranked[: max(0, limit)]
 
 
-def _print_rss_top(run_id: str, limit: int) -> None:
+def _rss_display_status(
+    entry: dict[str, object], status_by_path: dict[str, str] | None
+) -> str:
+    file_path = entry.get("file")
+    if status_by_path and isinstance(file_path, str):
+        resolved = status_by_path.get(file_path)
+        if isinstance(resolved, str) and resolved:
+            return resolved
+    raw = entry.get("status")
+    if isinstance(raw, str):
+        return raw
+    return ""
+
+
+def _print_rss_top(
+    run_id: str, limit: int, *, status_by_path: dict[str, str] | None = None
+) -> None:
     if limit <= 0:
         return
     build_entries = _top_rss_entries(run_id, limit, phase="build")
@@ -2401,7 +2480,7 @@ def _print_rss_top(run_id: str, limit: int) -> None:
         print(f"Top {len(build_entries)} RSS offenders (build phase):")
         for entry in build_entries:
             file_path = entry.get("file", "<unknown>")
-            status = entry.get("status", "")
+            status = _rss_display_status(entry, status_by_path)
             run_block = entry.get("run") or {}
             build_block = entry.get("build") or {}
             run_rss = run_block.get("max_rss") if isinstance(run_block, dict) else None
@@ -2416,7 +2495,7 @@ def _print_rss_top(run_id: str, limit: int) -> None:
         print(f"Top {len(run_entries)} RSS offenders (run phase):")
         for entry in run_entries:
             file_path = entry.get("file", "<unknown>")
-            status = entry.get("status", "")
+            status = _rss_display_status(entry, status_by_path)
             run_block = entry.get("run") or {}
             build_block = entry.get("build") or {}
             run_rss = run_block.get("max_rss") if isinstance(run_block, dict) else None
@@ -2898,7 +2977,7 @@ def run_diff(
     rss_top_run = [
         {
             "file": entry.get("file"),
-            "status": entry.get("status"),
+            "status": _rss_display_status(entry, status_by_path),
             "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
             if isinstance(entry.get("run"), dict)
             else None,
@@ -2913,7 +2992,7 @@ def run_diff(
     rss_top_build = [
         {
             "file": entry.get("file"),
-            "status": entry.get("status"),
+            "status": _rss_display_status(entry, status_by_path),
             "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
             if isinstance(entry.get("run"), dict)
             else None,
@@ -2973,7 +3052,11 @@ def run_diff(
     else:
         summary_path = _diff_root() / "summary.json"
         _emit_json(summary, str(summary_path), stdout=False)
-    _print_rss_top(run_id, limit if _diff_measure_rss() else 0)
+    _print_rss_top(
+        run_id,
+        limit if _diff_measure_rss() else 0,
+        status_by_path=status_by_path,
+    )
     return summary
 
 

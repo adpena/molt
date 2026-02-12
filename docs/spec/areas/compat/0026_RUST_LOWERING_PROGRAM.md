@@ -21,7 +21,7 @@ mapping, and capability gating.
 | Phase | Scope | Status | Entry Gate | Exit Gate |
 | --- | --- | --- | --- | --- |
 | 0 | Enforcement spine | Completed | Intrinsics audit in CI | `tools/check_stdlib_intrinsics.py` + `tools/check_core_lane_lowering.py` green in CI |
-| 1 | Core-lane closure lowering | Completed | Phase 0 complete | `tests/differential/core/TESTS.txt` green + closure contains only `intrinsic-backed` modules |
+| 1 | Core-lane closure lowering | Completed | Phase 0 complete | `tests/differential/basic/CORE_TESTS.txt` green + closure contains only `intrinsic-backed` modules |
 | 2 | Concurrency substrate | In progress (active) | Phase 1 complete | `socket` + `threading` + `asyncio` clusters green in native and wasm without Python-side semantics |
 | 3 | Core-adjacent stdlib | Planned | Phase 2 complete | target families promoted to `intrinsic-backed` |
 | 4 | Capability-gated long tail | Planned | Phase 3 complete | shipped compiled surface has no `python-only` modules |
@@ -52,18 +52,18 @@ Work in strict dependency order:
 #### 2.1 Socket/Select tranche (first unblocker)
 - Required lowering: socket construction/connect/bind/listen/accept/send/recv/sendall/recv_into/setsockopt/getsockopt/shutdown/dup/detach/timeouts/error mapping.
 - Required substrate: deterministic poller integration (`select`/`selectors`) with capability-gated I/O.
-- Required tests: `tests/differential/planned/socket_*.py`, relevant `select*`/`selectors*` cases, and native+wasm parity checks.
+- Required tests: `tests/differential/stdlib/socket_*.py`, relevant `select*`/`selectors*` stdlib-lane cases, and native+wasm parity checks.
 - Exit rule: socket/select/selectors are `intrinsic-backed` (or explicitly capability-gated with intrinsic-only implementations) and no Python semantic fallback path remains.
 
 #### 2.2 Threading tranche (second unblocker)
 - Required lowering: thread lifecycle, ids, lock/rlock/event/condition/semaphore primitives, thread-local behavior, and error parity.
-- Required tests: `tests/differential/planned/threading_*.py` cluster + stress reruns with RSS tracking.
+- Required tests: `tests/differential/stdlib/threading_*.py` cluster + stress reruns with RSS tracking.
 - Exit rule: threading primitives and lifecycle are intrinsic-backed and deterministic under the runtime lock model.
 
 #### 2.3 Asyncio tranche (third unblocker)
 - Required lowering: event loop core, transports/protocol adapters, task/future/wait/gather semantics, callbacks/readiness, cancellation/error propagation.
 - Dependency: only start full asyncio lowering after socket/select/selectors and threading tranches are green.
-- Required tests: `tests/differential/planned/asyncio_*.py` + async long-running/stability cases in native and wasm.
+- Required tests: `tests/differential/stdlib/asyncio_*.py` + async long-running/stability cases in native and wasm.
 - Exit rule: asyncio surface is intrinsic-backed for compiled execution and no Python-side semantic fallback remains.
 
 ### Phase 3: Core-Adjacent Stdlib (P1)
@@ -86,7 +86,7 @@ Exit criteria:
 
 ## Tracking And Reporting
 - Source-of-truth audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
-- Core lane list: `tests/differential/core/TESTS.txt`
+- Core lane list: `tests/differential/basic/CORE_TESTS.txt`
 - Stdlib lane list: `tests/differential/stdlib/TESTS.txt`
 - Status roll-up: `docs/spec/STATUS.md`
 - Sequencing and milestones: `docs/ROADMAP.md`

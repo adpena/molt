@@ -125,10 +125,7 @@ class zipimporter:
         return self
 
     def get_source(self, fullname: str) -> str | None:
-        try:
-            payload = self._resolve(fullname)
-        except ZipImportError:
-            return None
+        payload = self._resolve(fullname)
         source_payload = _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD(
             fullname,
             payload["zip_archive"],
@@ -141,3 +138,14 @@ class zipimporter:
         if not isinstance(source, str):
             raise ZipImportError("invalid zip source payload: source")
         return source
+
+    def get_filename(self, fullname: str) -> str:
+        payload = self._resolve(fullname)
+        origin = payload.get("origin")
+        if isinstance(origin, str):
+            return origin
+        return f"{payload['zip_archive']}/{payload['zip_inner_path']}"
+
+    def is_package(self, fullname: str) -> bool:
+        payload = self._resolve(fullname)
+        return bool(payload.get("is_package"))

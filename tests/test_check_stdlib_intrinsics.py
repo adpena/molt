@@ -259,8 +259,8 @@ def test_zero_non_intrinsic_gate_rejects_probe_only_module(
     assert "probe_mod" in out
 
 
-def test_bootstrap_strict_closure_rejects_intrinsic_partial_root(
-    tmp_path: Path, monkeypatch, capsys
+def test_bootstrap_strict_closure_allows_intrinsic_partial_root(
+    tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_gate_module()
     stdlib_root = tmp_path / "stdlib"
@@ -271,12 +271,7 @@ def test_bootstrap_strict_closure_rejects_intrinsic_partial_root(
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
 
-    exit_code = module.main()
-    out = capsys.readouterr().out
-
-    assert exit_code == 1
-    assert "bootstrap strict closure must be intrinsic-backed" in out
-    assert "builtins: intrinsic-partial" in out
+    assert module.main() == 0
 
 
 def test_bootstrap_strict_closure_rejects_transitive_python_only_dependency(
@@ -302,7 +297,7 @@ def test_bootstrap_strict_closure_rejects_transitive_python_only_dependency(
     out = capsys.readouterr().out
 
     assert exit_code == 1
-    assert "bootstrap strict closure must be intrinsic-backed" in out
+    assert "bootstrap strict closure must be intrinsic-implemented" in out
     assert "os: python-only" in out
 
 

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 """
 Synchronize top-level stdlib coverage stubs with the CPython union baseline.
 
@@ -10,6 +8,8 @@ entries under `src/molt/stdlib` and reports missing names.
 `--write` creates intrinsic-first placeholder stubs for missing entries.
 Without `--write`, this script is a dry run suitable for CI/local checks.
 """
+
+from __future__ import annotations
 
 import argparse
 import runpy

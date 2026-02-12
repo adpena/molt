@@ -3388,6 +3388,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_zipfile_crc32",
+        symbol: "molt_zipfile_crc32",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_percent_style_format",
+        symbol: "molt_logging_percent_style_format",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_logging_runtime_ready",
         symbol: "molt_logging_runtime_ready",
         arity: 0,
@@ -6073,6 +6083,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_queue_task_done" => Some(crate::molt_queue_task_done as *const () as usize as u64),
         "molt_queue_join" => Some(crate::molt_queue_join as *const () as usize as u64),
         "molt_queue_drop" => Some(crate::molt_queue_drop as *const () as usize as u64),
+        "molt_zipfile_crc32" => Some(crate::molt_zipfile_crc32 as *const () as usize as u64),
+        "molt_logging_percent_style_format" => {
+            Some(crate::molt_logging_percent_style_format as *const () as usize as u64)
+        }
         "molt_logging_runtime_ready" => {
             Some(crate::molt_logging_runtime_ready as *const () as usize as u64)
         }

@@ -341,13 +341,13 @@ Checklist:
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): align file handle type names in error/AttributeError messages with CPython _io.* wrappers.)
 
 Test plan (sign-off):
-- Differential tests: `tests/differential/planned/file_open_modes.py`, `file_buffering_text.py`,
+- Differential tests: `tests/differential/basic/file_open_modes.py`, `file_buffering_text.py`,
   `file_text_encoding_newline.py`, `file_iteration_context.py`, `file_seek_tell_fileno.py` (move to verified subset on parity).
 - Pytest unit tests: invalid mode/buffering/encoding/newline combos, fd-based `open`, `closefd`/`opener` errors, path-like objects.
 - WASM parity: harness tests for read/write/line iteration using temp files via Node/WASI host I/O.
 - Security/robustness: fuzz mode strings + newline values, and validate close/idempotency + leak-free handles.
 - Windows parity: newline translation + path handling coverage in CI.
-- Scaffolded tests live in `tests/differential/planned/` + `tests/wasm_planned/` until file/open parity lands.
+- Differential suite is now split by ownership lane: core/builtin semantics in `tests/differential/basic/`, stdlib module/submodule coverage in `tests/differential/stdlib/`, and wasm-focused scaffolds in `tests/wasm_planned/` until wasm parity lands.
 
 Sign-off criteria:
 - All above tests pass on 3.12/3.13/3.14 + wasm parity runs; matrices + STATUS updated; no capability bypass.
@@ -387,7 +387,7 @@ Sign-off criteria:
 - Implemented: `ast.parse` / `ast.walk` / `ast.get_docstring` now route through Rust intrinsics (`molt_ast_parse`, `molt_ast_walk`, `molt_ast_get_docstring`) with Python wrappers reduced to constructor wiring and argument forwarding.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): extend Rust ast lowering to additional stmt/expr variants and full argument shape parity; unsupported nodes currently raise RuntimeError immediately.
 - Implemented: `os` fd I/O lowering for compiled binaries (`molt_os_pipe`, `molt_os_read`, `molt_os_write`) with differential coverage (`os_pipe_basic.py`, `os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only runs.
-- Implemented: threading basic parity lane is green (`tests/differential/basic/threading_*.py` -> `24/24` pass) under intrinsic-only compiled runs with RSS profiling enabled.
+- Implemented: threading stdlib parity lane is green (`tests/differential/stdlib/threading_*.py` -> `24/24` pass) under intrinsic-only compiled runs with RSS profiling enabled.
 - Implemented: importlib namespace/distribution path discovery now lowers through runtime intrinsics (`molt_importlib_namespace_paths`, `molt_importlib_metadata_dist_paths`) and `importlib.metadata` file reads now lower via `molt_importlib_read_file` (no Python-side dist-info scan/open fallback).
 - Implemented: `importlib.resources` traversable stat/listdir shaping now lowers through runtime payload intrinsic (`molt_importlib_resources_path_payload`), and resources open/read helpers now use intrinsic-backed reads (`molt_importlib_read_file`) without Python file-open fallback.
 - Implemented: `importlib.resources` loader-reader `resource_path` now enforces filesystem-only results across direct/traversable/roots fallback lanes; archive-member paths are filtered to `None` and continue through intrinsic byte-open flows.

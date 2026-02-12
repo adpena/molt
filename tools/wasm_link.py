@@ -221,10 +221,34 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
                 break
             if sub_id == 1:
                 sub_offset = offset
-                count, sub_offset = _read_varuint(custom_payload, sub_offset)
+                try:
+                    count, sub_offset = _read_varuint(custom_payload, sub_offset)
+                except ValueError:
+                    # Ignore malformed function-name payloads and continue
+                    # scanning other subsections.
+                    offset = sub_end
+                    continue
                 for _ in range(count):
-                    func_idx, sub_offset = _read_varuint(custom_payload, sub_offset)
-                    func_name, sub_offset = _read_string(custom_payload, sub_offset)
+                    if sub_offset >= sub_end:
+                        break
+                    try:
+                        func_idx, sub_offset = _read_varuint(custom_payload, sub_offset)
+                        name_len, name_start = _read_varuint(custom_payload, sub_offset)
+                    except ValueError:
+                        break
+                    if name_start > sub_end:
+                        break
+                    name_end = name_start + name_len
+                    if name_end > sub_end:
+                        break
+                    name_bytes = custom_payload[name_start:name_end]
+                    sub_offset = name_end
+                    try:
+                        func_name = name_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Linked artifacts can contain malformed UTF-8 function
+                        # names in the optional name section; skip those entries.
+                        continue
                     names[func_idx] = func_name
             offset = sub_end
         break
@@ -924,8 +948,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             return res.returncode
         if not linked.exists():
             print(
-                "wasm-ld exited successfully but produced no linked output: "
-                f"{linked}",
+                f"wasm-ld exited successfully but produced no linked output: {linked}",
                 file=sys.stderr,
             )
             return 1

@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COVERAGE_INDEX = ROOT / "tests" / "differential" / "COVERAGE_INDEX.yaml"
-CORE_MANIFEST = ROOT / "tests" / "differential" / "core" / "TESTS.txt"
+CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 STDLIB_MANIFEST = ROOT / "tests" / "differential" / "stdlib" / "TESTS.txt"
 
 CORE_EXTRA = {

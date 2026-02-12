@@ -2,7 +2,7 @@
 
 This matrix maps asyncio APIs referenced by CPython test_asyncio modules (3.12-3.14)
 to Molt differential coverage. Status reflects whether we have at least one
-differential test referencing the API in basic or planned suites.
+differential test referencing the API in the basic or stdlib lanes.
 
 Generated on 2026-01-22 from:
 - third_party/cpython-3.12/Lib/test/test_asyncio
@@ -11,22 +11,22 @@ Generated on 2026-01-22 from:
 
 ## Async PEP coverage (3.12+)
 
-Status here reflects differential tests (basic/planned) plus direct API coverage
+Status here reflects differential tests (basic/stdlib) plus direct API coverage
 in the table below.
 
 | PEP | Topic | Status | Evidence |
 | --- | --- | --- | --- |
 | 3156 | asyncio core | partial | Core loop/task/future APIs covered; event loop policies, transports, and protocols missing (see table). |
-| 492 | async/await | basic | `tests/differential/basic/async_*`, `tests/differential/basic/asyncio_task_basic.py` |
+| 492 | async/await | basic | `tests/differential/basic/async_*`, `tests/differential/stdlib/asyncio_task_basic.py` |
 | 525 | async generators | basic | `tests/differential/basic/async_generator_*` |
 | 530 | async comprehensions | basic | `tests/differential/basic/async_comprehensions.py`, `tests/differential/basic/async_comprehensions_nested.py` |
-| 567 | contextvars | basic | `tests/differential/basic/asyncio_task_context_explicit.py`, `tests/differential/basic/asyncio_future_callback_context.py`, `tests/differential/basic/asyncio_loop_call_soon_context.py`, `tests/differential/basic/asyncio_taskgroup_context_name.py` |
+| 567 | contextvars | basic | `tests/differential/stdlib/asyncio_task_context_explicit.py`, `tests/differential/stdlib/asyncio_future_callback_context.py`, `tests/differential/stdlib/asyncio_loop_call_soon_context.py`, `tests/differential/stdlib/asyncio_taskgroup_context_name.py` |
 | 654 | ExceptionGroup/TaskGroup | basic | `tests/differential/basic/exceptiongroup_basic.py`, `tests/differential/basic/asyncio_taskgroup_*` |
 | 703 | free-threading (asyncio interactions) | missing | CPython 3.14 adds `test_free_threading.py`; no Molt coverage yet. |
 
 Legend:
-- basic: covered by tests/differential/basic
-- planned: covered only by tests/differential/planned
+- basic: covered by tests/differential/basic (core/builtins lane)
+- stdlib: covered by tests/differential/stdlib (stdlib module lane)
 - missing: not referenced in any differential test
 
 Child watcher APIs were removed in CPython 3.12+, so Molt intentionally does not

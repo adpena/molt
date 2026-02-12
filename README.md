@@ -337,12 +337,14 @@ See `docs/spec/areas/` for detailed architectural decisions.
 
 ### CI Parity Jobs
 - **WASM parity**: CI runs a dedicated `test-wasm` job that executes `tests/test_wasm_control_flow.py` via Node.
-- **Differential suite**: CI runs `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` on CPython 3.12+ (minimum 3.12).
+- **Differential suite**: CI runs both lanes on CPython 3.12+ (minimum 3.12): `tests/differential/basic` (core/builtins) and `tests/differential/stdlib` (stdlib modules/submodules).
 
 ### Local Commands
 - Python: `uv run --python 3.12 python3 tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
 - Rust: `cargo test`
-- Differential: `uv run --python 3.12 python3 tests/molt_diff.py <case.py>`
+- Differential (single case): `uv run --python 3.12 python3 tests/molt_diff.py <case.py>`
+- Differential (lane): `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` or `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/stdlib`
+- Differential layout gate: `python3 tools/check_differential_suite_layout.py`
 - Bench setup (optional): `uv sync --group bench --python 3.12`
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.
 - WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).

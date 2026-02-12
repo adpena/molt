@@ -22,6 +22,10 @@ _RLOCK_ACQUIRE = None
 _RLOCK_RELEASE = None
 _RLOCK_LOCKED = None
 _RLOCK_DROP = None
+_LOGGING_PERCENT_STYLE_FORMAT = cast(
+    Callable[[str, dict[str, Any]], str],
+    _require_intrinsic("molt_logging_percent_style_format", globals()),
+)
 _THREAD_CURRENT_IDENT: Callable[[], int] | None = None
 _GETPID: Callable[[], int] | None = None
 _MAIN_THREAD_IDENT: int | None = None
@@ -182,28 +186,7 @@ def _check_level(level: int | str | None) -> int:
 
 
 def _percent_fallback(fmt: str, mapping: dict[str, Any]) -> str:
-    sentinel = "__MOLT_PERCENT__"
-    out = fmt.replace("%%", sentinel)
-    for key, value in mapping.items():
-        token = f"%({key})"
-        for spec in ("s", "d", "r", "f"):
-            needle = f"{token}{spec}"
-            if spec == "d":
-                try:
-                    repl = str(int(value))
-                except Exception:
-                    repl = str(value)
-            elif spec == "f":
-                try:
-                    repl = f"{float(value):f}"
-                except Exception:
-                    repl = str(value)
-            elif spec == "r":
-                repl = repr(value)
-            else:
-                repl = str(value)
-            out = out.replace(needle, repl)
-    return out.replace(sentinel, "%")
+    return _LOGGING_PERCENT_STYLE_FORMAT(fmt, mapping)
 
 
 class _RLock:

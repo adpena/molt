@@ -1,4 +1,4 @@
-# MOLT_ENV: PYTHONPATH=src:tests/differential/planned
+# MOLT_ENV: PYTHONPATH=src:tests/differential/basic
 """Purpose: differential coverage for import sys modules override."""
 
 import importlib
