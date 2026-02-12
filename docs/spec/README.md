@@ -44,20 +44,24 @@ Long-form topic docs live under `docs/spec/areas/`.
 ## Compatibility And Contracts
 - 0014 Type Coverage Matrix: `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 - 0015 Stdlib Compatibility Matrix: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+- 0015 Stdlib Intrinsics Backing Tracker: `docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md`
 - 0016 Stdlib Intrinsics Audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
 - 0016 Args Kwargs: `docs/spec/areas/compat/0016_ARGS_KWARGS.md`
 - 0016 Verified Subset Contract: `docs/spec/areas/compat/0016_VERIFIED_SUBSET_CONTRACT.md`
+- 0017 Stdlib Lowering Sweep: `docs/spec/areas/compat/0017_STDLIB_LOWERING_SWEEP.md`
 - 0018 Molt Package ABI: `docs/spec/areas/compat/0018_MOLT_PACKAGE_ABI.md`
 - 0021 Syntactic Features Matrix: `docs/spec/areas/compat/0021_SYNTACTIC_FEATURES_MATRIX.md`
 - 0023 Semantic Behavior Matrix: `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`
 - 0024 Asyncio Coverage Matrix: `docs/spec/areas/compat/0024_ASYNCIO_COVERAGE_MATRIX.md`
 - 0025 Core Language PEP Coverage: `docs/spec/areas/compat/0025_CORE_LANGUAGE_PEP_COVERAGE.md`
+- 0026 Generator Async Generator API Coverage: `docs/spec/areas/compat/0026_GENERATOR_API_COVERAGE.md`
 - 0026 Rust Lowering Program: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
 - 0027 Stdlib Union Baseline: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
 - 0028 Stdlib Intrinsics Execution Plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`
 - 0210 CPython Bridge PyO3: `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 - 0212 C API Symbol Matrix: `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`
+- 0213 Import System And Modules: `docs/spec/areas/compat/0213_IMPORT_SYSTEM_AND_MODULES.md`
 - 0214 libmolt C-API v0: `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`
 
 ## Security
