@@ -23,8 +23,17 @@ def _resolve_bench(spec: str) -> str:
 def _run_node_profile(
     *, env: dict[str, str], out_dir: Path, name: str, interval_us: int | None
 ) -> bool:
+    try:
+        node_bin = bench_wasm.resolve_node_binary()
+    except RuntimeError as exc:
+        print(f"Node resolver error: {exc}", file=sys.stderr)
+        return False
     cmd = [
-        "node",
+        node_bin,
+        "--no-warnings",
+        "--no-wasm-tier-up",
+        "--no-wasm-dynamic-tiering",
+        "--wasm-num-compilation-tasks=1",
         "--cpu-prof",
         f"--cpu-prof-dir={out_dir}",
         f"--cpu-prof-name={name}",
@@ -32,6 +41,8 @@ def _run_node_profile(
     if interval_us is not None:
         cmd.append(f"--cpu-prof-interval={interval_us}")
     cmd.append("run_wasm.js")
+    env = env.copy()
+    env.setdefault("NODE_NO_WARNINGS", "1")
     try:
         res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     except OSError as exc:

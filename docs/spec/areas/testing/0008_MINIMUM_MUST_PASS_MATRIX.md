@@ -38,17 +38,17 @@ Required hardening gate details for IR dedicated probes (part of G3):
   - `MOLT_DIFF_RLIMIT_GB=10`
   - `MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt` when external volume exists
   - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache` when external volume exists
-- If RSS grows rapidly, terminate the run, record abort details and last RSS in `tests/differential/INDEX.md`, then rerun with lower parallelism.
+- If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md), then rerun with lower parallelism.
 
 ## Minimal Sign-off Checklist
 - [ ] G0 through G3 passed for every runtime/compiler semantic change.
 - [ ] G4 passed before merge for broad-impact changes.
 - [ ] G5 passed for release prep and parity-focused work.
 - [ ] G6 passed for changes that affect guard/deopt/profiling instrumentation.
-- [ ] `tests/differential/INDEX.md` updated after diff runs (date, host python, totals, failures, RSS notes).
+- [ ] [tests/differential/INDEX.md](tests/differential/INDEX.md) updated after diff runs (date, host python, totals, failures, RSS notes).
 
 ## Related Docs
-- `docs/ROADMAP_90_DAYS.md`
-- `docs/spec/areas/testing/0007-testing.md`
-- `docs/OPERATIONS.md`
-- `docs/spec/STATUS.md`
+- [docs/ROADMAP_90_DAYS.md](docs/ROADMAP_90_DAYS.md)
+- [docs/spec/areas/testing/0007-testing.md](docs/spec/areas/testing/0007-testing.md)
+- [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- [docs/spec/STATUS.md](docs/spec/STATUS.md)

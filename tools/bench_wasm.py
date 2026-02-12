@@ -95,6 +95,8 @@ WASM_LD = shutil.which("wasm-ld")
 _LINK_WARNED = False
 _LINK_DISABLED = False
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
+_NODE_BIN_CACHE: str | None = None
+_MIN_NODE_MAJOR = 18
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,84 @@ def _cargo_target_root() -> Path:
     if external_root is not None:
         return external_root / "target"
     return Path("target")
+
+
+def _parse_node_major(version_text: str) -> int | None:
+    text = version_text.strip()
+    if text.startswith("v"):
+        text = text[1:]
+    head = text.split(".", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
+def _node_major_for_binary(path: str) -> int | None:
+    try:
+        res = subprocess.run(
+            [path, "-p", "process.versions.node"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if res.returncode != 0:
+        return None
+    return _parse_node_major(res.stdout)
+
+
+def resolve_node_binary() -> str:
+    global _NODE_BIN_CACHE
+    if _NODE_BIN_CACHE is not None:
+        return _NODE_BIN_CACHE
+
+    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
+    if requested:
+        major = _node_major_for_binary(requested)
+        if major is None:
+            raise RuntimeError(f"MOLT_NODE_BIN is not executable: {requested}")
+        if major < _MIN_NODE_MAJOR:
+            raise RuntimeError(
+                f"MOLT_NODE_BIN must be Node >= {_MIN_NODE_MAJOR} (got {major}): {requested}"
+            )
+        _NODE_BIN_CACHE = requested
+        return requested
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in (
+        shutil.which("node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+    ):
+        if not candidate:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+
+    best_path: str | None = None
+    best_major = -1
+    for candidate in candidates:
+        major = _node_major_for_binary(candidate)
+        if major is None:
+            continue
+        if major > best_major:
+            best_path = candidate
+            best_major = major
+
+    if best_path is None:
+        raise RuntimeError(
+            "Node binary not found; install Node >= 18 or set MOLT_NODE_BIN."
+        )
+    if best_major < _MIN_NODE_MAJOR:
+        raise RuntimeError(
+            f"Detected Node {best_major} at {best_path}; Node >= {_MIN_NODE_MAJOR} required."
+        )
+    _NODE_BIN_CACHE = best_path
+    return best_path
 
 
 def _enable_line_buffering() -> None:
@@ -973,6 +1053,8 @@ def prepare_wasm_binary(
     run_env.pop("PYTHONPATH", None)
     run_env.pop("PYTHONHASHSEED", None)
     run_env.pop("PYTHONUNBUFFERED", None)
+    # Avoid noisy Node warnings in parity and benchmark lanes.
+    run_env.setdefault("NODE_NO_WARNINGS", "1")
     if linked_used:
         run_env["MOLT_WASM_PATH"] = str(linked)
         run_env["MOLT_WASM_LINKED"] = "1"
@@ -1062,7 +1144,17 @@ def _resolve_runner(
     node_max_old_space_mb: int | None,
 ) -> list[str]:
     if runner == "node":
-        cmd = ["node"]
+        cmd = [resolve_node_binary()]
+        # Keep Node wasm execution deterministic and avoid post-run V8 tiering/OOM
+        # incidents seen on large linked modules.
+        cmd.extend(
+            [
+                "--no-warnings",
+                "--no-wasm-tier-up",
+                "--no-wasm-dynamic-tiering",
+                "--wasm-num-compilation-tasks=1",
+            ]
+        )
         if node_max_old_space_mb is not None:
             cmd.append(f"--max-old-space-size={node_max_old_space_mb}")
         extra_options = os.environ.get("MOLT_WASM_NODE_OPTIONS")
@@ -1101,8 +1193,12 @@ def _resolve_runner(
 
 
 def _node_has_websocket(log: TextIO | None) -> bool:
+    try:
+        node_bin = resolve_node_binary()
+    except RuntimeError:
+        return False
     cmd = [
-        "node",
+        node_bin,
         "-e",
         (
             "let ws=globalThis.WebSocket; "

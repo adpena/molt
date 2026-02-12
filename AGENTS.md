@@ -59,15 +59,18 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names (avoid ad-hoc casing).
 
 ## Key Docs
-- `docs/CANONICALS.md`: must-read documents for new work.
-- `docs/INDEX.md`: documentation map and entry points.
-- `docs/spec/README.md`: spec index by area.
-- `CONTRIBUTING.md`: workflow expectations and the change impact matrix.
-- `docs/DEVELOPER_GUIDE.md`: architecture map, layer ownership, and integration checklist.
-- `docs/spec/areas/core/0000-vision.md` and `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`: vision, scope, and explicit break policy.
-- `docs/spec/STATUS.md` and `docs/ROADMAP.md`: current scope, limits, and planned work.
-- `docs/OPERATIONS.md`: remote access, logging, benchmarks, progress reports, and multi-agent workflow.
-- `docs/BENCHMARKING.md`: benchmarking overview.
+- [docs/CANONICALS.md](docs/CANONICALS.md): must-read documents for new work.
+- [docs/INDEX.md](docs/INDEX.md): documentation map and entry points.
+- [docs/spec/README.md](docs/spec/README.md): spec index by area.
+- [CONTRIBUTING.md](CONTRIBUTING.md): workflow expectations and the change impact matrix.
+- [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): architecture map, layer ownership, and integration checklist.
+- [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) and [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md): vision, scope, and explicit break policy.
+- [docs/spec/STATUS.md](docs/spec/STATUS.md) and [ROADMAP.md](ROADMAP.md): canonical current scope/limits and the active forward-looking plan.
+- [docs/ROADMAP.md](docs/ROADMAP.md): detailed archive/reference roadmap context.
+- [docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md): minimum must-pass gate matrix.
+- [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
+- [docs/OPERATIONS.md](docs/OPERATIONS.md): remote access, logging, benchmarks, progress reports, and multi-agent workflow.
+- [docs/BENCHMARKING.md](docs/BENCHMARKING.md): benchmarking overview.
 
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
@@ -116,8 +119,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
-- `python3 tools/diff_coverage.py`: generate `tests/differential/COVERAGE_REPORT.md`.
-- `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in `ROADMAP.md`.
+- `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
+- `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in [ROADMAP.md](ROADMAP.md).
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
 - `uv run pip-audit`: Python dependency audit (run after `uv sync --group dev`).
@@ -129,7 +132,6 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`.
 - Throughput bootstrap also sets `CARGO_INCREMENTAL=0` by default to improve cross-run/cacheability in highly concurrent workflows; override to `1` when investigating local incremental-only behavior.
 - `python3 tools/molt_cache_prune.py`: enforce Molt cache retention policy (defaults: external `200G` + `30` days; local `30G` + `30` days).
-- Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to improve `sccache` reuse across concurrent agents; override only when debugging local incremental behavior.
 - `cargo bloat -p molt-runtime --release` and `cargo llvm-lines -p molt-runtime`: size attribution.
 - `cargo flamegraph -p molt-runtime --bench ptr_registry`: native flamegraphs.
 
@@ -155,7 +157,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Treat stdlib submodules (e.g., `asyncio.locks`) as first-class entries in the compatibility matrix.
 - Register submodules explicitly (create module objects, add to `sys.modules`, and attach on the parent package) instead of relying on dynamic attribute lookups.
 - Keep submodules deterministic and capability-gated where they touch host I/O, OS, or process boundaries.
-- Update `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` when submodule coverage changes.
+- Update [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md) when submodule coverage changes.
 
 ## Runtime Locking & Unsafe Policy
 - Runtime mutation requires the GIL token; do not bypass it.
@@ -163,10 +165,23 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - When changing handle resolution or the pointer registry, run strict provenance checks (Miri when available) and the lock-sensitive bench subset.
 
 ## Testing Guidelines
-- Use `pytest tests/differential` for `molt-diff` parity checks against CPython.
+- Run differential parity through the harness, not raw pytest: `uv run --python 3.12 python3 -u tests/molt_diff.py <file_or_dir>`.
+- Differential lane contract:
+  - `tests/differential/basic`: core language + builtins.
+  - `tests/differential/stdlib`: stdlib modules/submodules.
+  - `tests/differential/moltlib`: Molt-only APIs (optional lane for non-CPython surfaces).
+- Do not add new tests under retired lanes: `tests/differential/planned`, `tests/differential/core`, or `tests/differential/scoping`.
+- After adding or moving differential tests, run lane integrity gates:
+  - `python3 tools/check_differential_suite_layout.py`
+  - `python3 tools/gen_diff_lanes.py`
+- Expected-failure governance for dynamic semantics:
+  - Register intentional dynamic gaps (for example `exec`/`eval`) only in `tools/stdlib_full_coverage_manifest.py` under `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
+  - Keep `tests/test_molt_diff_expected_failures.py` green so manifest coverage and `XFAIL`/`XPASS` behavior stay enforced.
+- Run the core-lane lowering gate with the current manifest path:
+  - `python3 tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt`
 - NON-NEGOTIABLE: Always use the external volume as the outdir root when it is available (prefer `/Volumes/APDataStore/Molt`); if it is not available, write outputs to the repo’s standard build folders (for example `logs/`, `bench/results/`, `target/`, `dist/`, `build/`, `wasm/`, or `runtime/**/target/`) and never to the repo root.
 - NON-NEGOTIABLE: Always run the differential testing suite with memory profiling enabled (`MOLT_DIFF_MEASURE_RSS=1`).
-- NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in `tests/differential/INDEX.md`.
+- NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - NON-NEGOTIABLE: Enforce a 10 GB per-process memory cap for diff runs when possible.
   - macOS/Linux: `ulimit -Sv 10485760` (KB) or `ulimit -v 10485760` in the shell that launches the suite.
   - If the limit is hit or memory pressure occurs, reduce parallelism (`--jobs 2` or `--jobs 1`) and rerun.
@@ -198,8 +213,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
   - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
 - Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
-  - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in `tests/differential/INDEX.md`).
-  - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in `tests/differential/INDEX.md`.
+  - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
+  - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - Example (multi-target list, auto-parallel): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
     `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file /Volumes/APDataStore/Molt/diff_live.log --log-aggregate /Volumes/APDataStore/Molt/diff_full.log --log-dir /Volumes/APDataStore/Molt/diff_logs tests/differential`
@@ -207,20 +222,20 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Example (monitor aggregate log): `tail -f /Volumes/APDataStore/Molt/diff_full.log`
   - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
-  - Always update `tests/differential/INDEX.md` after diff runs:
+  - Always update [tests/differential/INDEX.md](tests/differential/INDEX.md) after diff runs:
     - Record the run date/time, host Python (`uv run --python 3.12/3.13/3.14`), totals, and failure list.
     - Use `/Volumes/APDataStore/Molt/rss_metrics.jsonl` to extract the latest per-test status when RSS is enabled.
     - Prefer re-running only failing tests (Failure Queue) unless a full sweep is explicitly requested.
 - `tests/molt_diff.py` accepts multiple file/dir arguments and runs them in parallel by default (auto `--jobs`); use a shell loop only when you need custom ordering or retries.
 - The `tests/differential/basic/bytes_codec.py` case requires `msgpack` + `cbor2` (install via `uv sync --group dev`); otherwise the diff harness will skip it.
-- Use `tools/cpython_regrtest.py` to track CPython regression parity; it uses `tools/molt_regrtest_shim.py` to run tests via `--molt-cmd`. Keep skip reasons in `tools/cpython_regrtest_skip.txt`, and review `summary.md` + `junit.xml` in `logs/cpython_regrtest/`.
+- Use `tools/cpython_regrtest.py` to track CPython regression parity; it uses `tools/molt_regrtest_shim.py` to run tests via `--molt-cmd`. Keep skip reasons in `tools/cpython_regrtest_skip.txt`, and review `summary.md` (in each `logs/cpython_regrtest/<run>/`) + `junit.xml` in `logs/cpython_regrtest/`.
 - `--coverage` now combines host regrtest + Molt subprocess coverage (requires `coverage` and a Python-based `--molt-cmd`; non-Python commands log a warning and skip Molt coverage).
 - Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with `--molt-capabilities` if you need stricter or broader access.
 - The regrtest shim marks `MOLT_COMPAT_ERROR` results as skipped; check `junit.xml` for reasons and codify intentional exclusions in `tools/cpython_regrtest_skip.txt`.
 - The regrtest shim forces `MOLT_PROJECT_ROOT` to the repo so compiled runs link against the Molt runtime even for `third_party/` test sources.
 - The regrtest shim sets `MOLT_MODULE_ROOTS` (and `MOLT_REGRTEST_CPYTHON_DIR`) to the CPython `Lib` directory so `test.*` resolves to CPython sources; avoid exporting that path via `PYTHONPATH` to the host Python.
-- Use `molt test` for fast iteration, then use regrtest to surface broad regressions and map failures back to the stdlib matrix (`docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`).
-- Regrtest runs also emit `diff_summary.md` and `type_semantics_matrix.md` per run to track type/semantics coverage gaps against `0014`/`0023`.
+- Use `molt test` for fast iteration, then use regrtest to surface broad regressions and map failures back to the stdlib matrix ([docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md)).
+- Regrtest runs also emit `diff_summary.md` and `type_semantics_matrix.md` in each `logs/cpython_regrtest/<run>/` run directory to track type/semantics coverage gaps against `0014`/`0023`.
 - Use `--no-diff` if you want regrtest-only runs (the diff suite is enabled by default).
 - Use `--rust-coverage` with `cargo-llvm-cov` installed to collect Rust runtime coverage under `logs/cpython_regrtest/<ts>/py*/rust_coverage/`.
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
@@ -230,15 +245,21 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
 - Parity-first workflow: execute the ROADMAP parity plan before large optimizations; require parity gates (matrix updates + differential coverage + native/WASM parity checks) for changes that touch runtime semantics.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
-- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-readme` and commit the updated `docs/benchmarks/bench_summary.md` plus the refreshed `README.md` summary block.
-- Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in `README.md`.
+- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-readme` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [README.md](README.md) summary block.
+- Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [README.md](README.md).
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
   - For CPython regrtest runs, prefer `--uv --uv-prepare --uv-python 3.12/3.13/3.14` so results are reproducible across versions.
 
+## Compatibility & Security Claim Policy
+- Passing differential + CPython regrtest is strong compatibility evidence for the covered CPython 3.12+ surface.
+- Do not treat differential/regrtest pass status alone as a full security proof.
+- Security confidence claims require explicit checklist evidence from [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md) and the controls documented in [docs/SECURITY.md](docs/SECURITY.md).
+
 ## Commit & Pull Request Guidelines
-- The current branch has no commit history, so no established convention exists yet. Use concise, imperative subjects and add a scope when helpful (e.g., `runtime: tighten object layout guards`).
+- Repository history is active; use concise, imperative commit subjects with scope when helpful (e.g., `runtime: tighten object layout guards`).
+- Prefer `area: summary` commit subjects and include a brief validation summary in the PR description for substantial changes.
 - PRs should include a short summary, tests run, and any determinism or security impacts. Link issues when applicable.
 - Release tags start at `v0.0.001` and increment at the thousandth place (e.g., `v0.0.002`, `v0.0.003`).
 
@@ -252,25 +273,25 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Agent Expectations
 - You are the finest compiler/runtime/Rust/Python engineer in the world; operate with rigor, speed, and ambition.
-- Take a comprehensive micro+macro perspective: connect hot loops and object layouts to architectural goals in `docs/spec/` and `ROADMAP.md`.
+- Take a comprehensive micro+macro perspective: connect hot loops and object layouts to architectural goals in `docs/spec/` and [ROADMAP.md](ROADMAP.md).
 - Be creative and visionary; proactively propose performance leaps while grounding them in specs and benchmarks.
 - Provide extra handholding/step-by-step guidance when requested.
 - Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
 - Use stubs only if absolutely necessary; prefer implementing lower-level primitives first and document any remaining gaps.
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
 - ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide missing, partial, or hacky behavior; surface the gap, ask for priority/plan if needed, and implement the correct behavior.
-- Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
-- Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
+- Proactively read and update [ROADMAP.md](ROADMAP.md) and relevant files under `docs/spec/` when behavior or scope changes.
+- Treat [docs/spec/STATUS.md](docs/spec/STATUS.md) as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
 - For major changes, ensure tight integration and compatibility across compiler, runtime, tooling, and tests.
-- NON-NEGOTIABLE: Document partial or interim implementations with grepable `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers and mirror them in `ROADMAP.md` in the same change.
+- NON-NEGOTIABLE: Document partial or interim implementations with grepable `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers and mirror them in [ROADMAP.md](ROADMAP.md) in the same change.
 - NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
-- Whenever a stub/partial feature or optimization candidate is added, update `README.md`, the relevant `docs/spec/` file(s), and `ROADMAP.md` in the same change.
-- When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with the summarized results.
-- Follow `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
-- Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
+- Whenever a stub/partial feature or optimization candidate is added, update [README.md](README.md), the relevant `docs/spec/` file(s), and [ROADMAP.md](ROADMAP.md) in the same change.
+- When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in [README.md](README.md) with the summarized results.
+- Follow [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
+- Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
 - NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
   - `imsg send --to "+15128087500" --text “codex turn finished in molt” --service sms`
@@ -279,14 +300,14 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 If adding functionality, tests, or coverage would require "too much dynamism" that conflicts with the vision, break policy, runtime contract, or concurrency/GIL requirements, STOP and ask the user for explicit direction before proceeding. This is mandatory.
 
 Stop and ask if the change would require any of the following (examples are representative, not exhaustive):
-- Relaxing or bypassing constraints in `docs/spec/areas/core/0000-vision.md` or `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md` to accept CPython-style dynamism that the project explicitly rejects.
+- Relaxing or bypassing constraints in [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) or [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md) to accept CPython-style dynamism that the project explicitly rejects.
 - Introducing dynamic execution/compilation paths (e.g., enabling arbitrary `eval`/`exec`/`compile`, runtime codegen from strings, or fallback to a host interpreter) that are not covered by the runtime contract/specs.
 - Expanding dynamic import or reflection behavior beyond spec (e.g., import hooks, import-time monkeypatching, `__getattr__`-based module proxies, or dynamic module attribute creation) to make tests pass.
 - Weakening determinism or capability gating (e.g., implicit host I/O, network/process access, time-dependent behavior, or environment-dependent resolution) outside the documented security/capability model.
 - Changing runtime object layout/provenance/handle resolution rules or pointer registry behavior in ways that violate the runtime contract or provenance safety guarantees.
 - Introducing concurrency or parallel execution that bypasses the GIL token, allows unsynchronized mutation, or otherwise violates the runtime locking model in `docs/spec/` and runtime safety docs **unless** all of the following are true and explicitly approved by the user:
   - The bypass is gated behind a spec-defined capability/flag that is **off by default**.
-  - The gating mechanism, risk profile, and expected semantics are documented in `docs/spec/` and `docs/spec/STATUS.md`, and mirrored in `ROADMAP.md`.
+  - The gating mechanism, risk profile, and expected semantics are documented in `docs/spec/` and [docs/spec/STATUS.md](docs/spec/STATUS.md), and mirrored in [ROADMAP.md](ROADMAP.md).
   - The runtime safety plan is spelled out (e.g., provenance/aliasing guarantees, lock model changes, Miri or equivalent validation plan).
   - Tests explicitly cover both gated-on and gated-off behavior with determinism guarantees.
 - Adding "dynamic escape hatches" (feature flags, hidden toggles, or environment variables) that effectively bypass the contract or policy without an explicit spec change.
@@ -302,17 +323,17 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 **Required fields**
 - `area`: short, stable domain (`type-coverage`, `stdlib-compat`, `frontend`, `compiler`, `runtime`, `opcode-matrix`, `semantics`, `syntax`, `async-runtime`, `introspection`, `import-system`, `runtime-provenance`, `tooling`, `perf`, `wasm-parity`, `wasm-db-parity`, `wasm-link`, `wasm-host`, `db`, `offload`, `http-runtime`, `observability`, `dataframe`, `tests`, `docs`, `security`, `packaging`, `c-api`).
 - `owner`: `runtime`, `frontend`, `compiler`, `stdlib`, `tooling`, `release`, `docs`, or `security`.
-- `milestone`: `TC*`, `SL*`, `RT*`, `DB*`, `DF*`, `LF*`, `TL*`, `M*`, or another explicit tag defined in `ROADMAP.md`.
+- `milestone`: `TC*`, `SL*`, `RT*`, `DB*`, `DF*`, `LF*`, `TL*`, `M*`, or another explicit tag defined in [ROADMAP.md](ROADMAP.md).
 - `priority`: `P0` (blocker) to `P3` (low).
 - `status`: `missing`, `partial`, `planned`, or `divergent`.
 
 **Rules**
-- Any incomplete/partial/hacky/stubbed behavior must include a TODO in-line **and** be mirrored in `docs/spec/STATUS.md` + `ROADMAP.md`.
+- Any incomplete/partial/hacky/stubbed behavior must include a TODO in-line **and** be mirrored in [docs/spec/STATUS.md](docs/spec/STATUS.md) + [ROADMAP.md](ROADMAP.md).
 - If you introduce a new `area` or `milestone`, add it to this list or the ROADMAP legend in the same change.
 
 ## Optimization Planning
 - When focusing on optimization tasks, closely measure allocations and apply rigorous profiling when it can clarify behavior; this has unlocked major speedups in synchronous functions.
-- When a potential optimization is discovered but is complex, risky, or time-intensive, add a fully specced entry to `OPTIMIZATIONS_PLAN.md`.
+- When a potential optimization is discovered but is complex, risky, or time-intensive, add a fully specced entry to [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
 - The plan must include: problem statement, hypotheses, alternative implementations, algorithmic references/research (papers preferred), perf evaluation matrix (benchmarks + expected deltas), risk/rollback, and integration steps.
 - Compare alternatives with explicit tradeoffs and include checklists for validation and regression prevention.
 

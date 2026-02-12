@@ -68,6 +68,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - [docs/SECURITY.md](docs/SECURITY.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0211 Compatibility And Fallback Contract: [docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md](docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md)
+- 0215 Verified Subset Contract: [docs/spec/areas/compat/0215_VERIFIED_SUBSET_CONTRACT.md](docs/spec/areas/compat/0215_VERIFIED_SUBSET_CONTRACT.md)
 
 ## Web, DB, and WASM
 - 0900 HTTP Server Runtime: [docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md](docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md)

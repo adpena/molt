@@ -1,5 +1,5 @@
 # Verified Subset Contract
-**Spec ID:** 0016
+**Spec ID:** 0215
 **Status:** Draft (implementation-targeting)
 **Owner:** frontend + runtime + tooling
 **Goal:** Define the precise meaning and guarantees of the Molt "verified subset".

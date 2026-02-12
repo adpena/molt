@@ -9,10 +9,12 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 
 ## Platform Pitfalls
 - **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
-- **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
+- **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see [docs/spec/STATUS.md](docs/spec/STATUS.md)).
 - **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` are required for linked builds; use `--require-linked` to fail fast.
+- **Node PATH drift (macOS shells)**: some shells resolve `/usr/local/bin/node` (for example Node 14) before modern Homebrew/fnm nodes. Set `MOLT_NODE_BIN=/opt/homebrew/bin/node` (or another Node >= 18 path) for deterministic wasm lanes.
+- **Node wasm instability/noise**: use deterministic Node wasm flags (`--no-warnings --no-wasm-tier-up --no-wasm-dynamic-tiering --wasm-num-compilation-tasks=1`) to avoid warning-noise diffs and post-run Zone OOM incidents on large linked modules.
 
 ## Differential Suite (Operational Controls)
 - **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
@@ -43,6 +45,17 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 python3 tools/check_stdlib_intrinsics.py --critical-allowlist
 cat tools/stdlib_intrinsics_ratchet.json
 python3 tools/check_stdlib_intrinsics.py --update-doc
+```
+
+### WASM Runner Quick Triage
+Use these when wasm parity lanes fail before module semantics are reached:
+```bash
+which -a node
+node -v
+MOLT_NODE_BIN=/opt/homebrew/bin/node node -v
+MOLT_NODE_BIN=/opt/homebrew/bin/node node -e "const m=require('node:wasi'); console.log(typeof m.WASI)"
+which wasmtime
+wasmtime --version
 ```
 
 ### Failure String -> Copy-Paste Response

@@ -2,25 +2,22 @@
 from __future__ import annotations
 
 import argparse
-import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "docs/spec/0016_VERIFIED_SUBSET_CONTRACT.md"
-MANIFEST_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+CONTRACT: dict[str, object] = {
+    "python_version_min": "3.12",
+    "differential_suites": [
+        "tests/differential/basic",
+    ],
+    "status_doc": "docs/spec/STATUS.md",
+}
 
 
 def load_manifest() -> dict:
-    if not CONTRACT.exists():
-        raise SystemExit(f"Missing contract file: {CONTRACT}")
-    text = CONTRACT.read_text()
-    match = MANIFEST_RE.search(text)
-    if not match:
-        raise SystemExit("Missing JSON manifest block in verified subset contract")
-    return json.loads(match.group(1))
+    return CONTRACT
 
 
 def validate_manifest(manifest: dict) -> int:

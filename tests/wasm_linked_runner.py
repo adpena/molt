@@ -12,6 +12,8 @@ import pytest
 _WASM_TEST_LANE = (
     os.environ.get("MOLT_WASM_TEST_LANE", "").strip() or f"lane_{os.getpid()}"
 )
+_MIN_NODE_MAJOR = 18
+_NODE_BIN_CACHE: str | None = None
 
 
 def _select_out_dir(default: Path, root: Path) -> Path:
@@ -57,6 +59,71 @@ def _read_timeout_seconds(env_name: str, default: float) -> float:
     return parsed
 
 
+def _parse_node_major(version_text: str) -> int | None:
+    text = version_text.strip()
+    if text.startswith("v"):
+        text = text[1:]
+    head = text.split(".", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
+def _node_major_for_binary(path: str) -> int | None:
+    try:
+        res = subprocess.run(
+            [path, "-p", "process.versions.node"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if res.returncode != 0:
+        return None
+    return _parse_node_major(res.stdout)
+
+
+def _select_node_binary() -> str | None:
+    global _NODE_BIN_CACHE
+    if _NODE_BIN_CACHE is not None:
+        return _NODE_BIN_CACHE
+
+    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
+    if requested:
+        major = _node_major_for_binary(requested)
+        if major is None or major < _MIN_NODE_MAJOR:
+            return None
+        _NODE_BIN_CACHE = requested
+        return requested
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in (
+        shutil.which("node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+    ):
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+
+    best_path: str | None = None
+    best_major = -1
+    for candidate in candidates:
+        major = _node_major_for_binary(candidate)
+        if major is None:
+            continue
+        if major > best_major:
+            best_major = major
+            best_path = candidate
+    if best_path is None or best_major < _MIN_NODE_MAJOR:
+        return None
+    _NODE_BIN_CACHE = best_path
+    return best_path
+
+
 def _wasm_test_target_dir(root: Path, out_dir: Path, external_root: Path) -> Path:
     override = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
     if override:
@@ -76,8 +143,11 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, external_root: Path) -> Pat
 
 
 def require_wasm_toolchain() -> None:
-    if shutil.which("node") is None:
-        pytest.skip("node is required for wasm parity test")
+    node_bin = _select_node_binary()
+    if node_bin is None:
+        pytest.skip(
+            "Node >= 18 is required for wasm parity test (or set MOLT_NODE_BIN)."
+        )
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for wasm parity test")
     if shutil.which("wasm-ld") is None:
@@ -155,11 +225,16 @@ def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env.setdefault("NODE_NO_WARNINGS", "1")
     if env_overrides:
         env.update(env_overrides)
+    node_bin = _select_node_binary()
+    if node_bin is None:
+        raise AssertionError("Node >= 18 is required for wasm execution.")
     runner = root / "run_wasm.js"
     node_args = [
-        "node",
+        node_bin,
+        "--no-warnings",
         "--no-wasm-tier-up",
         "--no-wasm-dynamic-tiering",
         "--wasm-num-compilation-tasks=1",

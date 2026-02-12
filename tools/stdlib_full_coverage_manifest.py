@@ -29,7 +29,7 @@ TOO_DYNAMIC_POLICY_DOC_REFERENCES: tuple[str, ...] = (
     "docs/spec/areas/core/0000-vision.md",
     "docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md",
     "docs/spec/areas/testing/0007-testing.md",
-    "docs/spec/areas/compat/0016_VERIFIED_SUBSET_CONTRACT.md",
+    "docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md",
 )
 
 # Differential tests aligned with the documented policy references above.

@@ -11,7 +11,21 @@ try {
 } catch {
   UndiciWebSocket = null;
 }
-const { WASI } = require('wasi');
+let WASI;
+try {
+  ({ WASI } = require('node:wasi'));
+} catch {
+  try {
+    ({ WASI } = require('wasi'));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `WASI module unavailable for Node ${process.version}; ` +
+        "install Node >= 18 or set MOLT_NODE_BIN to a modern Node binary. " +
+        `Original error: ${detail}`
+    );
+  }
+}
 const {
   Worker,
   MessageChannel,
@@ -43,6 +57,7 @@ const trapOnExit = process.env.MOLT_WASM_TRAP_ON_EXIT === '1';
 const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
 const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
 const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
+const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
 const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
 const formatTraceError = (err) => {
   if (err instanceof Error) {
@@ -1185,7 +1200,8 @@ const parseIPv6 = (text) => {
   return { bytes, scopeId: zone ? Number.parseInt(zone, 10) || 0 : 0, hasV4 };
 };
 
-const decodeSockaddr = (bytes) => {
+const decodeSockaddr = (value) => {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value || []);
   if (!bytes || bytes.length < 4) {
     throw new Error('invalid sockaddr');
   }
@@ -1938,10 +1954,24 @@ const socketWorkerMain = () => {
         const { handle, addr } = request;
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
+        if (traceSocketHost) {
+          console.error(
+            `[socket-host] bind handle=${handle} kind=${entry.kind} addr_len=${addr ? addr.length : 0} addr_hex=${Buffer.from(addr || []).toString('hex')}`,
+          );
+        }
         let decoded;
         try {
           decoded = decodeSockaddr(addr);
+          if (traceSocketHost) {
+            console.error(
+              `[socket-host] bind decoded family=${decoded.family} host=${decoded.host} port=${decoded.port}`,
+            );
+          }
         } catch (err) {
+          if (traceSocketHost) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[socket-host] bind decode failed: ${msg}`);
+          }
           return { status: -EAFNOSUPPORT };
         }
         if (entry.kind === 'udp') {
@@ -1965,6 +1995,11 @@ const socketWorkerMain = () => {
         const { handle, backlog } = request;
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
+        if (traceSocketHost) {
+          console.error(
+            `[socket-host] listen handle=${handle} kind=${entry.kind} backlog=${backlog}`,
+          );
+        }
         if (entry.kind === 'udp') {
           return { status: -EINVAL };
         }
@@ -2368,6 +2403,16 @@ const socketWorkerMain = () => {
             info = entry.server.address();
           } else if (entry.kind === 'udp') {
             info = entry.socket.address();
+          } else if (entry.bindAddr) {
+            // TCP sockets can be explicitly bound before listen/connect. Node's
+            // net.Socket.address() reports 0.0.0.0:0 in that state, so preserve
+            // the requested bind tuple for CPython-compatible getsockname().
+            info = {
+              family: entry.bindAddr.family === AF_INET6 ? 'IPv6' : 'IPv4',
+              address: entry.bindAddr.host,
+              port: entry.bindAddr.port,
+              scopeid: entry.bindAddr.scopeId || 0,
+            };
           } else {
             info = entry.socket.address();
           }
@@ -2946,7 +2991,15 @@ const socketHostClone = (handle) => {
 const socketHostBind = (handle, addrPtr, addrLen) => {
   if (!wasmMemory) return -ENOSYS;
   const addr = readBytes(addrPtr, addrLen);
+  if (traceSocketHost) {
+    console.error(
+      `[socket-host-main] bind handle=${handle} addr_len=${addrLen} addr_hex=${Buffer.from(addr || []).toString('hex')}`,
+    );
+  }
   const res = socketCall('bind', { handle: Number(handle), addr }, 0);
+  if (traceSocketHost) {
+    console.error(`[socket-host-main] bind status=${res.status}`);
+  }
   return res.status;
 };
 
