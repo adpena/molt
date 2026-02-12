@@ -20,7 +20,18 @@ _reset_registry = data["_reset_registry"]
 _reset_caches = data["_reset_caches"]
 
 
+def abstractmethod(funcobj):
+    funcobj.__isabstractmethod__ = True
+    return funcobj
+
+
+class ABC:
+    __slots__ = ()
+
+
 __all__ = [
+    "ABC",
+    "abstractmethod",
     "get_cache_token",
     "_abc_init",
     "_abc_register",

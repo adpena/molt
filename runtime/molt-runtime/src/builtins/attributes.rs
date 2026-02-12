@@ -71,6 +71,7 @@ unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8])
             if object_type_id(ptr) == TYPE_ID_STRING {
                 let cached = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
                 if cached == slice {
+                    profile_hit_unchecked(&ATTR_SITE_NAME_CACHE_HIT_COUNT);
                     inc_ref_bits(_py, bits);
                     return Some(bits);
                 }
@@ -79,6 +80,7 @@ unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8])
         dec_ref_bits(_py, bits);
         cache.remove(&site_id);
     }
+    profile_hit_unchecked(&ATTR_SITE_NAME_CACHE_MISS_COUNT);
     let bits = attr_name_bits_from_bytes(_py, slice)?;
     inc_ref_bits(_py, bits);
     cache.insert(site_id, bits);

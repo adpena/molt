@@ -18,7 +18,10 @@ These are the must-read documents for anyone adding or reviewing functionality.
 - 0025 Reproducible And Deterministic Mode: `docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md`
 - 0800 What Molt Is Willing To Break: `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`
 - STATUS: `docs/spec/STATUS.md`
-- `docs/ROADMAP.md`
+- `ROADMAP.md`
+- `docs/ROADMAP_90_DAYS.md`
 
 ## Specifications
 - `docs/spec/README.md`
+- `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
+- `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`

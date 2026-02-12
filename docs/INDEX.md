@@ -15,8 +15,9 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0025 Reproducible And Deterministic Mode: `docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md`
 - 0800 What Molt Is Willing To Break: `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`
 - STATUS: `docs/spec/STATUS.md`
-- `docs/ROADMAP.md`
+- `ROADMAP.md` (active roadmap)
 - `docs/ROADMAP_90_DAYS.md`
+- `docs/ROADMAP.md` (detailed archive/reference)
 
 ## Architecture and Runtime
 - 0002 Architecture: `docs/spec/areas/core/0002-architecture.md`
@@ -42,6 +43,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 
 ## Testing and Benchmarks
 - 0007 Testing: `docs/spec/areas/testing/0007-testing.md`
+- 0008 Minimum Must-Pass Matrix: `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
 - 0008 Benchmarking: `docs/spec/areas/perf/0008-benchmarking.md`
 - 0604 Binary Size And Cold Start: `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md`
 - `docs/BENCHMARKING.md`
@@ -50,6 +52,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 ## Capabilities and Security
 - `docs/CAPABILITIES.md`
 - `docs/SECURITY.md`
+- 0014 Determinism And Security Enforcement Checklist: `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 
 ## Web, DB, and WASM

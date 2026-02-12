@@ -1,8 +1,206 @@
 # Molt Optimization Program (Comprehensive)
 
-Last updated: 2026-02-10
+Last updated: 2026-02-12
 Owner: compiler + runtime + backend + stdlib + tooling
-Status: Active
+Status: Phase 1 Week 1 Observability Completed; Week 0 baseline lock captured
+
+## 0. Clean-Slate Kickoff (Assume No Prior Execution)
+
+Kickoff date: 2026-02-11
+Kickoff owner: compiler + runtime + backend + stdlib + tooling
+Execution assumption (explicit): optimization implementation work is treated as not started.
+
+### 0.1 Operating Rules For This Kickoff
+- Existing optimization tracks in this document are treated as backlog/design scope until Week 0 evidence is captured.
+- No optimization lane is counted as "started" until reproducible baseline artifacts exist for build, native runtime, and wasm runtime.
+- We keep parity and correctness gates first (`docs/spec/STATUS.md` and differential suites), then optimization execution.
+
+### 0.2 Kickoff Progress Log
+
+| Date | Progress | Artifacts/Docs Updated | Notes |
+| --- | --- | --- | --- |
+| 2026-02-11 | Established clean-slate optimization kickoff and reset status assumptions for all optimization tracks. | `OPTIMIZATIONS_PLAN.md`, `docs/benchmarks/optimization_progress.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `README.md` | Planning + documentation only; benchmark execution has not started yet. |
+| 2026-02-11 | Started Week 1 observability execution: runtime hot-path counters wired, JSON profile emission landed, and Codon subset profile artifacts captured. | `runtime/molt-runtime/src/constants.rs`, `runtime/molt-runtime/src/call/bind.rs`, `runtime/molt-runtime/src/builtins/attributes.rs`, `runtime/molt-runtime/src/object/ops.rs`, `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md` | Validation gates passed (`cargo check -p molt-runtime -p molt-backend`; `uv run --python 3.12 pytest -q tests/test_codec_lowering.py` -> `33 passed`). |
+| 2026-02-11 | Landed compiler mid-end CFG simplification expansion: executable-edge SCCP threading across loop/try paths, pre-SCCP structural canonicalization, loop-bound tuple extraction/proofs, alias-aware read CSE expansion (`GETATTR`/`LOAD_ATTR`/`INDEX`), and per-transform function-scoped acceptance/rejection telemetry. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/spec/areas/compiler/0100_MOLT_IR.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_frontend_builtin_call_lowering.py tests/test_check_molt_ir_ops.py` -> `64 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`; native smoke build/run `examples/hello.py` -> `42`). |
+| 2026-02-11 | Tightened CFG rewrite correctness and specialization safety: balanced try-marker preservation in exceptional-edge pruning, explicit `CHECK_EXCEPTION` handler-edge threading into dominance-safe jumps, nested try/except multi-handler join normalization (label->jump trampoline threading) before CSE rounds, call-boundary read-heap invalidation, object-sensitive alias epochs, and SCCP range-safe `LEN`/`CONTAINS`/`INDEX` folds. | `src/molt/frontend/__init__.py`, `src/molt/frontend/cfg_analysis.py`, `tests/test_frontend_midend_passes.py`, `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/spec/areas/compiler/0100_MOLT_IR.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_frontend_builtin_call_lowering.py tests/test_check_molt_ir_ops.py` -> `71 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`; `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py` -> `42`). |
+| 2026-02-12 | Advanced fixed-point optimizer maturity: broadened read-heap CSE coverage (`MODULE_GET_ATTR`, `GETATTR_GENERIC_*`, `GETATTR_NAME_DEFAULT`, `GUARDED_GETATTR`), enforced hard read-key invalidation across uncertain call/FFI boundaries, expanded affine loop reasoning (recursive affine-term extraction + same-IV offset compare proofs + wider monotonic compare handling), strengthened PHI executable-edge simplification, and widened conservative LICM hoisting beyond loop-prefix-only scanning. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py` -> `47 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `28 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
+| 2026-02-12 | Stabilized mid-end into deterministic fixed-point rounds with explicit fail-fast on non-convergence (`simplify -> SCCP/edge-thread -> join canonicalize -> prune -> verifier -> DCE -> CSE`), extended nested try/except check-edge ladder threading (including `CHECK_EXCEPTION` + same-target jump compaction), and expanded per-function attempted/accepted/rejected telemetry wiring for `edge_thread`, `loop_rewrite`, `cse_readheap`, `dce_pure_op`, `LICM`, and guard-hoist split counters. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `77 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
+| 2026-02-12 | Completed next optimizer expansion: loop/try structural threading now rewrites more `LOOP_END`/`LOOP_BREAK_IF_*` cases into direct label jumps when safe, SCCP now applies executable-predecessor-aware PHI lattice merges plus richer type-fact implications (`TYPE_OF`/`EQ` and selected `GUARD_TYPE` handling), alias-aware read CSE expanded to additional attr/container reads (`GETATTR_NAME`, `HASATTR_NAME`, `GETATTR_SPECIAL_OBJ`) with conservative immutable-class buckets, and region-level redundant guard elimination landed with write/call invalidation safety. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `81 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
+| 2026-02-12 | Landed pre-round full CFG canonicalizer before optimization rounds: canonicalization fixed-point now runs ahead of SCCP/CSE to align PHI arg shapes to CFG predecessors, thread/deepen try/label ladders, and prune dead label/jump scaffolding. Also upgraded CFG analysis metadata (`try_end_to_start`, `block_entry_label`) for stronger structural rewrites, tightened SCCP type/guard fact propagation on executable predecessors, and expanded read-heap CSE alias classes for additional attr/container forms. | `src/molt/frontend/__init__.py`, `src/molt/frontend/cfg_analysis.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `84 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
+| 2026-02-12 | Reconciled SCCP non-hang safeguards with optimization throughput: replaced fixed tiny SCCP iteration limit with dynamic function-scaled cap, preserved conservative semantic fallback on cap hit, and wired cap-hit visibility into global/per-function telemetry and hotspot reporting (`sccp_iteration_cap_hits`) so regressions are actionable without risking compile stalls. | `src/molt/frontend/__init__.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `84 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
+| 2026-02-12 | Replaced SCCP full block-scan convergence loop with a queue-driven solver (`edge`, `value`, `block` worklists) so propagation only revisits impacted regions, reduced false cap-hit risk by counting transfer work (not every queue pop), and kept conservative cap fallback semantics intact. Added focused regression coverage for large CFG growth (no hang), semantic stability under forced cap fallback, and telemetry gating where cap hits are observed only in pathological runs. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py` -> `58 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `28 passed`; targeted SCCP regression subset -> `2 passed`). |
+
+### 0.3 Week 0 Deliverables (Required Before Week 1 Execution)
+- [x] Capture fresh build baseline (`tools/compile_progress.py`) with reproducibility metadata and artifact paths.
+- [x] Capture fresh native benchmark baseline (`tools/bench.py`) with JSON output and summary snapshot.
+- [x] Capture fresh wasm benchmark baseline (`tools/bench_wasm.py`) with JSON output and wasm/native ratio summary.
+- [x] Capture current lowering/program counts (`0016_STDLIB_INTRINSICS_AUDIT.md`, runtime import-call density snapshot).
+- [x] Publish a single Week 0 "baseline locked" entry in `docs/benchmarks/optimization_progress.md`.
+- [x] Land and validate Week 1 observability primitives (runtime counters + machine-readable profile output) so baseline runs can attribute hot paths deterministically.
+
+### 0.4 Definition Of "Optimization Work Started"
+Optimization execution is considered started only when all are true:
+1. Week 0 baselines are captured and linked in this plan.
+2. At least one OPT track has a committed experiment plan with owner, KPI, and rollback switch.
+3. Parity/correctness gates are recorded for the same revision used for baseline benchmarks.
+
+### 0.5 Historical Content Handling
+- The detailed OPT tracks below remain the canonical optimization scope.
+- Their implementation status is reset to not started for this kickoff unless a new progress entry explicitly promotes a track state.
+
+## 1A. Concrete 6-Week Execution Plan (Codon-Focused, Generalizable)
+
+Last updated: 2026-02-11
+Plan owner: compiler + runtime + backend + stdlib + tooling
+Execution style: correctness-first, measurable, rollback-safe, no benchmark-only hacks
+
+### Scope and North-Star Goals
+- Keep `sum.py` at parity or faster while closing the largest gaps in `word_count.py` and `taq.py`.
+- Convert benchmark-specific wins into reusable compiler/runtime primitives for ETL, analytics, service hot paths, and general Python workloads.
+- Preserve semantics strictly (no host-Python runtime fallback, no behavior shortcuts).
+
+### Baseline Snapshot (2026-02-11, runtime-only comparison)
+- `sum.py`: Molt ~0.0113s vs Codon ~0.0115s (near parity/slightly faster).
+- `word_count.py`: Molt ~0.0305s vs Codon ~0.0131s (~2.33x slower).
+- `taq.py`: Molt ~0.0531s vs Codon ~0.0135s (~3.93x slower).
+- Build times are tracked separately and are not included in runtime ratio calculations.
+
+### Program-Level Guardrails (applies every week)
+1. Correctness gate first:
+   - `cargo check -p molt-runtime -p molt-backend`
+   - `uv run --python 3.12 pytest -q tests/test_codec_lowering.py`
+2. Performance gate second:
+   - Run Codon subset (`sum.py`, `word_count.py`, `taq.py`) with stable samples.
+   - Record JSON artifact under `bench/results/`.
+3. Regression policy:
+   - Stop on first regression in runtime, correctness, or differential behavior.
+   - Fix/regress-proof before moving to the next cluster.
+4. Generalization policy:
+   - No optimization accepted if only usable by one benchmark shape.
+   - Each landing must map to reusable lanes/primitives used by at least one non-benchmark workload family.
+
+### Week-by-Week Plan
+
+#### Week 1: Observability and Hot-Path Attribution
+- Deliverables:
+  - Extend runtime perf diagnostics with machine-readable per-kernel counters (dispatch, attr, alloc, deopt/fallback, hot primitive hit/miss).
+  - Add benchmark artifact diff tooling for cluster-to-cluster trend checks.
+  - Normalize benchmark methodology docs for reproducibility and runtime-vs-build clarity.
+- Target outcomes:
+  - Single-command evidence for top cost centers in `word_count` and `taq`.
+  - Stable baseline artifacts for all later regression checks.
+- Exit gate:
+  - Metrics emitted and consumed in `bench/results/` workflow.
+
+##### Week 1 Progress Snapshot (2026-02-11)
+- Completed:
+  - Added runtime counters for:
+    - call-site IC effectiveness (`call_bind_ic_hit`, `call_bind_ic_miss`),
+    - attribute site-name cache hit/miss,
+    - split whitespace lane selection (`split_ws_ascii`, `split_ws_unicode`),
+    - `dict[str] += int` prehash lane (`hit`, `miss`, `deopt`),
+    - TAQ ingest path (`taq_ingest_calls`, `taq_ingest_skip_marker`),
+    - ASCII `int` parse failures.
+  - Extended `molt_profile_dump` to emit both:
+    - existing human-readable `molt_profile ...` line, and
+    - `molt_profile_json { ... }` payload when `MOLT_PROFILE_JSON=1`.
+  - Captured reproducible profile artifacts for Codon subset:
+    - `bench/results/optimization_progress/2026-02-11_week1_observability/sum_profile.log`
+    - `bench/results/optimization_progress/2026-02-11_week1_observability/word_count_profile.log`
+    - `bench/results/optimization_progress/2026-02-11_week1_observability/taq_profile.log`
+    - summary: `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md`
+- Key evidence:
+  - `word_count.py` primarily stresses `split_ws_ascii` (`20002` hits in sample).
+  - `taq.py` primarily stresses fused ingest (`taq_ingest_calls=20001`) and currently deopts `dict[str] += int` prehash lane heavily (`dict_str_int_prehash_deopt=20000` in sample).
+- Correctness/quality gates run and passing:
+  - `cargo check -p molt-runtime -p molt-backend`
+  - `uv run --python 3.12 pytest -q tests/test_codec_lowering.py`
+- Next actions for Week 1 completion:
+  - land benchmark artifact diff tooling (`tools/bench_diff.py`) for counter/time trend comparisons across runs, (done)
+  - lock Week 0 baselines (build/native/wasm JSON) so Week 2 specialization can gate on stable before/after deltas. (done)
+  - open dedicated wasm-stabilization clusters for linked-run fragility + wasm runtime parity failures observed in baseline lock.
+  - extend wasm bench triage tooling to classify runner failures and run wasmtime controls on failed node cases (in progress via `tools/bench_wasm.py` updates).
+
+#### Week 2: Typed Hot-Loop Specialization and Exception Regioning
+- Deliverables:
+  - Introduce stronger typed loop-region lowering for induction variables + arithmetic + bounds-hoisted loops.
+  - Tighten `check_exception` placement to region boundaries where proven safe.
+  - Add loop-shape regression tests for safe/unsafe control-flow boundaries.
+- Target outcomes:
+  - Reduced exception-check density in hot loops.
+  - No semantic regressions in control-flow heavy modules.
+- Exit gate:
+  - Lowered IR shows reduced guard overhead with test parity intact.
+
+#### Week 3: Text ETL Runtime Fast Paths (Reusable)
+- Deliverables:
+  - Extend fused text primitives (`split/find/count/tokenize + dict increment/update`) for broader ETL/API log usage.
+  - Strengthen `dict[str] += int` lane behavior and fallbacks under mixed types.
+  - Add kernel-level counters to verify hot-lane hit rates on real workloads.
+- Target outcomes:
+  - Material drop in object churn for `word_count` style loops.
+  - Generalized speedups for text analytics pipelines beyond benchmark code.
+- Exit gate:
+  - `word_count.py` ratio improves with no loss in semantic coverage.
+
+#### Week 4: TAQ/Data Ingest + Algorithmic Rolling Statistics
+- Deliverables:
+  - Expand fused ingest primitive design into generalized split/validate/parse/group/update kernels.
+  - Implement and lower repeated slice-stat loops (`mean`/`stdev`) to rolling-window kernels (`O(n)` behavior).
+  - Add strict numerical and error semantics tests for rolling stats.
+- Target outcomes:
+  - Major TAQ improvement by removing repeated slice recomputation overhead.
+  - Reusable rolling-stats primitive for monitoring/anomaly/stream workloads.
+- Exit gate:
+  - `taq.py` ratio drops materially and rolling stats path is validated.
+
+#### Week 5: Monomorphic/PIC Call-Attr Caches + Startup Cost Reductions
+- Deliverables:
+  - Upgrade call/attr IC architecture to bounded PIC behavior at stable hot sites with safe invalidation.
+  - Freeze frequent intrinsic/stdlib bindings at init where safe; remove avoidable import-time heavy work.
+  - Ensure lifecycle teardown clears all relevant caches deterministically.
+- Target outcomes:
+  - Reduced call dispatch and attr lookup costs in long-running services and hot scripts.
+  - Lower startup/import overhead in common stdlib paths.
+- Exit gate:
+  - Reduced `call_dispatch` and `attr_lookup` counters on representative workloads.
+
+#### Week 6: Architecture-Specific Kernelization + Hardening
+- Deliverables:
+  - Finalize architecture-tuned kernel paths (portable baseline + SIMD/multiversion lanes).
+  - Add explicit native-arch benchmark profile playbook and reporting standards.
+  - Run full validation sweep and document final before/after deltas.
+- Target outcomes:
+  - Best practical performance on production hardware while preserving portability lane.
+  - Clear release-ready evidence and rollback strategy.
+- Exit gate:
+  - All weekly gates green; top benchmark targets improved with no semantic regressions.
+
+### Concrete Targets by End of Week 6
+- `sum.py`: maintain parity or better.
+- `word_count.py`: move from ~2.3x slower toward <= 1.3x slower.
+- `taq.py`: move from ~3.9x slower toward <= 1.8x slower.
+- Maintain zero tolerance for semantic regressions and hidden fallback behavior.
+
+### Risks and Mitigations
+- Risk: Over-specialization that misses real-world patterns.
+  - Mitigation: require each primitive to demonstrate benefit on at least one non-benchmark workload class.
+- Risk: IC/cache invalidation correctness bugs.
+  - Mitigation: strict mutation/version guards, conservative deopt path, stress tests.
+- Risk: Architecture-specific wins reduce portability.
+  - Mitigation: portable default lane required; native-arch lane opt-in and measured.
+- Risk: Guard-hoisting introduces subtle exception behavior changes.
+  - Mitigation: conservative proofs, differential tests, stop-on-regression policy.
+
+### Reporting Cadence for This 6-Week Plan
+- Weekly status update in this document:
+  - work completed
+  - benchmark deltas
+  - regressions encountered/fixed
+  - next week adjustments
+- Artifact requirements:
+  - JSON benchmark reports under `bench/results/`
+  - any methodology changes reflected in `docs/BENCHMARKING.md`
 
 ## 1. Objectives
 
@@ -55,14 +253,14 @@ Status: Active
 
 | ID | Track | Priority | Status | Primary KPI | Exit Gate |
 | --- | --- | --- | --- | --- | --- |
-| OPT-1001 | Build Throughput and Determinism | P0 | Active | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
-| OPT-1002 | Core Primitive Lowering Expansion | P0 | Planned | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
-| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Active | `python-only` modules from 25 -> <= 5 (shipped surface) | strict lowering gates green |
-| OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Planned | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
-| OPT-1005 | WASM Lowering and Runtime Parity | P0 | Planned | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
-| OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Planned | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
-| OPT-1007 | Perf Governance and CI Guardrails | P0 | Active | prevent hidden regressions | budget checks enforced in CI and local tooling |
-| OPT-1008 | Friend-Native Benchmark Program | P0 | Active | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
+| OPT-1001 | Build Throughput and Determinism | P0 | Not Started (Kickoff Reset) | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
+| OPT-1002 | Core Primitive Lowering Expansion | P0 | Not Started (Kickoff Reset) | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
+| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Not Started (Kickoff Reset) | `python-only` modules from 25 -> <= 5 (shipped surface) | strict lowering gates green |
+| OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Not Started (Kickoff Reset) | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
+| OPT-1005 | WASM Lowering and Runtime Parity | P0 | Not Started (Kickoff Reset) | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
+| OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Not Started (Kickoff Reset) | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
+| OPT-1007 | Perf Governance and CI Guardrails | P0 | Not Started (Kickoff Reset) | prevent hidden regressions | budget checks enforced in CI and local tooling |
+| OPT-1008 | Friend-Native Benchmark Program | P0 | Not Started (Kickoff Reset) | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
 
 ---
 
@@ -519,6 +717,7 @@ Status: Active
 ## 6. Reporting Cadence
 
 - Update this plan at least once per optimization PR touching compiler/backend/runtime/stdlib hot paths.
+- Record every optimization milestone and benchmark run in `docs/benchmarks/optimization_progress.md`.
 - Keep benchmark and compile references synchronized with:
   - [Benchmarking and performance gates](docs/BENCHMARKING.md)
   - [Bench summary](docs/benchmarks/bench_summary.md)

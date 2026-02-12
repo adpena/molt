@@ -30,6 +30,17 @@ def _ops_by_kind(ir: dict, kind: str, func_name: str = "molt_main") -> list[dict
     raise AssertionError(f"Missing function {func_name}")
 
 
+def _assert_control_values_are_ints(ir: dict) -> None:
+    control_kinds = {"label", "state_label", "jump", "check_exception"}
+    for func in ir["functions"]:
+        for op in func["ops"]:
+            if op["kind"] not in control_kinds:
+                continue
+            assert isinstance(
+                op.get("value"), int
+            ), f"{func['name']} emitted non-int control value: {op}"
+
+
 def test_default_codec_is_msgpack():
     src = """
 import molt_json
@@ -217,6 +228,23 @@ for i in range(10):
     assert "vec_sum_float_range_iter" in kinds
 
 
+def test_async_control_flow_values_are_ints():
+    src = """
+async def step():
+    return 1
+
+async def work():
+    total = 0
+    i = 0
+    while i < 3:
+        total += await step()
+        i += 1
+    return total
+"""
+    ir = compile_to_tir(src)
+    _assert_control_values_are_ints(ir)
+
+
 def test_for_file_text_loop_item_hint_enables_string_split():
     src = """
 with open("sample.txt") as f:
@@ -386,7 +414,7 @@ def test_type_hint_check_lowering():
     src = "x: int = 1"
     ir = compile_to_tir(src, type_hint_policy="check")
     kinds = _op_kinds(ir)
-    assert "guard_type" in kinds
+    assert "guard_tag" in kinds
 
 
 def test_type_hint_fast_int_for_comparison_bitwise_and_shift():

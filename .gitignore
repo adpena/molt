@@ -30,6 +30,7 @@ bench/cython/
 bench/numba/
 bench/codon/
 bench/codon_probe/
+bench/friends/repos/
 runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
 packaging/out/

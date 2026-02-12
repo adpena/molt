@@ -820,6 +820,7 @@ impl WasmBackend {
         add_import("guarded_field_init_ptr", 22, &mut self.import_ids);
         add_import("handle_resolve", 13, &mut self.import_ids);
         add_import("inc_ref_obj", 1, &mut self.import_ids);
+        add_import("dec_ref_obj", 1, &mut self.import_ids);
         add_import("get_attr_generic", 23, &mut self.import_ids);
         add_import("get_attr_ptr", 23, &mut self.import_ids);
         add_import("get_attr_object", 18, &mut self.import_ids);
@@ -954,6 +955,8 @@ impl WasmBackend {
         add_import("callargs_expand_kwstar", 3, &mut self.import_ids);
         add_import("call_bind", 3, &mut self.import_ids);
         add_import("call_bind_ic", 5, &mut self.import_ids);
+        add_import("call_indirect_ic", 5, &mut self.import_ids);
+        add_import("invoke_ffi_ic", 7, &mut self.import_ids);
         add_import("slice", 5, &mut self.import_ids);
         add_import("slice_new", 5, &mut self.import_ids);
         add_import("range_new", 5, &mut self.import_ids);
@@ -986,12 +989,12 @@ impl WasmBackend {
         add_import("dict_get", 5, &mut self.import_ids);
         add_import("dict_inc", 5, &mut self.import_ids);
         add_import("dict_str_int_inc", 5, &mut self.import_ids);
-        add_import("string_split_ws_dict_inc", 4, &mut self.import_ids);
-        add_import("string_split_sep_dict_inc", 5, &mut self.import_ids);
+        add_import("string_split_ws_dict_inc", 5, &mut self.import_ids);
+        add_import("string_split_sep_dict_inc", 7, &mut self.import_ids);
         add_import("taq_ingest_line", 5, &mut self.import_ids);
         add_import("dict_pop", 7, &mut self.import_ids);
         add_import("dict_setdefault", 5, &mut self.import_ids);
-        add_import("dict_setdefault_empty_list", 4, &mut self.import_ids);
+        add_import("dict_setdefault_empty_list", 3, &mut self.import_ids);
         add_import("dict_update", 3, &mut self.import_ids);
         add_import("dict_clear", 2, &mut self.import_ids);
         add_import("dict_copy", 2, &mut self.import_ids);
@@ -1090,8 +1093,8 @@ impl WasmBackend {
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
         add_import("string_split_max", 5, &mut self.import_ids);
-        add_import("statistics_mean_slice", 6, &mut self.import_ids);
-        add_import("statistics_stdev_slice", 6, &mut self.import_ids);
+        add_import("statistics_mean_slice", 12, &mut self.import_ids);
+        add_import("statistics_stdev_slice", 12, &mut self.import_ids);
         add_import("string_lower", 2, &mut self.import_ids);
         add_import("string_upper", 2, &mut self.import_ids);
         add_import("string_capitalize", 2, &mut self.import_ids);
@@ -1215,7 +1218,7 @@ impl WasmBackend {
                 max_func_arity = max_func_arity.max(func_ir.params.len());
             }
             for op in &func_ir.ops {
-                if !is_poll && op.kind == "call_func" {
+                if !is_poll && (op.kind == "call_func" || op.kind == "invoke_ffi") {
                     if let Some(args) = &op.args {
                         if !args.is_empty() {
                             max_call_arity = max_call_arity.max(args.len() - 1);
@@ -1580,11 +1583,7 @@ impl WasmBackend {
                 }
             }
         }
-        let table_base: u32 = if reloc_enabled {
-            table_base_for_reloc()
-        } else {
-            256
-        };
+        let table_base: u32 = table_base_for_wasm();
         let poll_table_prefix = 33u32;
         let table_len = (poll_table_prefix as usize
             + builtin_table_funcs.len()
@@ -2438,29 +2437,26 @@ impl WasmBackend {
             }
         }
 
+        let mut ensure_local = |name: &str| {
+            if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
+            {
+                entry.insert(local_count);
+                local_types.push(ValType::I64);
+                local_count += 1;
+            }
+        };
+
         for op in &func_ir.ops {
-            if let Some(out) = &op.out {
-                if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(out.clone())
-                {
-                    entry.insert(local_count);
-                    local_types.push(ValType::I64);
-                    local_count += 1;
+            if let Some(args) = &op.args {
+                for arg in args {
+                    ensure_local(arg);
                 }
+            }
+            if let Some(out) = &op.out {
+                ensure_local(out);
                 if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint" {
-                    let ptr_name = format!("{out}_ptr");
-                    if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(ptr_name)
-                    {
-                        entry.insert(local_count);
-                        local_types.push(ValType::I64);
-                        local_count += 1;
-                    }
-                    let len_name = format!("{out}_len");
-                    if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(len_name)
-                    {
-                        entry.insert(local_count);
-                        local_types.push(ValType::I64);
-                        local_count += 1;
-                    }
+                    ensure_local(&format!("{out}_ptr"));
+                    ensure_local(&format!("{out}_len"));
                 }
             }
         }
@@ -2567,6 +2563,36 @@ impl WasmBackend {
         } else {
             None
         };
+        let const_seed_locals = if stateful || jumpful {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut seeds: Vec<(u32, i64)> = Vec::new();
+            for op in &func_ir.ops {
+                let Some(out_name) = op.out.as_ref() else {
+                    continue;
+                };
+                if seen.contains(out_name) {
+                    continue;
+                }
+                let bits = match op.kind.as_str() {
+                    "const" => op.value.map(box_int),
+                    "const_bool" => op.value.map(box_bool),
+                    "const_float" => op.f_value.map(box_float),
+                    "const_none" => Some(box_none()),
+                    _ => None,
+                };
+                let Some(bits) = bits else {
+                    continue;
+                };
+                let Some(&local_idx) = locals.get(out_name) else {
+                    continue;
+                };
+                seen.insert(out_name.clone());
+                seeds.push((local_idx, bits));
+            }
+            seeds
+        } else {
+            Vec::new()
+        };
         let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
         #[derive(Clone, Copy)]
@@ -2594,6 +2620,15 @@ impl WasmBackend {
                 block_map_base_local.expect("block map base local missing for dispatch");
             self.emit_data_ptr(reloc_enabled, func_index, &mut func, *block_map_segment);
             func.instruction(&Instruction::LocalSet(block_map_base_local));
+        }
+        if stateful || jumpful {
+            // Seed dispatch locals from their first literal assignment so control-flow
+            // edge threading cannot observe a raw wasm zero (0.0 bits) for an
+            // otherwise integer/none local before its defining block executes.
+            for (local_idx, bits) in const_seed_locals.iter().copied() {
+                func.instruction(&Instruction::I64Const(bits));
+                func.instruction(&Instruction::LocalSet(local_idx));
+            }
         }
 
         let mut emit_ops = |func: &mut Function,
@@ -3745,7 +3780,7 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
-                    "guard_type" => {
+                    "guard_type" | "guard_tag" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
                         let expected = locals[&args[1]];
@@ -3759,7 +3794,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "guard_layout" => {
+                    "guard_layout" | "guard_dict_shape" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         let class_bits = locals[&args[1]];
@@ -6487,6 +6522,16 @@ impl WasmBackend {
                         let func_idx = *func_indices
                             .get(target_name)
                             .expect("call target not found");
+                        let bootstrap_call = func_idx == import_ids["runtime_init"];
+                        if bootstrap_call {
+                            for arg_name in args_names {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(arg));
+                            }
+                            emit_call(func, reloc_enabled, func_idx);
+                            func.instruction(&Instruction::LocalSet(out));
+                            continue;
+                        }
                         emit_call(func, reloc_enabled, import_ids["recursion_guard_enter"]);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Ne);
@@ -6522,6 +6567,74 @@ impl WasmBackend {
                         }
                         emit_call(func, reloc_enabled, func_idx);
                         func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "inc_ref" | "borrow" => {
+                        let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("inc_ref/borrow requires one source arg");
+                        let src = locals[src_name];
+                        func.instruction(&Instruction::LocalGet(src));
+                        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        if let Some(out_name) = op.out.as_ref() {
+                            if out_name != "none" {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::LocalGet(src));
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
+                        }
+                    }
+                    "dec_ref" | "release" => {
+                        let args_names = op.args.as_ref().expect("dec_ref/release args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("dec_ref/release requires one source arg");
+                        let src = locals[src_name];
+                        func.instruction(&Instruction::LocalGet(src));
+                        emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        if let Some(out_name) = op.out.as_ref() {
+                            if out_name != "none" {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::I64Const(box_none()));
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
+                        }
+                    }
+                    "box" | "unbox" | "cast" | "widen" => {
+                        let args_names = op.args.as_ref().expect("conversion args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("conversion op requires one source arg");
+                        let src = locals[src_name];
+                        func.instruction(&Instruction::LocalGet(src));
+                        if let Some(out_name) = op.out.as_ref() {
+                            if out_name != "none" {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::LocalSet(out));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "identity_alias" => {
+                        let args_names = op.args.as_ref().expect("identity_alias args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("identity_alias requires one source arg");
+                        let src = locals[src_name];
+                        func.instruction(&Instruction::LocalGet(src));
+                        if let Some(out_name) = op.out.as_ref() {
+                            if out_name != "none" {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::LocalSet(out));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "call_guarded" => {
                         let target_name = op.s_value.as_ref().unwrap();
@@ -6788,7 +6901,7 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
-                    "call_func" => {
+                    "call_func" | "invoke_ffi" => {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
@@ -6805,31 +6918,57 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
                             func.instruction(&Instruction::Drop);
                         }
+                        let invoke_bridge_lane =
+                            op.kind == "invoke_ffi" && op.s_value.as_deref() == Some("bridge");
+                        let call_site_label = if op.kind == "invoke_ffi" {
+                            if invoke_bridge_lane {
+                                "invoke_ffi_bridge"
+                            } else {
+                                "invoke_ffi_deopt"
+                            }
+                        } else {
+                            "call_func"
+                        };
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func",
+                            call_site_label,
                         ));
                         func.instruction(&Instruction::I64Const(site_bits));
                         func.instruction(&Instruction::LocalGet(func_bits));
                         func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        if op.kind == "invoke_ffi" {
+                            let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
+                            func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
+                            emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        }
                         func.instruction(&Instruction::LocalSet(out));
                     }
-                    "call_bind" => {
+                    "call_bind" | "call_indirect" => {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let builder_ptr = locals[&args_names[1]];
                         let out = locals[op.out.as_ref().unwrap()];
+                        let call_site_label = if op.kind == "call_indirect" {
+                            "call_indirect"
+                        } else {
+                            "call_bind"
+                        };
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_bind",
+                            call_site_label,
                         ));
                         func.instruction(&Instruction::I64Const(site_bits));
                         func.instruction(&Instruction::LocalGet(func_bits));
                         func.instruction(&Instruction::LocalGet(builder_ptr));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        if op.kind == "call_indirect" {
+                            emit_call(func, reloc_enabled, import_ids["call_indirect_ic"]);
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        }
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "call_method" => {
@@ -7386,13 +7525,17 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "ret" => {
-                        if let Some(var_name) = op.var.as_ref() {
-                            func.instruction(&Instruction::LocalGet(locals[var_name]));
-                            func.instruction(&Instruction::Return);
+                        let ret_local = op.var.as_ref().and_then(|name| locals.get(name).copied());
+                        if let Some(local_idx) = ret_local {
+                            func.instruction(&Instruction::LocalGet(local_idx));
                         } else {
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::Return);
+                            eprintln!(
+                                "WASM lowering warning: missing return local in {} op {} (var={:?}); returning None",
+                                func_ir.name, op_idx, op.var
+                            );
+                            func.instruction(&Instruction::I64Const(box_none()));
                         }
+                        func.instruction(&Instruction::Return);
                     }
                     "ret_void" => {
                         func.instruction(&Instruction::I64Const(0));
@@ -7953,7 +8096,18 @@ impl WasmBackend {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
                             let else_idx = else_for_if.get(&idx).copied();
-                            let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
+                            let Some(end_idx) = end_for_if.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: malformed if without end_if in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let false_target = if let Some(else_pos) = else_idx {
                                 else_pos + 1
                             } else {
@@ -7977,10 +8131,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "else" => {
-                            let end_idx = end_for_else
-                                .get(&idx)
-                                .copied()
-                                .expect("else without end_if");
+                            let Some(end_idx) = end_for_else.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: malformed else without end_if in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8016,10 +8178,18 @@ impl WasmBackend {
                         "loop_break_if_true" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_true without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             func.instruction(&Instruction::LocalGet(cond));
@@ -8040,10 +8210,18 @@ impl WasmBackend {
                         "loop_break_if_false" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_false without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             func.instruction(&Instruction::LocalGet(cond));
@@ -8062,10 +8240,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_break" => {
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8073,10 +8259,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_continue" => {
-                            let start_idx = loop_continue_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop continue without loop");
+                            let Some(start_idx) = loop_continue_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_continue without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let start_block = start_idx + 1;
                             func.instruction(&Instruction::I64Const(start_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8092,10 +8286,19 @@ impl WasmBackend {
                         }
                         "jump" => {
                             let target_label = op.value.expect("jump missing label");
-                            let target_idx = label_to_index
-                                .get(&target_label)
-                                .copied()
-                                .expect("unknown jump label");
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown jump label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let target_block = target_idx;
                             func.instruction(&Instruction::I64Const(target_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8110,11 +8313,31 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "check_exception" => {
-                            let target_label = op.value.expect("check_exception missing label");
-                            let target_idx = label_to_index
-                                .get(&target_label)
-                                .copied()
-                                .expect("unknown check_exception label");
+                            let Some(target_label) = op.value else {
+                                eprintln!(
+                                    "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let target_block = target_idx;
                             let next_block = idx + 1;
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -8132,9 +8355,17 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "ret" => {
-                            func.instruction(&Instruction::LocalGet(
-                                locals[op.var.as_ref().unwrap()],
-                            ));
+                            let ret_local =
+                                op.var.as_ref().and_then(|name| locals.get(name).copied());
+                            if let Some(local_idx) = ret_local {
+                                func.instruction(&Instruction::LocalGet(local_idx));
+                            } else {
+                                eprintln!(
+                                    "WASM lowering warning: missing state-machine return local in {} op {} (var={:?}); returning None",
+                                    func_ir.name, idx, op.var
+                                );
+                                func.instruction(&Instruction::I64Const(box_none()));
+                            }
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
@@ -8317,16 +8548,33 @@ impl WasmBackend {
                     match op.kind.as_str() {
                         "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
                         | "chan_recv_yield" => {
-                            panic!(
-                                "jumpful wasm path hit stateful op {} in {}",
-                                op.kind, func_ir.name
+                            eprintln!(
+                                "WASM lowering warning: jumpful path hit stateful op {} in {} at op {}; falling through",
+                                op.kind, func_ir.name, idx
                             );
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                            continue;
                         }
                         "if" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
                             let else_idx = else_for_if.get(&idx).copied();
-                            let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
+                            let Some(end_idx) = end_for_if.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: malformed if without end_if in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let false_target = if let Some(else_pos) = else_idx {
                                 else_pos + 1
                             } else {
@@ -8350,10 +8598,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "else" => {
-                            let end_idx = end_for_else
-                                .get(&idx)
-                                .copied()
-                                .expect("else without end_if");
+                            let Some(end_idx) = end_for_else.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: malformed else without end_if in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8389,10 +8645,18 @@ impl WasmBackend {
                         "loop_break_if_true" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_true without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             func.instruction(&Instruction::LocalGet(cond));
@@ -8413,10 +8677,18 @@ impl WasmBackend {
                         "loop_break_if_false" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_false without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             func.instruction(&Instruction::LocalGet(cond));
@@ -8435,10 +8707,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_break" => {
-                            let end_idx = loop_break_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop break without loop");
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8446,10 +8726,18 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_continue" => {
-                            let start_idx = loop_continue_target
-                                .get(&idx)
-                                .copied()
-                                .expect("loop continue without loop");
+                            let Some(start_idx) = loop_continue_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_continue without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let start_block = start_idx + 1;
                             func.instruction(&Instruction::I64Const(start_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8464,18 +8752,38 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "jump" => {
-                            let target_label = op.value.expect("jump missing label");
-                            let target_idx = label_to_index
-                                .get(&target_label)
-                                .copied()
-                                .expect("unknown jump label");
+                            let Some(target_label) = op.value else {
+                                eprintln!(
+                                    "WASM lowering warning: jump missing label in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown jump label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let target_block = target_idx;
                             func.instruction(&Instruction::I64Const(target_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
                         }
-                        "try_start" | "try_end" | "label" => {
+                        "try_start" | "try_end" | "label" | "state_label" => {
                             let next_block = idx + 1;
                             func.instruction(&Instruction::I64Const(next_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -8483,11 +8791,31 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "check_exception" => {
-                            let target_label = op.value.expect("check_exception missing label");
-                            let target_idx = label_to_index
-                                .get(&target_label)
-                                .copied()
-                                .expect("unknown check_exception label");
+                            let Some(target_label) = op.value else {
+                                eprintln!(
+                                    "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
                             let target_block = target_idx;
                             let next_block = idx + 1;
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -8505,9 +8833,17 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "ret" => {
-                            func.instruction(&Instruction::LocalGet(
-                                locals[op.var.as_ref().unwrap()],
-                            ));
+                            let ret_local =
+                                op.var.as_ref().and_then(|name| locals.get(name).copied());
+                            if let Some(local_idx) = ret_local {
+                                func.instruction(&Instruction::LocalGet(local_idx));
+                            } else {
+                                eprintln!(
+                                    "WASM lowering warning: missing state-machine return local in {} op {} (var={:?}); returning None",
+                                    func_ir.name, idx, op.var
+                                );
+                                func.instruction(&Instruction::I64Const(box_none()));
+                            }
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
@@ -8605,8 +8941,10 @@ fn should_emit_relocs() -> bool {
     matches!(std::env::var("MOLT_WASM_LINK").as_deref(), Ok("1"))
 }
 
-fn table_base_for_reloc() -> u32 {
+fn table_base_for_wasm() -> u32 {
     // Allow the driver to pin the table base to the runtime table size.
+    // Use a high default for both linked and direct-link output so user
+    // table slots do not collide with runtime-populated table entries.
     match std::env::var("MOLT_WASM_TABLE_BASE") {
         Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
         Err(_) => RELOC_TABLE_BASE_DEFAULT,

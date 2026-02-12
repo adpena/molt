@@ -1,6 +1,8 @@
 # Molt Testing & Verification Strategy
 
 See `README.md` for quick-start testing commands and CI parity job summaries.
+Minimum required gates are defined in
+`docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
 
 ## Version Policy
 Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,

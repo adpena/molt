@@ -17,6 +17,22 @@ If you build standalone WASM artifacts for perf validation, use
 `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked`
 to ensure only linked output is produced.
 Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
+For targeted wasm failure triage, use benchmark filtering plus control-runner checks:
+
+```bash
+uv run --python 3.12 python3 tools/bench_wasm.py \
+  --bench bench_async_await \
+  --bench bench_channel_throughput \
+  --runner node \
+  --control-runner wasmtime \
+  --node-max-old-space-mb 8192 \
+  --samples 1 \
+  --warmup 0 \
+  --require-linked
+```
+
+This emits `molt_wasm_failure_*` fields and `molt_wasm_control_*` fields per
+failed benchmark in JSON outputs for quick node-vs-wasmtime classification.
 
 ```bash
 # Basic run
@@ -65,6 +81,24 @@ uv run --python 3.14 python3 tools/bench_report.py
 This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
 the JSON results to keep native and WASM performance tracking aligned.
 Add `--update-readme` to refresh the Performance & Comparisons block in `README.md`.
+
+## Benchmark Artifact Diffing
+
+Use `tools/bench_diff.py` to compare two benchmark artifacts and highlight
+regressions/improvements per metric:
+
+```bash
+python3 tools/bench_diff.py \
+  bench/results/cluster12_codon_subset_after_stats_coerce_fastpath.json \
+  bench/results/cluster13b_codon_subset_samples5_after_setdefault_empty_list_lowering.json \
+  --top 10 \
+  --json-out bench/results/bench_diff_latest.json
+```
+
+Notes:
+- By default, it diffs all shared numeric metrics.
+- It skips all-zero metrics unless `--include-zero-only-metrics` is passed.
+- Use `--metrics` to constrain analysis (for example `--metrics molt_time_s molt_codon_ratio`).
 
 ## Friend-Owned Suite Benchmarking
 
@@ -141,6 +175,25 @@ Validate native + WASM parity for the same cases.
 ## Profiles
 
 Use `molt profile <script.py>` to generate flamegraphs and identify bottlenecks in the compiler or runtime.
+
+### Runtime Hot-Path Counters (`MOLT_PROFILE_JSON`)
+
+For runtime attribution work, emit machine-readable counters from compiled runs:
+
+```bash
+PYTHONPATH=src \
+MOLT_PROFILE=1 \
+MOLT_PROFILE_JSON=1 \
+uv run --python 3.12 python3 -m molt.cli run --profile dev --trusted \
+  bench/friends/repos/codon_benchmarks/bench/codon/sum.py
+```
+
+Notes:
+- `molt_profile ...` (text) and `molt_profile_json {...}` (JSON) are emitted on stderr.
+- For file-driven Codon cases, pass explicit input paths:
+  - `word_count.py <input_file>`
+  - `taq.py <input_file>`
+- Keep these runs in `--profile dev` for iterative optimization loops; use `--profile release` for publication-grade benchmark reports.
 
 ### Native-Arch Perf Profile (Opt-In)
 

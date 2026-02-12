@@ -43,6 +43,7 @@ const trapOnExit = process.env.MOLT_WASM_TRAP_ON_EXIT === '1';
 const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
 const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
 const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
+const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
 const formatTraceError = (err) => {
   if (err instanceof Error) {
     return err.stack || err.message || String(err);
@@ -4087,6 +4088,34 @@ const buildRuntimeImportDirect = (runtimeInst) => {
   return runtimeImports;
 };
 
+const installTableRefs = (instance, table, label) => {
+  if (!instance || !table) {
+    return;
+  }
+  const refs = [];
+  for (const [name, value] of Object.entries(instance.exports)) {
+    const match = /^__molt_table_ref_(\d+)$/.exec(name);
+    if (!match || typeof value !== 'function') {
+      continue;
+    }
+    refs.push({ index: Number(match[1]), fn: value });
+  }
+  if (refs.length === 0) {
+    return;
+  }
+  refs.sort((a, b) => a.index - b.index);
+  const maxIndex = refs[refs.length - 1].index;
+  if (maxIndex >= table.length) {
+    table.grow(maxIndex + 1 - table.length);
+  }
+  for (const ref of refs) {
+    table.set(ref.index, ref.fn);
+  }
+  if (traceRun) {
+    console.error(`[molt wasm] installed ${refs.length} ${label} table refs`);
+  }
+};
+
 const runDirectLink = async () => {
   if (!canDirectLink) {
     throw new Error(
@@ -4184,6 +4213,9 @@ const runDirectLink = async () => {
   });
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
+  if (installTableRefsEnabled) {
+    installTableRefs(runtimeInst, table, 'runtime');
+  }
   const outputImportsDirect = traceImports
     ? buildRuntimeImportWrappers()
     : buildRuntimeImportDirect(runtimeInst);
@@ -4202,6 +4234,9 @@ const runDirectLink = async () => {
       throw new Error(`${wasmPath} missing ${name} export`);
     }
     callIndirectFns[name] = fn;
+  }
+  if (installTableRefsEnabled) {
+    installTableRefs(outputModule.instance, table, 'output');
   }
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
@@ -4340,11 +4375,6 @@ const runMain = async () => {
       `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
     );
   }
-  if (inputHasRuntimeImports && !linkedBuffer) {
-    throw new Error(
-      'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'
-    );
-  }
   if (!inputHasRuntimeImports && !linkedBuffer) {
     linkedPath = wasmPath;
     linkedBuffer = wasmBuffer;
@@ -4368,6 +4398,11 @@ const runMain = async () => {
   if (directLinkRequested && !canDirectLink) {
     throw new Error(
       'Direct-link mode is unavailable for this wasm artifact. Use linked output or rebuild with shared env.memory/env.__indirect_function_table imports.'
+    );
+  }
+  if (!directLinkRequested && inputHasRuntimeImports && !linkedBuffer) {
+    throw new Error(
+      'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'
     );
   }
   // Safety-first policy: default to linked execution. Direct-linking is opt-in

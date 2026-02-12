@@ -8637,6 +8637,61 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                "inc_ref" | "borrow" => {
+                    let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("inc_ref/borrow requires one source arg");
+                    let src = *var_get(&mut builder, &vars, src_name)
+                        .expect("inc_ref/borrow source not found");
+                    builder.ins().call(local_inc_ref_obj, &[src]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
+                    }
+                }
+                "dec_ref" | "release" => {
+                    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("dec_ref/release requires one source arg");
+                    let src = *var_get(&mut builder, &vars, src_name)
+                        .expect("dec_ref/release source not found");
+                    builder.ins().call(local_dec_ref_obj, &[src]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
+                        }
+                    }
+                }
+                "box" | "unbox" | "cast" | "widen" => {
+                    let args_names = op.args.as_ref().expect("conversion args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("conversion op requires one source arg");
+                    let src = *var_get(&mut builder, &vars, src_name)
+                        .expect("conversion source not found");
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
+                    }
+                }
+                "identity_alias" => {
+                    let args_names = op.args.as_ref().expect("identity_alias args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("identity_alias requires one source arg");
+                    let src = *var_get(&mut builder, &vars, src_name)
+                        .expect("identity_alias source not found");
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
+                    }
+                }
                 "call_guarded" => {
                     let target_name = op.s_value.as_ref().unwrap();
                     let args_names = op.args.as_ref().unwrap();
@@ -8867,6 +8922,7 @@ impl SimpleBackend {
                     for name in &args_names[1..] {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
+                    let call_site_prefix = "call_func";
 
                     let mut resolve_sig = self.module.make_signature();
                     resolve_sig.params.push(AbiParam::new(types::I64));
@@ -9091,12 +9147,13 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
                         .unwrap();
                     let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let bound_closure_label = format!("{call_site_prefix}_bound_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func_bound_closure",
+                            bound_closure_label.as_str(),
                         )),
                     );
                     let bound_call = builder
@@ -9459,12 +9516,13 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
                         .unwrap();
                     let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let bound_error_label = format!("{call_site_prefix}_bound_error");
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func_bound_error",
+                            bound_error_label.as_str(),
                         )),
                     );
                     let fallback_call = builder
@@ -9528,12 +9586,13 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
                         .unwrap();
                     let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let nonfunc_fallback_label = format!("{call_site_prefix}_nonfunc_fallback");
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func_nonfunc_fallback",
+                            nonfunc_fallback_label.as_str(),
                         )),
                     );
                     let fallback_call = builder
@@ -9639,12 +9698,13 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
                         .unwrap();
                     let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let closure_label = format!("{call_site_prefix}_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func_closure",
+                            closure_label.as_str(),
                         )),
                     );
                     let closure_call = builder
@@ -9714,12 +9774,13 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
                         .unwrap();
                     let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let bind_label = format!("{call_site_prefix}_bind");
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_func_bind",
+                            bind_label.as_str(),
                         )),
                     );
                     let bind_call = builder
@@ -9766,7 +9827,85 @@ impl SimpleBackend {
                     let res = builder.block_params(merge_block)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
-                "call_bind" => {
+                "invoke_ffi" => {
+                    let args_names = op.args.as_ref().unwrap();
+                    let func_bits =
+                        var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
+                    let mut args = Vec::new();
+                    for name in &args_names[1..] {
+                        args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
+                    }
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+
+                    let bridge_lane = op.s_value.as_deref() == Some("bridge");
+                    let call_site_label = if bridge_lane {
+                        "invoke_ffi_bridge"
+                    } else {
+                        "invoke_ffi_deopt"
+                    };
+                    let site_bits = builder.ins().iconst(
+                        types::I64,
+                        box_int(stable_ic_site_id(
+                            func_ir.name.as_str(),
+                            op_idx,
+                            call_site_label,
+                        )),
+                    );
+                    let require_bridge_cap = builder
+                        .ins()
+                        .iconst(types::I64, box_bool(if bridge_lane { 1 } else { 0 }));
+
+                    let mut invoke_sig = self.module.make_signature();
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.returns.push(AbiParam::new(types::I64));
+                    let invoke_fn = self
+                        .module
+                        .declare_function("molt_invoke_ffi_ic", Linkage::Import, &invoke_sig)
+                        .unwrap();
+                    let invoke_local = self.module.declare_func_in_func(invoke_fn, builder.func);
+                    let invoke_call = builder.ins().call(
+                        invoke_local,
+                        &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
+                    );
+                    let res = builder.inst_results(invoke_call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "call_bind" | "call_indirect" => {
                     let args_names = op.args.as_ref().unwrap();
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
@@ -9777,17 +9916,27 @@ impl SimpleBackend {
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
+                    let callee_name = if op.kind == "call_indirect" {
+                        "molt_call_indirect_ic"
+                    } else {
+                        "molt_call_bind_ic"
+                    };
                     let callee = self
                         .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &sig)
+                        .declare_function(callee_name, Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call_site_label = if op.kind == "call_indirect" {
+                        "call_indirect"
+                    } else {
+                        "call_bind"
+                    };
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
-                            "call_bind",
+                            call_site_label,
                         )),
                     );
                     let call = builder
@@ -11971,7 +12120,7 @@ impl SimpleBackend {
                         }
                     }
                 }
-                "guard_type" => {
+                "guard_type" | "guard_tag" => {
                     let args = op.args.as_ref().unwrap();
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("Guard value not found");
@@ -11988,7 +12137,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*val, *expected]);
                 }
-                "guard_layout" => {
+                "guard_layout" | "guard_dict_shape" => {
                     let args = op.args.as_ref().unwrap();
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Guard object not found");

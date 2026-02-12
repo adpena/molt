@@ -2,10 +2,154 @@
 
 Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking.
 
+## Planning Doc Hierarchy
+- Current state and capabilities: `docs/spec/STATUS.md` (canonical source of truth).
+- Active project plan and backlog: `ROADMAP.md` (this file).
+- Near-term sequencing and execution windows: `docs/ROADMAP_90_DAYS.md`.
+- Optimization strategy and track scope: `OPTIMIZATIONS_PLAN.md`.
+- Optimization execution history and artifacts: `docs/benchmarks/optimization_progress.md`.
+- Month 1 enforcement artifacts:
+  - `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
+  - `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
+- Historical/detail roadmap archive: `docs/ROADMAP.md` (retained for context; do not treat as canonical state).
+
 ## Legend
 - **Status:** Implemented (done), Partial (some semantics missing), Planned (scoped but not started), Missing (no implementation), Divergent (intentional difference from CPython).
 - **Priority:** P0 (blocker), P1 (high), P2 (medium), P3 (lower).
 - **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones).
+
+## Optimization Program Kickoff (2026-02-11)
+- Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
+- Canonical optimization scope: `OPTIMIZATIONS_PLAN.md`.
+- Canonical execution log and milestone history: `docs/benchmarks/optimization_progress.md`.
+- Current Week 1 evidence artifact: `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md`.
+- Week 0 baseline lock summary: `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md`.
+- Guard/deopt feedback artifact wiring is available: runtime emits
+  `molt_runtime_feedback.json` when `MOLT_RUNTIME_FEEDBACK=1`
+  (override path with `MOLT_RUNTIME_FEEDBACK_FILE`), and schema validation is
+  enforced via `tools/check_runtime_feedback.py` including required
+  `deopt_reasons.call_indirect_noncallable` and
+  `deopt_reasons.invoke_ffi_bridge_capability_denied`, plus
+  `deopt_reasons.guard_tag_type_mismatch` and
+  `deopt_reasons.guard_dict_shape_layout_mismatch` with guard-layout
+  mismatch breakdown counters (`*_null_obj`, `*_non_object`,
+  `*_class_mismatch`, `*_non_type_class`,
+  `*_expected_version_invalid`, `*_version_mismatch`).
+- Week 2 readiness note: baseline gate is satisfied; prioritize specialization + wasm-stabilization clusters from the lock summary failure lists.
+
+## 90-Day Priority Queue: Molt IR Spec Closure (2026-02-11)
+- Source audit: `docs/spec/areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md`.
+- Historical baseline snapshot (pre-closure audit): 109 implemented,
+  13 partial, 12 missing.
+- Current inventory gate (`tools/check_molt_ir_ops.py`) reports
+  `missing=0` for spec-op presence in frontend emit/lowering coverage, and
+  required dedicated-lane presence in native + wasm backends, plus
+  behavior-level semantic assertions for dedicated call/guard/ownership/
+  conversion lanes.
+- 2026-02-11 implementation update: dedicated frontend/lowering/backend lanes are
+  now present for `CALL_INDIRECT`, `INVOKE_FFI`, `GUARD_TAG`,
+  `GUARD_DICT_SHAPE`, `INC_REF`/`DEC_REF`/`BORROW`/`RELEASE`, and conversion
+  ops (`BOX`/`UNBOX`/`CAST`/`WIDEN`); semantic hardening and differential
+  evidence remain in progress.
+- Behavior-level lane regression tests are in
+  `tests/test_frontend_ir_alias_ops.py` for raw emit + lowered lane presence
+  (`call_indirect`, `guard_tag`, `guard_dict_shape`, ownership lanes, and
+  conversion lanes).
+- Differential parity evidence now includes dedicated-lane probes:
+  `tests/differential/basic/call_indirect_dynamic_callable.py`,
+  `tests/differential/basic/call_indirect_noncallable_deopt.py`,
+  `tests/differential/basic/invoke_ffi_os_getcwd.py`,
+  `tests/differential/basic/invoke_ffi_bridge_capability_enabled.py`,
+  `tests/differential/basic/invoke_ffi_bridge_capability_denied.py`,
+  `tests/differential/basic/guard_tag_type_hint_fail.py`, and
+  `tests/differential/basic/guard_dict_shape_mutation.py`.
+- CI enforcement update (2026-02-11): after `diff-basic`, CI now runs
+  `tools/check_molt_ir_ops.py --require-probe-execution` against
+  `rss_metrics.jsonl` + `ir_probe_failures.txt`, making required probe
+  execution/failure-queue linkage a hard gate.
+- `INVOKE_FFI` hardening update (2026-02-11): frontend now tags bridge-policy
+  invocations with a dedicated lane marker (`s_value="bridge"`), native/wasm
+  backends route through `molt_invoke_ffi_ic`, and runtime enforces
+  `python.bridge` capability in non-trusted mode for bridge-tagged calls.
+- `CALL_INDIRECT` hardening update (2026-02-11): native/wasm backends route
+  `call_indirect` through dedicated `molt_call_indirect_ic` /
+  `call_indirect_ic` lanes with explicit callable precheck before IC dispatch.
+- Frontend mid-end update (2026-02-11): `SimpleTIRGenerator.map_ops_to_json`
+  now runs a lightweight optimization pipeline before lowering
+  (`_coalesce_check_exception_ops` + CFG/dataflow mid-end). The mid-end now
+  builds explicit basic blocks, computes CFG successors/predecessors,
+  dominators, and backward liveness, then applies deterministic fixed-point
+  passes (`simplify -> SCCP -> canonicalize -> DCE`) with SCCP sparse lattice
+  propagation (`unknown`/`constant`/`overdefined`) over SSA names and now
+  tracks executable CFG edges explicitly (edge-filtered predecessor merges).
+  SCCP coverage now includes arithmetic, boolean, comparison, `TYPE_OF`,
+  `CONTAINS`/`INDEX` constant-folding, selected `ISINSTANCE` folds, and
+  selected guard/type fact propagation (including guard-failure edge
+  termination). It now tracks both try exceptional and try normal completion
+  facts and uses them for explicit try-edge threading. Control simplification
+  now threads executable edges across `IF`, `LOOP_BREAK_IF_*`, `LOOP_END`,
+  and `TRY_*`, applies deeper loop/try rewrites (including conservative
+  dead-backedge loop marker flattening and dead try-body suffix pruning after
+  proven guard/raise exits), and performs region-aware CFG simplification across
+  `IF`/`ELSE`, `LOOP_*`, `TRY_*`, and `LABEL`/`JUMP` regions (including
+  dead-label pruning and no-op jump elimination). A structural pre-SCCP
+  canonicalization round now strips degenerate empty branch/loop/try regions
+  before each SCCP round. The pass also adds conservative branch-tail merging +
+  loop-invariant pure-op hoisting and runs effect-aware CSE/DCE under CFG
+  safety checks. Read-heap CSE now uses conservative
+  alias/effect classes (`dict`/`list`/`indexable`/`attr`) so unrelated writes
+  no longer invalidate all read value numbers, including global reuse for
+  `GETATTR`/`LOAD_ATTR`/`INDEX` reads under no-interfering-write guards.
+  Read-heap invalidation now treats call/invoke operations as conservative
+  write barriers, and class-level alias epochs are augmented with lightweight
+  object-sensitive epochs for higher hit-rate without unsafe reuse.
+  Exceptional try-edge pruning now preserves balanced `TRY_START`/`TRY_END`
+  structure unless dominance/post-dominance plus pre-trap
+  `CHECK_EXCEPTION`-free proofs permit marker elision.
+  The mid-end now also models explicit `CHECK_EXCEPTION` CFG branch targets and
+  threads proven exceptional checks into direct `JUMP` edges to handler labels
+  with dominance-safe guards, and normalizes nested try/except multi-handler
+  join trampolines (label->jump chains) before CSE rounds.
+  Expanded cross-block value reuse remains explicitly gated by a CFG
+  definite-assignment verifier with automatic fallback to safe mode when proof
+  fails. Loop analysis now tracks `(start, step, bound, compare-op)` tuples for
+  affine induction facts and monotonic loop-bound proofs used by SCCP. CFG
+  construction now lives in a dedicated
+  `src/molt/frontend/cfg_analysis.py` module with explicit `BasicBlock` and
+  `CFGGraph` structures; mid-end telemetry now reports expanded-mode acceptance
+  plus per-transform diagnostics (`sccp_branch_prunes`,
+  `loop_edge_thread_prunes`, `try_edge_thread_prunes`,
+  `unreachable_blocks_removed`, `cfg_region_prunes`, `label_prunes`,
+  `jump_noop_elisions`, `licm_hoists`, `guard_hoist_*`, `gvn_hits`,
+  `dce_removed_total`) through `MOLT_MIDEND_STATS=1`. Function-scoped
+  acceptance/attempt telemetry is now tracked in `midend_stats_by_function`
+  (`sccp`, `edge_thread`, `loop_rewrite`, `guard_hoist`, `cse`,
+  `cse_readheap`, `gvn`, `licm`, `dce`, `dce_pure_op`) with
+  attempted/accepted/rejected breakdown for transform families. It currently
+  elides trivial `PHI`
+  nodes, proven no-op `GUARD_TAG` checks, and redundant branch-symmetric guards,
+  with join preservation across structured
+  `IF`/`ELSE`, `LOOP_*`, `TRY_*`, and `LABEL`/`JUMP` regions; regression coverage
+  lives in
+  `tests/test_frontend_midend_passes.py`.
+- P0 closure items (dedicated lanes landed; semantic/deopt and differential
+  coverage hardening remain):
+  - `CallIndirect`, `InvokeFFI`, `GuardTag`, `GuardDictShape`.
+- P1 ownership/LIR gaps:
+  - `IncRef`, `DecRef`, `Borrow`, `Release`.
+- P2 conversion and canonicalization gaps:
+  - `Box`, `Unbox`, `Cast`, `Widen` and alias-name normalization for partial ops.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): complete `CALL_INDIRECT` hardening with broader deopt reason telemetry (dedicated runtime lane, noncallable differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.call_indirect_noncallable` are landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): complete `INVOKE_FFI` hardening with broader deopt reason telemetry (bridge-lane marker, runtime capability gate, negative capability differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.invoke_ffi_bridge_capability_denied` are landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): harden `GUARD_TAG` specialization/deopt semantics + coverage (runtime-feedback counter `deopt_reasons.guard_tag_type_mismatch` is landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): harden `GUARD_DICT_SHAPE` invalidation/deopt semantics + coverage (runtime-feedback aggregate counter `deopt_reasons.guard_dict_shape_layout_mismatch` and per-reason breakdown counters are landed).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): enforce explicit LIR ownership invariants for `INC_REF`/`DEC_REF` across frontend/backend with differential parity evidence.
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): enforce borrow/release lifetime invariants for `BORROW`/`RELEASE` with safety checks and parity coverage.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P2, status:partial): add generic conversion ops (`BOX`, `UNBOX`, `CAST`, `WIDEN`) with deterministic semantics and native/wasm parity coverage.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P2, status:partial): normalize alias op naming (`BRANCH`/`RETURN`/`THROW`/`LOAD_ATTR`/`STORE_ATTR`/`CLOSURE_LOAD`/`CLOSURE_STORE`) or codify canonical aliases in `0100_MOLT_IR`.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of coverage into broader heap/call-specialization families and a stronger loop-bound solver for cross-iteration constant reasoning.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend loop/try edge threading beyond current executable-edge + conservative loop-marker rewrites into full loop-end and exceptional-handler CFG rewrites with dominance/post-dominance preservation.
+- Implemented: CI hardening for `tools/check_molt_ir_ops.py` now includes mandatory `--require-probe-execution` after `diff-basic`, so required-probe execution status and failure-queue linkage regressions fail CI.
 
 ## Parity-First Execution Plan
 Guiding principle: lock CPython parity and robust test coverage before large optimizations or new higher-level surface area.

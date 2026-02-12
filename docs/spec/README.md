@@ -32,6 +32,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0017 Type System And Specialization: `docs/spec/areas/compiler/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md`
 - 0019 Bytecode Lowering Matrix: `docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md`
 - 0100 Molt IR: `docs/spec/areas/compiler/0100_MOLT_IR.md`
+- 0100 Molt IR Implementation Coverage 2026-02-11: `docs/spec/areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md`
 - 0190 Lowering Rules: `docs/spec/areas/compiler/0190_LOWERING_RULES.md`
 - 0191 Deopt And Guard Model: `docs/spec/areas/compiler/0191_DEOPT_AND_GUARD_MODEL.md`
 - 0192 Idioms And Semantic Patterns: `docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md`
@@ -67,12 +68,14 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0011 CI: `docs/spec/areas/tooling/0011-ci.md`
 - 0012 Molt Commands: `docs/spec/areas/tooling/0012_MOLT_COMMANDS.md`
 - 0013 Python Dependencies: `docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md`
+- 0014 Determinism And Security Enforcement Checklist: `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
 - 0200 Profile Artifact: `docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md`
 - 0215 Molt Extension Build Pipeline: `docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md`
 - 0602 When To Write Extensions Or Binaries: `docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md`
 
 ## Testing
 - 0007 Testing: `docs/spec/areas/testing/0007-testing.md`
+- 0008 Minimum Must-Pass Matrix: `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
 - 0504 Differential Testing Oracle: `docs/spec/areas/testing/0504_DIFFERENTIAL_TESTING_ORACLE.md`
 
 ## Performance And Benchmarks
@@ -147,4 +150,4 @@ Long-form topic docs live under `docs/spec/areas/`.
 ## Adding Or Updating A Spec
 - Keep the scope narrow and list status at the top.
 - Link to the relevant matrices when semantics change.
-- Update `docs/spec/STATUS.md` and `docs/ROADMAP.md` when scope moves.
+- Update `docs/spec/STATUS.md` and `ROADMAP.md` when scope moves.

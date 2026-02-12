@@ -4,7 +4,11 @@ Molt compiles a verified subset of Python into extremely fast, single-file nativ
 
 **Ultimate Goal:** A Go-like developer experience for Python, producing binaries that rival C/Rust in performance and safety, suitable for high-concurrency web services, databases, and data pipelines.
 
-**Source of truth:** This file is the canonical status tracker. For near-term sequencing, see `ROADMAP_90_DAYS.md`. For historical milestone framing, see `docs/spec/areas/process/0006-roadmap.md`.
+**Document role:** Detailed roadmap archive/reference.
+For canonical current state, use `docs/spec/STATUS.md`.
+For the active forward-looking project plan, use `/ROADMAP.md`.
+For near-term sequencing, use `docs/ROADMAP_90_DAYS.md`.
+For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 
 **Version policy:** Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge, document the chosen target in specs/tests.
 

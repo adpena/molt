@@ -4586,6 +4586,7 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
             _ => false,
         };
         if !matches {
+            profile_hit_unchecked(&GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT);
             return raise_exception::<_>(_py, "TypeError", "type guard mismatch");
         }
         val_bits
@@ -4608,6 +4609,55 @@ pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_bool(!is_truthy(_py, obj_from_bits(val))).bits()
     })
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|val| !val.is_empty() && val != "0")
+        .unwrap_or(false)
+}
+
+fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
+    if !env_flag_enabled("MOLT_RUNTIME_FEEDBACK") {
+        return;
+    }
+    let out_path = std::env::var("MOLT_RUNTIME_FEEDBACK_FILE")
+        .ok()
+        .filter(|val| !val.is_empty())
+        .unwrap_or_else(|| "molt_runtime_feedback.json".to_string());
+    let path = std::path::Path::new(&out_path);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "molt_runtime_feedback_error stage=create_dir path={} err={}",
+                    path.display(),
+                    err
+                );
+                return;
+            }
+        }
+    }
+    let encoded = match serde_json::to_string_pretty(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!(
+                "molt_runtime_feedback_error stage=encode path={} err={}",
+                path.display(),
+                err
+            );
+            return;
+        }
+    };
+    if let Err(err) = std::fs::write(path, encoded) {
+        eprintln!(
+            "molt_runtime_feedback_error stage=write path={} err={}",
+            path.display(),
+            err
+        );
+        return;
+    }
+    eprintln!("molt_runtime_feedback_file {}", path.display());
 }
 
 #[no_mangle]
@@ -4642,8 +4692,43 @@ pub extern "C" fn molt_profile_dump() {
         let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
         let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
         let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
+        let call_bind_ic_hit = CALL_BIND_IC_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let call_bind_ic_miss = CALL_BIND_IC_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let call_indirect_noncallable_deopt =
+            CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let invoke_ffi_bridge_capability_denied =
+            INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_tag_type_mismatch_deopt =
+            GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_mismatch_deopt =
+            GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_null_obj =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_non_object =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_class_mismatch =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_non_type_class =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_expected_version_invalid =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT
+                .load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_version_mismatch =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+        let attr_site_name_hit = ATTR_SITE_NAME_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let attr_site_name_miss = ATTR_SITE_NAME_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let split_ws_ascii = SPLIT_WS_ASCII_FAST_PATH_COUNT.load(AtomicOrdering::Relaxed);
+        let split_ws_unicode = SPLIT_WS_UNICODE_PATH_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_hit = DICT_STR_INT_PREHASH_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_miss =
+            DICT_STR_INT_PREHASH_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_deopt =
+            DICT_STR_INT_PREHASH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let taq_ingest_calls = TAQ_INGEST_CALL_COUNT.load(AtomicOrdering::Relaxed);
+        let taq_ingest_skip_marker = TAQ_INGEST_SKIP_MARKER_COUNT.load(AtomicOrdering::Relaxed);
+        let ascii_i64_parse_fail = ASCII_I64_PARSE_FAIL_COUNT.load(AtomicOrdering::Relaxed);
         eprintln!(
-        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={}",
         call_dispatch,
         cache_hit,
         cache_miss,
@@ -4665,8 +4750,82 @@ pub extern "C" fn molt_profile_dump() {
         async_polls,
         async_pending,
         async_wakeups,
-        async_sleep_reg
+        async_sleep_reg,
+        call_bind_ic_hit,
+        call_bind_ic_miss,
+        call_indirect_noncallable_deopt,
+        invoke_ffi_bridge_capability_denied,
+        guard_tag_type_mismatch_deopt,
+        guard_dict_shape_layout_mismatch_deopt,
+        attr_site_name_hit,
+        attr_site_name_miss,
+        split_ws_ascii,
+        split_ws_unicode,
+        dict_str_int_prehash_hit,
+        dict_str_int_prehash_miss,
+        dict_str_int_prehash_deopt,
+        taq_ingest_calls,
+        taq_ingest_skip_marker,
+        ascii_i64_parse_fail
     );
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "kind": "runtime_feedback",
+            "profile": {
+                "call_dispatch": call_dispatch,
+                "string_count_cache_hit": cache_hit,
+                "string_count_cache_miss": cache_miss,
+                "struct_field_store": struct_stores,
+                "attr_lookup": attr_lookups,
+                "handle_resolve": handle_resolves,
+                "layout_guard": layout_guard,
+                "layout_guard_fail": layout_guard_fail,
+                "alloc_count": allocs,
+                "alloc_object": alloc_objects,
+                "alloc_exception": alloc_exceptions,
+                "alloc_dict": alloc_dicts,
+                "alloc_tuple": alloc_tuples,
+                "alloc_string": alloc_strings,
+                "alloc_callargs": alloc_callargs,
+                "tb_builds": tb_builds,
+                "tb_frames": tb_frames,
+                "tb_suppressed": tb_suppressed,
+                "async_polls": async_polls,
+                "async_pending": async_pending,
+                "async_wakeups": async_wakeups,
+                "async_sleep_register": async_sleep_reg,
+            },
+            "hot_paths": {
+                "call_bind_ic_hit": call_bind_ic_hit,
+                "call_bind_ic_miss": call_bind_ic_miss,
+                "attr_site_name_hit": attr_site_name_hit,
+                "attr_site_name_miss": attr_site_name_miss,
+                "split_ws_ascii": split_ws_ascii,
+                "split_ws_unicode": split_ws_unicode,
+                "dict_str_int_prehash_hit": dict_str_int_prehash_hit,
+                "dict_str_int_prehash_miss": dict_str_int_prehash_miss,
+                "dict_str_int_prehash_deopt": dict_str_int_prehash_deopt,
+                "taq_ingest_calls": taq_ingest_calls,
+                "taq_ingest_skip_marker": taq_ingest_skip_marker,
+                "ascii_i64_parse_fail": ascii_i64_parse_fail,
+            },
+            "deopt_reasons": {
+                "call_indirect_noncallable": call_indirect_noncallable_deopt,
+                "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
+                "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
+                "guard_dict_shape_layout_mismatch": guard_dict_shape_layout_mismatch_deopt,
+                "guard_dict_shape_layout_fail_null_obj": guard_dict_shape_layout_fail_null_obj,
+                "guard_dict_shape_layout_fail_non_object": guard_dict_shape_layout_fail_non_object,
+                "guard_dict_shape_layout_fail_class_mismatch": guard_dict_shape_layout_fail_class_mismatch,
+                "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
+                "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
+                "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
+            },
+        });
+        if env_flag_enabled("MOLT_PROFILE_JSON") {
+            eprintln!("molt_profile_json {}", payload);
+        }
+        maybe_emit_runtime_feedback_file(&payload);
     })
 }
 
@@ -25052,9 +25211,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let idx = if let Some(i) = to_i64(key) {
                         i
                     } else {
+                        let key_type = type_name(_py, key);
+                        if debug_index_enabled() {
+                            eprintln!(
+                                "molt index type-error op=get container=list key_type={} key_bits=0x{:x} key_float={:?}",
+                                key_type,
+                                key_bits,
+                                key.as_float()
+                            );
+                        }
                         let type_err = format!(
                             "list indices must be integers or slices, not {}",
-                            type_name(_py, key)
+                            key_type
                         );
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
@@ -25133,9 +25301,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let idx = if let Some(i) = to_i64(key) {
                         i
                     } else {
+                        let key_type = type_name(_py, key);
+                        if debug_index_enabled() {
+                            eprintln!(
+                                "molt index type-error op=get container=tuple key_type={} key_bits=0x{:x} key_float={:?}",
+                                key_type,
+                                key_bits,
+                                key.as_float()
+                            );
+                        }
                         let type_err = format!(
                             "tuple indices must be integers or slices, not {}",
-                            type_name(_py, key)
+                            key_type
                         );
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
@@ -25377,9 +25554,18 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let idx = if let Some(i) = to_i64(key) {
                         i
                     } else {
+                        let key_type = type_name(_py, key);
+                        if debug_index_enabled() {
+                            eprintln!(
+                                "molt index type-error op=set container=list key_type={} key_bits=0x{:x} key_float={:?}",
+                                key_type,
+                                key_bits,
+                                key.as_float()
+                            );
+                        }
                         let type_err = format!(
                             "list indices must be integers or slices, not {}",
-                            type_name(_py, key)
+                            key_type
                         );
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
@@ -25880,9 +26066,18 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             return obj_bits;
                         }
                     }
+                    let key_type = type_name(_py, key);
+                    if debug_index_enabled() {
+                        eprintln!(
+                            "molt index type-error op=del container=list key_type={} key_bits=0x{:x} key_float={:?}",
+                            key_type,
+                            key_bits,
+                            key.as_float()
+                        );
+                    }
                     let type_err = format!(
                         "list indices must be integers or slices, not {}",
-                        type_name(_py, key)
+                        key_type
                     );
                     let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
                         return MoltObject::none().bits();
@@ -27028,6 +27223,7 @@ pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bit
                 }
                 return MoltObject::none().bits();
             }
+            profile_hit_unchecked(&DICT_STR_INT_PREHASH_DEOPT_COUNT);
             if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
                 return MoltObject::none().bits();
             }
@@ -27115,6 +27311,7 @@ unsafe fn dict_inc_prehashed_string_key_in_place(
                 }
             }
             if keys_match {
+                profile_hit_unchecked(&DICT_STR_INT_PREHASH_HIT_COUNT);
                 let val_idx = entry_idx * 2 + 1;
                 let current_bits = order[val_idx];
                 let sum_bits: u64;
@@ -27166,6 +27363,7 @@ unsafe fn dict_inc_prehashed_string_key_in_place(
     inc_ref_bits(_py, sum_bits);
     let entry_idx = order.len() / 2 - 1;
     dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    profile_hit_unchecked(&DICT_STR_INT_PREHASH_MISS_COUNT);
     Some(!exception_pending(_py))
 }
 
@@ -27448,6 +27646,7 @@ fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
     }
     let trimmed = &field[start..end];
     if trimmed.is_empty() {
+        profile_hit_unchecked(&ASCII_I64_PARSE_FAIL_COUNT);
         raise_exception::<()>(
             _py,
             "ValueError",
@@ -27464,6 +27663,7 @@ fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
         idx = 1;
     }
     if idx >= trimmed.len() {
+        profile_hit_unchecked(&ASCII_I64_PARSE_FAIL_COUNT);
         let shown = String::from_utf8_lossy(trimmed);
         let msg = format!("invalid literal for int() with base 10: '{shown}'");
         raise_exception::<()>(_py, "ValueError", &msg);
@@ -27473,6 +27673,7 @@ fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
     while idx < trimmed.len() {
         let b = trimmed[idx];
         if !b.is_ascii_digit() {
+            profile_hit_unchecked(&ASCII_I64_PARSE_FAIL_COUNT);
             let shown = String::from_utf8_lossy(trimmed);
             let msg = format!("invalid literal for int() with base 10: '{shown}'");
             raise_exception::<()>(_py, "ValueError", &msg);
@@ -27485,6 +27686,7 @@ fn parse_ascii_i64_field(_py: &PyToken<'_>, field: &[u8]) -> Option<i64> {
         value = -value;
     }
     if value < i128::from(i64::MIN) || value > i128::from(i64::MAX) {
+        profile_hit_unchecked(&ASCII_I64_PARSE_FAIL_COUNT);
         let shown = String::from_utf8_lossy(trimmed);
         let msg = format!("invalid literal for int() with base 10: '{shown}'");
         raise_exception::<()>(_py, "ValueError", &msg);
@@ -27617,6 +27819,7 @@ pub extern "C" fn molt_string_split_ws_dict_inc(
             let mut last_bits = MoltObject::none().bits();
             let mut had_any = false;
             if line_bytes.is_ascii() {
+                profile_hit_unchecked(&SPLIT_WS_ASCII_FAST_PATH_COUNT);
                 if !split_ascii_whitespace_dict_inc_tokens(
                     _py,
                     dict_ptr,
@@ -27628,6 +27831,7 @@ pub extern "C" fn molt_string_split_ws_dict_inc(
                     return MoltObject::none().bits();
                 }
             } else {
+                profile_hit_unchecked(&SPLIT_WS_UNICODE_PATH_COUNT);
                 let Ok(line_str) = std::str::from_utf8(line_bytes) else {
                     return MoltObject::none().bits();
                 };
@@ -27747,6 +27951,7 @@ pub extern "C" fn molt_taq_ingest_line(
     bucket_size_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        profile_hit_unchecked(&TAQ_INGEST_CALL_COUNT);
         let dict_obj = obj_from_bits(dict_bits);
         let line_obj = obj_from_bits(line_bits);
         let Some(dict_ptr_raw) = dict_obj.as_ptr() else {
@@ -27816,6 +28021,7 @@ pub extern "C" fn molt_taq_ingest_line(
                 return raise_exception::<_>(_py, "IndexError", "list index out of range");
             };
             if ts_field == b"END" || vol_field == b"ENDP" {
+                profile_hit_unchecked(&TAQ_INGEST_SKIP_MARKER_COUNT);
                 return MoltObject::from_bool(false).bits();
             }
             let Some(timestamp) = parse_ascii_i64_field(_py, ts_field) else {

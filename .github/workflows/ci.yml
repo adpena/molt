@@ -30,6 +30,8 @@ jobs:
         run: uv run python tools/check_stdlib_intrinsics.py --critical-allowlist
       - name: Core lane lowering gate
         run: uv run python tools/check_core_lane_lowering.py
+      - name: Molt IR inventory + semantic lane gate
+        run: uv run python tools/check_molt_ir_ops.py
       - name: Type check
         run: uv run ty check src
       - name: Verified subset manifest
@@ -58,7 +60,10 @@ jobs:
         run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 tests/differential/core
       - name: Run molt-diff basic suite
         if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py tests/differential/basic
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 MOLT_DIFF_FAILURES=ir_probe_failures.txt uv run python tests/molt_diff.py tests/differential/basic
+      - name: Molt IR probe execution gate
+        if: matrix.python-version == '3.12'
+        run: uv run python tools/check_molt_ir_ops.py --require-probe-execution --probe-rss-metrics rss_metrics.jsonl --failure-queue ir_probe_failures.txt
       - name: Run molt-diff patterns suite
         if: matrix.python-version == '3.12'
         run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py tests/differential/patterns
