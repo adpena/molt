@@ -1,5 +1,8 @@
 # Agent Memory Log
 
+Archival note: this file is historical/internal coordination context and is not
+a canonical source of project status or capability truth.
+
 This log is append-only. Record coordination notes, active scope, tests, and
 benchmarks here to avoid collisions during parallel work.
 

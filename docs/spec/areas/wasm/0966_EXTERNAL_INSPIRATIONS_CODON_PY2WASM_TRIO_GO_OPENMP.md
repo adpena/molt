@@ -12,7 +12,9 @@
 
 This is a **design input doc** and a **work plan**: it states what to “steal,” why, and how to translate it into Molt’s tiered semantics and portability goals.
 
-> This file is intended to replace/supersede `0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO.md`.
+> Historical note: earlier drafts used the title
+> `0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO.md`; this OpenMP revision is
+> the canonical `0966` spec.
 
 ---
 

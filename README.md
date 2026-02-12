@@ -13,6 +13,15 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
   interoperability for Molt-supported semantics, while honoring Molt vision
   constraints (determinism, capability gates, and no hidden host fallback).
 
+## Documentation Quick Links
+- Docs index (canonical navigation): [`docs/INDEX.md`](docs/INDEX.md)
+- Spec index (full spec map): [`docs/spec/README.md`](docs/spec/README.md)
+- Differential suite organization + run ledger: [`tests/differential/INDEX.md`](tests/differential/INDEX.md)
+- Examples guide: [`examples/README.md`](examples/README.md)
+- Demo guide: [`demo/README.md`](demo/README.md)
+- Bench guides: [`bench/README.md`](bench/README.md), [`bench/friends/README.md`](bench/friends/README.md)
+- Packaging guides: [`packaging/README.md`](packaging/README.md), [`packaging/templates/linux/README.md`](packaging/templates/linux/README.md)
+
 ## Optimization Program Kickoff
 
 - Current phase: Week 1 observability complete with Week 0 baseline lock artifacts captured; next focus is Week 2 specialization + wasm stabilization clusters.

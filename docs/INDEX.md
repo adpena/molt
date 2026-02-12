@@ -10,6 +10,18 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - `docs/OPERATIONS.md`
 - Platform pitfalls: `README.md` (quickstart), `docs/DEVELOPER_GUIDE.md`, and `docs/OPERATIONS.md`.
 
+## Navigation Hubs
+- Project quickstart + top-level status: [`README.md`](../README.md)
+- Canonical documentation index: [`docs/INDEX.md`](INDEX.md)
+- Full spec index (all spec areas): [`docs/spec/README.md`](spec/README.md)
+- Differential test organization and run ledger: [`tests/differential/INDEX.md`](../tests/differential/INDEX.md)
+
+## Workspace Guides
+- Examples: [`examples/README.md`](../examples/README.md)
+- Demo app and offload workflow: [`demo/README.md`](../demo/README.md)
+- Benchmark harnesses: [`bench/README.md`](../bench/README.md), [`bench/friends/README.md`](../bench/friends/README.md)
+- Packaging/release guides: [`packaging/README.md`](../packaging/README.md), [`packaging/templates/linux/README.md`](../packaging/templates/linux/README.md)
+
 ## Vision, Scope, Status
 - 0000 Vision: `docs/spec/areas/core/0000-vision.md`
 - 0025 Reproducible And Deterministic Mode: `docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md`
@@ -65,3 +77,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 
 ## Full spec index
 - `docs/spec/README.md`
+
+## Internal And Archival
+- Agent memory log (archival context, not canonical status): `docs/AGENT_MEMORY.md`
+- Agent lock coordination notes (internal operations): `docs/AGENT_LOCKS.md`

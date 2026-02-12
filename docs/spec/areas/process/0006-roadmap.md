@@ -1,7 +1,7 @@
 # Molt Roadmap: From Scaffold to Production
 **Status:** Historical milestone framing (superseded)
 
-This document preserves the original milestone definitions for context. Current status and sequencing live in `ROADMAP.md`, with near-term steps in `ROADMAP_90_DAYS.md`.
+This document preserves the original milestone definitions for context. Current status and sequencing live in `ROADMAP.md`, with near-term steps in `docs/ROADMAP_90_DAYS.md`.
 
 ## Milestone 1: The "Hello World" Scaffold (Week 1-2)
 **Goal:** Minimal pipeline that compiles a Python function to native code.
