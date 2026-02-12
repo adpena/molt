@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 import os
 from pathlib import Path
 import importlib
+
+_require_intrinsic("molt_capabilities_has", globals())
 
 
 def _extend_cpython_test_path() -> None:
@@ -39,9 +43,9 @@ _MODULE_ALIASES = {
     "list_tests": ("test.list_tests", "list_tests"),
     "seq_tests": ("test.seq_tests", "seq_tests"),
     "support": ("test.support", "support"),
-    "import_helper": ("test.support.import_helper", "import_helper"),
-    "os_helper": ("test.support.os_helper", "os_helper"),
-    "warnings_helper": ("test.warnings_helper", "warnings_helper"),
+    "import_helper": ("test.support.import_helper", "support.import_helper"),
+    "os_helper": ("test.support.os_helper", "support.os_helper"),
+    "warnings_helper": ("test.support.warnings_helper", "support.warnings_helper"),
 }
 
 

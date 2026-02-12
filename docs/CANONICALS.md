@@ -25,3 +25,8 @@ These are the must-read documents for anyone adding or reviewing functionality.
 - `docs/spec/README.md`
 - `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
 - `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
+- `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+- `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+- `tools/stdlib_module_union.py`
+- `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
+- `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`

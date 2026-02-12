@@ -2,20 +2,20 @@
 Tests common to list and UserList.UserList
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 import sys
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Any, cast
+
+_require_intrinsic("molt_capabilities_has", globals())
 
 if TYPE_CHECKING:
     from . import seq_tests
     from .support import ALWAYS_EQ, C_RECURSION_LIMIT, NEVER_EQ
 else:
-    try:
-        from test import seq_tests
-        from test.support import ALWAYS_EQ, C_RECURSION_LIMIT, NEVER_EQ
-    except ModuleNotFoundError:
-        from . import seq_tests
-        from .support import ALWAYS_EQ, C_RECURSION_LIMIT, NEVER_EQ
+    from . import seq_tests
+    from .support import ALWAYS_EQ, C_RECURSION_LIMIT, NEVER_EQ
 
 
 class CommonTest(seq_tests.CommonTest):

@@ -3085,6 +3085,14 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             }
             let name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<name>".to_string());
+            if name == "exec" || name == "eval" {
+                let msg = format!(
+                    "MOLT_COMPAT_ERROR: {name}() is unsupported in compiled Molt binaries; \
+dynamic code execution is outside the verified subset. \
+Use static modules or pre-generated code paths instead."
+                );
+                return raise_exception::<_>(_py, "RuntimeError", &msg);
+            }
             if trace {
                 let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
                     .unwrap_or_else(|| "<module>".to_string());

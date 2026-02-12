@@ -18,6 +18,16 @@ SUPPORTED_SEMANTIC_MODES = {
     "unsupported_by_molt",
 }
 
+SUPPORTED_RUNNER_NAMES = (
+    "cpython",
+    "pypy",
+    "molt",
+    "codon",
+    "friend",
+    "nuitka",
+    "pyodide",
+)
+
 
 @dataclass(frozen=True)
 class RunnerSpec:
@@ -221,7 +231,7 @@ def _parse_runners(suite_id: str, raw_runners: Any) -> dict[str, RunnerSpec]:
     if not isinstance(raw_runners, dict):
         raise ValueError(f"suite {suite_id}: runners must be a table/object")
     runners: dict[str, RunnerSpec] = {}
-    for runner_name in ("cpython", "molt", "friend"):
+    for runner_name in SUPPORTED_RUNNER_NAMES:
         runner_raw = raw_runners.get(runner_name)
         if runner_raw is None:
             continue
@@ -531,23 +541,60 @@ def _run_runner(
 
 
 def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
-    cp = runners.get("cpython")
-    mt = runners.get("molt")
-    ct = runners.get("friend")
-    cp_s = cp.run_median_s if cp and cp.status == "ok" else None
-    mt_s = mt.run_median_s if mt and mt.status == "ok" else None
-    ct_s = ct.run_median_s if ct and ct.status == "ok" else None
+    def _runner_median(name: str) -> float | None:
+        runner = runners.get(name)
+        if runner and runner.status == "ok":
+            return runner.run_median_s
+        return None
 
-    molt_vs_cpython = cp_s / mt_s if cp_s and mt_s else None
-    molt_vs_friend = ct_s / mt_s if ct_s and mt_s else None
-    friend_vs_molt = mt_s / ct_s if ct_s and mt_s else None
+    def _speedup(baseline_s: float | None, candidate_s: float | None) -> float | None:
+        if (
+            baseline_s is None
+            or candidate_s is None
+            or baseline_s <= 0.0
+            or candidate_s <= 0.0
+        ):
+            return None
+        return baseline_s / candidate_s
+
+    cp_s = _runner_median("cpython")
+    pp_s = _runner_median("pypy")
+    mt_s = _runner_median("molt")
+    codon_s = _runner_median("codon")
+    friend_s = _runner_median("friend")
+    nuitka_s = _runner_median("nuitka")
+    pyodide_s = _runner_median("pyodide")
+
+    # Standardized lane keys align with tools/bench.py JSON naming.
     return {
         "cpython_median_s": cp_s,
+        "pypy_median_s": pp_s,
         "molt_median_s": mt_s,
-        "friend_median_s": ct_s,
-        "molt_vs_cpython_speedup": molt_vs_cpython,
-        "molt_vs_friend_speedup": molt_vs_friend,
-        "friend_vs_molt_speedup": friend_vs_molt,
+        "codon_median_s": codon_s,
+        "friend_median_s": friend_s,
+        "nuitka_median_s": nuitka_s,
+        "pyodide_median_s": pyodide_s,
+        "cpython_time_s": cp_s,
+        "pypy_time_s": pp_s,
+        "molt_time_s": mt_s,
+        "codon_time_s": codon_s,
+        "nuitka_time_s": nuitka_s,
+        "pyodide_time_s": pyodide_s,
+        "molt_vs_cpython_speedup": _speedup(cp_s, mt_s),
+        "molt_vs_pypy_speedup": _speedup(pp_s, mt_s),
+        "molt_vs_codon_speedup": _speedup(codon_s, mt_s),
+        "molt_vs_friend_speedup": _speedup(friend_s, mt_s),
+        "friend_vs_molt_speedup": _speedup(mt_s, friend_s),
+        "molt_vs_nuitka_speedup": _speedup(nuitka_s, mt_s),
+        "nuitka_vs_molt_speedup": _speedup(mt_s, nuitka_s),
+        "molt_vs_pyodide_speedup": _speedup(pyodide_s, mt_s),
+        "pyodide_vs_molt_speedup": _speedup(mt_s, pyodide_s),
+        "molt_speedup": _speedup(cp_s, mt_s),
+        "molt_cpython_ratio": _speedup(mt_s, cp_s),
+        "molt_pypy_ratio": _speedup(mt_s, pp_s),
+        "molt_codon_ratio": _speedup(mt_s, codon_s),
+        "molt_nuitka_ratio": _speedup(mt_s, nuitka_s),
+        "molt_pyodide_ratio": _speedup(mt_s, pyodide_s),
     }
 
 
@@ -582,19 +629,31 @@ def _render_summary_markdown(
     lines.append(f"JSON: `{json_rel}`")
     lines.append("")
     lines.append(
-        "| Suite | Semantic Mode | Status | CPython s | Molt s | "
-        "Friend s | Molt/CPython | Molt/Friend |"
+        "| Suite | Semantic Mode | Status | CPython s | PyPy s | Codon s | "
+        "Nuitka s | Pyodide s | Friend s | Molt s | Molt/CPython | Molt/PyPy | "
+        "Molt/Codon | Molt/Nuitka | Molt/Pyodide | Molt/Friend |"
     )
-    lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    lines.append(
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "---: | ---: | ---: | ---: | ---: | ---: |"
+    )
     for suite in suites:
         m = suite.metrics
         lines.append(
             "| "
             f"{suite.id} | {suite.semantic_mode} | {suite.status} | "
             f"{_format_optional(m.get('cpython_median_s'))} | "
-            f"{_format_optional(m.get('molt_median_s'))} | "
+            f"{_format_optional(m.get('pypy_median_s'))} | "
+            f"{_format_optional(m.get('codon_median_s'))} | "
+            f"{_format_optional(m.get('nuitka_median_s'))} | "
+            f"{_format_optional(m.get('pyodide_median_s'))} | "
             f"{_format_optional(m.get('friend_median_s'))} | "
-            f"{_format_optional(m.get('molt_vs_cpython_speedup'))} | "
+            f"{_format_optional(m.get('molt_median_s'))} | "
+            f"{_format_optional(m.get('molt_cpython_ratio'))} | "
+            f"{_format_optional(m.get('molt_pypy_ratio'))} | "
+            f"{_format_optional(m.get('molt_codon_ratio'))} | "
+            f"{_format_optional(m.get('molt_nuitka_ratio'))} | "
+            f"{_format_optional(m.get('molt_pyodide_ratio'))} | "
             f"{_format_optional(m.get('molt_vs_friend_speedup'))} |"
         )
 
@@ -605,7 +664,7 @@ def _render_summary_markdown(
         "`unsupported_by_molt`."
     )
     lines.append(
-        "- `Molt/Friend` values > 1.0 indicate Molt is faster on the suite median."
+        "- Ratio columns (`Molt/*`) > 1.0 indicate Molt is faster on the suite median."
     )
     lines.append(
         "- Compile-vs-run separation is recorded per runner when build commands "

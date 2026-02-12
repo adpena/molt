@@ -1,70 +1,61 @@
 # Stdlib Intrinsics Backing Tracker
 **Spec ID:** 0015-IB
-**Status:** Draft (tracking)
-**Owner:** stdlib + runtime + compiler
+**Status:** Active (generated-gate driven)
+**Owner:** stdlib + runtime + tooling
 
-Tracks stdlib modules that are currently implemented in Python without runtime intrinsics.
-This is a worklist for replacing pure-Python implementations with Rust-backed intrinsics.
+## Canonical Source Of Truth
+This tracker is no longer maintained as a hand-edited per-module table.
 
-| Module | Status | Notes |
-| --- | --- | --- |
-| `__future__` | Python-only | Source: `src/molt/stdlib/__future__.py` |
-| `_abc` | Python-only | Source: `src/molt/stdlib/_abc.py` |
-| `_asyncio` | Python-only | Source: `src/molt/stdlib/_asyncio.py` |
-| `_bz2` | Python-only | Source: `src/molt/stdlib/_bz2.py` |
-| `_collections_abc` | Python-only | Source: `src/molt/stdlib/_collections_abc.py` |
-| `_weakref` | Python-only | Source: `src/molt/stdlib/_weakref.py` |
-| `_weakrefset` | Python-only | Source: `src/molt/stdlib/_weakrefset.py` |
-| `abc` | Python-only | Source: `src/molt/stdlib/abc.py` |
-| `ast` | Python-only | Source: `src/molt/stdlib/ast.py` |
-| `base64` | Python-only | Source: `src/molt/stdlib/base64.py` |
-| `bisect` | Python-only | Source: `src/molt/stdlib/bisect.py` |
-| `collections.abc` | Python-only | Source: `src/molt/stdlib/collections/abc.py` |
-| `compileall` | Python-only | Source: `src/molt/stdlib/compileall.py` |
-| `concurrent` | Python-only | Source: `src/molt/stdlib/concurrent/__init__.py` |
-| `contextlib` | Python-only | Source: `src/molt/stdlib/contextlib.py` |
-| `contextvars` | Python-only | Source: `src/molt/stdlib/contextvars.py` |
-| `copyreg` | Python-only | Source: `src/molt/stdlib/copyreg.py` |
-| `csv` | Python-only | Source: `src/molt/stdlib/csv.py` |
-| `ctypes` | Python-only | Source: `src/molt/stdlib/ctypes.py` |
-| `doctest` | Python-only | Source: `src/molt/stdlib/doctest.py` |
-| `fnmatch` | Python-only | Source: `src/molt/stdlib/fnmatch.py` |
-| `functools` | Python-only | Source: `src/molt/stdlib/functools.py` |
-| `gc` | Python-only | Source: `src/molt/stdlib/gc.py` |
-| `gettext` | Python-only | Source: `src/molt/stdlib/gettext.py` |
-| `glob` | Python-only | Source: `src/molt/stdlib/glob.py` |
-| `importlib` | Python-only | Source: `src/molt/stdlib/importlib/__init__.py` |
-| `importlib.machinery` | Python-only | Source: `src/molt/stdlib/importlib/machinery.py` |
-| `importlib.metadata` | Python-only | Source: `src/molt/stdlib/importlib/metadata.py` |
-| `importlib.resources` | Python-only | Source: `src/molt/stdlib/importlib/resources/__init__.py` |
-| `importlib.util` | Python-only | Source: `src/molt/stdlib/importlib/util.py` |
-| `io` | Python-only | Source: `src/molt/stdlib/io.py` |
-| `ipaddress` | Python-only | Source: `src/molt/stdlib/ipaddress.py` |
-| `itertools` | Python-only | Source: `src/molt/stdlib/itertools.py` |
-| `json` | Python-only | Source: `src/molt/stdlib/json.py` |
-| `keyword` | Python-only | Source: `src/molt/stdlib/keyword.py` |
-| `linecache` | Python-only | Source: `src/molt/stdlib/linecache.py` |
-| `locale` | Python-only | Source: `src/molt/stdlib/locale.py` |
-| `operator` | Python-only | Source: `src/molt/stdlib/operator.py` |
-| `pathlib` | Python-only | Source: `src/molt/stdlib/pathlib.py` |
-| `pickle` | Python-only | Source: `src/molt/stdlib/pickle.py` |
-| `pkgutil` | Python-only | Source: `src/molt/stdlib/pkgutil.py` |
-| `pprint` | Python-only | Source: `src/molt/stdlib/pprint.py` |
-| `py_compile` | Python-only | Source: `src/molt/stdlib/py_compile.py` |
-| `random` | Python-only | Source: `src/molt/stdlib/random.py` |
-| `re` | Python-only | Source: `src/molt/stdlib/re.py` |
-| `reprlib` | Python-only | Source: `src/molt/stdlib/reprlib.py` |
-| `shlex` | Python-only | Source: `src/molt/stdlib/shlex.py` |
-| `shutil` | Python-only | Source: `src/molt/stdlib/shutil.py` |
-| `signal` | Python-only | Source: `src/molt/stdlib/signal.py` |
-| `stat` | Python-only | Source: `src/molt/stdlib/stat.py` |
-| `string` | Python-only | Source: `src/molt/stdlib/string.py` |
-| `tempfile` | Python-only | Source: `src/molt/stdlib/tempfile.py` |
-| `textwrap` | Python-only | Source: `src/molt/stdlib/textwrap.py` |
-| `types` | Python-only | Source: `src/molt/stdlib/types.py` |
-| `typing` | Python-only | Source: `src/molt/stdlib/typing.py` |
-| `unittest` | Python-only | Source: `src/molt/stdlib/unittest.py` |
-| `urllib` | Python-only | Source: `src/molt/stdlib/urllib/__init__.py` |
-| `urllib.parse` | Python-only | Source: `src/molt/stdlib/urllib/parse.py` |
-| `uuid` | Python-only | Source: `src/molt/stdlib/uuid.py` |
-| `zipimport` | Python-only | Source: `src/molt/stdlib/zipimport.py` |
+Canonical intrinsic-backing status now comes from:
+- gate script: `tools/check_stdlib_intrinsics.py`
+- generated audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+
+The gate computes `intrinsic-backed`, `intrinsic-partial`, `probe-only`, and
+`python-only` directly from `src/molt/stdlib/**` source and intrinsic usage.
+
+## Coverage Baseline
+Top-level + submodule name coverage is enforced against the CPython
+3.12/3.13/3.14 union baseline:
+- baseline: `tools/stdlib_module_union.py`
+- generator: `tools/gen_stdlib_module_union.py`
+- stub sync: `tools/sync_stdlib_top_level_stubs.py`
+- submodule stub sync: `tools/sync_stdlib_submodule_stubs.py`
+- workflow doc: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
+
+## Daily Commands
+- Audit + lint:
+  - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+- Critical strict roots:
+  - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
+- Ratchet budget check (explicit file override lane):
+  - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --intrinsic-partial-ratchet-file tools/stdlib_intrinsics_ratchet.json`
+- Regenerate audit doc:
+  - `python3 tools/check_stdlib_intrinsics.py --update-doc`
+
+## Ratchet Policy
+- Ratchet source: `tools/stdlib_intrinsics_ratchet.json`
+- Field: `max_intrinsic_partial`
+- Rule: `intrinsic-partial` count must never exceed the ratchet.
+- Expected workflow: lower modules first, then reduce the ratchet in the same change.
+
+## Full-Coverage Contract
+- Full-coverage attestation source: `tools/stdlib_full_coverage_manifest.py`
+- `STDLIB_FULLY_COVERED_MODULES`: modules/submodules explicitly attested as
+  full CPython 3.12+ API/PEP coverage (for Molt-supported semantics).
+- `STDLIB_REQUIRED_INTRINSICS_BY_MODULE`: required intrinsic contract for each
+  attested module.
+- Gate rules enforced by `tools/check_stdlib_intrinsics.py`:
+  - every attested module must be `intrinsic-backed`
+  - every attested module must have a contract entry
+  - every contract intrinsic must exist in runtime manifest and be wired in-module
+  - non-attested modules are classified as `intrinsic-partial` by default
+
+## Too-Dynamic Differential Policy
+- Intentional unsupported dynamism cases are tracked in
+  `tools/stdlib_full_coverage_manifest.py` via
+  `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
+- `tests/molt_diff.py` auto-applies expected-failure behavior for listed tests:
+  - Molt fail + CPython pass => `[XFAIL]` (counted as pass)
+  - Molt pass + CPython pass => `[XPASS]` (counted as failure)
+- Current high-confidence policy scope is `exec`/`eval` planned differential
+  tests, matching the project break policy against maximal runtime dynamism.

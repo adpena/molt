@@ -114,3 +114,64 @@ def test_bench_friends_include_disabled_with_dry_run(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
     payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
     assert payload["suites"][0]["status"] == "skipped"
+
+
+def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "out_ext"
+    suite_root = tmp_path / "suite_ext"
+    suite_root.mkdir(parents=True, exist_ok=True)
+
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "ext_runners_smoke"
+            enabled = true
+            friend = "local"
+            source = "local"
+            local_path = "{suite_root.as_posix()}"
+            semantic_mode = "requires_adapter"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.cpython]
+            run_cmd = ["python3", "-c", "import time; time.sleep(0.01)"]
+
+            [suite.runners.molt]
+            run_cmd = ["python3", "-c", "import time; time.sleep(0.02)"]
+
+            [suite.runners.nuitka]
+            run_cmd = ["python3", "-c", "import time; time.sleep(0.03)"]
+
+            [suite.runners.pyodide]
+            run_cmd = ["python3", "-c", "import time; time.sleep(0.04)"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run_tool(
+        "--manifest",
+        str(manifest),
+        "--output-root",
+        str(output_root),
+    )
+    assert res.returncode == 0, res.stderr
+
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    suite = payload["suites"][0]
+    assert suite["status"] == "ok"
+    assert suite["runners"]["nuitka"]["status"] == "ok"
+    assert suite["runners"]["pyodide"]["status"] == "ok"
+    assert suite["metrics"]["nuitka_median_s"] is not None
+    assert suite["metrics"]["pyodide_median_s"] is not None
+    assert suite["metrics"]["molt_vs_nuitka_speedup"] is not None
+    assert suite["metrics"]["molt_vs_pyodide_speedup"] is not None
+
+    summary_text = (output_root / "summary.md").read_text(encoding="utf-8")
+    assert "Nuitka s" in summary_text
+    assert "Pyodide s" in summary_text

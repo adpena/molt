@@ -94,6 +94,7 @@ RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 WASM_LD = shutil.which("wasm-ld")
 _LINK_WARNED = False
 _LINK_DISABLED = False
+_LAST_BUILD_FAILURE_DETAIL: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ class _RunResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -217,34 +219,65 @@ def _run_cmd(
     capture: bool,
     tty: bool,
     log: TextIO | None,
+    timeout_s: float | None = None,
 ) -> _RunResult:
-    if tty and not capture and os.name == "posix":
+    if tty and not capture and os.name == "posix" and timeout_s is None:
         return _run_with_pty(cmd, env, log)
-    if log is None and not capture:
-        res = subprocess.run(cmd, text=True, env=env)
-        return _RunResult(res.returncode)
-    if log is None and capture:
-        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+    if tty and timeout_s is not None and not capture:
+        print(
+            "TTY mode requested with timeout; using non-TTY subprocess mode.",
+            file=sys.stderr,
+        )
 
-    _log_command(log, cmd)
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    output: list[str] = []
-    if proc.stdout is not None:
-        for line in proc.stdout:
-            if not capture:
-                sys.stdout.write(line)
+    if log is not None:
+        _log_command(log, cmd)
+    try:
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        err = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        if log is not None:
+            if out:
+                _log_write(log, out)
+            if err:
+                _log_write(log, err)
+            _log_write(
+                log,
+                f"# timeout after {timeout_s:.1f}s (command aborted)\n"
+                if timeout_s is not None
+                else "# timeout (command aborted)\n",
+            )
+        if not capture:
+            if out:
+                sys.stdout.write(out)
                 sys.stdout.flush()
-            _log_write(log, line)
-            output.append(line)
-    return _RunResult(proc.wait(), "".join(output), "")
+            if err:
+                sys.stderr.write(err)
+                sys.stderr.flush()
+        return _RunResult(returncode=124, stdout=out, stderr=err, timed_out=True)
+
+    stdout = res.stdout or ""
+    stderr = res.stderr or ""
+    if log is not None:
+        if stdout:
+            _log_write(log, stdout)
+        if stderr:
+            _log_write(log, stderr)
+    if not capture:
+        if stdout:
+            sys.stdout.write(stdout)
+            sys.stdout.flush()
+        if stderr:
+            sys.stderr.write(stderr)
+            sys.stderr.flush()
+        return _RunResult(res.returncode, timed_out=False)
+    return _RunResult(res.returncode, stdout, stderr, False)
 
 
 def _summarize_error_text(
@@ -259,6 +292,49 @@ def _summarize_error_text(
     if len(trimmed) > max_chars:
         trimmed = trimmed[:max_chars].rstrip() + "... (truncated)"
     return trimmed
+
+
+def _write_build_timeout_diag(
+    *,
+    output_path: Path,
+    script: str,
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_s: float | None,
+    attempt: str,
+    result: _RunResult,
+) -> None:
+    diag_path = output_path.parent / f"build_timeout_diag_{attempt}.json"
+    payload = {
+        "script": script,
+        "attempt": attempt,
+        "timeout_s": timeout_s,
+        "command": cmd,
+        "env": {
+            key: env.get(key)
+            for key in (
+                "PYTHONHASHSEED",
+                "CARGO_TARGET_DIR",
+                "MOLT_BUILD_STATE_DIR",
+                "MOLT_BUILD_LOCK_TIMEOUT",
+                "MOLT_FRONTEND_PHASE_TIMEOUT",
+                "MOLT_MIDEND_FAIL_OPEN",
+                "MOLT_MIDEND_MAX_ROUNDS",
+                "MOLT_SCCP_MAX_ITERS",
+                "MOLT_CSE_MAX_ITERS",
+            )
+        },
+        "timed_out": result.timed_out,
+        "returncode": result.returncode,
+        "stdout_tail": (result.stdout or "")[-4000:],
+        "stderr_tail": (result.stderr or "")[-4000:],
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    try:
+        diag_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        print(f"Wrote build timeout diagnostic: {diag_path}", file=sys.stderr)
+    except OSError as exc:
+        print(f"Failed to write build timeout diagnostic: {exc}", file=sys.stderr)
 
 
 def _classify_failure(error: str, *, runner: str, returncode: int) -> str:
@@ -317,6 +393,12 @@ def _base_env() -> dict[str, str]:
     env.setdefault("MOLT_CSE_MAX_ITERS", "8")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "3")
     env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
+    env.setdefault(
+        "MOLT_MIDEND_SKIP_MODULE_PREFIXES",
+        "_collections_abc,abc,asyncio,collections",
+    )
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "60")
+    env.setdefault("MOLT_FRONTEND_PHASE_TIMEOUT", "60")
     external_root = _external_root()
     if external_root is not None:
         env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
@@ -358,6 +440,19 @@ def _parse_env_int(name: str) -> int | None:
     return parsed
 
 
+def _parse_env_float(name: str, *, default: float | None = None) -> float | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a float, got: {value!r}") from None
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be > 0, got: {parsed}")
+    return parsed
+
+
 def _append_rustflags(env: dict[str, str], flags: str) -> None:
     existing = env.get("RUSTFLAGS", "")
     joined = f"{existing} {flags}".strip()
@@ -367,6 +462,9 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
 def build_runtime_wasm(
     *, reloc: bool, output: Path, tty: bool, log: TextIO | None
 ) -> bool:
+    runtime_build_timeout = _parse_env_float(
+        "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC", default=300.0
+    )
     env = os.environ.copy()
     # Runtime wasm artifacts have shown intermittent corruption on external
     # target roots in this environment. Keep runtime builds on local target.
@@ -398,7 +496,14 @@ def build_runtime_wasm(
         capture=not tty,
         tty=tty,
         log=log,
+        timeout_s=runtime_build_timeout,
     )
+    if res.timed_out:
+        print(
+            f"WASM runtime build timed out after {runtime_build_timeout:.1f}s.",
+            file=sys.stderr,
+        )
+        return False
     if res.returncode != 0:
         if res.stderr or res.stdout:
             err = (res.stderr or res.stdout).strip()
@@ -431,6 +536,7 @@ def build_runtime_wasm(
             capture=not tty,
             tty=tty,
             log=log,
+            timeout_s=runtime_build_timeout,
         )
         if clean_res.returncode != 0:
             err = (clean_res.stderr or clean_res.stdout).strip()
@@ -443,7 +549,14 @@ def build_runtime_wasm(
             capture=not tty,
             tty=tty,
             log=log,
+            timeout_s=runtime_build_timeout,
         )
+        if res.timed_out:
+            print(
+                f"WASM runtime rebuild timed out after {runtime_build_timeout:.1f}s.",
+                file=sys.stderr,
+            )
+            return False
         if res.returncode != 0:
             err = (res.stderr or res.stdout).strip()
             if err:
@@ -461,7 +574,15 @@ def build_runtime_wasm(
                 capture=not tty,
                 tty=tty,
                 log=log,
+                timeout_s=runtime_build_timeout,
             )
+            if res.timed_out:
+                print(
+                    "WASM runtime second rebuild timed out after "
+                    f"{runtime_build_timeout:.1f}s.",
+                    file=sys.stderr,
+                )
+                return False
             if res.returncode != 0:
                 err = (res.stderr or res.stdout).strip()
                 if err:
@@ -486,6 +607,15 @@ def build_runtime_wasm(
 
 def _want_linked() -> bool:
     return os.environ.get("MOLT_WASM_LINK") == "1"
+
+
+def _runtime_rebuild_policy() -> str:
+    raw = os.environ.get("MOLT_WASM_RUNTIME_REBUILD", "auto").strip().lower()
+    if raw in {"always", "1", "true", "yes"}:
+        return "always"
+    if raw in {"never", "0", "false", "no"}:
+        return "never"
+    return "auto"
 
 
 def _link_wasm(
@@ -587,6 +717,9 @@ def _build_wasm_output(
     tty: bool,
     log: TextIO | None,
 ) -> float | None:
+    global _LAST_BUILD_FAILURE_DETAIL
+    _LAST_BUILD_FAILURE_DETAIL = None
+    build_timeout_s = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=90.0)
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     build_cmd = [
         *python_cmd,
@@ -608,18 +741,100 @@ def _build_wasm_output(
         capture=not tty,
         tty=tty,
         log=log,
+        timeout_s=build_timeout_s,
     )
     build_s = time.perf_counter() - start
+    if build_res.timed_out:
+        print(
+            f"WASM build timed out for {script} after {build_timeout_s:.1f}s; "
+            "retrying once with stricter fail-open limits.",
+            file=sys.stderr,
+        )
+        _write_build_timeout_diag(
+            output_path=output_path,
+            script=script,
+            cmd=build_cmd,
+            env=env,
+            timeout_s=build_timeout_s,
+            attempt="primary",
+            result=build_res,
+        )
+        retry_env = env.copy()
+        retry_env["MOLT_MIDEND_FAIL_OPEN"] = "1"
+        retry_env["MOLT_MIDEND_MAX_ROUNDS"] = "1"
+        retry_env["MOLT_SCCP_MAX_ITERS"] = "2"
+        retry_env["MOLT_CSE_MAX_ITERS"] = "2"
+        retry_env["MOLT_MIDEND_IDEMPOTENCE_CHECK"] = "0"
+        retry_env["MOLT_BUILD_LOCK_TIMEOUT"] = "30"
+        retry_env["MOLT_BUILD_STATE_DIR"] = str(
+            output_path.parent / ".molt_state_wasm_retry"
+        )
+        start = time.perf_counter()
+        build_res = _run_cmd(
+            build_cmd,
+            env=retry_env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+            timeout_s=build_timeout_s,
+        )
+        build_s = time.perf_counter() - start
+        if build_res.timed_out:
+            _write_build_timeout_diag(
+                output_path=output_path,
+                script=script,
+                cmd=build_cmd,
+                env=retry_env,
+                timeout_s=build_timeout_s,
+                attempt="retry",
+                result=build_res,
+            )
+            print(
+                f"WASM build timed out again for {script}; aborting benchmark compile.",
+                file=sys.stderr,
+            )
+            _LAST_BUILD_FAILURE_DETAIL = (
+                f"build_timeout_after_retry timeout_s={build_timeout_s:.1f}"
+            )
+            return None
+
+    lock_wait_timeout = "Timed out waiting for build lock"
+    if build_res.returncode != 0 and lock_wait_timeout in (
+        (build_res.stderr or "") + (build_res.stdout or "")
+    ):
+        print(
+            f"WASM build hit build-lock timeout for {script}; retrying with isolated build state.",
+            file=sys.stderr,
+        )
+        retry_env = env.copy()
+        retry_env["MOLT_BUILD_LOCK_TIMEOUT"] = "30"
+        retry_env["MOLT_BUILD_STATE_DIR"] = str(
+            output_path.parent / ".molt_state_wasm_lock_retry"
+        )
+        start = time.perf_counter()
+        build_res = _run_cmd(
+            build_cmd,
+            env=retry_env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+            timeout_s=build_timeout_s,
+        )
+        build_s = time.perf_counter() - start
+
     if build_res.returncode != 0:
         if build_res.stderr or build_res.stdout:
             err = (build_res.stderr or build_res.stdout).strip()
             if err:
                 print(f"WASM build failed for {script}: {err}", file=sys.stderr)
+                _LAST_BUILD_FAILURE_DETAIL = _summarize_error_text(err)
         else:
             print(f"WASM build failed for {script}.", file=sys.stderr)
+            _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
         return None
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
+        _LAST_BUILD_FAILURE_DETAIL = "wasm_output_missing"
         return None
     if not _is_valid_wasm(output_path):
         print(
@@ -637,20 +852,42 @@ def _build_wasm_output(
             capture=not tty,
             tty=tty,
             log=log,
+            timeout_s=build_timeout_s,
         )
         build_s = time.perf_counter() - start
+        if build_res.timed_out:
+            _write_build_timeout_diag(
+                output_path=output_path,
+                script=script,
+                cmd=build_cmd,
+                env=env,
+                timeout_s=build_timeout_s,
+                attempt="integrity_retry",
+                result=build_res,
+            )
+            print(
+                f"WASM build retry timed out for {script}; aborting benchmark compile.",
+                file=sys.stderr,
+            )
+            _LAST_BUILD_FAILURE_DETAIL = (
+                f"build_timeout_integrity_retry timeout_s={build_timeout_s:.1f}"
+            )
+            return None
         if build_res.returncode != 0:
             err = (build_res.stderr or build_res.stdout).strip()
             if err:
                 print(f"WASM build retry failed for {script}: {err}", file=sys.stderr)
+                _LAST_BUILD_FAILURE_DETAIL = _summarize_error_text(err)
             else:
                 print(f"WASM build retry failed for {script}.", file=sys.stderr)
+                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_retry_failed"
             return None
         if not output_path.exists() or not _is_valid_wasm(output_path):
             print(
                 f"WASM build produced invalid output.wasm for {script} after retry.",
                 file=sys.stderr,
             )
+            _LAST_BUILD_FAILURE_DETAIL = "wasm_output_invalid_after_retry"
             return None
     return build_s
 
@@ -663,6 +900,8 @@ def prepare_wasm_binary(
     log: TextIO | None,
     keep_temp: bool,
 ) -> WasmBinary | None:
+    global _LAST_BUILD_FAILURE_DETAIL
+    _LAST_BUILD_FAILURE_DETAIL = None
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
     if keep_temp:
         # Prevent TemporaryDirectory cleanup on GC so artifacts stick around.
@@ -684,6 +923,8 @@ def prepare_wasm_binary(
 
     build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
     if build_s is None:
+        if _LAST_BUILD_FAILURE_DETAIL is None:
+            _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
         if not keep_temp:
             temp_dir.cleanup()
         return None
@@ -701,6 +942,7 @@ def prepare_wasm_binary(
         )
         if not keep_temp:
             temp_dir.cleanup()
+        _LAST_BUILD_FAILURE_DETAIL = "linked_wasm_required_unavailable"
         raise RuntimeError("linked wasm required")
     if want_linked and not linked_used:
         print(
@@ -714,6 +956,8 @@ def prepare_wasm_binary(
             python_cmd, env, output_path, script, tty=tty, log=log
         )
         if build_s is None:
+            if _LAST_BUILD_FAILURE_DETAIL is None:
+                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed_after_link_fallback"
             if not keep_temp:
                 temp_dir.cleanup()
             return None
@@ -975,6 +1219,10 @@ def bench_results(
             data[name]["molt_wasm_failure_class"] = failed_sample.error_class
             data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
             data[name]["molt_wasm_failure"] = failed_sample.error
+        elif not ok and _LAST_BUILD_FAILURE_DETAIL:
+            data[name]["molt_wasm_failure_class"] = "build_setup_error"
+            data[name]["molt_wasm_failure_returncode"] = -1
+            data[name]["molt_wasm_failure"] = _LAST_BUILD_FAILURE_DETAIL
         if control_runner_name is not None and control_sample is not None:
             data[name]["molt_wasm_control_runner"] = control_runner_name
             data[name]["molt_wasm_control_ok"] = control_sample.elapsed_s is not None
@@ -1136,27 +1384,60 @@ def main() -> None:
             log=log_file,
             node_max_old_space_mb=args.node_max_old_space_mb,
         )
-    if not build_runtime_wasm(
-        reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
-    ):
-        if log_file is not None:
-            log_file.close()
-        sys.exit(1)
-    if _want_linked() and not build_runtime_wasm(
-        reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
-    ):
-        if args.require_linked:
+    runtime_policy = _runtime_rebuild_policy()
+    need_shared_runtime = runtime_policy == "always" or not _is_valid_wasm(RUNTIME_WASM)
+    if need_shared_runtime:
+        if runtime_policy == "never":
             print(
-                "Relocatable runtime build failed; linked output is required.",
+                f"Runtime rebuild disabled but runtime artifact is missing/invalid: {RUNTIME_WASM}",
                 file=sys.stderr,
             )
             if log_file is not None:
                 log_file.close()
             sys.exit(1)
-        print(
-            "Relocatable runtime build failed; falling back to non-linked wasm runs.",
-            file=sys.stderr,
+        if not build_runtime_wasm(
+            reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
+        ):
+            if log_file is not None:
+                log_file.close()
+            sys.exit(1)
+    elif log_file is not None:
+        _log_write(log_file, f"# reusing cached runtime wasm {RUNTIME_WASM}\n")
+
+    if _want_linked():
+        need_reloc_runtime = runtime_policy == "always" or not _is_valid_wasm(
+            RUNTIME_WASM_RELOC
         )
+        if need_reloc_runtime:
+            if runtime_policy == "never":
+                if args.require_linked:
+                    print(
+                        "Relocatable runtime rebuild disabled and artifact missing/invalid; "
+                        "linked output is required.",
+                        file=sys.stderr,
+                    )
+                    if log_file is not None:
+                        log_file.close()
+                    sys.exit(1)
+            elif not build_runtime_wasm(
+                reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
+            ):
+                if args.require_linked:
+                    print(
+                        "Relocatable runtime build failed; linked output is required.",
+                        file=sys.stderr,
+                    )
+                    if log_file is not None:
+                        log_file.close()
+                    sys.exit(1)
+                print(
+                    "Relocatable runtime build failed; falling back to non-linked wasm runs.",
+                    file=sys.stderr,
+                )
+        elif log_file is not None:
+            _log_write(
+                log_file, f"# reusing cached reloc runtime wasm {RUNTIME_WASM_RELOC}\n"
+            )
 
     benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
     if args.bench:

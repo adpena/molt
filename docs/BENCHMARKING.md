@@ -45,6 +45,10 @@ uv run --python 3.14 python3 tools/bench.py --script path/to/script.py
 # Record results to JSON (standard for PRs)
 uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
 
+# Isolated dynamic-builtin micro-slices (not part of core KPI suite)
+uv run --python 3.14 python3 tools/bench.py --dynamic-builtin-only \
+  --json-out bench/results/dynamic_builtins.json
+
 # Increase warmup runs (default: 1, or 0 for --smoke)
 uv run --python 3.14 python3 tools/bench.py --warmup 2
 
@@ -54,15 +58,16 @@ uv run --python 3.14 python3 tools/bench.py --compare cpython
 
 ## Native Baselines (Optional)
 
-`tools/bench.py` can compare Molt against optional native baselines using the
-same benchmark scripts:
+`tools/bench.py` compares Molt against optional baseline lanes using the same
+benchmark scripts:
 
 - **PyPy**: auto-probed via `uv run --python pypy@3.11` (skipped if unavailable).
-- **Cython/Numba**: install with `uv sync --group bench --python 3.12` (also included in the `dev` group).
 - **Codon**: install `codon` and ensure it is on PATH.
+- **Nuitka**: install `nuitka` (or pass `--nuitka-cmd "python -m nuitka"`).
+- **Pyodide**: provide a runner prefix with `--pyodide-cmd` or `MOLT_BENCH_PYODIDE_CMD`.
 
-Disable any baseline with `--no-pypy`, `--no-cython`, `--no-numba`, `--no-codon`,
-respectively.
+Disable any baseline with `--no-pypy`, `--no-codon`, `--no-nuitka`, and
+`--no-pyodide`, respectively.
 Use `--no-cpython` when you want a direct Molt-vs-friend comparison lane without
 paying the CPython runtime cost.
 Use `--runtime-timeout-sec <seconds>` to cap per-process runtime for long suites
@@ -132,6 +137,8 @@ Rules:
 - Pin friend repos to immutable `repo_ref` values before enabling suites.
 - Record compile and run phases separately when friends compile ahead of run.
 - Classify cases as `runs_unmodified`, `requires_adapter`, or `unsupported_by_molt`.
+- Use explicit runner lanes: `pypy`, `codon`, `nuitka`, and `pyodide`
+  (`friend` is kept only as a legacy generic lane).
 
 ## Binary Size & Cold-Start (Optional)
 

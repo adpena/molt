@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import runpy
 import signal
 import socket
 import shutil
@@ -81,6 +82,14 @@ def _resolve_molt_cli_python() -> str:
     return sys.executable
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _stdlib_full_coverage_manifest_path() -> Path:
+    return _repo_root() / "tools" / "stdlib_full_coverage_manifest.py"
+
+
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
     overrides: dict[str, str] = {}
     try:
@@ -120,6 +129,43 @@ def _collect_meta(file_path: str) -> dict[str, list[str]]:
                 values = [""]
             meta.setdefault(key, []).extend(values)
     return meta
+
+
+def _normalize_repo_relative(path: str | Path) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = (_repo_root() / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        rel = candidate.relative_to(_repo_root())
+    except ValueError:
+        return candidate.as_posix()
+    return rel.as_posix()
+
+
+@lru_cache(maxsize=1)
+def _too_dynamic_expected_failure_tests() -> frozenset[str]:
+    manifest = _stdlib_full_coverage_manifest_path()
+    if not manifest.exists():
+        return frozenset()
+    try:
+        namespace = runpy.run_path(str(manifest))
+    except Exception:
+        return frozenset()
+    raw = namespace.get("TOO_DYNAMIC_EXPECTED_FAILURE_TESTS", ())
+    if not isinstance(raw, tuple):
+        return frozenset()
+    out: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        out.add(_normalize_repo_relative(item))
+    return frozenset(out)
+
+
+def _manifest_marks_expected_failure(file_path: str) -> bool:
+    return _normalize_repo_relative(file_path) in _too_dynamic_expected_failure_tests()
 
 
 def _parse_version(value: str) -> tuple[int, int] | None:
@@ -190,6 +236,35 @@ def _truthy_flag(values: list[str]) -> bool:
         if value.strip().lower() in {"1", "true", "yes", "on"}:
             return True
     return False
+
+
+def _meta_expect_molt_fail(meta: dict[str, list[str]]) -> bool:
+    values = [v.lower() for v in meta.get("expect_fail", []) + meta.get("xfail", [])]
+    return "molt" in values
+
+
+def _meta_expect_fail_reason(meta: dict[str, list[str]]) -> str:
+    values = meta.get("expect_fail_reason", []) + meta.get("xfail_reason", [])
+    if not values:
+        return ""
+    return values[0].strip()
+
+
+def _resolve_expected_failure_status(
+    *,
+    expect_molt_fail: bool,
+    raw_status: str,
+    cpython_returncode: int,
+) -> tuple[str, str | None]:
+    if not expect_molt_fail:
+        return raw_status, None
+    if cpython_returncode != 0:
+        return raw_status, None
+    if raw_status == "fail":
+        return "pass", "xfail"
+    if raw_status == "pass":
+        return "fail", "xpass"
+    return raw_status, None
 
 
 def _should_skip(
@@ -2355,6 +2430,12 @@ def _print_rss_top(run_id: str, limit: int) -> None:
 
 def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
     meta = _collect_meta(file_path)
+    manifest_expect_fail = _manifest_marks_expected_failure(file_path)
+    explicit_expect_fail = _meta_expect_molt_fail(meta)
+    expect_molt_fail = manifest_expect_fail or explicit_expect_fail
+    expect_fail_reason = _meta_expect_fail_reason(meta)
+    if not expect_fail_reason and manifest_expect_fail:
+        expect_fail_reason = "too_dynamic_policy"
     python_version = _python_exe_version(python_exe)
     host_tags = _host_platform_tags()
     skip, reason = _should_skip(
@@ -2372,6 +2453,21 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
 
     print(f"Testing {file_path} against {python_exe}...")
     cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+
+    def _finalize_status(raw_status: str) -> str:
+        resolved_status, reason_tag = _resolve_expected_failure_status(
+            expect_molt_fail=expect_molt_fail,
+            raw_status=raw_status,
+            cpython_returncode=cp_ret,
+        )
+        if reason_tag == "xfail":
+            reason_text = expect_fail_reason or "expected dynamic-semantics gap"
+            print(f"[XFAIL] {file_path} ({reason_text})")
+        elif reason_tag == "xpass":
+            reason_text = expect_fail_reason or "expected dynamic-semantics gap"
+            print(f"[XPASS] {file_path} ({reason_text})")
+        return resolved_status
+
     if _should_retry_oom(cp_ret, cp_err):
         print(f"[OOM] {file_path} (cpython)")
         return "oom"
@@ -2540,13 +2636,13 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
                     stderr_ok = cp_err == molt_err
                 if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
                     print(f"[PASS] {file_path}")
-                    return "pass"
+                    return _finalize_status("pass")
                 print(f"[FAIL] {file_path} mismatch")
                 print(f"  CPython stdout: {cp_out!r}")
                 print(f"  Molt    stdout: {molt_out!r}")
                 print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
                 print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
-                return "fail"
+                return _finalize_status("fail")
 
         def is_compile_error(err: str) -> bool:
             return any(
@@ -2555,11 +2651,11 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
 
         if cp_ret != 0 and is_compile_error(cp_err) and is_compile_error(molt_err):
             print(f"[PASS] {file_path}")
-            return "pass"
+            return _finalize_status("pass")
 
         print(f"[FAIL] Molt failed to build {file_path}")
         print(molt_err)
-        return "fail"
+        return _finalize_status("fail")
 
     stderr_ok = True
     if stderr_match:
@@ -2567,14 +2663,14 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
 
     if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
         print(f"[PASS] {file_path}")
-        return "pass"
+        return _finalize_status("pass")
     else:
         print(f"[FAIL] {file_path} mismatch")
         print(f"  CPython stdout: {cp_out!r}")
         print(f"  Molt    stdout: {molt_out!r}")
         print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
         print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
-        return "fail"
+        return _finalize_status("fail")
 
 
 def run_diff(

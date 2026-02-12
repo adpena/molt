@@ -3,24 +3,14 @@
 from __future__ import annotations
 
 from typing import Any
-from types import ModuleType
 
 from _intrinsics import require_intrinsic as _intrinsics_require
-
-_capabilities: ModuleType | None
-try:
-    from molt import capabilities as _capabilities_raw
-except Exception:
-    _capabilities = None
-else:
-    if isinstance(_capabilities_raw, ModuleType):
-        _capabilities = _capabilities_raw
-    else:
-        _capabilities = None
 
 _molt_runpy_run_module = _intrinsics_require("molt_runpy_run_module", globals())
 _molt_runpy_resolve_path = _intrinsics_require("molt_runpy_resolve_path", globals())
 _molt_runpy_run_path = _intrinsics_require("molt_runpy_run_path", globals())
+_molt_capabilities_trusted = _intrinsics_require("molt_capabilities_trusted", globals())
+_molt_capabilities_require = _intrinsics_require("molt_capabilities_require", globals())
 
 __all__ = ["run_module", "run_path"]
 
@@ -32,10 +22,15 @@ def _require_intrinsic(fn: Any, name: str) -> Any:
 
 
 def _require_fs_read() -> None:
-    if _capabilities is None:
+    trusted = _require_intrinsic(
+        _molt_capabilities_trusted, "molt_capabilities_trusted"
+    )
+    if trusted():
         return
-    if not _capabilities.trusted():
-        _capabilities.require("fs.read")
+    require = _require_intrinsic(
+        _molt_capabilities_require, "molt_capabilities_require"
+    )
+    require("fs.read")
 
 
 def _fspath(path_name: Any) -> Any:

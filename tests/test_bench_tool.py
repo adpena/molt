@@ -27,9 +27,9 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     res = _run_bench(
         "--no-cpython",
         "--no-pypy",
-        "--no-cython",
-        "--no-numba",
         "--no-codon",
+        "--no-nuitka",
+        "--no-pyodide",
         "--samples",
         "1",
         "--warmup",
@@ -67,9 +67,9 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     res = _run_bench(
         "--no-cpython",
         "--no-pypy",
-        "--no-cython",
-        "--no-numba",
         "--no-codon",
+        "--no-nuitka",
+        "--no-pyodide",
         "--samples",
         "1",
         "--warmup",
@@ -86,4 +86,4 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     entry = payload["benchmarks"][script.name]
     assert entry["molt_ok"] is False
-    assert entry["molt_time_s"] == 0.0
+    assert entry["molt_time_s"] is None

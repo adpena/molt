@@ -79,16 +79,29 @@ def _is_placeholder_module(mod: object) -> bool:
     )
 
 
+def _require_importlib_util_module() -> object:
+    modules = getattr(_sys, "modules", {})
+    mod = modules.get("importlib.util")
+    if mod is None:
+        mod = _MOLT_MODULE_IMPORT("importlib.util")
+    if mod is None:
+        raise ImportError("No module named 'importlib.util'")
+    return mod
+
+
 def _recover_placeholder_module(resolved: str, placeholder: object):
     modules = getattr(_sys, "modules", {})
     previous = modules.pop(resolved, None)
     try:
-        import importlib.util as _importlib_util
-
-        spec = _importlib_util.find_spec(resolved, None)
+        importlib_util = _require_importlib_util_module()
+        find_spec = getattr(importlib_util, "find_spec", None)
+        module_from_spec = getattr(importlib_util, "module_from_spec", None)
+        if not callable(find_spec) or not callable(module_from_spec):
+            raise RuntimeError("importlib.util missing required loader helpers")
+        spec = find_spec(resolved, None)
         if spec is None:
             raise ImportError(f"No module named '{resolved}'")
-        module = _importlib_util.module_from_spec(spec)
+        module = module_from_spec(spec)
         modules[resolved] = module
         loader = getattr(spec, "loader", None)
         if loader is not None:
@@ -262,7 +275,41 @@ def compile(
     return intrinsic(source, filename, mode, flags, dont_inherit, optimize)
 
 
-# TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): implement eval/exec builtins with sandboxing rules.
+def _dynamic_execution_unavailable(name: str) -> RuntimeError:
+    return RuntimeError(
+        "MOLT_COMPAT_ERROR: "
+        f"{name}() is unsupported in compiled Molt binaries; "
+        "dynamic code execution is outside the verified subset. "
+        "Use static modules or pre-generated code paths instead."
+    )
+
+
+def eval(source, globals=None, locals=None):
+    raise _dynamic_execution_unavailable("eval")
+
+
+def exec(source, globals=None, locals=None, *, closure=None):
+    raise _dynamic_execution_unavailable("exec")
+
+
+def _molt_globals_builtin():
+    frame = _molt_getframe(1)
+    if frame is None:
+        return {}
+    return frame.f_globals
+
+
+def _molt_locals_builtin():
+    # TODO(compat, owner:stdlib, milestone:TL2, priority:P1, status:partial): expose
+    # full caller local-variable payload for alias-call paths once regular frame
+    # f_locals snapshots are complete across all lowered function shapes.
+    frame = _molt_getframe(1)
+    if frame is None:
+        return {}
+    return frame.f_locals
+
+
+# TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): implement eval/exec builtins with runtime-lowered sandboxing rules beyond fail-fast errors.
 __all__ = [
     "object",
     "type",
@@ -278,6 +325,12 @@ __all__ = [
     "hex",
     "abs",
     "divmod",
+    "compile",
+    "eval",
+    "exec",
+    "__import__",
+    "globals",
+    "locals",
     "repr",
     "format",
     "dir",
@@ -465,6 +518,8 @@ hasattr = hasattr
 super = super
 print = print
 vars = vars
+globals = _molt_globals_builtin
+locals = _molt_locals_builtin
 Ellipsis = ...
 # Avoid bootstrap-time global lookup of NotImplemented in runtimes where builtins
 # are still being initialized; rich-compare returns the singleton directly.

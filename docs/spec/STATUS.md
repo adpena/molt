@@ -1,19 +1,27 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
 README and `/ROADMAP.md` in sync.
 
-## Optimization Program Status (2026-02-11)
+## Strategic Target
+- Performance: reach parity with or exceed Codon on representative native and
+  wasm-relevant workloads.
+- Coverage/interoperability: approach Nuitka-level CPython surface coverage and
+  ecosystem interoperability, while preserving Molt vision constraints
+  (determinism, explicit capabilities, and no implicit host-Python fallback).
+
+## Optimization Program Status (2026-02-12)
 - Program state: Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
 - Execution assumption: optimization execution is active; Week 2 specialization and wasm-stabilization clusters are unblocked.
 - Canonical optimization scope: `OPTIMIZATIONS_PLAN.md`.
 - Canonical optimization execution log: `docs/benchmarks/optimization_progress.md`.
 - Current progress: runtime instrumentation + benchmark diff tooling are landed, and baseline lock summary is published at `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md`.
+- Active risk signal (2026-02-12): frontend/mid-end compile throughput regressed on stdlib-heavy module graphs; deterministic wasm benchmark builds can timeout before runtime execution. The dedicated compile-time recovery tranche (profile gating + tiering + budgets + per-pass telemetry + deterministic parallel rollout) is now partially implemented in frontend/CLI, including diagnostics sink integration and opt-in process-level parallel lowering, and is tracked in `OPTIMIZATIONS_PLAN.md`.
 
-## Roadmap 90-Day Execution Artifacts (2026-02-11)
+## Roadmap 90-Day Execution Artifacts (2026-02-12)
 - Delivered Month 1 determinism/security enforcement checklist:
   `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`.
 - Delivered Month 1 minimum must-pass Tier 0/1 + diff parity matrix:
@@ -126,6 +134,14 @@ README and `/ROADMAP.md` in sync.
   `midend_stats_by_function` (`sccp`, `edge_thread`, `loop_rewrite`,
   `guard_hoist`, `cse`, `cse_readheap`, `gvn`, `licm`, `dce`, `dce_pure_op`)
   with attempted/accepted/rejected breakdown for transform families.
+- Compile-time stabilization tranche (2026-02-12): core implementation is now
+  partially landed for profile-gated optimization policy (`dev`/`release`),
+  tiered optimization classes (A/B/C), per-function budgeted degrade ladders,
+  and per-pass wall-time offender telemetry. Latest tightening pass now
+  defaults stdlib functions to Tier C unless explicitly promoted, adds
+  finer stage-level/pre-pass budget degrade checkpoints (including preemptive
+  degrade evaluation), and surfaces stdlib-aware effective min-cost thresholds
+  in frontend parallel layer diagnostics.
 - Prioritized IR closure queue for the active 90-day window:
   - P0: `CallIndirect`, `InvokeFFI`, `GuardTag`, `GuardDictShape`.
   - P1: `IncRef`, `DecRef`, `Borrow`, `Release`.
@@ -140,9 +156,31 @@ README and `/ROADMAP.md` in sync.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P2, status:partial): normalize alias op naming (`BRANCH`/`RETURN`/`THROW`/`LOAD_ATTR`/`STORE_ATTR`/`CLOSURE_LOAD`/`CLOSURE_STORE`) or codify canonical aliases in `0100_MOLT_IR`.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of coverage into broader heap/call-specialization families and a stronger loop-bound solver for cross-iteration constant reasoning.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend loop/try edge threading beyond current executable-edge + conservative loop-marker rewrites into full loop-end and exceptional-handler CFG rewrites with dominance/post-dominance preservation.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (CLI->frontend profile plumbing is landed; diagnostics sink expansion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): surface active optimization profile/tier policy and degrade events in CLI build diagnostics and JSON outputs for deterministic triage (diagnostics sink now includes profile/tier/degrade summaries + pass hotspots; remaining work is richer UX controls/verbosity partitioning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility and worker-level tuning telemetry).
+- TODO(compiler, owner:compiler, milestone:LF3, priority:P1, status:planned): migrate hot mid-end kernels (CFG build, SCCP lattice transfer, dominator/liveness) to Rust with Python orchestration preserved for policy control.
 - Implemented: CI hardening for `tools/check_molt_ir_ops.py` now includes mandatory `--require-probe-execution` after `diff-basic`, so required-probe execution status and failure-queue linkage regressions fail CI.
 
 ## Capabilities (Current)
+- Active stdlib lowering execution plan:
+  `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`.
+- Implemented: checker-level intrinsic-partial ratchet enforcement
+  (`tools/check_stdlib_intrinsics.py`) with budget file
+  `tools/stdlib_intrinsics_ratchet.json`.
+- Implemented: host fallback `_py_*` import anti-pattern blocking in
+  `tools/check_stdlib_intrinsics.py`.
+- Implemented: importlib resolver hardening for module-name coercion and live
+  resolver precedence in `importlib.machinery`/`importlib.util`, including
+  one-shot default `PathFinder` bootstrap.
+- Differential regression coverage includes
+  `importlib_find_spec_path_importer_cache_intrinsic.py` and
+  `importlib_find_spec_path_hooks_intrinsic.py`.
+- Unit regression coverage includes
+  `tests/test_stdlib_importlib_machinery.py`.
 - Tier 0 structification for typed classes (fixed layout).
 - Native async/await lowering with state-machine poll loops.
 - Unified task ABI for futures/generators with kind-tagged allocation shared across native and wasm backends.
@@ -209,6 +247,15 @@ README and `/ROADMAP.md` in sync.
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): migrate all Python stdlib modules to Rust intrinsics-only implementations (Python files may only be thin intrinsic-forwarding wrappers); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`.
 - Intrinsics audit is enforced by `tools/check_stdlib_intrinsics.py` (generated doc + lint), including `intrinsic-backed` / `intrinsic-partial` / `probe-only` / `python-only` status tracking and a transitive dependency gate preventing non-`python-only` modules from importing `python-only` stdlib modules.
+- Fallback-pattern enforcement now runs across all stdlib modules by default in `tools/check_stdlib_intrinsics.py`; narrowing to intrinsic-backed-only scope is explicit (`--fallback-intrinsic-backed-only`).
+- Implemented: bootstrap strict roots (`builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`) now require an intrinsic-backed transitive stdlib closure in `tools/check_stdlib_intrinsics.py`.
+- Implemented: CPython top-level + submodule stdlib union coverage gates now run in `tools/check_stdlib_intrinsics.py` (missing entries, duplicate module/package mappings, and required package-kind mismatches are hard failures).
+- Implemented: canonical CPython baseline union is versioned in `tools/stdlib_module_union.py` (generated by `tools/gen_stdlib_module_union.py`) with update workflow documented in `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`.
+- Implemented: stdlib coverage is complete by name for the CPython 3.12/3.13/3.14 union (`320` top-level required names, `743` required `.py` submodule names), with current classification snapshot `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`.
+- Implemented: non-CPython top-level stdlib extras are now limited to `_intrinsics` (runtime loader helper) and `test` (CPython regrtest compatibility facade); Molt-specific DB shim moved out of stdlib.
+- Implemented: Molt-specific DB shim moved out of stdlib namespace (`moltlib.molt_db`), with `molt.molt_db` compatibility shim retained for existing imports.
+- Implemented: intrinsic pass-only fallback detection is enforced for `json` (try/except + `pass` around intrinsic calls now fails `tools/check_stdlib_intrinsics.py`).
+- Implemented: `test.support` now prefers CPython `Lib/test/support` when available (env `MOLT_REGRTEST_CPYTHON_DIR` first, then host stdlib discovery), with a local Molt fallback module for environments without CPython test sources.
 - Core compiled-surface gate is enforced by `tools/check_core_lane_lowering.py`: modules imported (transitively) by `tests/differential/core/TESTS.txt` must be `intrinsic-backed` only.
 - Execution program for complete Rust lowering is tracked in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md` (core blockers first, then socket -> threading -> asyncio, then full stdlib sweep).
 - Implemented: `__future__` and `keyword` module data/queries are now sourced from Rust intrinsics (`molt_future_features`, `molt_keyword_lists`, `molt_keyword_iskeyword`, `molt_keyword_issoftkeyword`), removing probe-only status.
@@ -225,9 +272,9 @@ README and `/ROADMAP.md` in sync.
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/encoding paths (`molt_enum_init_member`, `molt_pickle_encode_protocol0`) while retaining partial stdlib shims; `enum_basic.py` and `pickle_basic.py` are green in the differential basic lane with `--build-profile dev`.
 - Implemented: `queue` now has intrinsic-backed `LifoQueue` and `PriorityQueue` constructors/ordering (`molt_queue_lifo_new`, `molt_queue_priority_new`) on top of existing intrinsic-backed FIFO queue operations.
-- Implemented: `statistics` now has intrinsic-backed `mean`/`stdev` (`molt_statistics_mean`, `molt_statistics_stdev`) with shim-level `StatisticsError` mapping; Codon `taq.py` import/runtime path is unblocked.
+- Implemented: `statistics` function surface now lowers through Rust intrinsics (`molt_statistics_mean`, `molt_statistics_fmean`, `molt_statistics_stdev`, `molt_statistics_variance`, `molt_statistics_pvariance`, `molt_statistics_pstdev`, `molt_statistics_median`, `molt_statistics_median_low`, `molt_statistics_median_high`, `molt_statistics_median_grouped`, `molt_statistics_mode`, `molt_statistics_multimode`, `molt_statistics_quantiles`, `molt_statistics_harmonic_mean`, `molt_statistics_geometric_mean`, `molt_statistics_covariance`, `molt_statistics_correlation`, `molt_statistics_linear_regression`) with shim-level `StatisticsError` mapping.
 - Implemented: runtime-backed slice statistics intrinsics (`molt_statistics_mean_slice`, `molt_statistics_stdev_slice`) are wired for native+wasm lowering paths and preserve generic fallback behavior via runtime-owned slicing/iteration.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `statistics` module parity beyond `mean`/`stdev` coverage.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete full `statistics` 3.12+ API/PEP parity beyond intrinsic-lowered function surface (for example `NormalDist` and remaining edge-case semantics).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -671,7 +718,7 @@ README and `/ROADMAP.md` in sync.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane with multi-job compile API + richer health telemetry under high multi-agent contention.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): add function-level object caching and batch diff compile server mode to reduce repeated backend compiles across unchanged functions/tests.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add import-graph-aware diff scheduling and distributed cache playbooks for multi-host agent fleets.
-- TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend-owned suite adapters (Codon/PyPy/Nuitka/Cython/Numba), pin immutable suite refs/commands, and enable nightly friend scorecard publication.
+- TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend-owned suite adapters (Codon/PyPy/Nuitka/Pyodide), pin immutable suite refs/commands, and enable nightly friend scorecard publication.
 
 ## Known Gaps
 - Browser host harness is available under `wasm/browser_host.html` with

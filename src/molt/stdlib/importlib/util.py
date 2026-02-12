@@ -52,6 +52,7 @@ _SPEC_CACHE: dict[
     ],
     ModuleSpec | None,
 ] = {}
+_DEFAULT_META_PATH_BOOTSTRAPPED = False
 
 
 def _runtime_state_payload() -> dict[str, Any]:
@@ -74,6 +75,56 @@ def _runtime_state_payload() -> dict[str, Any]:
         "path_hooks": path_hooks,
         "path_importer_cache": path_importer_cache,
     }
+
+
+def _runtime_state_view() -> dict[str, Any]:
+    """Return import runtime state with live sys.* precedence for mutables.
+
+    CPython importlib resolves against the current sys state, not an older
+    snapshot. Prefer live sys attributes when available and type-compatible,
+    while preserving intrinsic payload as a fallback when attributes are
+    unavailable.
+    """
+
+    payload = _runtime_state_payload()
+
+    sys_modules = getattr(sys, "modules", None)
+    if isinstance(sys_modules, dict):
+        payload["modules"] = sys_modules
+
+    # Preserve iterable semantics; concrete type validation happens later.
+    for key in ("meta_path", "path_hooks"):
+        live = getattr(sys, key, None)
+        if live is not None:
+            payload[key] = live
+
+    live_cache = getattr(sys, "path_importer_cache", None)
+    if live_cache is None or isinstance(live_cache, dict):
+        payload["path_importer_cache"] = live_cache
+
+    return payload
+
+
+def _ensure_default_meta_path() -> None:
+    global _DEFAULT_META_PATH_BOOTSTRAPPED
+    if _DEFAULT_META_PATH_BOOTSTRAPPED:
+        return
+    meta_path = getattr(sys, "meta_path", None)
+    if not isinstance(meta_path, list):
+        _DEFAULT_META_PATH_BOOTSTRAPPED = True
+        return
+    if meta_path:
+        _DEFAULT_META_PATH_BOOTSTRAPPED = True
+        return
+    path_finder = getattr(machinery, "PathFinder", None)
+    if path_finder is None:
+        _DEFAULT_META_PATH_BOOTSTRAPPED = True
+        return
+    if path_finder in meta_path:
+        _DEFAULT_META_PATH_BOOTSTRAPPED = True
+        return
+    meta_path.append(path_finder)
+    _DEFAULT_META_PATH_BOOTSTRAPPED = True
 
 
 def _machinery_attr(name: str) -> Any:
@@ -205,6 +256,33 @@ def _path_importer_cache_signature(
         )
     except Exception as exc:
         raise RuntimeError(label) from exc
+
+
+def _find_spec_via_meta_path(
+    fullname: str,
+    search_paths: tuple[str, ...],
+    *,
+    package_context: bool,
+) -> ModuleSpec | None:
+    meta_path = getattr(sys, "meta_path", None)
+    if meta_path is None:
+        return None
+    try:
+        finders = tuple(meta_path)
+    except Exception as exc:
+        raise RuntimeError("invalid meta_path iterable") from exc
+    for finder in finders:
+        find_spec = getattr(finder, "find_spec", None)
+        if not callable(find_spec):
+            continue
+        path_arg = list(search_paths) if package_context else None
+        try:
+            spec = find_spec(fullname, path_arg, None)
+        except TypeError:
+            spec = find_spec(fullname, path_arg)
+        if spec is not None:
+            return spec
+    return None
 
 
 def _search_paths_for_resolved(
@@ -386,9 +464,12 @@ def _find_spec_in_path(
     return spec
 
 
+_ensure_default_meta_path()
+
+
 def find_spec(name: str, package: str | None = None):
     resolved = resolve_name(name, package)
-    runtime_state = _runtime_state_payload()
+    runtime_state = _runtime_state_view()
     modules = runtime_state["modules"]
     existing = modules.get(resolved)
     if existing is not None:
@@ -423,6 +504,12 @@ def find_spec(name: str, package: str | None = None):
     )
     if cache_key in _SPEC_CACHE:
         return _SPEC_CACHE[cache_key]
+    via_meta_path = _find_spec_via_meta_path(
+        resolved, search_paths, package_context=package_context
+    )
+    if via_meta_path is not None:
+        _SPEC_CACHE[cache_key] = via_meta_path
+        return via_meta_path
     spec = _find_spec_in_path(
         resolved,
         list(search_paths),

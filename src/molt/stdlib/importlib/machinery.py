@@ -78,8 +78,9 @@ class SourceFileLoader:
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
         path = self.path
+        module_name = _coerce_module_name(module, self)
         spec_has_locations = _module_spec_is_package(module)
-        payload = _source_exec_payload(module.__name__, path, bool(spec_has_locations))
+        payload = _source_exec_payload(module_name, path, bool(spec_has_locations))
         source = payload["source"]
         is_package = payload["is_package"]
         module_package = payload["module_package"]
@@ -133,9 +134,10 @@ class ZipSourceLoader:
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
+        module_name = _coerce_module_name(module, self)
         spec_has_locations = _module_spec_is_package(module)
         payload = _zip_source_exec_payload(
-            module.__name__,
+            module_name,
             self.archive_path,
             self.inner_path,
             bool(spec_has_locations),
@@ -186,9 +188,10 @@ class ExtensionFileLoader:
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
+        module_name = _coerce_module_name(module, self)
         spec_has_locations = _module_spec_is_package(module)
         payload = _extension_loader_payload(
-            module.__name__,
+            module_name,
             self.path,
             bool(spec_has_locations),
         )
@@ -213,9 +216,7 @@ class ExtensionFileLoader:
             module_package=module_package,
             package_root=package_root,
         )
-        result = _MOLT_IMPORTLIB_EXEC_EXTENSION(
-            module.__dict__, module.__name__, self.path
-        )
+        result = _MOLT_IMPORTLIB_EXEC_EXTENSION(module.__dict__, module_name, self.path)
         if result is not None:
             raise RuntimeError(
                 "invalid importlib extension execution intrinsic result: expected None"
@@ -247,9 +248,10 @@ class SourcelessFileLoader:
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
+        module_name = _coerce_module_name(module, self)
         spec_has_locations = _module_spec_is_package(module)
         payload = _sourceless_loader_payload(
-            module.__name__,
+            module_name,
             self.path,
             bool(spec_has_locations),
         )
@@ -277,7 +279,7 @@ class SourcelessFileLoader:
             package_root=package_root,
         )
         result = _MOLT_IMPORTLIB_EXEC_SOURCELESS(
-            module.__dict__, module.__name__, self.path
+            module.__dict__, module_name, self.path
         )
         if result is not None:
             raise RuntimeError(
@@ -363,15 +365,21 @@ def _set_module_state(
     package_root: str | None,
 ) -> None:
     spec = getattr(module, "__spec__", None)
+    module_name = _coerce_module_name(module, loader, spec)
     if spec is None:
         spec = ModuleSpec(
-            module.__name__,
+            module_name,
             loader=loader,
             origin=origin,
             is_package=is_package,
         )
         module.__spec__ = spec
     else:
+        if not isinstance(getattr(spec, "name", None), str):
+            try:
+                spec.name = module_name
+            except Exception as exc:
+                raise RuntimeError("invalid module spec name state") from exc
         spec.loader = loader
         spec.origin = origin
         spec.has_location = True
@@ -387,7 +395,43 @@ def _set_module_state(
             spec.submodule_search_locations = [package_root]
     import sys as _sys
 
-    _sys.modules[module.__name__] = module
+    _sys.modules[module_name] = module
+
+
+class PathFinder:
+    @classmethod
+    def find_spec(
+        cls,
+        fullname: str,
+        path: object | None = None,
+        target: object | None = None,
+    ):
+        del cls
+        import importlib.util as _util
+        import sys as _sys
+
+        if path is None:
+            search_paths = tuple(_sys.path)
+            package_context = False
+        else:
+            search_paths = _util._coerce_search_paths(  # noqa: SLF001
+                path,
+                "invalid parent package search path",
+            )
+            package_context = True
+        # Provide a non-empty meta-path sentinel so the intrinsic path-hook
+        # resolution lane remains active without recursively invoking PathFinder.
+        meta_path_sentinel = (None,)
+        path_hooks = getattr(_sys, "path_hooks", ())
+        path_importer_cache = getattr(_sys, "path_importer_cache", None)
+        return _util._find_spec_in_path(  # noqa: SLF001
+            fullname,
+            list(search_paths),
+            meta_path_sentinel,
+            path_hooks,
+            path_importer_cache,
+            package_context,
+        )
 
 
 def _exec_restricted(module, source: str, filename: str) -> None:
@@ -521,6 +565,33 @@ def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
     return _require(name, namespace)
 
 
+def _coerce_module_name(
+    module,
+    loader: object | None,
+    spec: object | None = None,
+) -> str:
+    module_name = getattr(module, "__name__", None)
+    if isinstance(module_name, str):
+        return module_name
+    module_spec = spec if spec is not None else getattr(module, "__spec__", None)
+    spec_name = getattr(module_spec, "name", None)
+    if isinstance(spec_name, str):
+        _set_module_name_best_effort(module, spec_name)
+        return spec_name
+    loader_name = getattr(loader, "name", None)
+    if isinstance(loader_name, str):
+        _set_module_name_best_effort(module, loader_name)
+        return loader_name
+    raise TypeError("module name must be str")
+
+
+def _set_module_name_best_effort(module, name: str) -> None:
+    try:
+        module.__name__ = name
+    except Exception:
+        return
+
+
 _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = None
 _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = None
 _MOLT_IMPORTLIB_READ_FILE = None
@@ -587,6 +658,7 @@ __all__ = [
     "ModuleSpec",
     "MOLT_LOADER",
     "MoltLoader",
+    "PathFinder",
     "SourcelessFileLoader",
     "SourceFileLoader",
     "ZipSourceLoader",

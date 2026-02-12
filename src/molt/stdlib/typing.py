@@ -408,6 +408,16 @@ NotRequired = _SpecialForm(
 )
 
 
+def _require_importlib_util_module() -> object:
+    modules = getattr(_sys, "modules", {})
+    mod = modules.get("importlib.util")
+    if mod is None:
+        mod = __import__("importlib.util", fromlist=("find_spec", "module_from_spec"))
+    if mod is None:
+        raise RuntimeError("typing requires importlib.util")
+    return mod
+
+
 def _load_collections_abc() -> ModuleType:
     cached = globals().get("_ABC_CACHE")
     if isinstance(cached, ModuleType):
@@ -435,13 +445,20 @@ def _load_collections_abc() -> ModuleType:
 def _reload_collections_abc() -> ModuleType | None:
     modules = getattr(_sys, "modules", {})
     previous = modules.pop("_collections_abc", None)
+    importlib_util = _require_importlib_util_module()
+    find_spec = getattr(importlib_util, "find_spec", None)
+    module_from_spec = getattr(importlib_util, "module_from_spec", None)
+    if not callable(find_spec) or not callable(module_from_spec):
+        if previous is not None:
+            modules["_collections_abc"] = previous
+        return None
     try:
-        import importlib.util as _importlib_util
-
-        spec = _importlib_util.find_spec("_collections_abc", None)
+        spec = find_spec("_collections_abc", None)
         if spec is None:
+            if previous is not None:
+                modules["_collections_abc"] = previous
             return None
-        module = _importlib_util.module_from_spec(spec)
+        module = module_from_spec(spec)
         modules["_collections_abc"] = module
         loader = getattr(spec, "loader", None)
         if loader is not None:

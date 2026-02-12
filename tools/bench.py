@@ -5,13 +5,13 @@ import json
 import os
 import platform
 import re
+import shlex
 import signal
 import shutil
 import socket
 import statistics
 import subprocess
 import sys
-import textwrap
 import time
 import tempfile
 from dataclasses import dataclass
@@ -79,6 +79,13 @@ WS_BENCHMARKS = [
     "tests/benchmarks/bench_ws_wait.py",
 ]
 
+DYNAMIC_BUILTIN_SLICES = [
+    "tests/benchmarks/bench_builtin_locals_slice.py",
+    "tests/benchmarks/bench_builtin_dir_slice.py",
+    "tests/benchmarks/bench_builtin_import_slice.py",
+    "tests/benchmarks/bench_builtin_delattr_slice.py",
+]
+
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
@@ -101,6 +108,7 @@ class BenchRunner:
     script: str | None
     env: dict[str, str]
     build_s: float = 0.0
+    size_kb: float | None = None
 
 
 @dataclass(frozen=True)
@@ -500,132 +508,96 @@ def summarize_samples(samples: list[float]) -> dict[str, float]:
     }
 
 
-def _split_imports(source: str) -> tuple[list[str], list[str]]:
-    imports: list[str] = []
-    body: list[str] = []
-    seen_body = False
-    for line in source.splitlines():
-        stripped = line.strip()
-        if not seen_body:
-            if stripped == "" or stripped.startswith("#"):
-                imports.append(line)
-                continue
-            if stripped.startswith("import ") or stripped.startswith("from "):
-                imports.append(line)
-                continue
-        seen_body = True
-        body.append(line)
-    return imports, body
-
-
-def _rewrite_prints(body_lines: list[str]) -> list[str]:
-    rewritten: list[str] = []
-    has_print = False
-    for line in body_lines:
-        stripped = line.lstrip()
-        if stripped.startswith("print(") and stripped.endswith(")"):
-            indent = line[: len(line) - len(stripped)]
-            expr = stripped[len("print(") : -1]
-            rewritten.append(f"{indent}_molt_result = {expr}")
-            has_print = True
-        else:
-            rewritten.append(line)
-    if has_print:
-        rewritten.append("return _molt_result")
-    else:
-        rewritten.append("return None")
-    return rewritten
-
-
 def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
-def _prepare_cython_runner(
+def _find_compiled_binary(output_dir: Path, stem: str) -> Path | None:
+    candidates = [
+        output_dir / stem,
+        output_dir / f"{stem}.bin",
+        output_dir / f"{stem}.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    for candidate in sorted(output_dir.glob(f"{stem}*")):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _nuitka_command(explicit_cmd: str | None) -> list[str] | None:
+    if explicit_cmd:
+        parts = shlex.split(explicit_cmd)
+        return parts if parts else None
+    nuitka = shutil.which("nuitka")
+    if nuitka:
+        return [nuitka]
+    if _module_available("nuitka"):
+        return [sys.executable, "-m", "nuitka"]
+    return None
+
+
+def _prepare_nuitka_runner(
     script_path: Path,
     build_root: Path,
     base_env: dict[str, str],
-    run_args: list[str],
     *,
     tty: bool,
+    nuitka_cmd: list[str] | None,
 ) -> BenchRunner | None:
-    if not _module_available("pyximport"):
+    if nuitka_cmd is None:
         return None
-    source = script_path.read_text()
-    imports, body = _split_imports(source)
-    body = _rewrite_prints(body)
-    module_name = f"bench_cython_{script_path.stem}"
+    module_name = f"bench_nuitka_{script_path.stem}"
     module_dir = build_root / module_name
     module_dir.mkdir(parents=True, exist_ok=True)
-    pyx_path = module_dir / f"{module_name}.pyx"
-    build_dir = module_dir / "build"
-    pyx_source = "# cython: language_level=3\n"
-    if imports:
-        pyx_source += "\n".join(imports) + "\n"
-    pyx_source += "\n\ndef bench():\n"
-    pyx_source += textwrap.indent("\n".join(body), "    ") + "\n"
-    pyx_path.write_text(pyx_source)
-
-    runner_path = module_dir / "runner.py"
-    runner_source = f"""import importlib
-import pyximport
-
-pyximport.install(language_level=3, build_dir={str(build_dir)!r}, inplace=False)
-mod = importlib.import_module("{module_name}")
-mod.bench()
-"""
-    runner_path.write_text(runner_source)
-    env = _prepend_pythonpath(base_env.copy(), str(module_dir))
-    env["PYTHONWARNINGS"] = "ignore"
-    warm = _run_cmd(
-        [sys.executable, str(runner_path), *run_args],
-        env,
+    build_start = time.perf_counter()
+    build = _run_cmd(
+        [
+            *nuitka_cmd,
+            "--onefile",
+            "--output-dir",
+            str(module_dir),
+            "--remove-output",
+            str(script_path),
+        ],
+        env=base_env,
         capture=not tty,
         tty=tty,
     )
-    if warm.returncode != 0:
+    build_s = time.perf_counter() - build_start
+    if build.returncode != 0:
         return None
-    return BenchRunner([sys.executable], str(runner_path), env)
+    binary_path = _find_compiled_binary(module_dir, script_path.stem)
+    if binary_path is None:
+        return None
+    size_kb = binary_path.stat().st_size / 1024
+    return BenchRunner(
+        [str(binary_path)], None, base_env, build_s=build_s, size_kb=size_kb
+    )
 
 
-def _prepare_numba_runner(
+def _pyodide_command(explicit_cmd: str | None) -> list[str] | None:
+    if explicit_cmd:
+        parts = shlex.split(explicit_cmd)
+        return parts if parts else None
+    env_cmd = os.environ.get("MOLT_BENCH_PYODIDE_CMD", "").strip()
+    if env_cmd:
+        parts = shlex.split(env_cmd)
+        return parts if parts else None
+    return None
+
+
+def _prepare_pyodide_runner(
     script_path: Path,
-    build_root: Path,
     base_env: dict[str, str],
-    run_args: list[str],
     *,
-    tty: bool,
+    pyodide_cmd: list[str] | None,
 ) -> BenchRunner | None:
-    if not _module_available("numba"):
+    if pyodide_cmd is None:
         return None
-    source = script_path.read_text()
-    imports, body = _split_imports(source)
-    body = _rewrite_prints(body)
-    module_name = f"bench_numba_{script_path.stem}"
-    module_dir = build_root / module_name
-    module_dir.mkdir(parents=True, exist_ok=True)
-    runner_path = module_dir / f"{module_name}.py"
-    module_source = ""
-    if imports:
-        module_source += "\n".join(imports) + "\n"
-    module_source += "from numba import njit\n\n"
-    module_source += "def _bench_py():\n"
-    module_source += textwrap.indent("\n".join(body), "    ") + "\n"
-    module_source += "bench = njit(cache=True)(_bench_py)\n\n"
-    module_source += "if __name__ == '__main__':\n    bench()\n"
-    runner_path.write_text(module_source)
-    env = _prepend_pythonpath(base_env.copy(), str(module_dir))
-    env["NUMBA_CACHE_DIR"] = str(module_dir / "cache")
-    env["NUMBA_DISABLE_PERFORMANCE_WARNINGS"] = "1"
-    warm = _run_cmd(
-        [sys.executable, str(runner_path), *run_args],
-        env,
-        capture=not tty,
-        tty=tty,
-    )
-    if warm.returncode != 0:
-        return None
-    return BenchRunner([sys.executable], str(runner_path), env)
+    return BenchRunner(pyodide_cmd, str(script_path), base_env)
 
 
 def _prepare_codon_runner(
@@ -667,7 +639,10 @@ def _prepare_codon_runner(
         target = module_dir / "libomp.dylib"
         if libomp.exists() and not target.exists():
             shutil.copy2(libomp, target)
-    return BenchRunner(arch_prefix + [str(binary_path)], None, env, build_s=build_s)
+    size_kb = binary_path.stat().st_size / 1024 if binary_path.exists() else None
+    return BenchRunner(
+        arch_prefix + [str(binary_path)], None, env, build_s=build_s, size_kb=size_kb
+    )
 
 
 def _pypy_command() -> list[str] | None:
@@ -702,45 +677,55 @@ def bench_results(
     warmup,
     use_cpython,
     use_pypy,
-    use_cython,
-    use_numba,
     use_codon,
+    use_nuitka,
+    use_pyodide,
     super_run,
     runtime_timeout_s,
     *,
     tty: bool,
+    nuitka_cmd: str | None,
+    pyodide_cmd: str | None,
 ):
     runtimes = {}
     if use_cpython:
-        runtimes["CPython"] = [sys.executable]
+        runtimes["cpython"] = [sys.executable]
     if use_pypy:
         pypy_cmd = _pypy_command()
         if pypy_cmd:
-            runtimes["PyPy"] = pypy_cmd
+            runtimes["pypy"] = pypy_cmd
 
-    if use_cython and not _module_available("pyximport"):
-        print("Skipping Cython: pyximport not available.", file=sys.stderr)
-        use_cython = False
-    if use_numba and not _module_available("numba"):
-        print("Skipping Numba: numba not available.", file=sys.stderr)
-        use_numba = False
     if use_codon and not shutil.which("codon"):
         print("Skipping Codon: codon not found.", file=sys.stderr)
         use_codon = False
+    resolved_nuitka_cmd = _nuitka_command(nuitka_cmd) if use_nuitka else None
+    if use_nuitka and resolved_nuitka_cmd is None:
+        print(
+            "Skipping Nuitka: nuitka not found (or pass --nuitka-cmd).",
+            file=sys.stderr,
+        )
+        use_nuitka = False
+    resolved_pyodide_cmd = _pyodide_command(pyodide_cmd) if use_pyodide else None
+    if use_pyodide and resolved_pyodide_cmd is None:
+        print(
+            "Skipping Pyodide: set --pyodide-cmd or MOLT_BENCH_PYODIDE_CMD.",
+            file=sys.stderr,
+        )
+        use_pyodide = False
 
     header = (
-        f"{'Benchmark':<30} | {'CPython (s)':<12} | {'PyPy (s)':<12} | "
-        f"{'Cython (s)':<12} | {'Numba (s)':<12} | {'Codon (s)':<12} | "
-        f"{'Molt/Codon':<12} | {'Molt (s)':<10} | "
-        f"{'Molt Speedup':<12} | {'Molt Size'}"
+        f"{'Benchmark':<30} | {'CPython(s)':<10} | {'PyPy(s)':<10} | "
+        f"{'CodonBuild':<10} | {'CodonRun':<10} | {'NuitkaBld':<10} | "
+        f"{'NuitkaRun':<10} | {'PyodideRun':<10} | {'MoltBuild':<10} | "
+        f"{'MoltRun':<10} | {'MoltKB':<10} | {'Speedup':<10} | {'M/PyPy':<10} | "
+        f"{'M/Codon':<10} | {'M/Nuitka':<10} | {'M/Pyodide':<10}"
     )
     print(header)
     print("-" * len(header))
 
     base_env = _base_python_env()
-    cython_root = Path("bench/cython")
-    numba_root = Path("bench/numba")
     codon_root = Path("bench/codon")
+    nuitka_root = Path("bench/nuitka")
 
     data = {}
     for script in benchmarks:
@@ -757,75 +742,25 @@ def bench_results(
                     env=base_env,
                     run_args=run_args,
                     timeout_s=runtime_timeout_s,
-                    label=name,
+                    label=f"{name} [{rt_name}]",
                 ),
                 samples,
                 warmup=warmup,
             )
-            results[rt_name] = statistics.mean(samples_list) if ok else 0.0
+            results[rt_name] = statistics.mean(samples_list) if ok else None
             runtime_ok[rt_name] = ok
             if super_run and ok:
-                stats[rt_name.lower()] = summarize_samples(samples_list)
+                stats[rt_name] = summarize_samples(samples_list)
 
-        cython_time = 0.0
-        cython_ok = False
-        if use_cython:
-            runner = _prepare_cython_runner(
-                Path(script), cython_root, base_env, run_args, tty=tty
-            )
-            if runner is not None:
-                cython_samples, cython_ok = collect_samples(
-                    lambda: measure_runtime(
-                        runner.cmd,
-                        runner.script,
-                        env=runner.env,
-                        run_args=run_args,
-                        timeout_s=runtime_timeout_s,
-                        label=f"{name} [cython]",
-                    ),
-                    samples,
-                    warmup=warmup,
-                )
-                if cython_ok:
-                    cython_time = statistics.mean(cython_samples)
-                    if super_run:
-                        stats["cython"] = summarize_samples(cython_samples)
-            else:
-                print(f"Skipping Cython for {name}.", file=sys.stderr)
-
-        numba_time = 0.0
-        numba_ok = False
-        if use_numba:
-            runner = _prepare_numba_runner(
-                Path(script), numba_root, base_env, run_args, tty=tty
-            )
-            if runner is not None:
-                numba_samples, numba_ok = collect_samples(
-                    lambda: measure_runtime(
-                        runner.cmd,
-                        runner.script,
-                        env=runner.env,
-                        run_args=run_args,
-                        timeout_s=runtime_timeout_s,
-                        label=f"{name} [numba]",
-                    ),
-                    samples,
-                    warmup=warmup,
-                )
-                if numba_ok:
-                    numba_time = statistics.mean(numba_samples)
-                    if super_run:
-                        stats["numba"] = summarize_samples(numba_samples)
-            else:
-                print(f"Skipping Numba for {name}.", file=sys.stderr)
-
-        codon_time = 0.0
-        codon_build = 0.0
+        codon_time: float | None = None
+        codon_build: float | None = None
+        codon_size: float | None = None
         codon_ok = False
         if use_codon:
             runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
             if runner is not None:
                 codon_build = runner.build_s
+                codon_size = runner.size_kb
                 codon_samples, codon_ok = collect_samples(
                     lambda: measure_runtime(
                         runner.cmd,
@@ -845,7 +780,71 @@ def bench_results(
             else:
                 print(f"Skipping Codon for {name}.", file=sys.stderr)
 
-        molt_time, molt_size, molt_build = 0.0, 0.0, 0.0
+        nuitka_time: float | None = None
+        nuitka_build: float | None = None
+        nuitka_size: float | None = None
+        nuitka_ok = False
+        if use_nuitka:
+            runner = _prepare_nuitka_runner(
+                Path(script),
+                nuitka_root,
+                base_env,
+                tty=tty,
+                nuitka_cmd=resolved_nuitka_cmd,
+            )
+            if runner is not None:
+                nuitka_build = runner.build_s
+                nuitka_size = runner.size_kb
+                nuitka_samples, nuitka_ok = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [nuitka]",
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if nuitka_ok:
+                    nuitka_time = statistics.mean(nuitka_samples)
+                    if super_run:
+                        stats["nuitka"] = summarize_samples(nuitka_samples)
+            else:
+                print(f"Skipping Nuitka for {name}.", file=sys.stderr)
+
+        pyodide_time: float | None = None
+        pyodide_build: float | None = None
+        pyodide_size: float | None = None
+        pyodide_ok = False
+        if use_pyodide:
+            runner = _prepare_pyodide_runner(
+                Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
+            )
+            if runner is not None:
+                pyodide_samples, pyodide_ok = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [pyodide]",
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if pyodide_ok:
+                    pyodide_time = statistics.mean(pyodide_samples)
+                    if super_run:
+                        stats["pyodide"] = summarize_samples(pyodide_samples)
+            else:
+                print(f"Skipping Pyodide for {name}.", file=sys.stderr)
+
+        molt_time: float | None = None
+        molt_size: float | None = None
+        molt_build: float | None = None
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
         molt_ok = False
         molt_samples: list[float] = []
@@ -875,8 +874,9 @@ def bench_results(
             print(f"Molt build/run failed for {name}.", file=sys.stderr)
 
         cpython_time = (
-            results.get("CPython") if runtime_ok.get("CPython", False) else None
+            results.get("cpython") if runtime_ok.get("cpython", False) else None
         )
+        pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
         speedup = (
             (cpython_time / molt_time)
             if (cpython_time is not None and molt_ok and molt_time > 0)
@@ -887,56 +887,89 @@ def bench_results(
             if (molt_ok and cpython_time is not None and cpython_time > 0)
             else None
         )
+        pypy_ratio = (
+            (molt_time / pypy_time)
+            if (molt_ok and pypy_time is not None and pypy_time > 0)
+            else None
+        )
         codon_ratio = (
             (molt_time / codon_time)
             if molt_ok and codon_ok and codon_time > 0
             else None
         )
+        nuitka_ratio = (
+            (molt_time / nuitka_time)
+            if molt_ok and nuitka_ok and nuitka_time is not None and nuitka_time > 0
+            else None
+        )
+        pyodide_ratio = (
+            (molt_time / pyodide_time)
+            if molt_ok and pyodide_ok and pyodide_time is not None and pyodide_time > 0
+            else None
+        )
 
-        cpython_cell = (
-            f"{results.get('CPython', 0.0):<12.4f}"
-            if runtime_ok.get("CPython", False)
-            else f"{'n/a':<12}"
-        )
-        pypy_cell = (
-            f"{results.get('PyPy', 0.0):<12.4f}"
-            if runtime_ok.get("PyPy", False)
-            else f"{'n/a':<12}"
-        )
-        cython_cell = f"{cython_time:<12.4f}" if cython_ok else f"{'n/a':<12}"
-        numba_cell = f"{numba_time:<12.4f}" if numba_ok else f"{'n/a':<12}"
-        codon_cell = f"{codon_time:<12.4f}" if codon_ok else f"{'n/a':<12}"
-        codon_ratio_cell = (
-            f"{codon_ratio:<12.2f}x" if codon_ratio is not None else f"{'n/a':<12}"
-        )
-        speedup_cell = f"{speedup:<12.2f}x" if speedup is not None else f"{'n/a':<12}"
+        def _cell(value: float | None, width: int = 10) -> str:
+            if value is None:
+                return f"{'n/a':<{width}}"
+            return f"{value:<{width}.4f}"
+
+        def _ratio_cell(value: float | None, width: int = 10) -> str:
+            if value is None:
+                return f"{'n/a':<{width}}"
+            return f"{value:<{width}.2f}x"
+
+        cpython_cell = _cell(cpython_time)
+        pypy_cell = _cell(pypy_time)
+        codon_build_cell = _cell(codon_build)
+        codon_run_cell = _cell(codon_time)
+        nuitka_build_cell = _cell(nuitka_build)
+        nuitka_run_cell = _cell(nuitka_time)
+        pyodide_run_cell = _cell(pyodide_time)
+        molt_build_cell = _cell(molt_build)
+        molt_run_cell = _cell(molt_time)
+        molt_size_cell = _cell(molt_size)
+        speedup_cell = _ratio_cell(speedup)
+        pypy_ratio_cell = _ratio_cell(pypy_ratio)
+        codon_ratio_cell = _ratio_cell(codon_ratio)
+        nuitka_ratio_cell = _ratio_cell(nuitka_ratio)
+        pyodide_ratio_cell = _ratio_cell(pyodide_ratio)
 
         print(
-            f"{name:<30} | {cpython_cell} | {pypy_cell} | {cython_cell} | "
-            f"{numba_cell} | {codon_cell} | {codon_ratio_cell} | {molt_time:<10.4f} | "
-            f"{speedup_cell} | "
-            f"{molt_size:.1f} KB"
+            f"{name:<30} | {cpython_cell} | {pypy_cell} | {codon_build_cell} | "
+            f"{codon_run_cell} | {nuitka_build_cell} | {nuitka_run_cell} | "
+            f"{pyodide_run_cell} | {molt_build_cell} | {molt_run_cell} | "
+            f"{molt_size_cell} | {speedup_cell} | {pypy_ratio_cell} | "
+            f"{codon_ratio_cell} | {nuitka_ratio_cell} | {pyodide_ratio_cell}"
         )
 
         data[name] = {
             "cpython_time_s": cpython_time,
-            "pypy_time_s": results.get("PyPy", 0.0),
-            "cython_time_s": cython_time,
-            "numba_time_s": numba_time,
+            "pypy_time_s": pypy_time,
             "codon_time_s": codon_time,
             "codon_build_s": codon_build,
+            "codon_size_kb": codon_size,
+            "nuitka_time_s": nuitka_time,
+            "nuitka_build_s": nuitka_build,
+            "nuitka_size_kb": nuitka_size,
+            "pyodide_time_s": pyodide_time,
+            "pyodide_build_s": pyodide_build,
+            "pyodide_size_kb": pyodide_size,
             "molt_time_s": molt_time,
             "molt_build_s": molt_build,
             "molt_size_kb": molt_size,
             "molt_speedup": speedup,
             "molt_cpython_ratio": ratio,
+            "molt_pypy_ratio": pypy_ratio,
             "molt_codon_ratio": codon_ratio,
+            "molt_nuitka_ratio": nuitka_ratio,
+            "molt_pyodide_ratio": pyodide_ratio,
             "molt_ok": molt_ok,
+            "pypy_ok": runtime_ok.get("pypy", False),
             "molt_args": molt_args,
             "run_args": run_args,
-            "cython_ok": cython_ok,
-            "numba_ok": numba_ok,
             "codon_ok": codon_ok,
+            "nuitka_ok": nuitka_ok,
+            "pyodide_ok": pyodide_ok,
         }
         if super_run:
             data[name]["super_stats"] = stats
@@ -986,16 +1019,40 @@ def main():
     parser.add_argument(
         "--no-cpython",
         action="store_true",
-        help="Skip CPython timing lane (useful when focusing on Molt vs Codon).",
+        help="Skip CPython timing lane (useful when focusing on Molt vs external lanes).",
     )
     parser.add_argument("--no-pypy", action="store_true")
-    parser.add_argument("--no-cython", action="store_true")
-    parser.add_argument("--no-numba", action="store_true")
     parser.add_argument("--no-codon", action="store_true")
+    parser.add_argument("--no-nuitka", action="store_true")
+    parser.add_argument("--no-pyodide", action="store_true")
+    parser.add_argument(
+        "--nuitka-cmd",
+        default=None,
+        help=(
+            "Override Nuitka command prefix, e.g. 'python -m nuitka'. "
+            "Default auto-probes `nuitka` then `python -m nuitka`."
+        ),
+    )
+    parser.add_argument(
+        "--pyodide-cmd",
+        default=None,
+        help=(
+            "Pyodide run command prefix (also reads MOLT_BENCH_PYODIDE_CMD). "
+            "The command must accept `<script> [args...]`."
+        ),
+    )
     parser.add_argument(
         "--ws",
         action="store_true",
         help="Include websocket wait benchmark (also honors MOLT_BENCH_WS=1).",
+    )
+    parser.add_argument(
+        "--dynamic-builtin-only",
+        action="store_true",
+        help=(
+            "Run only isolated locals/dir/__import__/delattr benchmark slices; "
+            "kept out of core throughput KPI lanes."
+        ),
     )
     parser.add_argument(
         "--script",
@@ -1024,17 +1081,26 @@ def main():
         parser.error("--super cannot be combined with --smoke")
     if args.super and args.samples is not None:
         parser.error("--super cannot be combined with --samples")
+    if args.dynamic_builtin_only and args.smoke:
+        parser.error("--dynamic-builtin-only cannot be combined with --smoke")
 
     if args.script:
         if args.smoke:
             parser.error("--script cannot be combined with --smoke")
+        if args.dynamic_builtin_only:
+            parser.error("--script cannot be combined with --dynamic-builtin-only")
         benchmarks = [str(Path(path)) for path in args.script]
         missing = [path for path in benchmarks if not Path(path).exists()]
         if missing:
             parser.error(f"Script(s) not found: {', '.join(missing)}")
     else:
-        benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
-    include_ws = args.ws or os.environ.get("MOLT_BENCH_WS") == "1"
+        if args.dynamic_builtin_only:
+            benchmarks = list(DYNAMIC_BUILTIN_SLICES)
+        else:
+            benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
+    include_ws = not args.dynamic_builtin_only and (
+        args.ws or os.environ.get("MOLT_BENCH_WS") == "1"
+    )
     if include_ws:
         for bench in WS_BENCHMARKS:
             if bench not in benchmarks:
@@ -1046,9 +1112,9 @@ def main():
     )
     use_cpython = not args.no_cpython
     use_pypy = not args.no_pypy
-    use_cython = not args.no_cython
-    use_numba = not args.no_numba
     use_codon = not args.no_codon
+    use_nuitka = not args.no_nuitka
+    use_pyodide = not args.no_pyodide
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
     _prune_backend_daemons()
@@ -1060,12 +1126,14 @@ def main():
         warmup,
         use_cpython,
         use_pypy,
-        use_cython,
-        use_numba,
         use_codon,
+        use_nuitka,
+        use_pyodide,
         args.super,
         args.runtime_timeout_sec,
         tty=use_tty,
+        nuitka_cmd=args.nuitka_cmd,
+        pyodide_cmd=args.pyodide_cmd,
     )
 
     load_avg = None

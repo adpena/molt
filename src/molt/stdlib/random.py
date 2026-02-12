@@ -12,7 +12,18 @@ import math as _math
 import os as _os
 from typing import SupportsInt, cast
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_MATH_LOG = _require_intrinsic("molt_math_log", globals())
+_MOLT_MATH_EXP = _require_intrinsic("molt_math_exp", globals())
+_MOLT_MATH_CEIL = _require_intrinsic("molt_math_ceil", globals())
+_MOLT_MATH_SQRT = _require_intrinsic("molt_math_sqrt", globals())
+_MOLT_MATH_ACOS = _require_intrinsic("molt_math_acos", globals())
+_MOLT_MATH_COS = _require_intrinsic("molt_math_cos", globals())
+_MOLT_MATH_SIN = _require_intrinsic("molt_math_sin", globals())
+_MOLT_MATH_FLOOR = _require_intrinsic("molt_math_floor", globals())
+_MOLT_MATH_ISFINITE = _require_intrinsic("molt_math_isfinite", globals())
+_MOLT_MATH_LGAMMA = _require_intrinsic("molt_math_lgamma", globals())
+_MOLT_MATH_FABS = _require_intrinsic("molt_math_fabs", globals())
+_MOLT_MATH_LOG2 = _require_intrinsic("molt_math_log2", globals())
 
 
 __all__ = [
@@ -56,21 +67,21 @@ BPF = 53
 RECIP_BPF = 2**-BPF
 _sha512 = None
 _urandom = _os.urandom
-_log = _math.log
-_exp = _math.exp
+_log = _MOLT_MATH_LOG
+_exp = _MOLT_MATH_EXP
 _pi = _math.pi
 _e = _math.e
-_ceil = _math.ceil
-_sqrt = _math.sqrt
-_acos = _math.acos
-_cos = _math.cos
-_sin = _math.sin
+_ceil = _MOLT_MATH_CEIL
+_sqrt = _MOLT_MATH_SQRT
+_acos = _MOLT_MATH_ACOS
+_cos = _MOLT_MATH_COS
+_sin = _MOLT_MATH_SIN
 TWOPI = _math.tau
-_floor = _math.floor
-_isfinite = _math.isfinite
-_lgamma = _math.lgamma
-_fabs = _math.fabs
-_log2 = _math.log2
+_floor = _MOLT_MATH_FLOOR
+_isfinite = _MOLT_MATH_ISFINITE
+_lgamma = _MOLT_MATH_LGAMMA
+_fabs = _MOLT_MATH_FABS
+_log2 = _MOLT_MATH_LOG2
 
 NV_MAGICCONST = 4 * _exp(-0.5) / _sqrt(2.0)
 LOG4 = _log(4.0)

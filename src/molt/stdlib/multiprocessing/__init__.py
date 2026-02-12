@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import builtins as _builtins
 import importlib
 import os
-import struct
 import sys
 import time
 from typing import Any, Callable, cast
@@ -27,6 +26,7 @@ __all__ = [
     "Process",
     "Queue",
     "Pipe",
+    "TimeoutError",
     "Value",
     "get_all_start_methods",
     "get_context",
@@ -64,6 +64,8 @@ _MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
 _MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
 _MOLT_PENDING = _intrinsics_require("molt_pending", globals())
 _MOLT_CAP_REQUIRE = _intrinsics_require("molt_capabilities_require", globals())
+_MOLT_STRUCT_PACK = _intrinsics_require("molt_struct_pack", globals())
+_MOLT_STRUCT_UNPACK = _intrinsics_require("molt_struct_unpack", globals())
 _PENDING_SENTINEL: Any | None = None
 
 _MAX_MESSAGE = 64 * 1024 * 1024
@@ -88,6 +90,8 @@ _TAG_PIPE = 0x42
 _TAG_VALUE = 0x43
 _TAG_ARRAY = 0x44
 _TAG_EXC = 0x45
+
+TimeoutError = _builtins.TimeoutError
 
 _MSG_RUN = "run"
 _MSG_WORKER = "worker"
@@ -356,6 +360,20 @@ def _encode_bytes(value: bytes, out: bytearray) -> None:
     out.extend(value)
 
 
+def _pack_f64(value: float) -> bytes:
+    packed = _MOLT_STRUCT_PACK("<d", (float(value),))
+    if isinstance(packed, (bytes, bytearray)):
+        return bytes(packed)
+    raise RuntimeError("invalid struct pack payload for float")
+
+
+def _unpack_f64(payload: bytes) -> float:
+    unpacked = _MOLT_STRUCT_UNPACK("<d", payload)
+    if not isinstance(unpacked, tuple) or len(unpacked) != 1:
+        raise RuntimeError("invalid struct unpack payload for float")
+    return float(unpacked[0])
+
+
 def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
     length, idx = _decode_varint(data, idx)
     end = idx + length
@@ -447,12 +465,12 @@ def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) ->
         return
     if isinstance(value, float):
         out.append(_TAG_FLOAT)
-        out.extend(struct.pack("<d", value))
+        out.extend(_pack_f64(value))
         return
     if _COMPLEX_TYPE is not None and isinstance(value, _COMPLEX_TYPE):
         out.append(_TAG_COMPLEX)
-        out.extend(struct.pack("<d", value.real))
-        out.extend(struct.pack("<d", value.imag))
+        out.extend(_pack_f64(value.real))
+        out.extend(_pack_f64(value.imag))
         return
     if isinstance(value, bytes):
         out.append(_TAG_BYTES)
@@ -525,13 +543,13 @@ def _decode_value(
         end = idx + 8
         if end > len(data):
             raise ValueError("truncated float")
-        return struct.unpack("<d", data[idx:end])[0], end
+        return _unpack_f64(data[idx:end]), end
     if tag == _TAG_COMPLEX:
         end = idx + 16
         if end > len(data):
             raise ValueError("truncated complex")
-        real = struct.unpack("<d", data[idx : idx + 8])[0]
-        imag = struct.unpack("<d", data[idx + 8 : end])[0]
+        real = _unpack_f64(data[idx : idx + 8])
+        imag = _unpack_f64(data[idx + 8 : end])
         return _complex_from_parts(real, imag), end
     if tag == _TAG_BYTES:
         value, idx = _decode_bytes(data, idx)
@@ -1656,7 +1674,11 @@ class Pool:
         raise RuntimeError("no available worker")
 
     def _dispatch_task(
-        self, func: Callable[..., Any], args: Sequence[Any], index: int
+        self,
+        func: Callable[..., Any],
+        args: Sequence[Any],
+        index: int,
+        kwargs: dict[str, Any] | None = None,
     ) -> tuple[int, "_Worker"]:
         while True:
             self._refresh_workers()
@@ -1669,7 +1691,7 @@ class Pool:
         task_id = self._next_task_id
         self._next_task_id += 1
         worker.note_task_sent()
-        worker.send((_MSG_TASK, task_id, index, func, tuple(args), {}))
+        worker.send((_MSG_TASK, task_id, index, func, tuple(args), dict(kwargs or {})))
         return task_id, worker
 
     def _consume_worker_messages(self, worker: "_Worker") -> None:
@@ -1737,10 +1759,8 @@ class Pool:
         args: Sequence[Any] = (),
         kwds: dict[str, Any] | None = None,
     ) -> AsyncResult:
-        if kwds:
-            raise NotImplementedError("keyword args not supported")
         results = [None]
-        task_id, worker = self._dispatch_task(func, args, 0)
+        task_id, worker = self._dispatch_task(func, args, 0, kwds)
         async_result = AsyncResult(self, [task_id], results, unwrap_single=True)
         self._pending[task_id] = (async_result, 0, worker)
         return async_result

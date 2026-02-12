@@ -285,6 +285,34 @@ def test_cli_run_json(tmp_path: Path) -> None:
     assert "ok" in payload["data"].get("stdout", "")
 
 
+@pytest.mark.parametrize(
+    ("symbol", "invocation"),
+    [("exec", "exec('value = 1')"), ("eval", "eval('1 + 1')")],
+)
+def test_cli_run_unresolved_exec_eval_raise_runtime_error(
+    tmp_path: Path, symbol: str, invocation: str
+) -> None:
+    script = tmp_path / f"{symbol}_unresolved.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import builtins",
+                f"if hasattr(builtins, {symbol!r}):",
+                f"    delattr(builtins, {symbol!r})",
+                invocation,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    res = _run_cli(["run", str(script)])
+    assert res.returncode != 0
+    assert "RuntimeError: MOLT_COMPAT_ERROR:" in res.stderr
+    assert f"{symbol}() is unsupported in compiled Molt binaries" in res.stderr
+    assert "NameError" not in res.stderr
+    assert "NameError" not in res.stdout
+
+
 def test_cli_vendor_dry_run_json() -> None:
     res = _run_cli(
         ["vendor", "--dry-run", "--allow-non-tier-a", "--deterministic-warn", "--json"]

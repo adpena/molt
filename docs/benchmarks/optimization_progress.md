@@ -1,6 +1,6 @@
 # Optimization Progress Log
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 Canonical plan: `OPTIMIZATIONS_PLAN.md`
 
 ## Purpose
@@ -11,7 +11,7 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 ## Current Program State
 - Program phase: Week 1 (Observability + Hot-Path Attribution), with Week 0 baseline lock complete.
 - Execution assumption: implementation work has started for instrumentation/attribution and wasm stabilization, with follow-on Week 2 specialization queued behind wasm parity/perf hardening.
-- Status summary: runtime observability counters + profile JSON emission are landed/validated; refreshed uv-first linked-WASM artifact captured with 43/45 pass; wasm triage tooling now captures failure classes and optional wasmtime control-runner evidence.
+- Status summary: runtime observability counters + profile JSON emission are landed/validated; refreshed uv-first linked-WASM artifact captured with 43/45 pass; wasm triage tooling now captures failure classes and optional wasmtime control-runner evidence; compile-time recovery tightening is now landed (stdlib Tier-C bias, finer budget degrade checkpoints, stdlib-aware parallel policy) with green validation gates.
 
 ## Week 0 Checklist
 - [x] Build baseline captured (`tools/compile_progress.py`)
@@ -41,6 +41,7 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 | 2026-02-11 | WASM stabilization | Hardened wasm backend/harness against baseline blockers: fixed missing-local panic class in wasm codegen and made `bench_wasm.py` continue after per-benchmark setup failures. Added wasm link diagnostics hardening (`tools/wasm_link.py`) and optional unlinked mode for targeted debugging. | Partial complete | `runtime/molt-backend/src/wasm.rs`, `tools/bench_wasm.py`, `tools/wasm_link.py` | Address remaining linked-run/runtime parity failures (`bench_async_await`, `bench_channel_throughput`, `bench_bytes_find`, `bench_str_join`) in dedicated wasm clusters. |
 | 2026-02-11 | WASM stabilization | Re-ran full linked WASM suite with uv-first interpreter routing and published refreshed artifacts + diff versus week-0 baseline lock. `bench_bytes_find` and `bench_str_join` moved to passing; remaining failures are async/channel benches under Node with V8 Zone OOM during wasm compilation. | Partial complete (43/45 pass) | `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked.json`, `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked_summary.md`, `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked_vs_week0.json` | Triage async/channel failures with wasmtime-native runner as control and reduce Node/V8 compile-memory pressure for linked modules. |
 | 2026-02-11 | WASM stabilization | Extended `tools/bench_wasm.py` for focused async/channel triage: added benchmark selection (`--bench`), structured failure classification (`molt_wasm_failure_*`), optional control-runner reruns (`--control-runner wasmtime`), and Node heap tuning (`--node-max-old-space-mb` / `MOLT_WASM_NODE_MAX_OLD_SPACE_MB`). | In progress | `tools/bench_wasm.py`, `docs/benchmarks/optimization_progress.md` | Re-run `bench_async_await` + `bench_channel_throughput` with `--runner node --control-runner wasmtime` and publish fresh stabilization artifact bundle. |
+| 2026-02-12 | Compile-throughput recovery | Tightened frontend compile policy + strict stdlib gating: stdlib defaults to Tier C unless explicitly promoted, mid-end budget degrade now has finer stage/pre-pass checkpoints, and frontend layer policy includes stdlib-aware effective min-cost diagnostics. Also flipped stdlib fallback-pattern lint to all-stdlib default mode and cleaned all violations. | Complete (targeted tranche) | `src/molt/frontend/__init__.py`, `src/molt/cli.py`, `tools/check_stdlib_intrinsics.py`, `src/molt/stdlib/*`, `/tmp/molt_diag_new_serial.json`, `/tmp/molt_diag_new_parallel.json` | Run larger no-cache build matrix + wasm stabilization follow-up to quantify broader compile-time deltas beyond `examples/hello.py`. |
 
 ## Experiment Template (Use For Each OPT Track)
 

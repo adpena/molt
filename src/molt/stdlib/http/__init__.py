@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_http_client_execute", globals())
 
 from . import client as client  # noqa: E402
 from . import cookiejar as cookiejar  # noqa: E402

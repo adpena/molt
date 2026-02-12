@@ -1,6 +1,6 @@
 """Capability-gated socket module for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full socket module surface (sendmsg/recvmsg ancillary edge cases, timeout nuance parity, and remaining low-level option/errno behavior) with CPython parity.
+# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): continue expanding socket parity (remaining option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage).
 
 from __future__ import annotations
 

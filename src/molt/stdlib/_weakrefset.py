@@ -7,7 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from weakref import WeakSet
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_weakset_len", globals())
 
 
 __all__ = ["WeakSet"]

@@ -7,7 +7,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode", globals())
+_MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode", globals())
 
 
 __all__ = [
@@ -496,6 +497,26 @@ _MAXLINESIZE = 76
 _MAXBINSIZE = (_MAXLINESIZE // 4) * 3
 
 
+def _base64_encode_intrinsic(raw: bytes) -> bytes | None:
+    try:
+        encoded = _MOLT_CODECS_ENCODE(raw, "base64", "strict")
+    except Exception:
+        return None
+    if isinstance(encoded, (bytes, bytearray, memoryview)):
+        return bytes(encoded)
+    return None
+
+
+def _base64_decode_intrinsic(raw: bytes) -> bytes | None:
+    try:
+        decoded = _MOLT_CODECS_DECODE(raw, "base64", "strict")
+    except Exception:
+        return None
+    if isinstance(decoded, (bytes, bytearray, memoryview)):
+        return bytes(decoded)
+    return None
+
+
 def encode(input, output) -> None:
     while True:
         chunk = input.read(_MAXBINSIZE)
@@ -516,6 +537,9 @@ def encodebytes(s: Any) -> bytes:
     raw = _input_type_check(s)
     if not raw:
         return b""
+    fast = _base64_encode_intrinsic(raw)
+    if fast is not None:
+        return fast
     pieces = []
     for idx in range(0, len(raw), _MAXBINSIZE):
         chunk = raw[idx : idx + _MAXBINSIZE]
@@ -525,6 +549,9 @@ def encodebytes(s: Any) -> bytes:
 
 def decodebytes(s: Any) -> bytes:
     raw = _input_type_check(s)
+    fast = _base64_decode_intrinsic(raw)
+    if fast is not None:
+        return fast
     return b64decode(raw)
 
 

@@ -25,16 +25,8 @@ _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
 _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
     "molt_importlib_zip_source_exec_payload", globals()
 )
-
-_capabilities: ModuleType | None
-try:
-    from molt import capabilities as _capabilities_raw
-except Exception:
-    _capabilities = None
-else:
-    _capabilities = (
-        _capabilities_raw if isinstance(_capabilities_raw, ModuleType) else None
-    )
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
+_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
 def _split_archive_path(path: str) -> tuple[str, str]:
@@ -70,8 +62,8 @@ def _validate_resolution(payload: Any) -> dict[str, Any]:
 
 class zipimporter:
     def __init__(self, archive: str) -> None:
-        if _capabilities is not None and not _capabilities.trusted():
-            _capabilities.require("fs.read")
+        if not _MOLT_CAPABILITIES_TRUSTED():
+            _MOLT_CAPABILITIES_REQUIRE("fs.read")
         archive_path = str(archive)
         self.archive, self._prefix = _split_archive_path(archive_path)
         if not self.archive:

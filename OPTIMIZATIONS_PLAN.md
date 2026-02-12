@@ -29,6 +29,10 @@ Execution assumption (explicit): optimization implementation work is treated as 
 | 2026-02-12 | Landed pre-round full CFG canonicalizer before optimization rounds: canonicalization fixed-point now runs ahead of SCCP/CSE to align PHI arg shapes to CFG predecessors, thread/deepen try/label ladders, and prune dead label/jump scaffolding. Also upgraded CFG analysis metadata (`try_end_to_start`, `block_entry_label`) for stronger structural rewrites, tightened SCCP type/guard fact propagation on executable predecessors, and expanded read-heap CSE alias classes for additional attr/container forms. | `src/molt/frontend/__init__.py`, `src/molt/frontend/cfg_analysis.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `84 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
 | 2026-02-12 | Reconciled SCCP non-hang safeguards with optimization throughput: replaced fixed tiny SCCP iteration limit with dynamic function-scaled cap, preserved conservative semantic fallback on cap hit, and wired cap-hit visibility into global/per-function telemetry and hotspot reporting (`sccp_iteration_cap_hits`) so regressions are actionable without risking compile stalls. | `src/molt/frontend/__init__.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `84 passed`; `uv run --python 3.12 python3 tools/check_molt_ir_ops.py` -> `ok`). |
 | 2026-02-12 | Replaced SCCP full block-scan convergence loop with a queue-driven solver (`edge`, `value`, `block` worklists) so propagation only revisits impacted regions, reduced false cap-hit risk by counting transfer work (not every queue pop), and kept conservative cap fallback semantics intact. Added focused regression coverage for large CFG growth (no hang), semantic stability under forced cap fallback, and telemetry gating where cap hits are observed only in pathological runs. | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py` -> `58 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `28 passed`; targeted SCCP regression subset -> `2 passed`). |
+| 2026-02-12 | Planned compile-time recovery override for frontend/mid-end throughput: profile-gated optimization policy (`dev` vs `release`), tiered function/module optimization classes (A/B/C), per-function wall-time budgets with degrade ladder, per-pass wall-time telemetry, deterministic fixed-point pass contract, and staged process-level parallel lowering/optimization rollout. | `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/ROADMAP_90_DAYS.md` | Planning/documentation tranche only; implementation slices and acceptance gates are now explicit and ready to execute. |
+| 2026-02-12 | Landed the first compile-throughput recovery tranche in frontend/CLI: profile plumbing from build profile into frontend policy (`dev`/`release`), active tier classifier (A/B/C), per-function budget/degrade ladder in the deterministic fixed-point loop (correctness gates always on), and per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) with function-scoped policy outcomes. | `src/molt/cli.py`, `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py` -> `66 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `28 passed`). |
+| 2026-02-12 | Landed PR-6 + PR-7 tranche: CLI diagnostics now sinks frontend mid-end policy/budget/pass telemetry into build diagnostics (stderr + JSON payload), and deterministic process-level module lowering is available behind `MOLT_FRONTEND_PARALLEL_MODULES` with stable dependency-layer merge ordering and conservative auto-fallback to serial when unsupported (`type_facts`/phase-timeout lanes). | `src/molt/cli.py`, `tests/cli/test_cli_import_collection.py`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/ROADMAP_90_DAYS.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/cli/test_cli_import_collection.py` -> `20 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `94 passed`). |
+| 2026-02-12 | Tightened compile-throughput control + strict stdlib fallback enforcement: stdlib mid-end classification now defaults to Tier C unless explicitly promoted, stage-level budget checkpoints now include pre-pass/preemptive degrade logic, and frontend layer parallel policy now applies stdlib-aware effective min-cost thresholds with diagnostics visibility. In parallel, `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (with explicit opt-down flag), and remaining violating modules were cleaned up to keep the gate green. | `src/molt/frontend/__init__.py`, `src/molt/cli.py`, `tools/check_stdlib_intrinsics.py`, `src/molt/stdlib/{builtins.py,runpy.py,signal.py,typing.py,pathlib.py,warnings.py,zipfile.py,zipimport.py,importlib/metadata.py,pprint.py,test/import_helper.py,test/list_tests.py,test/seq_tests.py,test/support.py}`, `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `README.md` | Validation gates passed (`python3 tools/check_stdlib_intrinsics.py --update-doc && python3 tools/check_stdlib_intrinsics.py`; `python3 tools/check_core_lane_lowering.py`; `python3 tools/check_molt_ir_ops.py`; `uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/cli/test_cli_import_collection.py` -> `93 passed`). No-cache diagnostics probes on `examples/hello.py` show tier shift to `A=12/B=7/C=187` (from prior `A=12/B=189/C=3`) and lower wall time in forced-parallel probe (`35.94s` vs `40.99s` serial). |
 
 ### 0.3 Week 0 Deliverables (Required Before Week 1 Execution)
 - [x] Capture fresh build baseline (`tools/compile_progress.py`) with reproducibility metadata and artifact paths.
@@ -261,6 +265,261 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 | OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Not Started (Kickoff Reset) | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
 | OPT-1007 | Perf Governance and CI Guardrails | P0 | Not Started (Kickoff Reset) | prevent hidden regressions | budget checks enforced in CI and local tooling |
 | OPT-1008 | Friend-Native Benchmark Program | P0 | Not Started (Kickoff Reset) | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
+
+---
+
+## 3A. Compiler Mid-End Compile-Time Recovery (Priority Override, 2026-02-12)
+
+### Intent And Self-Containment
+This section is intentionally explicit and operational. It is written so a new
+engineer can execute the recovery plan without prior chat context.
+
+### Problem Statement
+- Optimization depth and fixed-point scope expanded faster than compile-time
+  controls, causing frontend/mid-end latency spikes on stdlib-heavy module
+  graphs.
+- In deterministic bench lanes, builds can timeout before wasm execution
+  starts. In direct native profiling, a few stdlib modules dominate lowering
+  wall time.
+- The immediate risk is compile-throughput collapse in cold/no-cache paths, not
+  semantic correctness regressions.
+
+### Reproduction Baseline (As Of 2026-02-12)
+- Deterministic wasm bench probe:
+  - Command:
+    `PYTHONHASHSEED=0 MOLT_FRONTEND_TIMINGS=5 TMPDIR=/Volumes/APDataStore/Molt/tmp_rust UV_NO_SYNC=1 CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target_shared uv run --python 3.12 python3 -u tools/bench_wasm.py --bench bench_async_await --samples 1 --warmup 0 --runner node --control-runner none --keep-artifacts --log-file /Volumes/APDataStore/Molt/bench_wasm_async_hash0_keep.log --json-out /Volumes/APDataStore/Molt/bench/results/bench_wasm_async_hash0_keep.json`
+  - Signal:
+    repeated `WASM build timed out ... after 90.0s` with retry timeout.
+- Native frontend hotspot probe:
+  - Command:
+    `PYTHONPATH=src PYTHONHASHSEED=0 UV_NO_SYNC=1 CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target_shared MOLT_FRONTEND_TIMINGS=5 uv run --python 3.12 python3 -m molt.cli build --no-cache --out-dir /Volumes/APDataStore/Molt/tmp_rust/native_async_profile tests/benchmarks/bench_async_await.py`
+  - Signal:
+    representative module tails included `_intrinsics ~67.5s`,
+    `__future__ ~244.5s`, and `keyword ~48.8s`.
+
+### Investigation Findings (WASM Fix + Native Probe)
+This subsection captures what was discovered during incident triage so future
+work does not repeat already-closed investigations.
+
+| Finding ID | Discovery | Evidence | Outcome |
+| --- | --- | --- | --- |
+| F-1 | Initial wasm-hang signal included malformed control suspicion. | Deterministic bench harness logs plus backend panic reports from prior runs. | Added strict frontend structural verification and direct failure reporting so malformed control cannot silently pass to backend. |
+| F-2 | A real frontend structural bug existed: `LOOP_BREAK_IF_FALSE` emitted outside `LOOP_START`/`LOOP_END` in module-chunked stdlib lowering (notably `_collections_abc` chunk). | Runtime error during mid-end verification in `_collections_abc__molt_module_chunk_1` and targeted op-window inspection around offending index. | Fixed loop lowering to emit `LOOP_START` before `LOOP_INDEX_START` paths and added regression coverage (`test_range_loop_lowering_keeps_loop_index_control_within_loop_markers`). |
+| F-3 | After fixing malformed loop control, deterministic wasm builds still timed out in frontend lowering. | Bench retries still hit 90s timeout after structural fix; no runtime execution began. | Confirms active blocker is compile-throughput, not malformed-control panic class. |
+| F-4 | Timeout diagnostics from bench harness often had empty stdout/stderr tails. | `build_timeout_diag_primary.json`/`retry.json` showed timeout with minimal output due subprocess termination boundary. | Added/used phase-level frontend timeouts (`MOLT_FRONTEND_PHASE_TIMEOUT`) and module timing output (`MOLT_FRONTEND_TIMINGS`) to expose specific hotspot modules. |
+| F-5 | Wasm path looked worse than native mainly due tighter harness timeout envelope. | Wasm bench uses 90s build timeout + retry; native direct profiling without that envelope continued far longer and surfaced large stdlib module tails. | Root cause is shared frontend/mid-end cost profile; wasm simply fails faster because harness bounds are strict. |
+| F-6 | Heavy stdlib modules dominate compile time under current optimization depth. | Native timing probe surfaced long-tail modules (`_intrinsics`, `__future__`, `keyword`, and others). | Motivates profile/tier policy and per-function budgeted degrade path as top-priority recovery work. |
+
+### What Was Fixed During Investigation
+- Frontend structural control verification is now explicitly fail-closed for
+  malformed loop/control constructs before backend lowering.
+- Range/counted-loop lowering paths were corrected so loop-control ops are
+  structurally enclosed.
+- Deterministic regression coverage was added for this failure class in
+  frontend mid-end tests.
+- Bench harness behavior now degrades deterministically (timeout + retry +
+  diagnostics) rather than hanging indefinitely.
+
+### What Was Ruled Out
+- This incident is not primarily a wasm-only backend correctness problem.
+- After structural loop-control fix, the dominant blocker remained frontend
+  compile time in shared module lowering paths.
+- Malformed-control warning counts in deterministic bench logs were not the
+  dominant failure signal in the post-fix runs; build timeout was.
+
+### Current Active Blocker (Post-Investigation)
+- Compile throughput in frontend/mid-end on stdlib-heavy graphs remains the
+  blocker; policy/tiering/budget/telemetry rollout is now the designated fix
+  path.
+- Any future wasm panic/control-flow anomalies should still be triaged, but
+  this tranche is scoped to the compile-time bottleneck evidenced above.
+
+### Scope
+- In scope:
+  - frontend/mid-end pass scheduling and policy,
+  - profile/tier gating,
+  - per-function budgeting and degrade paths,
+  - pass-level timing telemetry,
+  - deterministic process-level parallelization for lowering/optimization.
+- Out of scope for this tranche:
+  - runtime semantic changes,
+  - backend codegen algorithm changes unrelated to compile throughput,
+  - broad benchmark retuning before policy/telemetry lands.
+
+### Guardrails (Non-Negotiable)
+- Correctness passes are always-on in every profile/tier:
+  - structural control verifier,
+  - definite-assignment verifier,
+  - deterministic pass-order and convergence checks.
+- Degrade mode may remove expensive optimization transforms, but never removes
+  correctness/safety gates.
+- Same input + profile + policy must produce deterministic IR and diagnostics.
+
+### Definitions
+- Profile:
+  - `dev`: fast feedback; correctness-first; conservative optimization depth.
+  - `release`: full optimization depth with bounded fixed-point rounds.
+- Tier:
+  - Tier A: entry/hot functions.
+  - Tier B: normal user functions.
+  - Tier C: heavy dependency/stdlib functions (unless promoted).
+- Promotion:
+  - deterministic rule that moves Tier C/B to Tier A when function-level
+    hotness hints or explicit overrides are present.
+
+### Policy Matrix (V1 Defaults)
+
+#### Fixed-point contract (all policies)
+- Canonical pass order:
+  `simplify -> SCCP/edge-thread -> join canonicalize -> prune -> verifier -> DCE -> CSE`
+- Stop conditions:
+  - stable IR hash for a round,
+  - configured round cap reached (fail-fast telemetry),
+  - safety fallback required.
+
+#### Profile + Tier defaults
+| Profile | Tier | Max rounds | SCCP iter cap base | CSE iter cap base | Read-heap CSE | LICM/advanced guard-hoist | Budget base (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `dev` | A | 2 | 48 | 16 | selective | off by default | 60 |
+| `dev` | B | 1 | 24 | 8 | conservative | off | 35 |
+| `dev` | C | 1 | 12 | 4 | off by default | off | 20 |
+| `release` | A | 4 | 128 | 48 | on | on | 180 |
+| `release` | B | 3 | 96 | 32 | on (conservative) | selective | 110 |
+| `release` | C | 2 | 48 | 16 | selective/off by shape | off by default | 70 |
+
+Note: numbers above are initial defaults for implementation and expected to be
+adjusted from telemetry after landing PR-5/PR-6.
+
+### Tier Classifier Contract (Deterministic)
+- Inputs:
+  - module name,
+  - function symbol role (`__main__`, init symbols, user functions),
+  - IR size (`op_count`, `block_count`),
+  - optional hotness hints from profile/bench artifacts.
+- Order of operations:
+  1. Explicit override map (highest precedence).
+  2. Entry/hot function matching -> Tier A.
+  3. Known heavy dependency/stdlib module matching -> Tier C.
+  4. Default -> Tier B.
+- Tie-breaking:
+  - lexical order of module/function symbols for deterministic assignment.
+
+### Per-Function Budget Algorithm (V1)
+- Budget formula:
+  - `budget_ms = base_ms(profile,tier) + alpha * op_count + beta * block_count`
+  - initial constants: `alpha=0.03`, `beta=0.75`.
+- Enforcement checkpoints:
+  - after each pass in a round,
+  - after each round.
+- Degrade ladder (strict order):
+  1. Clamp remaining rounds to 1.
+  2. Disable deep edge-thread rewrites.
+  3. Disable global read-heap CSE expansion.
+  4. Disable LICM and region-wide guard hoist.
+  5. Keep verifier + structural safety; emit degrade event.
+- Required degrade reasons:
+  - `budget_exceeded`,
+  - `round_cap_hit`,
+  - `iteration_cap_hit`,
+  - `policy_tier_limit`,
+  - `safety_gate_fallback`.
+
+### Per-Pass Telemetry Contract
+- Required counters per `(module,function,pass)`:
+  - `attempted`, `accepted`, `rejected`, `degraded`.
+- Required timing:
+  - `ms_total`, `ms_max`, `sample_count`, `ms_p95`.
+- Required rollups:
+  - top N offenders by `ms_total`,
+  - top N offenders by `ms_p95`,
+  - degrade reason distribution by profile/tier.
+- Example JSON shape:
+```json
+{
+  "optimization_policy": {"profile": "release", "tier": "B"},
+  "function_budget": {"budget_ms": 143.2, "spent_ms": 167.4, "degraded": true, "reason": "budget_exceeded"},
+  "passes": {
+    "sccp": {"attempted": 3, "accepted": 2, "rejected": 1, "degraded": 1, "ms_total": 74.5, "ms_p95": 31.2},
+    "cse": {"attempted": 2, "accepted": 1, "rejected": 1, "degraded": 1, "ms_total": 28.9, "ms_p95": 17.4}
+  }
+}
+```
+
+### Diagnostics Contract
+- Stderr summary must include:
+  - active profile/tier policy,
+  - number of degraded functions and top reasons,
+  - top 10 `(module,function,pass)` by wall time.
+- JSON diagnostics payload must include:
+  - policy summary,
+  - per-function budget/degrade outcomes,
+  - per-pass timings and counters.
+
+### PR Slice Execution Plan (Deterministic, Parallel-Friendly)
+| Slice | Scope | Primary files | Dependencies | Acceptance criteria | Minimum validation |
+| --- | --- | --- | --- | --- | --- |
+| PR-1 | Policy plumbing (`--profile` -> frontend policy object + diagnostics banner) | `src/molt/cli.py`, `src/molt/frontend/__init__.py` | none | policy visible and deterministic in diagnostics | `uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py -k policy` |
+| PR-2 | Tier classifier + override knobs (A/B/C) | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py` | PR-1 | deterministic tier assignment across runs | targeted tier classifier tests |
+| PR-3 | Pass-order contract hardening + explicit non-convergence fail-fast | `src/molt/frontend/__init__.py` | PR-1 | second-run idempotence on same IR | fixed-point/idempotence test subset |
+| PR-4 | Per-function budget model + degrade ladder | `src/molt/frontend/__init__.py`, `tests/test_frontend_midend_passes.py` | PR-1..3 | budget breach disables expensive passes only; verifier remains enforced | budget/degrade regression tests |
+| PR-5 | Per-pass wall-time telemetry + top offenders | `src/molt/frontend/__init__.py`, `src/molt/cli.py`, `tests/test_frontend_midend_passes.py` | PR-1..4 | counters and timings emitted deterministically | telemetry schema tests |
+| PR-6 | Build diagnostics sink integration (stderr + JSON) | `src/molt/cli.py`, docs | PR-5 | tooling-visible policy + degrade + offender data | CLI diagnostics tests |
+| PR-7 | Process-level parallel module lowering with deterministic merge | `src/molt/cli.py` | PR-1..6 | identical IR ordering/semantics across serial and parallel lanes | deterministic serial-vs-parallel IR comparison |
+| PR-8 | Optional large-function workers + Rust-kernel extraction staging | `src/molt/frontend/__init__.py`, future Rust bridge code | PR-1..7 | throughput gain with no semantic drift | focused compile-time + parity gates |
+
+### Rollout And Exit Gates
+- Phase 0 (observability only):
+  - policy and telemetry land; no behavior changes to optimization depth.
+- Phase 1 (dev profile gating):
+  - `dev` defaults to conservative depth with safety gates always on.
+- Phase 2 (release tiering + budgets):
+  - full policy matrix enabled, degrade ladder active.
+- Phase 3 (parallel lowering):
+  - deterministic process-level concurrency enabled by default.
+- Exit gates:
+  - deterministic second-run IR equality,
+  - reduced p95 frontend lowering time on stdlib-heavy modules,
+  - no increase in verifier fallbacks or correctness regressions.
+
+### Parallelism/Concurrency Strategy
+- Use process-level concurrency for CPU-heavy work (not Python threads).
+- Phase 1:
+  - module-level parallel lowering by dependency layer,
+  - deterministic merge by topological layer then lexical module order.
+- Phase 2:
+  - optional large-function optimization workers for oversized functions.
+- Phase 3:
+  - move hot kernels (CFG build, SCCP transfer, dominator/liveness) to Rust
+    while policy orchestration stays in Python.
+
+### Rollback/Kill Switches
+- Required emergency switches:
+  - force legacy policy behavior,
+  - disable budget degrade path,
+  - disable parallel lowering,
+  - force serial deterministic lane.
+- Rollback requirement:
+  - one-flag return to known-safe behavior for release hotfixes.
+
+### Tracking Metrics
+- Throughput KPIs:
+  - per-function lower+midend wall time (`p50`/`p95`/`p99`),
+  - pass-level `ms_total` and `ms_p95`,
+  - degrade rate by reason/tier/profile,
+  - fixed-point convergence round distribution.
+- Stability KPIs:
+  - deterministic second-run IR equality,
+  - verifier fallback rate flat or improving,
+  - zero semantic regressions in focused optimizer suites.
+
+### TODO Contracts (Mirrored in `ROADMAP.md` and `docs/spec/STATUS.md`)
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (profile plumbing into frontend policy is landed; CLI diagnostics sink expansion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline classifier + env override knobs are landed; hotness-driven promotion logic remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; tuning heuristics and function-level diagnostics surfacing remain).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend pass telemetry + hotspot rendering are landed; CLI/JSON sink wiring remains).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): surface active optimization profile/tier policy and degrade events in CLI build diagnostics and JSON outputs for deterministic triage (diagnostics sink is landed for policy/tier/degrade + pass hotspots; remaining work is richer CLI UX controls and optional verbosity partitioning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility + worker telemetry/perf tuning).
+- TODO(compiler, owner:compiler, milestone:LF3, priority:P1, status:planned): migrate hot mid-end kernels (CFG build, SCCP lattice transfer, dominator/liveness) to Rust with Python orchestration preserved for policy control.
 
 ---
 
