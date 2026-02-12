@@ -39,8 +39,6 @@ native_wheels = ["cbor2", "cryptography", "msgpack"]
 
 [dependency-groups]
 bench = [
-    "cython>=3.2.3",
-    "numba>=0.63.1 ; python_full_version < '3.13'",
     "setuptools>=80.9.0",
 ]
 dev = [
@@ -50,8 +48,6 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.14.10",
     "ty>=0.0.8",
-    "cython>=3.2.3",
-    "numba>=0.63.1 ; python_full_version < '3.13'",
     "setuptools>=80.9.0",
     "django>=5.0",
     "stdlib-list>=0.12.0",

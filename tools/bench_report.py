@@ -133,46 +133,26 @@ def _format_ratio_list(items: list[tuple[str, float]], limit: int) -> str:
 
 
 def _baseline_summary(native_bench: dict[str, Any]) -> str:
-    cython_available = any(entry.get("cython_ok") for entry in native_bench.values())
-    numba_available = any(entry.get("numba_ok") for entry in native_bench.values())
-    codon_available = any(entry.get("codon_ok") for entry in native_bench.values())
-
     parts: list[str] = []
-
-    if not cython_available and not numba_available:
-        parts.append("Cython/Numba baselines unavailable")
-    else:
-        if not cython_available:
-            parts.append("Cython baseline unavailable")
-        else:
-            cython_missing = sorted(
-                _display_name(name)
-                for name, entry in native_bench.items()
-                if not entry.get("cython_ok")
-            )
-            if cython_missing:
-                parts.append(f"Cython skipped for {_format_name_list(cython_missing)}")
-        if not numba_available:
-            parts.append("Numba baseline unavailable")
-        else:
-            numba_missing = sorted(
-                _display_name(name)
-                for name, entry in native_bench.items()
-                if not entry.get("numba_ok")
-            )
-            if numba_missing:
-                parts.append(f"Numba skipped for {_format_name_list(numba_missing)}")
-
-    if not codon_available:
-        parts.append("Codon baseline unavailable")
-    else:
-        codon_missing = sorted(
+    lane_labels = {
+        "pypy": "PyPy",
+        "codon": "Codon",
+        "nuitka": "Nuitka",
+        "pyodide": "Pyodide",
+    }
+    for lane, label in lane_labels.items():
+        ok_key = f"{lane}_ok"
+        available = any(entry.get(ok_key) for entry in native_bench.values())
+        if not available:
+            parts.append(f"{label} baseline unavailable")
+            continue
+        missing = sorted(
             _display_name(name)
             for name, entry in native_bench.items()
-            if not entry.get("codon_ok")
+            if not entry.get(ok_key)
         )
-        if codon_missing:
-            parts.append(f"Codon skipped for {_format_name_list(codon_missing)}")
+        if missing:
+            parts.append(f"{label} skipped for {_format_name_list(missing)}")
 
     if not parts:
         return "none"
@@ -270,9 +250,21 @@ def _render_report(
     wasm: dict[str, Any],
 ) -> None:
     names, native_bench, wasm_bench = _collect_benchmarks(native, wasm)
+    lane_labels = {
+        "pypy": "PyPy",
+        "codon": "Codon",
+        "nuitka": "Nuitka",
+        "pyodide": "Pyodide",
+    }
+    comparator_rows: dict[str, list[tuple[str, float, float, float]]] = {
+        lane: [] for lane in lane_labels
+    }
 
     native_ok = sum(1 for entry in native_bench.values() if entry.get("molt_ok"))
-    codon_ok = sum(1 for entry in native_bench.values() if entry.get("codon_ok"))
+    lane_ok_counts = {
+        lane: sum(1 for entry in native_bench.values() if entry.get(f"{lane}_ok"))
+        for lane in lane_labels
+    }
     wasm_ok = sum(1 for entry in wasm_bench.values() if entry.get("molt_wasm_ok"))
 
     native_speedups = [
@@ -281,58 +273,46 @@ def _render_report(
         if entry.get("molt_ok") and entry.get("molt_speedup")
     ]
 
-    wasm_speedups = []
-    wasm_native_ratios = []
-    regressions = []
-    wasm_slowest = []
+    wasm_speedups: list[float] = []
+    wasm_native_ratios: list[float] = []
+    regressions: list[tuple[str, float, float | None, float | None]] = []
+    wasm_slowest: list[tuple[str, float, float, float]] = []
 
-    molt_ok_names = sorted(
-        name for name, entry in native_bench.items() if entry.get("molt_ok")
-    )
-    codon_ok_names = sorted(
-        name for name, entry in native_bench.items() if entry.get("codon_ok")
-    )
-    codon_only = sorted(set(codon_ok_names) - set(molt_ok_names))
-    molt_only_codon = sorted(set(molt_ok_names) - set(codon_ok_names))
-    both_ok_codon = sorted(set(molt_ok_names) & set(codon_ok_names))
-    codon_comparisons: list[tuple[str, float, float, float]] = []
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
-
         molt_time = n_entry.get("molt_time_s")
-        codon_time = n_entry.get("codon_time_s")
         cpython_time = n_entry.get("cpython_time_s")
         speedup = n_entry.get("molt_speedup")
-
         wasm_time = w_entry.get("molt_wasm_time_s")
 
         wasm_speedup = _safe_div(cpython_time, wasm_time)
         wasm_native_ratio = _safe_div(wasm_time, molt_time)
-
         if wasm_speedup is not None:
             wasm_speedups.append(wasm_speedup)
-
-        if wasm_native_ratio is not None:
+        if (
+            wasm_native_ratio is not None
+            and wasm_time is not None
+            and molt_time is not None
+        ):
             wasm_native_ratios.append(wasm_native_ratio)
             wasm_slowest.append((name, wasm_time, molt_time, wasm_native_ratio))
-
         if speedup is not None and speedup < 1.0:
             regressions.append((name, speedup, molt_time, cpython_time))
 
-        if (
-            n_entry.get("molt_ok")
-            and n_entry.get("codon_ok")
-            and molt_time is not None
-            and codon_time is not None
-            and codon_time > 0
-        ):
-            ratio = molt_time / codon_time
-            codon_comparisons.append((name, molt_time, codon_time, ratio))
+        if not n_entry.get("molt_ok") or molt_time is None or molt_time <= 0:
+            continue
+        for lane in lane_labels:
+            lane_time = n_entry.get(f"{lane}_time_s")
+            if n_entry.get(f"{lane}_ok") and lane_time is not None and lane_time > 0:
+                comparator_rows[lane].append(
+                    (name, molt_time, lane_time, molt_time / lane_time)
+                )
 
     regressions.sort(key=lambda item: item[1])
     wasm_slowest.sort(key=lambda item: item[3], reverse=True)
-    codon_comparisons.sort(key=lambda item: item[3], reverse=True)
+    for lane in comparator_rows:
+        comparator_rows[lane].sort(key=lambda item: item[3], reverse=True)
 
     missing_native = sorted(set(wasm_bench) - set(native_bench))
     missing_wasm = sorted(set(native_bench) - set(wasm_bench))
@@ -343,10 +323,8 @@ def _render_report(
 
     native_rev = native.get("git_rev") or "-"
     wasm_rev = wasm.get("git_rev") or "-"
-
     native_created = native.get("created_at") or "-"
     wasm_created = wasm.get("created_at") or "-"
-
     native_system = _format_system(native.get("system"))
     wasm_system = _format_system(wasm.get("system"))
 
@@ -375,8 +353,6 @@ def _render_report(
         f"- Benchmarks: {len(names)} total; native ok {native_ok}/{len(native_bench)}; "
         f"wasm ok {wasm_ok}/{len(wasm_bench)}."
     )
-    if native_bench:
-        lines.append(f"- Codon ok {codon_ok}/{len(native_bench)}.")
     lines.append(
         "- Median native speedup vs CPython: "
         f"{_format_ratio(_median(native_speedups))}."
@@ -388,35 +364,18 @@ def _render_report(
         f"- Median wasm/native ratio: {_format_ratio(_median(wasm_native_ratios))}."
     )
     lines.append(f"- Native regressions (< 1.0x): {len(regressions)}.")
+    lines.append(
+        "- Comparator coverage: "
+        + ", ".join(
+            f"{label} {lane_ok_counts[lane]}/{len(native_bench)}"
+            for lane, label in lane_labels.items()
+        )
+        + "."
+    )
     if missing_native:
         lines.append(f"- Missing native entries: {', '.join(missing_native)}.")
     if missing_wasm:
         lines.append(f"- Missing wasm entries: {', '.join(missing_wasm)}.")
-    lines.append("")
-
-    lines.append("## Molt & Codon OK")
-    if both_ok_codon:
-        lines.append(f"- Benchmarks OK in both: {len(both_ok_codon)}.")
-        lines.append(f"- {_format_name_list(both_ok_codon)}.")
-    else:
-        lines.append("- Benchmarks OK in both: 0.")
-    lines.append("")
-
-    lines.append("## Codon Only")
-    if codon_only:
-        lines.append(f"- Benchmarks OK only in Codon: {len(codon_only)}.")
-        lines.append(f"- {_format_name_list(codon_only)}.")
-    else:
-        lines.append("- Benchmarks OK only in Codon: 0.")
-    lines.append("")
-
-    lines.append("## Molt Only")
-    if not molt_only_codon:
-        lines.append("- Benchmarks OK only in Molt: 0.")
-    else:
-        if molt_only_codon:
-            lines.append(f"- vs Codon: {len(molt_only_codon)}.")
-            lines.append(f"- {_format_name_list(molt_only_codon)}.")
     lines.append("")
 
     lines.append("## Regressions (Native < 1.0x)")
@@ -444,51 +403,67 @@ def _render_report(
         lines.append("| - | - | - | - |")
     lines.append("")
 
-    lines.append("## Molt vs Codon (Both OK)")
-    lines.append("| Benchmark | Molt s | Codon s | Molt/Codon |")
-    lines.append("| --- | --- | --- | --- |")
-    for name, molt_time, codon_time, ratio in codon_comparisons[:10]:
-        lines.append(
-            f"| {name} | {_format_time(molt_time)} | {_format_time(codon_time)} | "
-            f"{_format_ratio(ratio)} |"
-        )
-    if not codon_comparisons:
-        lines.append("| - | - | - | - |")
-    lines.append("")
+    for lane, label in lane_labels.items():
+        lines.append(f"## Molt vs {label} (Both OK)")
+        lines.append("| Benchmark | Molt s | Comparator s | Molt/Comparator |")
+        lines.append("| --- | --- | --- | --- |")
+        rows = comparator_rows[lane]
+        for name, molt_time, lane_time, ratio in rows[:10]:
+            lines.append(
+                f"| {name} | {_format_time(molt_time)} | {_format_time(lane_time)} | "
+                f"{_format_ratio(ratio)} |"
+            )
+        if not rows:
+            lines.append("| - | - | - | - |")
+        lines.append("")
 
     lines.append("## Combined Table")
     lines.append(
-        "| Benchmark | Native OK | Codon OK | CPython s | Molt s | Codon s | "
-        "Molt/Codon | Speedup | WASM OK | WASM s | WASM/Native | WASM/CPython |"
+        "| Benchmark | Molt OK | CPython s | PyPy s | Codon build s | Codon run s | "
+        "Codon KB | Nuitka build s | Nuitka run s | Nuitka KB | Pyodide run s | "
+        "Molt build s | Molt run s | Molt KB | Molt/CPython | Molt/PyPy | "
+        "Molt/Codon | Molt/Nuitka | Molt/Pyodide | WASM OK | WASM s | "
+        "WASM/Native | WASM/CPython |"
     )
     lines.append(
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+        "--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
-
         cpython_time = n_entry.get("cpython_time_s")
-        molt_time = n_entry.get("molt_time_s")
+        pypy_time = n_entry.get("pypy_time_s")
+        codon_build = n_entry.get("codon_build_s")
         codon_time = n_entry.get("codon_time_s")
-        speedup = n_entry.get("molt_speedup")
-
+        codon_size = n_entry.get("codon_size_kb")
+        nuitka_build = n_entry.get("nuitka_build_s")
+        nuitka_time = n_entry.get("nuitka_time_s")
+        nuitka_size = n_entry.get("nuitka_size_kb")
+        pyodide_time = n_entry.get("pyodide_time_s")
+        molt_build = n_entry.get("molt_build_s")
+        molt_time = n_entry.get("molt_time_s")
+        molt_size = n_entry.get("molt_size_kb")
         wasm_time = w_entry.get("molt_wasm_time_s")
         wasm_native_ratio = _safe_div(wasm_time, molt_time)
-        wasm_speedup = _safe_div(cpython_time, wasm_time)
-
-        native_ok_label = "yes" if n_entry.get("molt_ok") else "no"
-        codon_ok_label = "yes" if n_entry.get("codon_ok") else "no"
-        wasm_ok_label = "yes" if w_entry.get("molt_wasm_ok") else "no"
-        codon_ratio = _safe_div(molt_time, codon_time)
-
+        wasm_cpython_ratio = _safe_div(wasm_time, cpython_time)
         lines.append(
             "| "
-            f"{name} | {native_ok_label} | {codon_ok_label} | "
-            f"{_format_time(cpython_time)} | {_format_time(molt_time)} | "
-            f"{_format_time(codon_time)} | {_format_ratio(codon_ratio)} | "
-            f"{_format_ratio(speedup)} | {wasm_ok_label} | {_format_time(wasm_time)} | "
-            f"{_format_ratio(wasm_native_ratio)} | {_format_ratio(wasm_speedup)} |"
+            f"{name} | {'yes' if n_entry.get('molt_ok') else 'no'} | "
+            f"{_format_time(cpython_time)} | {_format_time(pypy_time)} | "
+            f"{_format_time(codon_build)} | {_format_time(codon_time)} | "
+            f"{_format_time(codon_size)} | {_format_time(nuitka_build)} | "
+            f"{_format_time(nuitka_time)} | {_format_time(nuitka_size)} | "
+            f"{_format_time(pyodide_time)} | {_format_time(molt_build)} | "
+            f"{_format_time(molt_time)} | {_format_time(molt_size)} | "
+            f"{_format_ratio(_safe_div(molt_time, cpython_time))} | "
+            f"{_format_ratio(_safe_div(molt_time, pypy_time))} | "
+            f"{_format_ratio(_safe_div(molt_time, codon_time))} | "
+            f"{_format_ratio(_safe_div(molt_time, nuitka_time))} | "
+            f"{_format_ratio(_safe_div(molt_time, pyodide_time))} | "
+            f"{'yes' if w_entry.get('molt_wasm_ok') else 'no'} | "
+            f"{_format_time(wasm_time)} | {_format_ratio(wasm_native_ratio)} | "
+            f"{_format_ratio(wasm_cpython_ratio)} |"
         )
 
     lines.append("")

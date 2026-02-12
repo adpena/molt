@@ -6,9 +6,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 from typing import Any
+import linecache as _linecache
+import os as _os
+import re as _re
 import sys as _sys
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 
 
 class _WarningRecord:
@@ -141,10 +145,11 @@ def _normalize_category(category: Any) -> type:
 
 
 def _get_frame(stacklevel: int) -> Any | None:
+    getframe = getattr(_sys, "_getframe", None)
+    if not callable(getframe):
+        return None
     try:
-        import sys
-
-        return sys._getframe(stacklevel)
+        return getframe(stacklevel)
     except Exception:
         return None
 
@@ -303,22 +308,17 @@ def _action_for(message: str, category: type, module: str, lineno: int) -> str:
 
 def _file_exists_for_linecache(filename: str) -> bool:
     try:
-        import os
-        import sys
+        if _os.path.isabs(filename):
+            return _os.path.exists(filename)
     except Exception:
         return False
-    try:
-        if os.path.isabs(filename):
-            return os.path.exists(filename)
-    except Exception:
-        return False
-    for dirname in sys.path:
+    for dirname in _sys.path:
         try:
-            candidate = os.path.join(dirname, filename)
+            candidate = _os.path.join(dirname, filename)
         except Exception:
             continue
         try:
-            if os.path.exists(candidate):
+            if _os.path.exists(candidate):
                 return True
         except Exception:
             continue
@@ -335,17 +335,11 @@ def formatwarning(
     name = getattr(category, "__name__", "Warning")
     text = str(message)
     if line is None:
-        try:
-            from molt import capabilities as _caps
-
-            if _caps.has("fs.read") and _file_exists_for_linecache(filename):
-                import linecache
-
-                line = linecache.getline(filename, lineno) or None
-            else:
+        if _MOLT_CAPABILITIES_HAS("fs.read") and _file_exists_for_linecache(filename):
+            try:
+                line = _linecache.getline(filename, lineno) or None
+            except Exception:
                 line = None
-        except Exception:
-            line = None
     if line:
         return f"{filename}:{lineno}: {name}: {text}\n  {line.strip()}\n"
     return f"{filename}:{lineno}: {name}: {text}\n"
@@ -501,19 +495,11 @@ def filterwarnings(
     msg_pat = None
     mod_pat = None
     if message or module:
-        try:
-            import re
-
-            msg_flags = getattr(re, "IGNORECASE", getattr(re, "I", 0))
-            if message:
-                msg_pat = re.compile(message, msg_flags)
-            if module:
-                mod_pat = re.compile(module)
-        except Exception:
-            if message:
-                msg_pat = _SimpleRegex(message, True)
-            if module:
-                mod_pat = _SimpleRegex(module, False)
+        msg_flags = getattr(_re, "IGNORECASE", getattr(_re, "I", 0))
+        if message:
+            msg_pat = _re.compile(message, msg_flags)
+        if module:
+            mod_pat = _re.compile(module)
     cat = None if category is None else category
     filt = (action, msg_pat, cat, mod_pat, lineno)
     if append:

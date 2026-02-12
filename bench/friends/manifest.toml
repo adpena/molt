@@ -32,7 +32,7 @@ skip_reason = "Configure cpython run_cmd for this suite before enabling."
 [suite.runners.molt]
 skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
 
-[suite.runners.friend]
+[suite.runners.codon]
 skip_reason = "Configure codon run_cmd (and optional build_cmd) before enabling."
 
 [[suite]]
@@ -53,7 +53,7 @@ skip_reason = "Configure cpython run_cmd for this suite before enabling."
 [suite.runners.molt]
 skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
 
-[suite.runners.friend]
+[suite.runners.pypy]
 skip_reason = "Configure pypy run_cmd before enabling."
 
 [[suite]]
@@ -74,20 +74,20 @@ skip_reason = "Configure cpython run_cmd for this suite before enabling."
 [suite.runners.molt]
 skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
 
-[suite.runners.friend]
+[suite.runners.nuitka]
 skip_reason = "Configure nuitka build_cmd/run_cmd before enabling."
 
 [[suite]]
-id = "cython_benchmarks"
+id = "pyodide_benchmarks"
 enabled = false
-friend = "cython"
-display_name = "Cython Benchmarks"
+friend = "pyodide"
+display_name = "Pyodide Benchmarks"
 source = "git"
-repo_url = "https://github.com/cython/cython.git"
+repo_url = "https://github.com/pyodide/pyodide.git"
 repo_ref = "PINNED_COMMIT_REQUIRED"
 semantic_mode = "requires_adapter"
-adapter_notes = "Track Cython build vs run time separately and pin compiler flags."
-tags = ["native", "compiler", "compile-time"]
+adapter_notes = "Map Pyodide benchmark command lanes and separate browser/Node wasm runtime costs from benchmark payload runtime."
+tags = ["wasm", "interpreter", "compatibility"]
 
 [suite.runners.cpython]
 skip_reason = "Configure cpython run_cmd for this suite before enabling."
@@ -95,26 +95,5 @@ skip_reason = "Configure cpython run_cmd for this suite before enabling."
 [suite.runners.molt]
 skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
 
-[suite.runners.friend]
-skip_reason = "Configure cython build_cmd/run_cmd before enabling."
-
-[[suite]]
-id = "numba_benchmarks"
-enabled = false
-friend = "numba"
-display_name = "Numba Benchmarks"
-source = "git"
-repo_url = "https://github.com/numba/numba.git"
-repo_ref = "PINNED_COMMIT_REQUIRED"
-semantic_mode = "requires_adapter"
-adapter_notes = "Pin Numba/llvmlite versions and isolate first-run JIT warmup from steady-state."
-tags = ["native", "jit", "numeric"]
-
-[suite.runners.cpython]
-skip_reason = "Configure cpython run_cmd for this suite before enabling."
-
-[suite.runners.molt]
-skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
-
-[suite.runners.friend]
-skip_reason = "Configure numba run_cmd and warmup policy before enabling."
+[suite.runners.pyodide]
+skip_reason = "Configure pyodide run_cmd (and optional prepare_cmds) before enabling."

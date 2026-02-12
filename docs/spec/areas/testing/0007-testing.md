@@ -49,6 +49,21 @@ uv run --python 3.12 python3 tools/diff_coverage.py
 ```
 The report is written to `tests/differential/COVERAGE_REPORT.md` by default.
 
+### 1.5 Expected-Failure Policy For Too-Dynamic Cases
+- Use this only for intentionally unsupported semantics called out by the
+  vision/break-policy docs (for example `exec`/`eval` heavy behavior).
+- Canonical registry:
+  `tools/stdlib_full_coverage_manifest.py` ->
+  `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.
+- Optional per-test metadata override:
+  `# MOLT_META: expect_fail=molt` and
+  `# MOLT_META: expect_fail_reason=<short_reason>`.
+- Harness behavior (`tests/molt_diff.py`):
+  - CPython pass + Molt fail on expected-failure test => `[XFAIL]` and counted as pass.
+  - CPython pass + Molt pass on expected-failure test => `[XPASS]` and counted as failure.
+- Guardrail: expected-failure lists are not a substitute for lowering; remove
+  entries as soon as support lands.
+
 ## 2. Automated Test Generation (Hypothesis)
 We use `Hypothesis` to generate random Python ASTs that fall within the Molt Tier 0 subset.
 - **Rules**:

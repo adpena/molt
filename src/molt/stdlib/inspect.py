@@ -41,7 +41,7 @@ __all__ = [
     "signature",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): add full signature/introspection parity.
+# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): continue signature/introspection parity expansion.
 
 GEN_CREATED = "GEN_CREATED"
 GEN_RUNNING = "GEN_RUNNING"

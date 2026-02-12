@@ -1793,7 +1793,9 @@ fn timezone_profile_now() -> Option<(i64, String, String)> {
 fn host_time_timezone() -> i64 {
     #[cfg(unix)]
     {
-        return timezone_profile_now().map(|profile| profile.0).unwrap_or(i64::MIN);
+        return timezone_profile_now()
+            .map(|profile| profile.0)
+            .unwrap_or(i64::MIN);
     }
     #[cfg(not(unix))]
     {
@@ -2535,7 +2537,12 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
                     if out_msg_flags_ptr != 0 {
-                        let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, msg.msg_flags as u32);
+                        let _ = write_u32(
+                            &mut caller,
+                            &memory,
+                            out_msg_flags_ptr,
+                            msg.msg_flags as u32,
+                        );
                     }
                     if out_anc_len_ptr != 0 {
                         let _ = write_u32(
@@ -2592,13 +2599,8 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 }
                 let anc_len_usize = ancillary.len().min(anc_cap.max(0) as usize);
                 if anc_len_usize > 0
-                    && write_bytes(
-                        &mut caller,
-                        &memory,
-                        anc_ptr,
-                        &ancillary[..anc_len_usize],
-                    )
-                    .is_err()
+                    && write_bytes(&mut caller, &memory, anc_ptr, &ancillary[..anc_len_usize])
+                        .is_err()
                 {
                     return -libc::EFAULT;
                 }
@@ -3242,14 +3244,24 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
     linker.define(&mut *store, "env", "molt_socket_recv_host", socket_recv)?;
     linker.define(&mut *store, "env", "molt_socket_send_host", socket_send)?;
     linker.define(&mut *store, "env", "molt_socket_sendto_host", socket_sendto)?;
-    linker.define(&mut *store, "env", "molt_socket_sendmsg_host", socket_sendmsg)?;
+    linker.define(
+        &mut *store,
+        "env",
+        "molt_socket_sendmsg_host",
+        socket_sendmsg,
+    )?;
     linker.define(
         &mut *store,
         "env",
         "molt_socket_recvfrom_host",
         socket_recvfrom,
     )?;
-    linker.define(&mut *store, "env", "molt_socket_recvmsg_host", socket_recvmsg)?;
+    linker.define(
+        &mut *store,
+        "env",
+        "molt_socket_recvmsg_host",
+        socket_recvmsg,
+    )?;
     linker.define(
         &mut *store,
         "env",

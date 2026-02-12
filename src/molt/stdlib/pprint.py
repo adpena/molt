@@ -31,11 +31,12 @@ from typing import Any, cast
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 import collections as _collections
+import importlib.util as _importlib_util
 import sys as _sys
 import types as _types
 from io import StringIO as _StringIO
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_REPR_FROM_OBJ = _require_intrinsic("molt_repr_from_obj", globals())
 
 
 __all__ = [
@@ -114,6 +115,13 @@ def isrecursive(object: object) -> bool:
     return PrettyPrinter()._safe_repr(object, {}, None, 0)[2]
 
 
+def _repr_from_obj(value: object) -> str:
+    rep = _MOLT_REPR_FROM_OBJ(value)
+    if not isinstance(rep, str):
+        raise RuntimeError("repr intrinsic returned invalid value")
+    return rep
+
+
 def _sorted_dict_items(items):
     try:
         return sorted(items)
@@ -185,12 +193,14 @@ def _get_is_dataclass():
     if _IS_DATACLASS is False:
         return None
     if _IS_DATACLASS is None:
-        try:
-            from dataclasses import is_dataclass as _is_dataclass
-        except Exception:
+        if _importlib_util.find_spec("dataclasses") is None:
             _IS_DATACLASS = False
             return None
-        _IS_DATACLASS = _is_dataclass
+        dataclasses_mod = __import__("dataclasses", fromlist=("is_dataclass",))
+        is_dataclass_fn = getattr(dataclasses_mod, "is_dataclass", None)
+        if not callable(is_dataclass_fn):
+            raise RuntimeError("dataclasses.is_dataclass is required")
+        _IS_DATACLASS = is_dataclass_fn
     return _IS_DATACLASS
 
 
@@ -997,7 +1007,7 @@ class PrettyPrinter:
                 recursive,
             )
 
-        rep = repr(object)
+        rep = _repr_from_obj(object)
         return rep, bool(rep and not rep.startswith("<")), False
 
 

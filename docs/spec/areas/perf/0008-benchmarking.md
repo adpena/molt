@@ -3,8 +3,7 @@
 ## 1. Methodology
 - **Baselines**: Compare against CPython 3.12/3.13/3.14 (multi-version baselines; Molt targets 3.12+),
   PyPy (via `uv run --no-project --python pypy@3.11` to bypass `requires-python`),
-  and optional Cython/Numba baselines when the `bench` dependency group is
-  installed with Python 3.12.
+  plus optional Codon/Nuitka/Pyodide lanes when configured in the harness.
 - **Environment**:
     - macOS arm64 (M1/M2/M3)
     - Linux x86_64 (Ubuntu 22.04)
@@ -44,7 +43,7 @@
 - `tools/bench.py` runs warmup iterations (default 1, or 0 for `--smoke`) and records Molt compile time in `molt_build_s` separate from `molt_time_s` run time.
 - `tools/bench_wasm.py` uses the same warmup defaults and records wasm compile time in `molt_wasm_build_s`.
 - `tools/bench_report.py` combines `bench/results/bench.json` and `bench/results/bench_wasm.json` into `docs/benchmarks/bench_summary.md`.
-- Install optional benchmark deps with `uv sync --group bench --python 3.12` to enable Cython/Numba.
+- Install optional benchmark deps with `uv sync --group bench --python 3.12`.
 - Capture CPython version baselines by running the harness under each interpreter:
   `uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,
   `uv run --python 3.13 python3 tools/bench.py --json-out bench/results/bench_py313.json`,

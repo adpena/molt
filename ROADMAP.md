@@ -18,6 +18,11 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - **Priority:** P0 (blocker), P1 (high), P2 (medium), P3 (lower).
 - **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones).
 
+## Strategic North-Star
+- Performance target: parity with or superiority to Codon on tracked benches.
+- Compatibility target: near-Nuitka CPython coverage + interoperability for
+  Molt-supported semantics, without violating Molt break-policy constraints.
+
 ## Optimization Program Kickoff (2026-02-11)
 - Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
 - Canonical optimization scope: `OPTIMIZATIONS_PLAN.md`.
@@ -36,6 +41,25 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
   `*_class_mismatch`, `*_non_type_class`,
   `*_expected_version_invalid`, `*_version_mismatch`).
 - Week 2 readiness note: baseline gate is satisfied; prioritize specialization + wasm-stabilization clusters from the lock summary failure lists.
+
+## Stdlib Intrinsics Program (2026-02-12)
+- Canonical plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`.
+- Hard gate contract in `tools/check_stdlib_intrinsics.py` now includes:
+  - zero `probe-only`,
+  - zero `python-only`,
+  - intrinsic-partial ratchet budget (`tools/stdlib_intrinsics_ratchet.json`),
+  - fallback anti-pattern blocking for `_py_*` direct/dynamic imports.
+- Blocker-first tranche update:
+  - landed importlib blocker/resolver hardening (`importlib.machinery` + `importlib.util`)
+    with regression tests and targeted differential evidence.
+  - `concurrent.futures` currently intrinsic-backed; `pickle` remains intrinsic-partial.
+  - runtime-heavy/data/metadata-email/tooling clusters remain intrinsic-partial and are the active burn-down queue.
+- Current snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`,
+  `probe-only=0`, `python-only=0`; bootstrap checker blocker remains `re`.
+- Weekly scoreboard (required): track
+  `intrinsic-backed`, `intrinsic-partial`, `probe-only`, `python-only`,
+  missing required top-level/submodule entries, native pass %, wasm pass %, and
+  memory regressions.
 
 ## 90-Day Priority Queue: Molt IR Spec Closure (2026-02-11)
 - Source audit: `docs/spec/areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md`.
@@ -150,6 +174,30 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of coverage into broader heap/call-specialization families and a stronger loop-bound solver for cross-iteration constant reasoning.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial): extend loop/try edge threading beyond current executable-edge + conservative loop-marker rewrites into full loop-end and exceptional-handler CFG rewrites with dominance/post-dominance preservation.
 - Implemented: CI hardening for `tools/check_molt_ir_ops.py` now includes mandatory `--require-probe-execution` after `diff-basic`, so required-probe execution status and failure-queue linkage regressions fail CI.
+
+## Compiler Optimization Stabilization Tranche (2026-02-12)
+- Priority override: recover frontend/mid-end compile throughput while preserving correctness and deterministic outputs.
+- Current regression signal from active runs: stdlib-heavy module lowering tails dominate compile time and can timeout before wasm/native execution in no-cache bench paths.
+- Current tranche status: profile plumbing, tier classification, per-function budget/degrade ladder, per-pass timing/hotspot telemetry, CLI diagnostics sink integration, and deterministic process-level parallel lowering (opt-in) are landed in frontend/CLI. Latest tightening pass now defaults stdlib functions to Tier C unless explicitly promoted, adds finer stage-level/pre-pass budget degrade checkpoints, and applies stdlib-aware effective min-cost thresholds in layer-parallel policy diagnostics; remaining work is broader parallel eligibility and diagnostics UX refinement.
+- Execution order (implementation slices):
+  1. Profile-gated policy matrix (`dev` cheap/correctness-first, `release` full fixed-point).
+  2. Tiered optimization policy (Tier A hot, Tier B normal, Tier C heavy dependency/stdlib).
+  3. Per-function budgets with degrade ladder (disable expensive transforms first, never correctness gates).
+  4. Per-pass wall-time telemetry and top-offender diagnostics.
+  5. Process-level parallel module lowering with deterministic merge order.
+  6. Optional large-function optimization workers and staged Rust kernel migration.
+- Exit criteria:
+  - deterministic second-run IR stability,
+  - reduced p95 frontend lowering latency on stdlib-heavy modules,
+  - verifier fallback/correctness regressions do not increase.
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (CLI->frontend profile plumbing is landed; diagnostics sink expansion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (temporary hard safety gates keep dev-profile mid-end off by default unless `MOLT_MIDEND_DEV_ENABLE=1`, and keep stdlib modules out of canonicalization by default in all profiles).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): surface active optimization profile/tier policy and degrade events in CLI build diagnostics and JSON outputs for deterministic triage (diagnostics sink now includes profile/tier/degrade summaries + pass hotspots; remaining work is richer UX controls/verbosity partitioning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility and worker-level tuning telemetry).
+- TODO(compiler, owner:compiler, milestone:LF3, priority:P1, status:planned): migrate hot mid-end kernels (CFG build, SCCP lattice transfer, dominator/liveness) to Rust with Python orchestration preserved for policy control.
 
 ## Parity-First Execution Plan
 Guiding principle: lock CPython parity and robust test coverage before large optimizations or new higher-level surface area.
@@ -330,6 +378,12 @@ Sign-off criteria:
 - Partial: `decimal` shim backed by Rust intrinsics (contexts/traps/flags, quantize/compare/normalize/exp/div, `as_tuple`, `str`/`repr`/float conversions) with native Rust backend when vendored `libmpdec` sources are unavailable.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
 - Implemented: strict intrinsics registry + removal of CPython shim fallbacks in tooling/tests; JSON/MsgPack helpers now use runtime intrinsics only.
+- Implemented: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (strict all-stdlib mode); opt-down to intrinsic-backed-only scope is explicit via `--fallback-intrinsic-backed-only`.
+- Implemented: `tools/check_stdlib_intrinsics.py` now enforces CPython 3.12/3.13/3.14 union coverage for both top-level stdlib names and `.py` submodule names (missing-name failures, required-package shape checks, and duplicate module/package mappings).
+- Implemented: stdlib coverage stubs are synchronized by `tools/sync_stdlib_top_level_stubs.py` and `tools/sync_stdlib_submodule_stubs.py` against the generated baseline in `tools/stdlib_module_union.py` (`tools/gen_stdlib_module_union.py`).
+- Implemented: probe-only and python-only buckets are currently zero; union coverage is complete by name (`320` top-level names, `743` submodule names), with remaining work concentrated in intrinsic-partial burn-down.
+- Implemented: non-CPython stdlib top-level extras are now constrained to `_intrinsics` and `test` only.
+- Implemented: Molt-specific DB client shim moved from stdlib (`molt_db`) to `moltlib.molt_db`, with `molt.molt_db` compatibility shim retained.
 - Implemented: `ast.parse` / `ast.walk` / `ast.get_docstring` now route through Rust intrinsics (`molt_ast_parse`, `molt_ast_walk`, `molt_ast_get_docstring`) with Python wrappers reduced to constructor wiring and argument forwarding.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): extend Rust ast lowering to additional stmt/expr variants and full argument shape parity; unsupported nodes currently raise RuntimeError immediately.
 - Implemented: `os` fd I/O lowering for compiled binaries (`molt_os_pipe`, `molt_os_read`, `molt_os_write`) with differential coverage (`os_pipe_basic.py`, `os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only runs.
@@ -401,7 +455,7 @@ Sign-off criteria:
 - Implemented: wasm DB client shims + parity test (`molt_db` async helper) consume response streams and surface bytes/Arrow IPC; Node/WASI host adapter forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
 
 ## Parity Cluster Plan (Next)
-- 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio.py`, `src/molt/stdlib/contextvars.py`, `docs/spec/STATUS.md`. Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
+- 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio/__init__.py`, `src/molt/stdlib/contextvars.py`, `docs/spec/STATUS.md`. Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
 - 2) Capability-gated async I/O: sockets/SSL/selectors/time primitives with cancellation propagation. Key files: `docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md`, `docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md`, `runtime/molt-runtime/src/lib.rs`. Outcome: async I/O primitives usable by DB/HTTP stacks. Validation: I/O unit tests + fuzzed parser tests + wasm/native parity checks.
 - Implemented: native host-level websocket connect hook for `molt_ws_connect` with capability gating for production socket usage.
 - 3) DB semantics expansion: implement `db_exec`, transactions, typed param mapping; add multirange + array lower-bound decoding. Key files: `runtime/molt-db/src/postgres.rs`, `runtime/molt-worker/src/main.rs`, `docs/spec/areas/db/0700_MOLT_DB_LAYER_VISION.md`, `docs/spec/areas/db/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`, `docs/spec/areas/db/0915_MOLT_DB_IPC_CONTRACT.md`. Outcome: production-ready DB calls with explicit write gating and full type decoding. Validation: dockerized Postgres integration + cancellation tests.

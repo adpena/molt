@@ -3,12 +3,12 @@ use crate::builtins::numbers::{index_bigint_from_obj, index_i64_from_obj, int_bi
 use crate::object::ops::{format_obj, type_name};
 use crate::PyToken;
 use crate::{
-    alloc_tuple, attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc,
+    alloc_list, alloc_tuple, attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc,
     bigint_ptr_from_bits, bigint_ref, bigint_to_inline, call_callable0, class_name_for_error,
-    dec_ref_bits, exception_pending, inc_ref_bits, intern_static_name, is_truthy,
-    maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul, obj_from_bits, object_type_id,
-    raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, to_i64, type_of_bits,
-    MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_pending, inc_ref_bits,
+    intern_static_name, is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul,
+    molt_sorted_builtin, obj_from_bits, object_type_id, raise_exception, raise_not_iterable,
+    runtime_state, seq_vec_ref, to_i64, type_of_bits, MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE,
 };
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -2410,25 +2410,489 @@ fn statistics_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<f64> {
 }
 
 fn statistics_stdev_value(_py: &PyToken<'_>, data_bits: u64, xbar_bits: u64) -> Option<f64> {
+    let variance = statistics_variance_value(_py, data_bits, xbar_bits, false, "stdev")?;
+    Some(math_sqrt(variance))
+}
+
+fn statistics_variance_value(
+    _py: &PyToken<'_>,
+    data_bits: u64,
+    center_bits: u64,
+    population: bool,
+    opname: &str,
+) -> Option<f64> {
     let values = collect_real_vec(_py, data_bits)?;
     let n = values.len();
-    if n < 2 {
-        raise_exception::<()>(_py, "ValueError", "stdev requires at least two data points");
+    if (!population && n < 2) || (population && n < 1) {
+        let msg = if population {
+            format!("{opname} requires at least one data point")
+        } else {
+            format!("{opname} requires at least two data points")
+        };
+        raise_exception::<()>(_py, "ValueError", &msg);
         return None;
     }
-    let mean = if obj_from_bits(xbar_bits).is_none() {
+    let mean = if obj_from_bits(center_bits).is_none() {
         sum_f64_simd(&values) / n as f64
     } else {
-        let value = coerce_real_named(_py, xbar_bits, "stdev")?;
+        let value = coerce_real_named(_py, center_bits, opname)?;
         coerce_to_f64(_py, value)?
     };
     let sum_sq = sum_sq_diff_f64_simd(&values, mean);
+    let denominator = if population { n as f64 } else { (n - 1) as f64 };
     let variance = if sum_sq < 0.0 && sum_sq > -f64::EPSILON {
         0.0
     } else {
-        sum_sq / (n - 1) as f64
+        sum_sq / denominator
     };
-    Some(math_sqrt(variance))
+    Some(variance)
+}
+
+fn collect_values_vec(_py: &PyToken<'_>, iter_bits: u64) -> Option<Vec<u64>> {
+    let iter_obj = molt_iter(iter_bits);
+    if obj_from_bits(iter_obj).is_none() {
+        raise_not_iterable::<Option<Vec<u64>>>(_py, iter_bits);
+        return None;
+    }
+    let mut out = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_obj);
+        if exception_pending(_py) {
+            return None;
+        }
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return raise_exception::<Option<Vec<u64>>>(
+                _py,
+                "TypeError",
+                "object is not an iterator",
+            );
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<Option<Vec<u64>>>(
+                    _py,
+                    "TypeError",
+                    "object is not an iterator",
+                );
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return raise_exception::<Option<Vec<u64>>>(
+                    _py,
+                    "TypeError",
+                    "object is not an iterator",
+                );
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(_py, obj_from_bits(done_bits)) {
+                break;
+            }
+            out.push(val_bits);
+        }
+    }
+    Some(out)
+}
+
+fn statistics_sorted_values(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> {
+    let none_bits = MoltObject::none().bits();
+    let false_bits = MoltObject::from_bool(false).bits();
+    let sorted_bits = molt_sorted_builtin(data_bits, none_bits, false_bits);
+    if exception_pending(_py) || obj_from_bits(sorted_bits).is_none() {
+        return None;
+    }
+    Some(sorted_bits)
+}
+
+fn statistics_collect_sorted_real(
+    _py: &PyToken<'_>,
+    data_bits: u64,
+    opname: &str,
+) -> Option<Vec<f64>> {
+    let mut values = collect_real_vec(_py, data_bits)?;
+    if values.is_empty() {
+        let msg = format!("{opname} requires at least one data point");
+        raise_exception::<()>(_py, "ValueError", &msg);
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(values)
+}
+
+fn statistics_mode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> {
+    let values = collect_values_vec(_py, data_bits)?;
+    if values.is_empty() {
+        raise_exception::<()>(_py, "ValueError", "no mode for empty data");
+        return None;
+    }
+    let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
+    let Some(counts_ptr) = obj_from_bits(counts_bits).as_ptr() else {
+        return None;
+    };
+    let mut best_bits = values[0];
+    let mut best_count: i64 = 0;
+    unsafe {
+        for &value_bits in &values {
+            let current = match dict_get_in_place(_py, counts_ptr, value_bits) {
+                Some(bits) => to_i64(obj_from_bits(bits)).unwrap_or(0),
+                None => {
+                    if exception_pending(_py) {
+                        if maybe_ptr_from_bits(counts_bits).is_some() {
+                            dec_ref_bits(_py, counts_bits);
+                        }
+                        return None;
+                    }
+                    0
+                }
+            };
+            let Some(next) = current.checked_add(1) else {
+                if maybe_ptr_from_bits(counts_bits).is_some() {
+                    dec_ref_bits(_py, counts_bits);
+                }
+                return raise_exception::<Option<u64>>(_py, "OverflowError", "mode count overflow");
+            };
+            dict_set_in_place(
+                _py,
+                counts_ptr,
+                value_bits,
+                MoltObject::from_int(next).bits(),
+            );
+            if exception_pending(_py) {
+                if maybe_ptr_from_bits(counts_bits).is_some() {
+                    dec_ref_bits(_py, counts_bits);
+                }
+                return None;
+            }
+            if next > best_count {
+                best_bits = value_bits;
+                best_count = next;
+            }
+        }
+    }
+    inc_ref_bits(_py, best_bits);
+    if maybe_ptr_from_bits(counts_bits).is_some() {
+        dec_ref_bits(_py, counts_bits);
+    }
+    Some(best_bits)
+}
+
+fn statistics_multimode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> {
+    let values = collect_values_vec(_py, data_bits)?;
+    if values.is_empty() {
+        let list_ptr = alloc_list(_py, &[]);
+        if list_ptr.is_null() {
+            return None;
+        }
+        return Some(MoltObject::from_ptr(list_ptr).bits());
+    }
+    let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
+    let Some(counts_ptr) = obj_from_bits(counts_bits).as_ptr() else {
+        return None;
+    };
+    let mut first_seen: Vec<u64> = Vec::new();
+    let mut max_count: i64 = 0;
+    unsafe {
+        for &value_bits in &values {
+            let current_opt = dict_get_in_place(_py, counts_ptr, value_bits);
+            let current = match current_opt {
+                Some(bits) => to_i64(obj_from_bits(bits)).unwrap_or(0),
+                None => {
+                    if exception_pending(_py) {
+                        if maybe_ptr_from_bits(counts_bits).is_some() {
+                            dec_ref_bits(_py, counts_bits);
+                        }
+                        return None;
+                    }
+                    first_seen.push(value_bits);
+                    0
+                }
+            };
+            let Some(next) = current.checked_add(1) else {
+                if maybe_ptr_from_bits(counts_bits).is_some() {
+                    dec_ref_bits(_py, counts_bits);
+                }
+                return raise_exception::<Option<u64>>(
+                    _py,
+                    "OverflowError",
+                    "multimode count overflow",
+                );
+            };
+            dict_set_in_place(
+                _py,
+                counts_ptr,
+                value_bits,
+                MoltObject::from_int(next).bits(),
+            );
+            if exception_pending(_py) {
+                if maybe_ptr_from_bits(counts_bits).is_some() {
+                    dec_ref_bits(_py, counts_bits);
+                }
+                return None;
+            }
+            if next > max_count {
+                max_count = next;
+            }
+        }
+        let mut out: Vec<u64> = Vec::new();
+        for &value_bits in &first_seen {
+            let Some(count_bits) = dict_get_in_place(_py, counts_ptr, value_bits) else {
+                if exception_pending(_py) {
+                    if maybe_ptr_from_bits(counts_bits).is_some() {
+                        dec_ref_bits(_py, counts_bits);
+                    }
+                    return None;
+                }
+                continue;
+            };
+            if to_i64(obj_from_bits(count_bits)).unwrap_or(0) == max_count {
+                out.push(value_bits);
+            }
+        }
+        let list_ptr = alloc_list(_py, &out);
+        if maybe_ptr_from_bits(counts_bits).is_some() {
+            dec_ref_bits(_py, counts_bits);
+        }
+        if list_ptr.is_null() {
+            return None;
+        }
+        return Some(MoltObject::from_ptr(list_ptr).bits());
+    }
+}
+
+fn statistics_quantiles_value(
+    _py: &PyToken<'_>,
+    data_bits: u64,
+    n_bits: u64,
+    inclusive_bits: u64,
+) -> Option<u64> {
+    let n = index_i64_from_obj(_py, n_bits, "quantiles");
+    if exception_pending(_py) {
+        return None;
+    }
+    if n < 1 {
+        raise_exception::<()>(_py, "ValueError", "n must be at least 1");
+        return None;
+    }
+    let mut values = collect_real_vec(_py, data_bits)?;
+    if values.len() < 2 {
+        raise_exception::<()>(_py, "ValueError", "must have at least two data points");
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n_usize = usize::try_from(n).ok()?;
+    let inclusive = is_truthy(_py, obj_from_bits(inclusive_bits));
+    let mut out_floats: Vec<f64> = Vec::with_capacity(n_usize.saturating_sub(1));
+    if !inclusive {
+        let m = values.len() + 1;
+        for i in 1..n_usize {
+            let num = i * m;
+            let j = num / n_usize;
+            let delta = num % n_usize;
+            if j == 0 {
+                out_floats.push(values[0]);
+                continue;
+            }
+            if j >= values.len() {
+                out_floats.push(*values.last().unwrap_or(&values[0]));
+                continue;
+            }
+            let lo = values[j - 1];
+            let hi = values[j];
+            out_floats.push(lo + (delta as f64 / n_usize as f64) * (hi - lo));
+        }
+    } else {
+        let m = values.len() - 1;
+        for i in 1..n_usize {
+            let num = i * m;
+            let j = num / n_usize;
+            let delta = num % n_usize;
+            let lo = values[j];
+            let hi = values[j + 1];
+            out_floats.push(lo + (delta as f64 / n_usize as f64) * (hi - lo));
+        }
+    }
+    let out_bits: Vec<u64> = out_floats
+        .into_iter()
+        .map(|v| MoltObject::from_float(v).bits())
+        .collect();
+    let list_ptr = alloc_list(_py, &out_bits);
+    if list_ptr.is_null() {
+        return None;
+    }
+    Some(MoltObject::from_ptr(list_ptr).bits())
+}
+
+fn statistics_harmonic_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<f64> {
+    let values = collect_real_vec(_py, data_bits)?;
+    if values.is_empty() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "harmonic_mean requires at least one data point",
+        );
+        return None;
+    }
+    if values.iter().any(|v| *v < 0.0) {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "harmonic mean does not support negative values",
+        );
+        return None;
+    }
+    if values.iter().any(|v| *v == 0.0) {
+        return Some(0.0);
+    }
+    let denom = values.iter().fold(0.0_f64, |acc, v| acc + (1.0 / *v));
+    Some(values.len() as f64 / denom)
+}
+
+fn statistics_geometric_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<f64> {
+    let values = collect_real_vec(_py, data_bits)?;
+    if values.is_empty() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "geometric_mean requires at least one data point",
+        );
+        return None;
+    }
+    if values.iter().any(|v| *v < 0.0) {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "geometric mean does not support negative values",
+        );
+        return None;
+    }
+    if values.iter().any(|v| *v == 0.0) {
+        return Some(0.0);
+    }
+    let sum_logs = values.iter().fold(0.0_f64, |acc, v| acc + math_log(*v));
+    Some(math_exp(sum_logs / values.len() as f64))
+}
+
+fn statistics_covariance_value(_py: &PyToken<'_>, x_bits: u64, y_bits: u64) -> Option<f64> {
+    let x_values = collect_real_vec(_py, x_bits)?;
+    let y_values = collect_real_vec(_py, y_bits)?;
+    if x_values.len() != y_values.len() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "covariance requires that both inputs have the same length",
+        );
+        return None;
+    }
+    if x_values.len() < 2 {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "covariance requires at least two data points",
+        );
+        return None;
+    }
+    let x_mean = sum_f64_simd(&x_values) / x_values.len() as f64;
+    let y_mean = sum_f64_simd(&y_values) / y_values.len() as f64;
+    let mut accum = 0.0_f64;
+    for (xv, yv) in x_values.iter().zip(y_values.iter()) {
+        accum += (*xv - x_mean) * (*yv - y_mean);
+    }
+    Some(accum / (x_values.len() - 1) as f64)
+}
+
+fn statistics_correlation_value(_py: &PyToken<'_>, x_bits: u64, y_bits: u64) -> Option<f64> {
+    let x_values = collect_real_vec(_py, x_bits)?;
+    let y_values = collect_real_vec(_py, y_bits)?;
+    if x_values.len() != y_values.len() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "correlation requires that both inputs have the same length",
+        );
+        return None;
+    }
+    if x_values.len() < 2 {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "correlation requires at least two data points",
+        );
+        return None;
+    }
+    let x_mean = sum_f64_simd(&x_values) / x_values.len() as f64;
+    let y_mean = sum_f64_simd(&y_values) / y_values.len() as f64;
+    let mut num = 0.0_f64;
+    let mut x_var = 0.0_f64;
+    let mut y_var = 0.0_f64;
+    for (xv, yv) in x_values.iter().zip(y_values.iter()) {
+        let dx = *xv - x_mean;
+        let dy = *yv - y_mean;
+        num += dx * dy;
+        x_var += dx * dx;
+        y_var += dy * dy;
+    }
+    let denom = math_sqrt(x_var * y_var);
+    if denom == 0.0 {
+        raise_exception::<()>(_py, "ValueError", "at least one of the inputs is constant");
+        return None;
+    }
+    Some(num / denom)
+}
+
+fn statistics_linear_regression_value(
+    _py: &PyToken<'_>,
+    x_bits: u64,
+    y_bits: u64,
+    proportional_bits: u64,
+) -> Option<(f64, f64)> {
+    let x_values = collect_real_vec(_py, x_bits)?;
+    let y_values = collect_real_vec(_py, y_bits)?;
+    if x_values.len() != y_values.len() {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "x and y must have the same number of data points",
+        );
+        return None;
+    }
+    if x_values.len() < 2 {
+        raise_exception::<()>(
+            _py,
+            "ValueError",
+            "linear_regression requires at least two data points",
+        );
+        return None;
+    }
+    if is_truthy(_py, obj_from_bits(proportional_bits)) {
+        let mut sxx = 0.0_f64;
+        let mut sxy = 0.0_f64;
+        for (xv, yv) in x_values.iter().zip(y_values.iter()) {
+            sxx += *xv * *xv;
+            sxy += *xv * *yv;
+        }
+        if sxx == 0.0 {
+            raise_exception::<()>(_py, "ValueError", "x is constant");
+            return None;
+        }
+        return Some((sxy / sxx, 0.0));
+    }
+    let x_mean = sum_f64_simd(&x_values) / x_values.len() as f64;
+    let y_mean = sum_f64_simd(&y_values) / y_values.len() as f64;
+    let mut sxx = 0.0_f64;
+    let mut sxy = 0.0_f64;
+    for (xv, yv) in x_values.iter().zip(y_values.iter()) {
+        let dx = *xv - x_mean;
+        sxx += dx * dx;
+        sxy += dx * (*yv - y_mean);
+    }
+    if sxx == 0.0 {
+        raise_exception::<()>(_py, "ValueError", "x is constant");
+        return None;
+    }
+    let slope = sxy / sxx;
+    let intercept = y_mean - slope * x_mean;
+    Some((slope, intercept))
 }
 
 fn statistics_coerce_elem_fast_f64(_py: &PyToken<'_>, val_bits: u64, name: &str) -> Option<f64> {
@@ -2493,6 +2957,292 @@ pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         MoltObject::from_float(stdev).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_variance(data_bits: u64, xbar_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(variance) =
+            statistics_variance_value(_py, data_bits, xbar_bits, false, "variance")
+        else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(variance).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_pvariance(data_bits: u64, mu_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pvariance")
+        else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(variance).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_pstdev(data_bits: u64, mu_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pstdev")
+        else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(math_sqrt(variance)).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(values) = collect_real_vec(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        if values.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "fmean requires at least one data point",
+            );
+        }
+        MoltObject::from_float(sum_f64_simd(&values) / values.len() as f64).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median") else {
+            return MoltObject::none().bits();
+        };
+        let n = values.len();
+        let mid = n / 2;
+        let out = if n % 2 == 1 {
+            values[mid]
+        } else {
+            (values[mid - 1] + values[mid]) / 2.0
+        };
+        MoltObject::from_float(out).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        let sorted = obj_from_bits(sorted_bits);
+        let Some(sorted_ptr) = sorted.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(sorted_ptr) != TYPE_ID_LIST {
+                if maybe_ptr_from_bits(sorted_bits).is_some() {
+                    dec_ref_bits(_py, sorted_bits);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "median_low expected sorted list payload",
+                );
+            }
+            let elems = seq_vec_ref(sorted_ptr);
+            if elems.is_empty() {
+                if maybe_ptr_from_bits(sorted_bits).is_some() {
+                    dec_ref_bits(_py, sorted_bits);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "median_low requires at least one data point",
+                );
+            }
+            let idx = (elems.len() - 1) / 2;
+            let out_bits = elems[idx];
+            inc_ref_bits(_py, out_bits);
+            if maybe_ptr_from_bits(sorted_bits).is_some() {
+                dec_ref_bits(_py, sorted_bits);
+            }
+            out_bits
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        let sorted = obj_from_bits(sorted_bits);
+        let Some(sorted_ptr) = sorted.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(sorted_ptr) != TYPE_ID_LIST {
+                if maybe_ptr_from_bits(sorted_bits).is_some() {
+                    dec_ref_bits(_py, sorted_bits);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "median_high expected sorted list payload",
+                );
+            }
+            let elems = seq_vec_ref(sorted_ptr);
+            if elems.is_empty() {
+                if maybe_ptr_from_bits(sorted_bits).is_some() {
+                    dec_ref_bits(_py, sorted_bits);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "median_high requires at least one data point",
+                );
+            }
+            let idx = elems.len() / 2;
+            let out_bits = elems[idx];
+            inc_ref_bits(_py, out_bits);
+            if maybe_ptr_from_bits(sorted_bits).is_some() {
+                dec_ref_bits(_py, sorted_bits);
+            }
+            out_bits
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median_grouped") else {
+            return MoltObject::none().bits();
+        };
+        let Some(interval_real) = coerce_real_named(_py, interval_bits, "median_grouped") else {
+            return MoltObject::none().bits();
+        };
+        let Some(interval) = coerce_to_f64(_py, interval_real) else {
+            return MoltObject::none().bits();
+        };
+        let n = values.len();
+        let mid = n / 2;
+        let x = if n % 2 == 1 {
+            values[mid]
+        } else {
+            (values[mid - 1] + values[mid]) / 2.0
+        };
+        let lower = x - (interval / 2.0);
+        let cf = values.iter().filter(|v| **v < x).count() as f64;
+        let f = values
+            .iter()
+            .filter(|v| (**v - x).abs() <= f64::EPSILON)
+            .count() as f64;
+        if f == 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "no grouped median for empty class");
+        }
+        MoltObject::from_float(lower + interval * ((n as f64 / 2.0 - cf) / f)).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_mode(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(bits) = statistics_mode_value(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_multimode(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(bits) = statistics_multimode_value(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_quantiles(
+    data_bits: u64,
+    n_bits: u64,
+    inclusive_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(bits) = statistics_quantiles_value(_py, data_bits, n_bits, inclusive_bits) else {
+            return MoltObject::none().bits();
+        };
+        bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = statistics_harmonic_mean_value(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_geometric_mean(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = statistics_geometric_mean_value(_py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_covariance(x_bits: u64, y_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = statistics_covariance_value(_py, x_bits, y_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_correlation(x_bits: u64, y_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = statistics_correlation_value(_py, x_bits, y_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_statistics_linear_regression(
+    x_bits: u64,
+    y_bits: u64,
+    proportional_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((slope, intercept)) =
+            statistics_linear_regression_value(_py, x_bits, y_bits, proportional_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                MoltObject::from_float(slope).bits(),
+                MoltObject::from_float(intercept).bits(),
+            ],
+        );
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 

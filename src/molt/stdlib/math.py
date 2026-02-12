@@ -134,7 +134,7 @@ inf = float("inf")
 nan = float("nan")
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): finish math determinism policy.
+# TODO(stdlib-parity, owner:stdlib, milestone:SL1, priority:P1, status:planned): continue tightening math determinism policy coverage and platform notes.
 
 
 def isfinite(x: object) -> bool:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 __all__ = [
     "ip_address",
     "ip_network",
@@ -10,57 +12,36 @@ __all__ = [
     "IPv4Network",
 ]
 
+_MOLT_SOCKET_CONSTANTS = _require_intrinsic("molt_socket_constants", globals())
+_MOLT_SOCKET_INET_PTON = _require_intrinsic("molt_socket_inet_pton", globals())
+_AF_INET = int(_MOLT_SOCKET_CONSTANTS().get("AF_INET", 2))
+_AF_INET6 = int(_MOLT_SOCKET_CONSTANTS().get("AF_INET6", 10))
+
 
 def _parse_ipv4(text: str) -> int:
-    parts = text.split(".")
-    if len(parts) != 4:
-        raise ValueError("invalid IPv4 address")
-    nums: list[int] = []
-    for part in parts:
-        if not part or not part.isdigit():
-            raise ValueError("invalid IPv4 address")
-        val = int(part)
-        if val < 0 or val > 255:
-            raise ValueError("invalid IPv4 address")
-        nums.append(val)
-    out = 0
-    for val in nums:
-        out = (out << 8) | val
-    return out
+    try:
+        packed = _MOLT_SOCKET_INET_PTON(_AF_INET, text)
+    except OSError as exc:
+        raise ValueError("invalid IPv4 address") from exc
+    if not isinstance(packed, (bytes, bytearray, memoryview)):
+        raise RuntimeError("socket inet_pton intrinsic returned invalid value")
+    raw = bytes(packed)
+    if len(raw) != 4:
+        raise RuntimeError("socket inet_pton intrinsic returned invalid value")
+    return int.from_bytes(raw, "big")
 
 
 def _parse_ipv6(text: str) -> int:
-    if "::" in text:
-        head, tail = text.split("::", 1)
-        head_parts = [p for p in head.split(":") if p]
-        tail_parts = [p for p in tail.split(":") if p]
-        missing = 8 - (len(head_parts) + len(tail_parts))
-        if missing < 0:
-            raise ValueError("invalid IPv6 address")
-        parts = head_parts + (["0"] * missing) + tail_parts
-    else:
-        parts = text.split(":")
-        if len(parts) != 8:
-            raise ValueError("invalid IPv6 address")
-    if len(parts) != 8:
-        raise ValueError("invalid IPv6 address")
-    nums: list[int] = []
-    for part in parts:
-        if not part:
-            part = "0"
-        if len(part) > 4:
-            raise ValueError("invalid IPv6 address")
-        try:
-            val = int(part, 16)
-        except ValueError as exc:
-            raise ValueError("invalid IPv6 address") from exc
-        if val < 0 or val > 0xFFFF:
-            raise ValueError("invalid IPv6 address")
-        nums.append(val)
-    out = 0
-    for val in nums:
-        out = (out << 16) | val
-    return out
+    try:
+        packed = _MOLT_SOCKET_INET_PTON(_AF_INET6, text)
+    except OSError as exc:
+        raise ValueError("invalid IPv6 address") from exc
+    if not isinstance(packed, (bytes, bytearray, memoryview)):
+        raise RuntimeError("socket inet_pton intrinsic returned invalid value")
+    raw = bytes(packed)
+    if len(raw) != 16:
+        raise RuntimeError("socket inet_pton intrinsic returned invalid value")
+    return int.from_bytes(raw, "big")
 
 
 def _compress_ipv6(words: list[int]) -> str:

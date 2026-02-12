@@ -9,26 +9,26 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `112`
-- `intrinsic-backed`: `58`
-- `intrinsic-partial`: `16`
-- `probe-only`: `13`
-- `python-only`: `25`
+- Total audited modules: `873`
+- `intrinsic-backed`: `180`
+- `intrinsic-partial`: `693`
+- `probe-only`: `0`
+- `python-only`: `0`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
-- `socket`: `intrinsic-partial`
+- `socket`: `intrinsic-backed`
 - `select`: `intrinsic-backed`
 - `selectors`: `intrinsic-backed`
 - `threading`: `intrinsic-backed`
-- `asyncio`: `intrinsic-partial`
+- `asyncio`: `intrinsic-backed`
 
 ### P1 queue (Phase 3: core-adjacent stdlib)
 - `builtins`: `intrinsic-backed`
 - `types`: `intrinsic-backed`
 - `weakref`: `intrinsic-backed`
 - `math`: `intrinsic-partial`
-- `re`: `intrinsic-partial`
+- `re`: `intrinsic-backed`
 - `struct`: `intrinsic-backed`
 - `time`: `intrinsic-backed`
 - `inspect`: `intrinsic-partial`
@@ -38,7 +38,7 @@
 - `contextlib`: `intrinsic-backed`
 
 ### P2 queue (Phase 4: import/data/network long tail)
-- `pathlib`: `intrinsic-partial`
+- `pathlib`: `intrinsic-backed`
 - `importlib`: `intrinsic-backed`
 - `importlib.util`: `intrinsic-backed`
 - `importlib.machinery`: `intrinsic-backed`
@@ -47,17 +47,17 @@
 - `shutil`: `intrinsic-backed`
 - `py_compile`: `intrinsic-backed`
 - `compileall`: `intrinsic-backed`
-- `json`: `probe-only`
-- `csv`: `python-only`
-- `pickle`: `python-only`
-- `enum`: `python-only`
-- `ipaddress`: `python-only`
-- `encodings`: `python-only`
-- `ssl`: `not-audited`
-- `subprocess`: `not-audited`
-- `concurrent.futures`: `intrinsic-partial`
-- `http.client`: `intrinsic-partial`
-- `http.server`: `intrinsic-partial`
+- `json`: `intrinsic-partial`
+- `csv`: `intrinsic-backed`
+- `pickle`: `intrinsic-partial`
+- `enum`: `intrinsic-backed`
+- `ipaddress`: `intrinsic-backed`
+- `encodings`: `intrinsic-backed`
+- `ssl`: `intrinsic-backed`
+- `subprocess`: `intrinsic-backed`
+- `concurrent.futures`: `intrinsic-backed`
+- `http.client`: `intrinsic-backed`
+- `http.server`: `intrinsic-backed`
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
@@ -65,120 +65,881 @@
 - `_abc`
 - `_collections_abc`
 - `_intrinsics`
+- `_weakref`
+- `_weakrefset`
 - `abc`
+- `ast`
+- `asyncio`
+- `base64`
+- `bdb`
+- `bisect`
 - `builtins`
+- `cProfile`
+- `calendar`
+- `cmath`
+- `cmd`
+- `code`
 - `codecs`
+- `codeop`
 - `collections`
 - `collections.abc`
+- `colorsys`
 - `compileall`
+- `concurrent`
+- `concurrent.futures`
+- `configparser`
 - `contextlib`
+- `contextvars`
 - `copy`
 - `copyreg`
+- `csv`
+- `curses`
 - `dataclasses`
+- `datetime`
+- `dbm`
+- `difflib`
+- `dis`
+- `email`
+- `email.headerregistry`
+- `email.parser`
+- `email.utils`
+- `encodings`
+- `encodings.aliases`
+- `ensurepip`
+- `enum`
 - `errno`
+- `faulthandler`
+- `fcntl`
+- `filecmp`
+- `fileinput`
 - `fnmatch`
+- `ftplib`
 - `gc`
+- `genericpath`
+- `getpass`
 - `glob`
+- `graphlib`
+- `grp`
+- `hashlib`
 - `heapq`
 - `hmac`
+- `http`
+- `http.client`
+- `http.cookiejar`
+- `http.server`
+- `imaplib`
 - `importlib`
 - `importlib.machinery`
 - `importlib.resources`
 - `importlib.util`
 - `io`
+- `ipaddress`
 - `itertools`
 - `keyword`
 - `linecache`
 - `logging`
+- `mailbox`
+- `marshal`
+- `mmap`
+- `modulefinder`
 - `molt.stdlib`
-- `molt_db`
 - `multiprocessing`
 - `multiprocessing.spawn`
+- `netrc`
+- `opcode`
 - `operator`
+- `optparse`
 - `os`
+- `pathlib`
+- `pdb`
+- `pickletools`
 - `pkgutil`
+- `plistlib`
+- `poplib`
+- `posix`
+- `posixpath`
+- `pprint`
+- `profile`
+- `pstats`
+- `pty`
+- `pwd`
 - `py_compile`
+- `pyclbr`
+- `pydoc`
+- `pydoc_data`
+- `pyexpat`
+- `queue`
+- `quopri`
+- `random`
+- `re`
+- `readline`
 - `reprlib`
+- `resource`
+- `rlcompleter`
 - `runpy`
+- `sched`
 - `select`
 - `selectors`
 - `shlex`
 - `shutil`
+- `signal`
+- `socket`
 - `socketserver`
+- `sre_compile`
+- `sre_constants`
+- `sre_parse`
+- `ssl`
 - `stat`
+- `string`
+- `stringprep`
 - `struct`
+- `subprocess`
+- `symtable`
 - `sys`
+- `syslog`
+- `tabnanny`
+- `tempfile`
+- `termios`
+- `test`
+- `test.list_tests`
+- `test.seq_tests`
+- `test.support`
+- `test.support._fallback_support`
+- `test.support.warnings_helper`
+- `test.tokenizedata`
+- `test.tokenizedata.badsyntax_3131`
+- `test.tokenizedata.badsyntax_pep3120`
 - `textwrap`
+- `this`
 - `threading`
 - `time`
+- `timeit`
+- `token`
+- `tokenize`
+- `tomllib`
+- `trace`
 - `traceback`
+- `tracemalloc`
+- `tty`
 - `types`
 - `typing`
+- `unicodedata`
 - `urllib`
 - `urllib.error`
 - `urllib.parse`
 - `urllib.request`
+- `uuid`
+- `venv`
+- `warnings`
+- `wave`
 - `weakref`
+- `webbrowser`
+- `wsgiref`
+- `wsgiref.headers`
+- `wsgiref.simple_server`
+- `wsgiref.util`
+- `xmlrpc`
+- `xmlrpc.client`
+- `zlib`
 
 ### Intrinsic-backed modules (partial lowering pending)
+- `_aix_support`
+- `_android_support`
+- `_apple_support`
+- `_ast`
+- `_ast_unparse`
 - `_asyncio`
-- `asyncio`
-- `concurrent.futures`
+- `_bisect`
+- `_blake2`
+- `_bz2`
+- `_codecs`
+- `_codecs_cn`
+- `_codecs_hk`
+- `_codecs_iso2022`
+- `_codecs_jp`
+- `_codecs_kr`
+- `_codecs_tw`
+- `_collections`
+- `_colorize`
+- `_compat_pickle`
+- `_compression`
+- `_contextvars`
+- `_crypt`
+- `_csv`
+- `_ctypes`
+- `_curses`
+- `_curses_panel`
+- `_datetime`
+- `_dbm`
+- `_decimal`
+- `_elementtree`
+- `_frozen_importlib`
+- `_frozen_importlib_external`
+- `_functools`
+- `_gdbm`
+- `_hashlib`
+- `_heapq`
+- `_hmac`
+- `_imp`
+- `_interpchannels`
+- `_interpqueues`
+- `_interpreters`
+- `_io`
+- `_ios_support`
+- `_json`
+- `_locale`
+- `_lsprof`
+- `_lzma`
+- `_markupbase`
+- `_md5`
+- `_msi`
+- `_multibytecodec`
+- `_multiprocessing`
+- `_opcode`
+- `_opcode_metadata`
+- `_operator`
+- `_osx_support`
+- `_overlapped`
+- `_pickle`
+- `_posixshmem`
+- `_posixsubprocess`
+- `_py_abc`
+- `_py_warnings`
+- `_pydatetime`
+- `_pydecimal`
+- `_pyio`
+- `_pylong`
+- `_pyrepl`
+- `_pyrepl.__main__`
+- `_pyrepl._minimal_curses`
+- `_pyrepl._module_completer`
+- `_pyrepl._threading_handler`
+- `_pyrepl.base_eventqueue`
+- `_pyrepl.commands`
+- `_pyrepl.completing_reader`
+- `_pyrepl.console`
+- `_pyrepl.curses`
+- `_pyrepl.fancy_termios`
+- `_pyrepl.historical_reader`
+- `_pyrepl.input`
+- `_pyrepl.keymap`
+- `_pyrepl.main`
+- `_pyrepl.pager`
+- `_pyrepl.reader`
+- `_pyrepl.readline`
+- `_pyrepl.simple_interact`
+- `_pyrepl.terminfo`
+- `_pyrepl.trace`
+- `_pyrepl.types`
+- `_pyrepl.unix_console`
+- `_pyrepl.unix_eventqueue`
+- `_pyrepl.utils`
+- `_pyrepl.windows_console`
+- `_pyrepl.windows_eventqueue`
+- `_queue`
+- `_random`
+- `_remote_debugging`
+- `_scproxy`
+- `_sha1`
+- `_sha2`
+- `_sha3`
+- `_signal`
+- `_sitebuiltins`
+- `_socket`
+- `_sqlite3`
+- `_sre`
+- `_ssl`
+- `_stat`
+- `_statistics`
+- `_string`
+- `_strptime`
+- `_struct`
+- `_suggestions`
+- `_symtable`
+- `_sysconfig`
+- `_thread`
+- `_threading_local`
+- `_tkinter`
+- `_tokenize`
+- `_tracemalloc`
+- `_types`
+- `_typing`
+- `_uuid`
+- `_warnings`
+- `_winapi`
+- `_wmi`
+- `_zoneinfo`
+- `_zstd`
+- `aifc`
+- `annotationlib`
+- `antigravity`
+- `argparse`
+- `array`
+- `asyncio.__main__`
+- `asyncio.base_events`
+- `asyncio.base_futures`
+- `asyncio.base_subprocess`
+- `asyncio.base_tasks`
+- `asyncio.constants`
+- `asyncio.coroutines`
+- `asyncio.events`
+- `asyncio.exceptions`
+- `asyncio.format_helpers`
+- `asyncio.futures`
+- `asyncio.graph`
+- `asyncio.locks`
+- `asyncio.log`
+- `asyncio.mixins`
+- `asyncio.proactor_events`
+- `asyncio.protocols`
+- `asyncio.queues`
+- `asyncio.runners`
+- `asyncio.selector_events`
+- `asyncio.sslproto`
+- `asyncio.staggered`
+- `asyncio.streams`
+- `asyncio.subprocess`
+- `asyncio.taskgroups`
+- `asyncio.tasks`
+- `asyncio.threads`
+- `asyncio.timeouts`
+- `asyncio.tools`
+- `asyncio.transports`
+- `asyncio.trsock`
+- `asyncio.unix_events`
+- `asyncio.windows_events`
+- `asyncio.windows_utils`
+- `atexit`
+- `audioop`
+- `binascii`
+- `bz2`
+- `cgi`
+- `cgitb`
+- `chunk`
+- `compression`
+- `compression._common`
+- `compression._common._streams`
+- `compression.bz2`
+- `compression.gzip`
+- `compression.lzma`
+- `compression.zlib`
+- `compression.zstd`
+- `compression.zstd._zstdfile`
+- `concurrent.futures._base`
+- `concurrent.futures.interpreter`
+- `concurrent.futures.process`
+- `concurrent.futures.thread`
+- `concurrent.interpreters`
+- `concurrent.interpreters._crossinterp`
+- `concurrent.interpreters._queues`
+- `crypt`
+- `ctypes`
+- `ctypes._aix`
+- `ctypes._endian`
+- `ctypes._layout`
+- `ctypes.macholib`
+- `ctypes.macholib.dyld`
+- `ctypes.macholib.dylib`
+- `ctypes.macholib.framework`
+- `ctypes.util`
+- `ctypes.wintypes`
+- `curses.ascii`
+- `curses.has_key`
+- `curses.panel`
+- `curses.textpad`
+- `dbm.dumb`
+- `dbm.gnu`
+- `dbm.ndbm`
+- `dbm.sqlite3`
 - `decimal`
+- `doctest`
+- `email._encoded_words`
+- `email._header_value_parser`
+- `email._parseaddr`
+- `email._policybase`
+- `email.base64mime`
+- `email.charset`
+- `email.contentmanager`
+- `email.encoders`
+- `email.errors`
+- `email.feedparser`
+- `email.generator`
+- `email.header`
+- `email.iterators`
 - `email.message`
+- `email.mime`
+- `email.mime.application`
+- `email.mime.audio`
+- `email.mime.base`
+- `email.mime.image`
+- `email.mime.message`
+- `email.mime.multipart`
+- `email.mime.nonmultipart`
+- `email.mime.text`
+- `email.policy`
+- `email.quoprimime`
+- `encodings._win_cp_codecs`
+- `encodings.ascii`
+- `encodings.base64_codec`
+- `encodings.big5`
+- `encodings.big5hkscs`
+- `encodings.bz2_codec`
+- `encodings.charmap`
+- `encodings.cp037`
+- `encodings.cp1006`
+- `encodings.cp1026`
+- `encodings.cp1125`
+- `encodings.cp1140`
+- `encodings.cp1250`
+- `encodings.cp1251`
+- `encodings.cp1252`
+- `encodings.cp1253`
+- `encodings.cp1254`
+- `encodings.cp1255`
+- `encodings.cp1256`
+- `encodings.cp1257`
+- `encodings.cp1258`
+- `encodings.cp273`
+- `encodings.cp424`
+- `encodings.cp437`
+- `encodings.cp500`
+- `encodings.cp720`
+- `encodings.cp737`
+- `encodings.cp775`
+- `encodings.cp850`
+- `encodings.cp852`
+- `encodings.cp855`
+- `encodings.cp856`
+- `encodings.cp857`
+- `encodings.cp858`
+- `encodings.cp860`
+- `encodings.cp861`
+- `encodings.cp862`
+- `encodings.cp863`
+- `encodings.cp864`
+- `encodings.cp865`
+- `encodings.cp866`
+- `encodings.cp869`
+- `encodings.cp874`
+- `encodings.cp875`
+- `encodings.cp932`
+- `encodings.cp949`
+- `encodings.cp950`
+- `encodings.euc_jis_2004`
+- `encodings.euc_jisx0213`
+- `encodings.euc_jp`
+- `encodings.euc_kr`
+- `encodings.gb18030`
+- `encodings.gb2312`
+- `encodings.gbk`
+- `encodings.hex_codec`
+- `encodings.hp_roman8`
+- `encodings.hz`
+- `encodings.idna`
+- `encodings.iso2022_jp`
+- `encodings.iso2022_jp_1`
+- `encodings.iso2022_jp_2`
+- `encodings.iso2022_jp_2004`
+- `encodings.iso2022_jp_3`
+- `encodings.iso2022_jp_ext`
+- `encodings.iso2022_kr`
+- `encodings.iso8859_1`
+- `encodings.iso8859_10`
+- `encodings.iso8859_11`
+- `encodings.iso8859_13`
+- `encodings.iso8859_14`
+- `encodings.iso8859_15`
+- `encodings.iso8859_16`
+- `encodings.iso8859_2`
+- `encodings.iso8859_3`
+- `encodings.iso8859_4`
+- `encodings.iso8859_5`
+- `encodings.iso8859_6`
+- `encodings.iso8859_7`
+- `encodings.iso8859_8`
+- `encodings.iso8859_9`
+- `encodings.johab`
+- `encodings.koi8_r`
+- `encodings.koi8_t`
+- `encodings.koi8_u`
+- `encodings.kz1048`
+- `encodings.latin_1`
+- `encodings.mac_arabic`
+- `encodings.mac_croatian`
+- `encodings.mac_cyrillic`
+- `encodings.mac_farsi`
+- `encodings.mac_greek`
+- `encodings.mac_iceland`
+- `encodings.mac_latin2`
+- `encodings.mac_roman`
+- `encodings.mac_romanian`
+- `encodings.mac_turkish`
+- `encodings.mbcs`
+- `encodings.oem`
+- `encodings.palmos`
+- `encodings.ptcp154`
+- `encodings.punycode`
+- `encodings.quopri_codec`
+- `encodings.raw_unicode_escape`
+- `encodings.rot_13`
+- `encodings.shift_jis`
+- `encodings.shift_jis_2004`
+- `encodings.shift_jisx0213`
+- `encodings.tis_620`
+- `encodings.undefined`
+- `encodings.unicode_escape`
+- `encodings.utf_16`
+- `encodings.utf_16_be`
+- `encodings.utf_16_le`
+- `encodings.utf_32`
+- `encodings.utf_32_be`
+- `encodings.utf_32_le`
+- `encodings.utf_7`
+- `encodings.utf_8`
+- `encodings.utf_8_sig`
+- `encodings.uu_codec`
+- `encodings.zlib_codec`
+- `ensurepip.__main__`
+- `ensurepip._uninstall`
+- `fractions`
 - `functools`
+- `getopt`
 - `gettext`
-- `hashlib`
-- `http.client`
-- `http.server`
+- `gzip`
+- `html`
+- `html.entities`
+- `html.parser`
+- `http.cookies`
+- `idlelib`
+- `idlelib.__main__`
+- `idlelib.autocomplete`
+- `idlelib.autocomplete_w`
+- `idlelib.autoexpand`
+- `idlelib.browser`
+- `idlelib.calltip`
+- `idlelib.calltip_w`
+- `idlelib.codecontext`
+- `idlelib.colorizer`
+- `idlelib.config`
+- `idlelib.config_key`
+- `idlelib.configdialog`
+- `idlelib.debugger`
+- `idlelib.debugger_r`
+- `idlelib.debugobj`
+- `idlelib.debugobj_r`
+- `idlelib.delegator`
+- `idlelib.dynoption`
+- `idlelib.editor`
+- `idlelib.filelist`
+- `idlelib.format`
+- `idlelib.grep`
+- `idlelib.help`
+- `idlelib.help_about`
+- `idlelib.history`
+- `idlelib.hyperparser`
+- `idlelib.idle`
+- `idlelib.iomenu`
+- `idlelib.macosx`
+- `idlelib.mainmenu`
+- `idlelib.multicall`
+- `idlelib.outwin`
+- `idlelib.parenmatch`
+- `idlelib.pathbrowser`
+- `idlelib.percolator`
+- `idlelib.pyparse`
+- `idlelib.pyshell`
+- `idlelib.query`
+- `idlelib.redirector`
+- `idlelib.replace`
+- `idlelib.rpc`
+- `idlelib.run`
+- `idlelib.runscript`
+- `idlelib.scrolledlist`
+- `idlelib.search`
+- `idlelib.searchbase`
+- `idlelib.searchengine`
+- `idlelib.sidebar`
+- `idlelib.squeezer`
+- `idlelib.stackviewer`
+- `idlelib.statusbar`
+- `idlelib.textview`
+- `idlelib.tooltip`
+- `idlelib.tree`
+- `idlelib.undo`
+- `idlelib.util`
+- `idlelib.window`
+- `idlelib.zoomheight`
+- `idlelib.zzdummy`
+- `imghdr`
+- `importlib._abc`
+- `importlib._bootstrap`
+- `importlib._bootstrap_external`
+- `importlib.abc`
 - `importlib.metadata`
+- `importlib.metadata._adapters`
+- `importlib.metadata._collections`
+- `importlib.metadata._functools`
+- `importlib.metadata._itertools`
+- `importlib.metadata._meta`
+- `importlib.metadata._text`
+- `importlib.metadata.diagnose`
+- `importlib.readers`
+- `importlib.resources._adapters`
+- `importlib.resources._common`
+- `importlib.resources._functional`
+- `importlib.resources._itertools`
+- `importlib.resources._legacy`
+- `importlib.resources.abc`
+- `importlib.resources.readers`
+- `importlib.resources.simple`
+- `importlib.simple`
 - `inspect`
+- `json`
+- `json.__main__`
+- `json.decoder`
+- `json.encoder`
+- `json.scanner`
+- `json.tool`
+- `lib2to3`
+- `lib2to3.__main__`
+- `lib2to3.btm_matcher`
+- `lib2to3.btm_utils`
+- `lib2to3.fixer_base`
+- `lib2to3.fixer_util`
+- `lib2to3.fixes`
+- `lib2to3.fixes.fix_apply`
+- `lib2to3.fixes.fix_asserts`
+- `lib2to3.fixes.fix_basestring`
+- `lib2to3.fixes.fix_buffer`
+- `lib2to3.fixes.fix_dict`
+- `lib2to3.fixes.fix_except`
+- `lib2to3.fixes.fix_exec`
+- `lib2to3.fixes.fix_execfile`
+- `lib2to3.fixes.fix_exitfunc`
+- `lib2to3.fixes.fix_filter`
+- `lib2to3.fixes.fix_funcattrs`
+- `lib2to3.fixes.fix_future`
+- `lib2to3.fixes.fix_getcwdu`
+- `lib2to3.fixes.fix_has_key`
+- `lib2to3.fixes.fix_idioms`
+- `lib2to3.fixes.fix_import`
+- `lib2to3.fixes.fix_imports`
+- `lib2to3.fixes.fix_imports2`
+- `lib2to3.fixes.fix_input`
+- `lib2to3.fixes.fix_intern`
+- `lib2to3.fixes.fix_isinstance`
+- `lib2to3.fixes.fix_itertools`
+- `lib2to3.fixes.fix_itertools_imports`
+- `lib2to3.fixes.fix_long`
+- `lib2to3.fixes.fix_map`
+- `lib2to3.fixes.fix_metaclass`
+- `lib2to3.fixes.fix_methodattrs`
+- `lib2to3.fixes.fix_ne`
+- `lib2to3.fixes.fix_next`
+- `lib2to3.fixes.fix_nonzero`
+- `lib2to3.fixes.fix_numliterals`
+- `lib2to3.fixes.fix_operator`
+- `lib2to3.fixes.fix_paren`
+- `lib2to3.fixes.fix_print`
+- `lib2to3.fixes.fix_raise`
+- `lib2to3.fixes.fix_raw_input`
+- `lib2to3.fixes.fix_reduce`
+- `lib2to3.fixes.fix_reload`
+- `lib2to3.fixes.fix_renames`
+- `lib2to3.fixes.fix_repr`
+- `lib2to3.fixes.fix_set_literal`
+- `lib2to3.fixes.fix_standarderror`
+- `lib2to3.fixes.fix_sys_exc`
+- `lib2to3.fixes.fix_throw`
+- `lib2to3.fixes.fix_tuple_params`
+- `lib2to3.fixes.fix_types`
+- `lib2to3.fixes.fix_unicode`
+- `lib2to3.fixes.fix_urllib`
+- `lib2to3.fixes.fix_ws_comma`
+- `lib2to3.fixes.fix_xrange`
+- `lib2to3.fixes.fix_xreadlines`
+- `lib2to3.fixes.fix_zip`
+- `lib2to3.main`
+- `lib2to3.patcomp`
+- `lib2to3.pgen2`
+- `lib2to3.pgen2.conv`
+- `lib2to3.pgen2.driver`
+- `lib2to3.pgen2.grammar`
+- `lib2to3.pgen2.literals`
+- `lib2to3.pgen2.parse`
+- `lib2to3.pgen2.pgen`
+- `lib2to3.pgen2.token`
+- `lib2to3.pgen2.tokenize`
+- `lib2to3.pygram`
+- `lib2to3.pytree`
+- `lib2to3.refactor`
 - `locale`
+- `logging.config`
+- `logging.handlers`
+- `lzma`
+- `mailcap`
 - `math`
-- `pathlib`
-- `re`
-- `socket`
+- `mimetypes`
+- `msilib`
+- `msvcrt`
+- `multiprocessing.connection`
+- `multiprocessing.context`
+- `multiprocessing.dummy`
+- `multiprocessing.dummy.connection`
+- `multiprocessing.forkserver`
+- `multiprocessing.heap`
+- `multiprocessing.managers`
+- `multiprocessing.pool`
+- `multiprocessing.popen_fork`
+- `multiprocessing.popen_forkserver`
+- `multiprocessing.popen_spawn_posix`
+- `multiprocessing.popen_spawn_win32`
+- `multiprocessing.process`
+- `multiprocessing.queues`
+- `multiprocessing.reduction`
+- `multiprocessing.resource_sharer`
+- `multiprocessing.resource_tracker`
+- `multiprocessing.shared_memory`
+- `multiprocessing.sharedctypes`
+- `multiprocessing.synchronize`
+- `multiprocessing.util`
+- `nis`
+- `nntplib`
+- `nt`
+- `ntpath`
+- `nturl2path`
+- `numbers`
+- `ossaudiodev`
+- `pathlib._abc`
+- `pathlib._local`
+- `pathlib._os`
+- `pathlib.types`
+- `pickle`
+- `pipes`
+- `platform`
+- `pydoc_data.topics`
+- `re._casefix`
+- `re._compiler`
+- `re._constants`
+- `re._parser`
+- `secrets`
+- `shelve`
+- `site`
+- `smtplib`
+- `sndhdr`
+- `spwd`
+- `sqlite3`
+- `sqlite3.__main__`
+- `sqlite3.dbapi2`
+- `sqlite3.dump`
+- `statistics`
+- `string.templatelib`
+- `sunau`
+- `sysconfig`
+- `sysconfig.__main__`
+- `tarfile`
+- `telnetlib`
+- `test.support.import_helper`
+- `test.support.os_helper`
+- `tkinter`
+- `tkinter.__main__`
+- `tkinter.colorchooser`
+- `tkinter.commondialog`
+- `tkinter.constants`
+- `tkinter.dialog`
+- `tkinter.dnd`
+- `tkinter.filedialog`
+- `tkinter.font`
+- `tkinter.messagebox`
+- `tkinter.scrolledtext`
+- `tkinter.simpledialog`
+- `tkinter.tix`
+- `tkinter.ttk`
+- `tomllib._parser`
+- `tomllib._re`
+- `tomllib._types`
+- `turtle`
+- `turtledemo`
+- `turtledemo.__main__`
+- `turtledemo.bytedesign`
+- `turtledemo.chaos`
+- `turtledemo.clock`
+- `turtledemo.colormixer`
+- `turtledemo.forest`
+- `turtledemo.fractalcurves`
+- `turtledemo.lindenmayer`
+- `turtledemo.minimal_hanoi`
+- `turtledemo.nim`
+- `turtledemo.paint`
+- `turtledemo.peace`
+- `turtledemo.penrose`
+- `turtledemo.planet_and_moon`
+- `turtledemo.rosette`
+- `turtledemo.round_dance`
+- `turtledemo.sorting_animate`
+- `turtledemo.tree`
+- `turtledemo.two_canvases`
+- `turtledemo.yinyang`
+- `unittest`
+- `unittest.__main__`
+- `unittest._log`
+- `unittest.async_case`
+- `unittest.case`
+- `unittest.loader`
+- `unittest.main`
+- `unittest.mock`
+- `unittest.result`
+- `unittest.runner`
+- `unittest.signals`
+- `unittest.suite`
+- `unittest.util`
+- `urllib.response`
+- `urllib.robotparser`
+- `uu`
+- `venv.__main__`
+- `winreg`
+- `winsound`
+- `wsgiref.handlers`
+- `wsgiref.types`
+- `wsgiref.validate`
+- `xdrlib`
+- `xml`
+- `xml.dom`
+- `xml.dom.NodeFilter`
+- `xml.dom.domreg`
+- `xml.dom.expatbuilder`
+- `xml.dom.minicompat`
+- `xml.dom.minidom`
+- `xml.dom.pulldom`
+- `xml.dom.xmlbuilder`
+- `xml.etree`
+- `xml.etree.ElementInclude`
+- `xml.etree.ElementPath`
+- `xml.etree.ElementTree`
+- `xml.etree.cElementTree`
+- `xml.parsers`
+- `xml.parsers.expat`
+- `xml.sax`
+- `xml.sax._exceptions`
+- `xml.sax.expatreader`
+- `xml.sax.handler`
+- `xml.sax.saxutils`
+- `xml.sax.xmlreader`
+- `xmlrpc.server`
+- `zipapp`
 - `zipfile`
+- `zipfile.__main__`
+- `zipfile._path`
+- `zipfile._path.glob`
+- `zipimport`
+- `zoneinfo`
+- `zoneinfo._common`
+- `zoneinfo._tzpath`
+- `zoneinfo._zoneinfo`
 
 ### Probe-only modules (thin wrappers + policy gate only)
-- `_weakrefset`
-- `base64`
-- `bisect`
-- `contextvars`
-- `json`
-- `pprint`
-- `random`
-- `string`
-- `tempfile`
-- `unittest`
-- `warnings`
 
 ### Python-only modules (intrinsic missing)
-- `_bz2`
-- `_weakref`
-- `ast`
-- `concurrent`
-- `csv`
-- `ctypes`
-- `doctest`
-- `encodings`
-- `encodings.aliases`
-- `enum`
-- `ipaddress`
-- `pickle`
-- `signal`
-- `test`
-- `test.import_helper`
-- `test.list_tests`
-- `test.os_helper`
-- `test.seq_tests`
-- `test.support`
-- `test.tokenizedata`
-- `test.tokenizedata.badsyntax_3131`
-- `test.tokenizedata.badsyntax_pep3120`
-- `test.warnings_helper`
-- `uuid`
-- `zipimport`
 
 ## Core Lane Gate
 - Required lane: `tests/differential/core/TESTS.txt` (import closure).
@@ -186,8 +947,10 @@
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
+- Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
+- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be `intrinsic-backed` (no `intrinsic-partial`, `probe-only`, or `python-only`).
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: bootstrap modules must not be `python-only`.
+- Gate rule: required bootstrap modules that are present must be `intrinsic-backed`.
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
@@ -197,6 +960,38 @@
 
 ## Intrinsic-Backed Fallback Gate
 - Global rule: every `intrinsic-backed` module must avoid optional intrinsic loaders and try/except import fallback paths.
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`.
+
+## All-Stdlib Fallback Gate
+- Global rule: every stdlib module must avoid optional intrinsic loaders and try/except import fallback paths.
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## Intrinsic Pass-Fallback Gate
+- Rule: selected modules must not swallow intrinsic call failures via try/except pass-only fallback paths.
+- Enforced modules: `json`
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## Zero Non-Intrinsic Gate
+- Global rule: stdlib classification must have zero `probe-only` modules and zero `python-only` modules.
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## Intrinsic-Partial Ratchet Gate
+- Global rule: `intrinsic-partial` count must be less than or equal to the ratchet budget and trend to zero.
+- Ratchet source: `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`).
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## CPython Top-Level Union Gate
+- Global rule: Molt must expose one top-level stdlib module or package for every CPython stdlib entry in the 3.12/3.13/3.14 union baseline.
+- Global rule: required package names must be implemented as packages (not single-file modules).
+- Global rule: do not provide both `name.py` and `name/__init__.py` for the same top-level entry.
+- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## CPython Submodule Union Gate
+- Global rule: Molt must expose one stdlib submodule/subpackage for every CPython stdlib `.py` module in the 3.12/3.13/3.14 union baseline.
+- Global rule: required subpackage names must be implemented as packages (`pkg/subpkg/__init__.py`), not single-file modules.
+- Global rule: do not provide both `pkg/name.py` and `pkg/name/__init__.py` for the same submodule entry.
+- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
 ## TODO

@@ -24,8 +24,8 @@ __all__ = [
     "wraps",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): finish
-# functools surface (namedtuple cache_info, singledispatch).
+# TODO(stdlib-parity, owner:stdlib, milestone:SL1, priority:P2, status:planned): continue
+# functools parity expansion (`singledispatch`, richer cache metadata).
 
 WRAPPER_ASSIGNMENTS = (
     "__module__",

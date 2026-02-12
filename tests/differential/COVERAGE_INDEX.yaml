@@ -140,6 +140,10 @@ stdlib:
       - tests/differential/basic/contextlib_async_failures.py
       - tests/differential/basic/contextlib_intrinsics_lowered.py
       - tests/differential/basic/test_support_captured_output.py
+  concurrent.futures:
+    tests:
+      - tests/differential/basic/concurrent_futures_processpool_surface.py
+      - tests/differential/basic/concurrent_futures_threadpool_surface.py
   contextvars:
     tests:
       - tests/differential/basic/contextvars_basic.py

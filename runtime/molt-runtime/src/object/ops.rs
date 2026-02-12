@@ -12635,20 +12635,22 @@ pub extern "C" fn molt_print_builtin(
             if obj_from_bits(resolved_file_bits).is_none() {
                 let sys_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
-                let sys_bits = molt_module_cache_get(sys_name_bits);
-                if !obj_from_bits(sys_bits).is_none() {
-                    sys_found = true;
-                    let stdout_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.stdout_name,
-                        b"stdout",
-                    );
-                    resolved_file_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
-                    dec_ref_bits(_py, sys_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                if !obj_from_bits(sys_name_bits).is_none() {
+                    let sys_bits = molt_module_cache_get(sys_name_bits);
+                    if !obj_from_bits(sys_bits).is_none() {
+                        sys_found = true;
+                        let stdout_name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.stdout_name,
+                            b"stdout",
+                        );
+                        resolved_file_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
+                        dec_ref_bits(_py, sys_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        file_from_sys = true;
                     }
-                    file_from_sys = true;
                 }
             }
 
@@ -25220,10 +25222,8 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                                 key.as_float()
                             );
                         }
-                        let type_err = format!(
-                            "list indices must be integers or slices, not {}",
-                            key_type
-                        );
+                        let type_err =
+                            format!("list indices must be integers or slices, not {}", key_type);
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
                             return MoltObject::none().bits();
@@ -25310,10 +25310,8 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                                 key.as_float()
                             );
                         }
-                        let type_err = format!(
-                            "tuple indices must be integers or slices, not {}",
-                            key_type
-                        );
+                        let type_err =
+                            format!("tuple indices must be integers or slices, not {}", key_type);
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
                             return MoltObject::none().bits();
@@ -25563,10 +25561,8 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 key.as_float()
                             );
                         }
-                        let type_err = format!(
-                            "list indices must be integers or slices, not {}",
-                            key_type
-                        );
+                        let type_err =
+                            format!("list indices must be integers or slices, not {}", key_type);
                         let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
                         else {
                             return MoltObject::none().bits();
@@ -26075,10 +26071,8 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             key.as_float()
                         );
                     }
-                    let type_err = format!(
-                        "list indices must be integers or slices, not {}",
-                        key_type
-                    );
+                    let type_err =
+                        format!("list indices must be integers or slices, not {}", key_type);
                     let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
                         return MoltObject::none().bits();
                     };

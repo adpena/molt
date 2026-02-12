@@ -4,19 +4,11 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 import enum as _enum
-from types import ModuleType
-from typing import cast
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _MOLT_SIGNAL_RAISE = _require_intrinsic("molt_signal_raise", globals())
-
-_capabilities: ModuleType | None
-try:
-    from molt import capabilities as _capabilities_raw
-except Exception:
-    _capabilities = None
-else:
-    _capabilities = cast(ModuleType, _capabilities_raw)
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
+_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 __all__ = [
     "SIGINT",
@@ -31,11 +23,9 @@ __all__ = [
 
 
 def _require_cap() -> None:
-    if _capabilities is None:
+    if _MOLT_CAPABILITIES_TRUSTED():
         return
-    if _capabilities.trusted():
-        return
-    _capabilities.require("process.signal")
+    _MOLT_CAPABILITIES_REQUIRE("process.signal")
 
 
 SIGINT = 2

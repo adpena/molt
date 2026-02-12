@@ -7,6 +7,12 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are kept in sync).
 
+## Strategic Targets
+- Performance: parity with or superiority to Codon on tracked benchmarks.
+- Coverage/interoperability: approach Nuitka-level CPython surface coverage and
+  interoperability for Molt-supported semantics, while honoring Molt vision
+  constraints (determinism, capability gates, and no hidden host fallback).
+
 ## Optimization Program Kickoff
 
 - Current phase: Week 1 observability complete with Week 0 baseline lock artifacts captured; next focus is Week 2 specialization + wasm stabilization clusters.
@@ -14,6 +20,14 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
 - Canonical optimization execution log: `docs/benchmarks/optimization_progress.md`.
 - Latest observability artifact snapshot: `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md`.
 - Baseline lock summary: `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md`.
+- Current compile-throughput recovery status: stdlib mid-end functions now default to Tier C unless explicitly promoted; budget degrade checkpoints are stage-level with pre-pass evaluation; frontend layer-parallel diagnostics include stdlib-aware effective min-cost policy details.
+- Stdlib integrity gate status: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (opt-down flag: `--fallback-intrinsic-backed-only`).
+- Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
+- Stdlib ratchet gate status: `tools/check_stdlib_intrinsics.py` enforces intrinsic-partial budget via `tools/stdlib_intrinsics_ratchet.json`.
+- Stdlib lowering audit snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`; bootstrap/critical strict-import gates are still active blockers during ongoing lowering burn-down.
+- Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific DB helpers now live in `moltlib.molt_db` (with `molt.molt_db` compatibility shim).
+- Stdlib union maintenance guide: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`.
+- Stdlib execution plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`.
 
 ## Capabilities (Current)
 
@@ -55,7 +69,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; relative imports resolved within known packages; no dynamic import hooks or full package resolution.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `statistics` (`mean`/`stdev`), `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending).
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `statistics` (core function surface lowered through Rust intrinsics), `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
@@ -329,8 +343,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - Python: `uv run --python 3.12 python3 tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
 - Rust: `cargo test`
 - Differential: `uv run --python 3.12 python3 tests/molt_diff.py <case.py>`
-- Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
-- Dev installs include Cython/Numba by default (via the `dev` dependency group).
+- Bench setup (optional): `uv sync --group bench --python 3.12`
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.
 - WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
 - WASM build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
@@ -345,11 +358,14 @@ After major features or optimizations, run `uv run --python 3.14 python3 tools/b
 `uv run --python 3.14 python3 tools/bench_report.py --update-readme` to refresh this section with a short summary
 (date/host, top speedups, regressions, and any build failures) for both native and WASM, including WASM vs CPython ratios.
 Optimization backlog (see `ROADMAP.md` for tracked TODOs): wasm trampoline payload init/bulk helpers, cached task-trampoline eligibility on function headers, coroutine cancel-token reuse when safe, and cached mio websocket poll registration to avoid per-wait clones.
-Install optional baselines with `uv sync --group bench --python 3.12` to enable Cython/Numba
-columns. PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
+Install optional baselines with `uv sync --group bench --python 3.12`.
+PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
 `requires-python` and remain comparable.
 Codon baselines require the `codon` CLI; on Apple Silicon, run the bench harness
 under an arm64 interpreter so Codon can link against its runtime.
+Nuitka baselines require `nuitka` (or `--nuitka-cmd "python -m nuitka"`).
+Pyodide baselines require `--pyodide-cmd` (or `MOLT_BENCH_PYODIDE_CMD`) pointing
+to a runner command that accepts `<script> [args...]`.
 Codon skip reasons are tracked in `bench/README.md`.
 For cross-version baselines, run the bench harness under each CPython version
 (`uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,
@@ -371,7 +387,7 @@ Latest run: 2026-01-19 (macOS x86_64, CPython 3.14.0).
 Top speedups: `bench_sum.py` 222.42x, `bench_channel_throughput.py` 26.41x, `bench_ptr_registry.py` 11.70x, `bench_sum_list_hints.py` 6.85x, `bench_sum_list.py` 6.35x.
 Regressions: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.31x, `bench_attr_access.py` 0.40x, `bench_tuple_pack.py` 0.42x, `bench_tuple_index.py` 0.42x, `bench_descriptor_property.py` 0.44x, `bench_fib.py` 0.49x, `bench_csv_parse.py` 0.50x, `bench_try_except.py` 0.88x, `bench_str_join.py` 0.93x.
 Slowest: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.31x.
-Build/run failures: Cython/Numba baselines unavailable; Codon skipped for `bench_async_await.py`, `bench_bytearray_find.py`, `bench_bytearray_replace.py`, `bench_channel_throughput.py`, `bench_matrix_math.py`, `bench_memoryview_tobytes.py`, `bench_parse_msgpack.py`, `bench_ptr_registry.py`, and 2 more.
+Build/run failures: PyPy/Codon/Nuitka/Pyodide baseline availability and per-benchmark skips are reported in `docs/benchmarks/bench_summary.md`.
 WASM run: 2026-01-19 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py` 4.25s, `bench_struct.py` 4.14s, `bench_descriptor_property.py` 1.09s; largest sizes: `bench_channel_throughput.py` 3012.3 KB, `bench_async_await.py` 2930.8 KB, `bench_ptr_registry.py` 2080.8 KB; WASM vs CPython slowest ratios: `bench_struct.py` 11.65x, `bench_descriptor_property.py` 8.74x, `bench_async_await.py` 7.90x.
 <!-- BENCH_SUMMARY_END -->
 

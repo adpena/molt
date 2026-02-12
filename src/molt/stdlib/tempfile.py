@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os as _os
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 
 __all__ = [
     "NamedTemporaryFile",
@@ -57,7 +57,7 @@ def mkdtemp(suffix: str = "", prefix: str = "tmp", dir: str | None = None) -> st
     for _ in range(10000):
         name = f"{prefix}{_TEMP_COUNTER}"
         _TEMP_COUNTER += 1
-        candidate = _os.path.join(base, f"{name}{suffix}")
+        candidate = _MOLT_PATH_JOIN(base, f"{name}{suffix}")
         try:
             _os.makedirs(candidate)
             return candidate
@@ -119,7 +119,7 @@ def NamedTemporaryFile(
     for _ in range(10000):
         name = f"{prefix}{_TEMP_COUNTER}"
         _TEMP_COUNTER += 1
-        path = _os.path.join(base, f"{name}{suffix}")
+        path = _MOLT_PATH_JOIN(base, f"{name}{suffix}")
         try:
             handle = open(
                 path, open_mode, buffering=buffering, encoding=encoding, newline=newline
@@ -136,7 +136,7 @@ def _rmtree(path: str) -> None:
     except Exception:
         entries = []
     for name in entries:
-        entry = _os.path.join(path, name)
+        entry = _MOLT_PATH_JOIN(path, name)
         try:
             if _os.path.isdir(entry):
                 _rmtree(entry)

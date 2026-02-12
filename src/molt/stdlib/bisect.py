@@ -7,7 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable, TypeVar
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_MATH_FLOOR = _require_intrinsic("molt_math_floor", globals())
 
 
 __all__ = [
@@ -74,14 +74,14 @@ def bisect_left(
         raise err
     if key is None:
         while lo_idx < hi_idx:
-            mid = (lo_idx + hi_idx) // 2
+            mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
             if a[mid] < x:
                 lo_idx = mid + 1
             else:
                 hi_idx = mid
         return lo_idx
     while lo_idx < hi_idx:
-        mid = (lo_idx + hi_idx) // 2
+        mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
         if key(a[mid]) < x:
             lo_idx = mid + 1
         else:
@@ -102,14 +102,14 @@ def bisect_right(
         raise err
     if key is None:
         while lo_idx < hi_idx:
-            mid = (lo_idx + hi_idx) // 2
+            mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
             if x < a[mid]:
                 hi_idx = mid
             else:
                 lo_idx = mid + 1
         return lo_idx
     while lo_idx < hi_idx:
-        mid = (lo_idx + hi_idx) // 2
+        mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
         if x < key(a[mid]):
             hi_idx = mid
         else:

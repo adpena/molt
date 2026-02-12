@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import types
 from contextlib import contextmanager
@@ -850,6 +851,16 @@ def test_structural_cfg_validator_rejects_missing_check_exception_target() -> No
         gen._ensure_structural_cfg_validity(ops, stage="unit_test")
 
 
+def test_range_loop_lowering_keeps_loop_index_control_within_loop_markers() -> None:
+    source = "for i in range(3):\n    pass\n"
+    gen = SimpleTIRGenerator(module_name="unit_test")
+    gen.visit(ast.parse(source))
+    ops = gen.funcs_map["molt_main"]["ops"]
+
+    assert any(op.kind == "LOOP_INDEX_START" for op in ops)
+    gen._ensure_structural_cfg_validity(ops, stage="unit_test")
+
+
 def test_try_check_exception_threading_rewrites_to_jump_with_dominance_proof() -> None:
     ops = [
         MoltOp(kind="CONST", args=[10], result=MoltValue("value")),
@@ -922,6 +933,78 @@ def test_loop_break_if_true_threads_to_jump_when_exit_has_label() -> None:
     assert any(
         op.kind == "JUMP" and op.args and str(op.args[0]) == "77" for op in rewritten
     )
+
+
+def test_loop_break_if_true_threads_through_exit_label_trampoline() -> None:
+    ops = [
+        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
+        MoltOp(kind="CONST_BOOL", args=[True], result=MoltValue("cond")),
+        MoltOp(
+            kind="LOOP_BREAK_IF_TRUE",
+            args=[MoltValue("cond")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[77], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=[88], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[88], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    rewritten, *_rest = gen._rewrite_loop_try_edge_threading(
+        ops,
+        cfg=cfg,
+        control=cfg.control,
+        executable_edges=sccp.executable_edges,
+        loop_break_choice_by_index=sccp.loop_break_choice_by_index,
+        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
+        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
+        guard_fail_indices=sccp.guard_fail_indices,
+    )
+    assert any(
+        op.kind == "JUMP" and op.args and str(op.args[0]) == "88" for op in rewritten
+    )
+
+
+def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
+    ops = [
+        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("container")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("index")),
+        MoltOp(
+            kind="INDEX",
+            args=[MoltValue("container"), MoltValue("index")],
+            result=MoltValue("value"),
+        ),
+        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=[20], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[20], result=MoltValue("none")),
+        MoltOp(kind="JUMP", args=[30], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[30], result=MoltValue("none")),
+        MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[90], result=MoltValue("none")),
+        MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    rewritten, *_stats = gen._rewrite_loop_try_edge_threading(
+        ops,
+        cfg=cfg,
+        control=cfg.control,
+        executable_edges=sccp.executable_edges,
+        loop_break_choice_by_index=sccp.loop_break_choice_by_index,
+        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
+        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
+        guard_fail_indices=sccp.guard_fail_indices,
+    )
+    rewritten_check = next(op for op in rewritten if op.kind == "CHECK_EXCEPTION")
+    assert rewritten_check.args and str(rewritten_check.args[0]) == "30"
 
 
 def test_try_except_join_normalization_threads_nested_label_trampolines() -> None:
@@ -1521,7 +1604,7 @@ def test_midend_telemetry_counters_account_for_expanded_vs_fallback() -> None:
     assert accepted + fallbacks == attempts
 
 
-def test_midend_fixed_point_fail_fast_on_non_convergence() -> None:
+def test_midend_fixed_point_round_cap_degrades_without_semantic_failure() -> None:
     gen = SimpleTIRGenerator()
     ops = [MoltOp(kind="CONST", args=[1], result=MoltValue("x"))]
     flip = {"value": False}
@@ -1531,8 +1614,14 @@ def test_midend_fixed_point_fail_fast_on_non_convergence() -> None:
         round_ops: list[MoltOp],
         *,
         allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
     ) -> tuple[list[MoltOp], int]:
-        del allow_cross_block_const_dedupe
+        del (
+            allow_cross_block_const_dedupe,
+            max_cse_iterations_override,
+            sccp_iter_cap_override,
+        )
         flip["value"] = not flip["value"]
         if flip["value"]:
             return (
@@ -1551,13 +1640,57 @@ def test_midend_fixed_point_fail_fast_on_non_convergence() -> None:
         oscillating_cse, gen
     )
 
-    try:
-        _ = gen._canonicalize_control_aware_ops_impl(
-            ops, allow_cross_block_const_dedupe=True
+    rewritten = gen._canonicalize_control_aware_ops_impl(
+        ops, allow_cross_block_const_dedupe=True
+    )
+    assert isinstance(rewritten, list)
+    assert gen.midend_stats["fixed_point_fail_fast"] >= 1
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["degraded"] is True
+    actions = [event.get("action") for event in outcome.get("degrade_events", [])]
+    assert "accept_last_verified_round" in actions
+
+
+def test_midend_fixed_point_round_cap_hard_fail_opt_in() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [MoltOp(kind="CONST", args=[1], result=MoltValue("x"))]
+    flip = {"value": False}
+
+    def oscillating_cse(
+        self: SimpleTIRGenerator,
+        round_ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
+    ) -> tuple[list[MoltOp], int]:
+        del (
+            allow_cross_block_const_dedupe,
+            max_cse_iterations_override,
+            sccp_iter_cap_override,
         )
-        assert False, "expected deterministic fixed-point fail-fast"
-    except RuntimeError as exc:
-        assert "failed to converge" in str(exc)
+        flip["value"] = not flip["value"]
+        if flip["value"]:
+            return (
+                [
+                    *round_ops,
+                    MoltOp(kind="LINE", args=[778], result=MoltValue("none")),
+                ],
+                0,
+            )
+        return (
+            [op for op in round_ops if not (op.kind == "LINE" and op.args == [778])],
+            0,
+        )
+
+    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
+        oscillating_cse, gen
+    )
+    with _temp_env("MOLT_MIDEND_HARD_FAIL", "1"):
+        with pytest.raises(RuntimeError, match="failed to converge"):
+            _ = gen._canonicalize_control_aware_ops_impl(
+                ops, allow_cross_block_const_dedupe=True
+            )
 
 
 def test_sccp_worklist_solver_handles_large_cfg_without_cap_hit() -> None:
@@ -1603,3 +1736,79 @@ def test_sccp_cap_hits_only_for_pathological_cases_and_preserves_semantics() -> 
         )
     assert _eval_simple_ops(capped_out) == expected
     assert capped_gen.midend_stats["sccp_iteration_cap_hits"] >= 1
+
+
+def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
+    dev_gen = SimpleTIRGenerator(optimization_profile="dev", module_name="__main__")
+    dev_ops = _build_sccp_growth_ops(depth=4, constant_cond=True)
+    dev_policy = dev_gen._resolve_midend_function_policy(
+        dev_ops,
+        function_name="molt_main",
+        block_count=3,
+    )
+    assert dev_policy.profile == "dev"
+    assert dev_policy.tier == "A"
+    assert dev_policy.max_rounds == 2
+
+    stdlib_gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="_collections_abc",
+        source_path="src/molt/stdlib/_collections_abc.py",
+    )
+    stdlib_ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(700)
+    ]
+    stdlib_policy = stdlib_gen._resolve_midend_function_policy(
+        stdlib_ops,
+        function_name="stdlib_heavy",
+        block_count=6,
+    )
+    assert stdlib_policy.profile == "release"
+    assert stdlib_policy.tier == "C"
+    assert stdlib_policy.enable_deep_edge_thread is False
+
+
+def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
+    gen = SimpleTIRGenerator(optimization_profile="dev")
+    with _temp_env("MOLT_MIDEND_DEV_ENABLE", "1"):
+        _ = gen.map_ops_to_json(
+            [
+                MoltOp(kind="CONST", args=[1], result=MoltValue("a")),
+                MoltOp(kind="CONST", args=[2], result=MoltValue("b")),
+                MoltOp(
+                    kind="ADD",
+                    args=[MoltValue("a"), MoltValue("b")],
+                    result=MoltValue("s"),
+                ),
+            ]
+        )
+    assert "<direct>" in gen.midend_pass_stats_by_function
+    simplify_stats = gen.midend_pass_stats_by_function["<direct>"]["simplify"]
+    assert simplify_stats["attempted"] >= 1
+    assert float(simplify_stats["ms_total"]) >= 0.0
+    assert isinstance(simplify_stats["samples_ms"], list)
+
+    assert "<direct>" in gen.midend_policy_outcomes_by_function
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["profile"] == "dev"
+    assert outcome["tier"] in {"A", "B", "C"}
+    assert float(outcome["spent_ms"]) >= 0.0
+
+
+def test_midend_budget_degrade_preserves_correctness() -> None:
+    ops = _build_sccp_growth_ops(depth=32, constant_cond=True)
+    expected = _eval_simple_ops(ops)
+    gen = SimpleTIRGenerator(optimization_profile="release")
+    with _temp_env("MOLT_MIDEND_BUDGET_MS", "0"):
+        out = gen._canonicalize_control_aware_ops_impl(
+            ops, allow_cross_block_const_dedupe=True
+        )
+
+    assert _eval_simple_ops(out) == expected
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["degraded"] is True
+    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
+    assert "budget_exceeded" in reasons
+    cse_stats = gen.midend_pass_stats_by_function["<direct>"]["cse"]
+    assert int(cse_stats["degraded"]) >= 1

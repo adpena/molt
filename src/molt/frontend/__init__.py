@@ -4,9 +4,10 @@ import ast
 import bisect
 import os
 import sys
+import time
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import string as _py_string
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypedDict, cast
@@ -59,6 +60,24 @@ class LoopBoundFact:
 
 _SCCP_OVERDEFINED = object()
 _SCCP_UNKNOWN = object()
+
+
+MidendProfile = Literal["dev", "release"]
+MidendTier = Literal["A", "B", "C"]
+
+
+@dataclass(frozen=True)
+class MidendFunctionPolicy:
+    profile: MidendProfile
+    tier: MidendTier
+    max_rounds: int
+    sccp_iter_cap: int
+    cse_iter_cap: int
+    enable_deep_edge_thread: bool
+    enable_cse: bool
+    enable_licm: bool
+    enable_guard_hoist: bool
+    budget_ms: float
 
 
 @dataclass
@@ -810,6 +829,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
+        optimization_profile: MidendProfile = "release",
     ) -> None:
         self.funcs_map: dict[str, FuncInfo] = {"molt_main": {"params": [], "ops": []}}
         self.current_func_name: str = "molt_main"
@@ -872,6 +892,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "src/molt/stdlib/"
             ):
                 self.stdlib_hint_trust = True
+        self._source_is_stdlib_module = self.stdlib_hint_trust
         self.global_dict_key_hints: dict[str, str] = {}
         self.global_dict_value_hints: dict[str, str] = {}
         self.type_facts = type_facts
@@ -903,6 +924,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_stmt_offsets: list[int] = []
         self.module_chunk_counter = 0
         self.module_chunk_symbols: list[str] = []
+        if optimization_profile not in {"dev", "release"}:
+            optimization_profile = "release"
+        self.optimization_profile: MidendProfile = cast(
+            MidendProfile, optimization_profile
+        )
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
@@ -971,6 +997,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "expanded_attempts": 0,
             "expanded_accepted": 0,
             "expanded_fallbacks": 0,
+            "midend_module_skips": 0,
             "invalid_unbound_rollback": 0,
             "invalid_unbound_uses": 0,
             "fixed_point_fail_fast": 0,
@@ -993,6 +1020,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "dce_removed_total": 0,
         }
         self.midend_stats_by_function: dict[str, dict[str, int]] = {}
+        self.midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
+        self.midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
         self._active_midend_function_name = "<direct>"
         self._midend_stats_reported = False
         self.qualname_stack: list[tuple[str, bool]] = []
@@ -5415,6 +5444,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         return self._emit_global_get(node.id)
                 if node.id == "globals":
                     return self._emit_globals_builtin_ref()
+                if node.id in {"locals", "__import__"}:
+                    return self._emit_module_attr_get_on("builtins", node.id)
                 builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
                 if builtin_tag is not None:
                     tag_val = MoltValue(self.next_var(), type_hint="int")
@@ -7667,6 +7698,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             length = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LEN", args=[iterable], result=length))
 
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
             idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
             cond = MoltValue(self.next_var(), type_hint="bool")
@@ -7805,6 +7837,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         def emit_range_loop_body() -> None:
             if step_const is not None and step_const != 0:
                 with self._suppress_check_exception(emit_on_exit=False):
+                    self.emit(
+                        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+                    )
                     idx = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                     cond = MoltValue(self.next_var(), type_hint="bool")
@@ -7848,6 +7883,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
             self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
                 idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                 cond = MoltValue(self.next_var(), type_hint="bool")
@@ -7880,6 +7916,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
             self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
                 idx_neg = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
                 cond_neg = MoltValue(self.next_var(), type_hint="bool")
@@ -9182,6 +9219,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         stop = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
         cond = MoltValue(self.next_var(), type_hint="bool")
@@ -29131,6 +29169,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return json_ops
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
+        if os.getenv("MOLT_MIDEND_DISABLE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            self.midend_stats["midend_module_skips"] += 1
+            return ops
+        # TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned):
+        # Root-cause/fix dev-profile mid-end miscompiles before re-enabling by
+        # default; `MOLT_MIDEND_DEV_ENABLE=1` is the explicit opt-in escape hatch.
+        if self.optimization_profile == "dev" and os.getenv(
+            "MOLT_MIDEND_DEV_ENABLE", ""
+        ).strip().lower() not in {"1", "true", "yes", "on"}:
+            self.midend_stats["midend_module_skips"] += 1
+            return ops
+        # TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned):
+        # Root-cause and fix stdlib mid-end miscompiles that can route missing
+        # values into runtime lookups/call sites; keep this hard safety gate until
+        # canonicalized stdlib lowering is proven stable.
+        if self._source_is_stdlib_module:
+            self.midend_stats["midend_module_skips"] += 1
+            return ops
+        module_name = self.module_name or ""
         ops = self._coalesce_check_exception_ops(ops)
         try:
             ops, structural_rewrites = self._ensure_structural_cfg_validity(
@@ -29141,6 +29203,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return ops
             raise
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
+        skip_prefixes_raw = os.getenv("MOLT_MIDEND_SKIP_MODULE_PREFIXES", "").strip()
+        if skip_prefixes_raw:
+            skip_prefixes = [
+                token.strip() for token in skip_prefixes_raw.split(",") if token.strip()
+            ]
+            for prefix in skip_prefixes:
+                if module_name == prefix or module_name.startswith(f"{prefix}."):
+                    self.midend_stats["midend_module_skips"] += 1
+                    return ops
         return self._canonicalize_control_aware_ops(ops)
 
     def _midend_function_stats(self) -> dict[str, int]:
@@ -29179,6 +29250,253 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.midend_stats_by_function[name] = stats
         return stats
 
+    def _midend_pass_stats(self, pass_name: str) -> dict[str, Any]:
+        func_name = self._active_midend_function_name
+        per_func = self.midend_pass_stats_by_function.setdefault(func_name, {})
+        stats = per_func.get(pass_name)
+        if stats is None:
+            stats = {
+                "attempted": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "degraded": 0,
+                "ms_total": 0.0,
+                "ms_max": 0.0,
+                "samples_ms": [],
+            }
+            per_func[pass_name] = stats
+        return stats
+
+    @staticmethod
+    def _midend_csv_tokens(value: str) -> set[str]:
+        return {token.strip() for token in value.split(",") if token.strip()}
+
+    @staticmethod
+    def _midend_float_env(name: str, default: float) -> float:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
+    def _classify_midend_tier(
+        self, function_name: str, ops: list[MoltOp]
+    ) -> MidendTier:
+        forced_tier = os.getenv("MOLT_MIDEND_TIER_FORCE", "").strip().upper()
+        if forced_tier in {"A", "B", "C"}:
+            return cast(MidendTier, forced_tier)
+
+        tier_a_functions = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_A_FUNCTIONS", "")
+        )
+        tier_b_functions = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_B_FUNCTIONS", "")
+        )
+        tier_c_functions = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_C_FUNCTIONS", "")
+        )
+        if function_name in tier_a_functions:
+            return "A"
+        if function_name in tier_c_functions:
+            return "C"
+        if function_name in tier_b_functions:
+            return "B"
+
+        module_name = self.module_name or ""
+        tier_a_prefixes = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_A_MODULE_PREFIXES", "")
+        )
+        tier_b_prefixes = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_B_MODULE_PREFIXES", "")
+        )
+        tier_c_prefixes = self._midend_csv_tokens(
+            os.getenv("MOLT_MIDEND_TIER_C_MODULE_PREFIXES", "")
+        )
+        for prefix in sorted(tier_a_prefixes):
+            if module_name == prefix or module_name.startswith(f"{prefix}."):
+                return "A"
+        for prefix in sorted(tier_c_prefixes):
+            if module_name == prefix or module_name.startswith(f"{prefix}."):
+                return "C"
+        for prefix in sorted(tier_b_prefixes):
+            if module_name == prefix or module_name.startswith(f"{prefix}."):
+                return "B"
+
+        if module_name == "__main__":
+            return "A"
+        if function_name == "molt_main":
+            return "A"
+
+        op_count = len(ops)
+        chunk_prefix = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"
+        if self._source_is_stdlib_module:
+            # Stdlib defaults to the lightest tier unless explicitly elevated
+            # via A/B overrides above.
+            if function_name.startswith(chunk_prefix):
+                return "C"
+            return "C"
+        if op_count >= 1800:
+            return "C"
+        return "B"
+
+    def _resolve_midend_function_policy(
+        self,
+        ops: list[MoltOp],
+        *,
+        function_name: str | None = None,
+        block_count: int = 1,
+    ) -> MidendFunctionPolicy:
+        profile = self.optimization_profile
+        profile_override = os.getenv("MOLT_MIDEND_PROFILE", "").strip().lower()
+        if profile_override in {"dev", "release"}:
+            profile = cast(MidendProfile, profile_override)
+
+        resolved_function = function_name or self._active_midend_function_name
+        tier = self._classify_midend_tier(resolved_function, ops)
+        defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
+            ("dev", "A"): {
+                "max_rounds": 2,
+                "sccp_iter_cap": 48,
+                "cse_iter_cap": 16,
+                "enable_deep_edge_thread": True,
+                "enable_cse": True,
+                "enable_licm": False,
+                "enable_guard_hoist": False,
+                "budget_base_ms": 60.0,
+            },
+            ("dev", "B"): {
+                "max_rounds": 1,
+                "sccp_iter_cap": 24,
+                "cse_iter_cap": 8,
+                "enable_deep_edge_thread": True,
+                "enable_cse": True,
+                "enable_licm": False,
+                "enable_guard_hoist": False,
+                "budget_base_ms": 35.0,
+            },
+            ("dev", "C"): {
+                "max_rounds": 1,
+                "sccp_iter_cap": 12,
+                "cse_iter_cap": 4,
+                "enable_deep_edge_thread": False,
+                "enable_cse": False,
+                "enable_licm": False,
+                "enable_guard_hoist": False,
+                "budget_base_ms": 20.0,
+            },
+            ("release", "A"): {
+                "max_rounds": 4,
+                "sccp_iter_cap": 128,
+                "cse_iter_cap": 48,
+                "enable_deep_edge_thread": True,
+                "enable_cse": True,
+                "enable_licm": True,
+                "enable_guard_hoist": True,
+                "budget_base_ms": 180.0,
+            },
+            ("release", "B"): {
+                "max_rounds": 3,
+                "sccp_iter_cap": 96,
+                "cse_iter_cap": 32,
+                "enable_deep_edge_thread": True,
+                "enable_cse": True,
+                "enable_licm": True,
+                "enable_guard_hoist": True,
+                "budget_base_ms": 110.0,
+            },
+            ("release", "C"): {
+                "max_rounds": 2,
+                "sccp_iter_cap": 48,
+                "cse_iter_cap": 16,
+                "enable_deep_edge_thread": False,
+                "enable_cse": True,
+                "enable_licm": False,
+                "enable_guard_hoist": False,
+                "budget_base_ms": 70.0,
+            },
+        }
+        selected = dict(defaults[(profile, tier)])
+        budget_override = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
+        if budget_override:
+            try:
+                budget_ms = max(0.0, float(budget_override))
+            except ValueError:
+                budget_ms = selected["budget_base_ms"]
+        else:
+            alpha = self._midend_float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03)
+            beta = self._midend_float_env("MOLT_MIDEND_BUDGET_BETA", 0.75)
+            scale = self._midend_float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0)
+            budget_ms = (
+                selected["budget_base_ms"]
+                + alpha * max(1, len(ops))
+                + beta * max(1, block_count)
+            ) * max(0.0, scale)
+        return MidendFunctionPolicy(
+            profile=profile,
+            tier=tier,
+            max_rounds=int(selected["max_rounds"]),
+            sccp_iter_cap=int(selected["sccp_iter_cap"]),
+            cse_iter_cap=int(selected["cse_iter_cap"]),
+            enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),
+            enable_cse=bool(selected["enable_cse"]),
+            enable_licm=bool(selected["enable_licm"]),
+            enable_guard_hoist=bool(selected["enable_guard_hoist"]),
+            budget_ms=float(budget_ms),
+        )
+
+    def _record_midend_pass_sample(
+        self,
+        pass_name: str,
+        *,
+        elapsed_ms: float,
+        accepted: bool,
+        degraded: bool = False,
+    ) -> None:
+        stats = self._midend_pass_stats(pass_name)
+        stats["attempted"] = int(stats.get("attempted", 0)) + 1
+        if accepted:
+            stats["accepted"] = int(stats.get("accepted", 0)) + 1
+        else:
+            stats["rejected"] = int(stats.get("rejected", 0)) + 1
+        if degraded:
+            stats["degraded"] = int(stats.get("degraded", 0)) + 1
+        stats["ms_total"] = float(stats.get("ms_total", 0.0)) + max(0.0, elapsed_ms)
+        stats["ms_max"] = max(float(stats.get("ms_max", 0.0)), max(0.0, elapsed_ms))
+        samples = stats.get("samples_ms")
+        if not isinstance(samples, list):
+            samples = []
+            stats["samples_ms"] = samples
+        samples.append(max(0.0, elapsed_ms))
+        if len(samples) > 256:
+            del samples[: len(samples) - 256]
+
+    @staticmethod
+    def _pass_stat_p95(samples: list[float]) -> float:
+        if not samples:
+            return 0.0
+        ordered = sorted(samples)
+        idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+        return float(ordered[idx])
+
+    def _record_midend_policy_outcome(
+        self,
+        *,
+        policy: MidendFunctionPolicy,
+        spent_ms: float,
+        degraded: bool,
+        degrade_events: list[dict[str, Any]],
+    ) -> None:
+        self.midend_policy_outcomes_by_function[self._active_midend_function_name] = {
+            "profile": policy.profile,
+            "tier": policy.tier,
+            "budget_ms": round(policy.budget_ms, 3),
+            "spent_ms": round(max(0.0, spent_ms), 3),
+            "degraded": degraded,
+            "degrade_events": list(degrade_events),
+        }
+
     def _maybe_report_midend_stats(self) -> None:
         if self._midend_stats_reported:
             return
@@ -29189,6 +29507,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "expanded_attempts",
             "expanded_accepted",
             "expanded_fallbacks",
+            "midend_module_skips",
             "invalid_unbound_rollback",
             "invalid_unbound_uses",
             "fixed_point_fail_fast",
@@ -29284,6 +29603,65 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     f"{func_name} family={family} rejected={rejected} attempted={attempted}",
                     file=sys.stderr,
                 )
+        if self.midend_policy_outcomes_by_function:
+            rendered_policy = []
+            for func_name in sorted(self.midend_policy_outcomes_by_function):
+                outcome = self.midend_policy_outcomes_by_function[func_name]
+                rendered_policy.append(
+                    f"{func_name}:profile={outcome.get('profile')},"
+                    f"tier={outcome.get('tier')},"
+                    f"spent_ms={outcome.get('spent_ms')},"
+                    f"budget_ms={outcome.get('budget_ms')},"
+                    f"degraded={outcome.get('degraded')}"
+                )
+            print(
+                "molt midend policy outcomes: " + " | ".join(rendered_policy),
+                file=sys.stderr,
+            )
+        pass_hotspots: list[tuple[float, str, str, float, float, int, int, int]] = []
+        for func_name, per_pass in self.midend_pass_stats_by_function.items():
+            for pass_name, stats in per_pass.items():
+                samples = [
+                    float(sample)
+                    for sample in stats.get("samples_ms", [])
+                    if isinstance(sample, (int, float))
+                ]
+                p95 = self._pass_stat_p95(samples)
+                total_ms = float(stats.get("ms_total", 0.0))
+                pass_hotspots.append(
+                    (
+                        total_ms,
+                        func_name,
+                        pass_name,
+                        total_ms,
+                        p95,
+                        int(stats.get("attempted", 0)),
+                        int(stats.get("accepted", 0)),
+                        int(stats.get("degraded", 0)),
+                    )
+                )
+        if pass_hotspots:
+            pass_hotspots.sort(reverse=True)
+            top_passes = []
+            for (
+                _score,
+                func_name,
+                pass_name,
+                total_ms,
+                p95,
+                attempted,
+                accepted,
+                degraded,
+            ) in pass_hotspots[:10]:
+                top_passes.append(
+                    f"{func_name}:{pass_name} total_ms={total_ms:.3f} "
+                    f"p95_ms={p95:.3f} attempted={attempted} "
+                    f"accepted={accepted} degraded={degraded}"
+                )
+            print(
+                "molt midend pass hotspots: " + " | ".join(top_passes),
+                file=sys.stderr,
+            )
 
     def _resolve_alias_value(
         self, value: MoltValue, aliases: dict[str, MoltValue]
@@ -31025,7 +31403,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         return True
 
-    def _compute_sccp(self, ops: list[MoltOp], cfg: CFGGraph) -> SCCPResult:
+    def _compute_sccp(
+        self,
+        ops: list[MoltOp],
+        cfg: CFGGraph,
+        *,
+        max_iters_override: int | None = None,
+    ) -> SCCPResult:
         # TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial):
         # extend loop/try edge threading beyond current executable-edge +
         # conservative loop-marker rewrites into full loop-end and
@@ -31504,7 +31888,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         iterations = 0
         ssa_defs = sum(1 for op in ops if op.result.name != "none")
         max_iterations_env = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
-        if max_iterations_env:
+        if max_iters_override is not None and max_iters_override > 0:
+            max_iterations = max_iters_override
+        elif max_iterations_env:
             try:
                 parsed = int(max_iterations_env)
             except ValueError:
@@ -32472,6 +32858,70 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if len(chosen) == 1:
                 single_exec_succ_by_block[block.id] = chosen[0]
 
+        label_alias: dict[str, str] = {}
+
+        def collect_label_aliases() -> None:
+            def alias_target_from_body(body_ops: list[MoltOp]) -> str | None:
+                if (
+                    len(body_ops) == 1
+                    and body_ops[0].kind == "JUMP"
+                    and body_ops[0].args
+                ):
+                    return self._control_label_key(body_ops[0].args[0])
+                if (
+                    len(body_ops) == 2
+                    and body_ops[0].kind == "CHECK_EXCEPTION"
+                    and body_ops[0].args
+                    and body_ops[1].kind == "JUMP"
+                    and body_ops[1].args
+                ):
+                    check_key = self._control_label_key(body_ops[0].args[0])
+                    jump_key = self._control_label_key(body_ops[1].args[0])
+                    if check_key is not None and check_key == jump_key:
+                        return jump_key
+                return None
+
+            for block in cfg.blocks:
+                if block.start >= block.end:
+                    continue
+                head = ops[block.start]
+                if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
+                    continue
+                head_key = self._control_label_key(head.args[0])
+                if head_key is None:
+                    continue
+                body_ops = [
+                    ops[idx]
+                    for idx in range(block.start + 1, block.end)
+                    if ops[idx].kind != "LINE"
+                ]
+                target_key = alias_target_from_body(body_ops)
+                if target_key is None and not body_ops:
+                    succs = cfg.successors.get(block.id, [])
+                    if len(succs) == 1:
+                        succ_block = cfg.blocks[succs[0]]
+                        succ_body = [
+                            ops[idx]
+                            for idx in range(succ_block.start, succ_block.end)
+                            if ops[idx].kind != "LINE"
+                        ]
+                        target_key = alias_target_from_body(succ_body)
+                if target_key is None or target_key == head_key:
+                    continue
+                if cfg.label_to_block.get(target_key) is None:
+                    continue
+                label_alias[head_key] = target_key
+
+        def resolve_label_alias(label_key: str) -> str:
+            resolved = label_key
+            seen: set[str] = set()
+            while resolved in label_alias and resolved not in seen:
+                seen.add(resolved)
+                resolved = label_alias[resolved]
+            return resolved
+
+        collect_label_aliases()
+
         try_remove_starts = {
             start
             for start, can_raise in try_exception_possible_by_start.items()
@@ -32552,7 +33002,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if target_block not in cfg.successors.get(check_block, []):
                     continue
                 threaded_check_idx = check_idx
-                threaded_check_exception_jumps[check_idx] = check_op.args[0]
+                target_key = self._control_label_key(check_op.args[0])
+                if target_key is None:
+                    threaded_check_exception_jumps[check_idx] = check_op.args[0]
+                else:
+                    resolved_key = resolve_label_alias(target_key)
+                    threaded_check_exception_jumps[check_idx] = (
+                        self._coerce_control_label_like(check_op.args[0], resolved_key)
+                    )
                 break
 
             if threaded_check_idx is not None:
@@ -32586,6 +33043,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 continue
             if (end_block, start_block) in executable_edges:
                 continue
+            # Keep loop markers whenever dynamic loop-control ops are present
+            # anywhere in the loop body. Restricting this to only currently
+            # executable blocks can invalidate structure after later rewrites.
             body_has_dynamic_loop_control = any(
                 ops[idx].kind
                 in {
@@ -32594,7 +33054,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "LOOP_BREAK_IF_FALSE",
                     "LOOP_CONTINUE",
                 }
-                and cfg.index_to_block.get(idx) in executable_blocks
                 for idx in range(loop_start + 1, loop_end)
             )
             if body_has_dynamic_loop_control:
@@ -32609,7 +33068,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         try_body_prunes = 0
         check_exception_threads = 0
         check_exception_elisions_count = 0
-        block_jump_label_arg: dict[int, Any] = dict(cfg.block_entry_label)
+        block_jump_label_arg: dict[int, Any] = {}
+        for block_id, label in cfg.block_entry_label.items():
+            label_key = self._control_label_key(label)
+            if label_key is None:
+                block_jump_label_arg[block_id] = label
+                continue
+            resolved_label = resolve_label_alias(label_key)
+            block_jump_label_arg[block_id] = self._coerce_control_label_like(
+                label, resolved_label
+            )
 
         for idx, op in enumerate(ops):
             if op.kind == "CHECK_EXCEPTION":
@@ -32628,6 +33096,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if idx in check_exception_elisions:
                     check_exception_elisions_count += 1
                     continue
+                if op.args:
+                    original_key = self._control_label_key(op.args[0])
+                    if original_key is not None:
+                        resolved_key = resolve_label_alias(original_key)
+                        if resolved_key != original_key:
+                            out.append(
+                                MoltOp(
+                                    kind=op.kind,
+                                    args=[
+                                        self._coerce_control_label_like(
+                                            op.args[0], resolved_key
+                                        ),
+                                        *op.args[1:],
+                                    ],
+                                    result=op.result,
+                                    metadata=op.metadata,
+                                )
+                            )
+                            check_exception_threads += 1
+                            continue
             if idx in try_unreachable_body_indices:
                 try_body_prunes += 1
                 continue
@@ -32977,7 +33465,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "LOOP_CONTINUE",
             }:
                 if not any(open_kind == "LOOP_START" for open_kind, _ in control_stack):
-                    fail(f"{kind} at op index {idx} is outside LOOP_START/LOOP_END")
+                    # Structural repairs should be fail-closed for malformed
+                    # labels/targets, but loop-control ops outside loop scope
+                    # can be safely elided as no-ops to keep IR canonical.
+                    rewrites += 1
+                    continue
                 rewritten.append(op)
                 continue
 
@@ -33293,11 +33785,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ops: list[MoltOp],
         *,
         allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
     ) -> tuple[list[MoltOp], int]:
         round_cfg = build_cfg(ops)
         if not round_cfg.blocks:
             return ops, 0
-        sccp = self._compute_sccp(ops, round_cfg)
+        sccp = self._compute_sccp(
+            ops, round_cfg, max_iters_override=sccp_iter_cap_override
+        )
         working_ops, phi_trims = self._trim_phi_args_by_executable_edges(
             ops, round_cfg, sccp.executable_edges
         )
@@ -33305,7 +33801,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             round_cfg = build_cfg(working_ops)
             if not round_cfg.blocks:
                 return working_ops, phi_trims
-            sccp = self._compute_sccp(working_ops, round_cfg)
+            sccp = self._compute_sccp(
+                working_ops,
+                round_cfg,
+                max_iters_override=sccp_iter_cap_override,
+            )
         sccp_in_consts = self._sccp_in_const_int_values(sccp)
         induction_steps = self._analyze_loop_induction_steps(working_ops, round_cfg)
 
@@ -33322,14 +33822,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         changed = True
         iterations = 0
         max_cse_iterations_env = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
-        max_cse_iterations = 20
-        if max_cse_iterations_env:
+        if max_cse_iterations_override is not None and max_cse_iterations_override > 0:
+            max_cse_iterations = max_cse_iterations_override
+        elif max_cse_iterations_env:
             try:
                 parsed = int(max_cse_iterations_env)
             except ValueError:
                 parsed = 0
-            if parsed > 0:
-                max_cse_iterations = parsed
+            max_cse_iterations = parsed if parsed > 0 else 20
+        else:
+            max_cse_iterations = 20
         while changed and iterations < max_cse_iterations:
             iterations += 1
             changed = False
@@ -33416,9 +33918,214 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_stats["licm_attempted"] += 1
         func_stats["dce_attempted"] += 1
 
+        policy = self._resolve_midend_function_policy(
+            validated_ops,
+            function_name=self._active_midend_function_name,
+            block_count=len(cfg.blocks),
+        )
+        pass_start = time.perf_counter()
         rewritten_ops, pre_cfg_rewrites = self._canonicalize_cfg_before_optimization(
             validated_ops
         )
+        self._record_midend_pass_sample(
+            "cfg_precanonicalize",
+            elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+            accepted=pre_cfg_rewrites > 0,
+            degraded=False,
+        )
+
+        midend_start = time.perf_counter()
+        degrade_events: list[dict[str, Any]] = []
+        degraded = False
+        enable_deep_edge_thread = policy.enable_deep_edge_thread
+        enable_cse = policy.enable_cse
+        enable_licm = policy.enable_licm
+        enable_guard_hoist = policy.enable_guard_hoist
+        max_rounds = max(1, policy.max_rounds)
+        sccp_iter_cap = max(1, policy.sccp_iter_cap)
+        cse_iter_cap = max(1, policy.cse_iter_cap)
+
+        max_rounds_env = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
+        if max_rounds_env:
+            try:
+                parsed = int(max_rounds_env)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                max_rounds = parsed
+
+        sccp_cap_env = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
+        if sccp_cap_env:
+            try:
+                parsed = int(sccp_cap_env)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                sccp_iter_cap = parsed
+
+        cse_cap_env = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
+        if cse_cap_env:
+            try:
+                parsed = int(cse_cap_env)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                cse_iter_cap = parsed
+        enable_idempotence_probe = (
+            os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0"
+        )
+        hard_fail_on_non_convergence = (
+            os.getenv("MOLT_MIDEND_HARD_FAIL", "").strip() == "1"
+        )
+        # Legacy opt-in fail-open flag remains accepted for compatibility.
+        legacy_fail_open = os.getenv("MOLT_MIDEND_FAIL_OPEN")
+        if legacy_fail_open == "0":
+            hard_fail_on_non_convergence = True
+
+        def spent_midend_ms() -> float:
+            return (time.perf_counter() - midend_start) * 1000.0
+
+        budget_preempt_ratio = max(
+            0.0,
+            min(
+                1.0,
+                self._midend_float_env("MOLT_MIDEND_BUDGET_PREEMPT_RATIO", 0.92),
+            ),
+        )
+
+        def recent_pass_p95_ms(pass_name: str) -> float:
+            per_func = self.midend_pass_stats_by_function.get(
+                self._active_midend_function_name, {}
+            )
+            stats = per_func.get(pass_name, {})
+            samples = stats.get("samples_ms")
+            if not isinstance(samples, list):
+                return 0.0
+            filtered: list[float] = []
+            for sample in samples:
+                try:
+                    value = float(sample)
+                except (TypeError, ValueError):
+                    continue
+                if value >= 0.0:
+                    filtered.append(value)
+            return self._pass_stat_p95(filtered)
+
+        def add_degrade_event(
+            reason: str,
+            stage: str,
+            action: str,
+            *,
+            value: Any | None = None,
+        ) -> None:
+            event: dict[str, Any] = {
+                "reason": reason,
+                "stage": stage,
+                "action": action,
+                "spent_ms": round(max(0.0, spent_midend_ms()), 3),
+            }
+            if value is not None:
+                event["value"] = value
+            degrade_events.append(event)
+
+        if not enable_deep_edge_thread:
+            add_degrade_event(
+                "policy_tier_limit",
+                "policy_init",
+                "disable_deep_edge_thread",
+            )
+        if not enable_cse:
+            add_degrade_event(
+                "policy_tier_limit",
+                "policy_init",
+                "disable_cse",
+            )
+        if not enable_guard_hoist:
+            add_degrade_event(
+                "policy_tier_limit",
+                "policy_init",
+                "disable_guard_hoist",
+            )
+        if not enable_licm:
+            add_degrade_event(
+                "policy_tier_limit",
+                "policy_init",
+                "disable_licm",
+            )
+
+        def maybe_apply_budget_degrade(
+            stage: str,
+            round_index: int,
+            *,
+            upcoming_pass: str | None = None,
+        ) -> None:
+            nonlocal degraded
+            nonlocal enable_deep_edge_thread
+            nonlocal enable_cse
+            nonlocal enable_guard_hoist
+            nonlocal enable_licm
+            nonlocal max_rounds
+            nonlocal sccp_iter_cap
+            nonlocal cse_iter_cap
+            nonlocal enable_idempotence_probe
+            if policy.budget_ms < 0:
+                return
+            while True:
+                spent_now = spent_midend_ms()
+                over_budget = spent_now > policy.budget_ms
+                preemptive = False
+                predicted_ms = 0.0
+                if (
+                    not over_budget
+                    and upcoming_pass is not None
+                    and budget_preempt_ratio > 0.0
+                ):
+                    predicted_ms = recent_pass_p95_ms(upcoming_pass)
+                    threshold_budget = policy.budget_ms * budget_preempt_ratio
+                    if (
+                        predicted_ms > 0.0
+                        and (spent_now + predicted_ms) > threshold_budget
+                    ):
+                        preemptive = True
+                if not over_budget and not preemptive:
+                    break
+                action: str | None = None
+                if enable_cse:
+                    enable_cse = False
+                    action = "disable_cse"
+                elif enable_deep_edge_thread:
+                    enable_deep_edge_thread = False
+                    action = "disable_deep_edge_thread"
+                elif enable_guard_hoist:
+                    enable_guard_hoist = False
+                    action = "disable_guard_hoist"
+                elif enable_licm:
+                    enable_licm = False
+                    action = "disable_licm"
+                elif enable_idempotence_probe:
+                    enable_idempotence_probe = False
+                    action = "disable_idempotence_probe"
+                elif max_rounds > (round_index + 1):
+                    max_rounds = round_index + 1
+                    action = f"cap_rounds_to_{max_rounds}"
+                elif sccp_iter_cap > 8:
+                    sccp_iter_cap = max(8, sccp_iter_cap // 2)
+                    action = f"shrink_sccp_iter_cap_to_{sccp_iter_cap}"
+                elif cse_iter_cap > 4:
+                    cse_iter_cap = max(4, cse_iter_cap // 2)
+                    action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
+                if action is None:
+                    break
+                degraded = True
+                reason = "budget_exceeded" if over_budget else "budget_preemptive"
+                extra_value: dict[str, Any] | None = None
+                if preemptive and upcoming_pass is not None:
+                    extra_value = {
+                        "upcoming_pass": upcoming_pass,
+                        "predicted_ms": round(max(0.0, predicted_ms), 3),
+                    }
+                add_degrade_event(reason, stage, action, value=extra_value)
+
         total_branch_prunes = 0
         total_loop_edge_prunes = 0
         total_try_edge_prunes = 0
@@ -33440,29 +34147,44 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         guard_hoist_rejected_before = self.midend_stats.get("guard_hoist_rejected", 0)
 
         converged = False
-        max_rounds_env = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
-        max_rounds = 10
-        if max_rounds_env:
-            try:
-                parsed = int(max_rounds_env)
-            except ValueError:
-                parsed = 0
-            if parsed > 0:
-                max_rounds = parsed
-        for _round in range(max_rounds):
+        round_index = 0
+        while round_index < max_rounds:
+            round_index += 1
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_start",
+                round_index - 1,
+                upcoming_pass="simplify",
+            )
             step_before = rewritten_ops
             step_ops = rewritten_ops
 
             # 1) simplify
+            pass_start = time.perf_counter()
             step_ops, structural_prunes = (
                 self._canonicalize_structured_regions_pre_sccp(step_ops)
             )
+            self._record_midend_pass_sample(
+                "simplify",
+                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                accepted=structural_prunes > 0,
+                degraded=degraded,
+            )
             total_region_prunes += structural_prunes
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_simplify",
+                round_index - 1,
+                upcoming_pass="sccp_edge_thread",
+            )
 
             # 2) SCCP/edge-thread
             iter_cfg = build_cfg(step_ops)
             if iter_cfg.blocks:
-                iter_sccp = self._compute_sccp(step_ops, iter_cfg)
+                pass_start = time.perf_counter()
+                iter_sccp = self._compute_sccp(
+                    step_ops,
+                    iter_cfg,
+                    max_iters_override=sccp_iter_cap,
+                )
                 step_ops, phi_trims = self._trim_phi_args_by_executable_edges(
                     step_ops, iter_cfg, iter_sccp.executable_edges
                 )
@@ -33470,7 +34192,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if phi_trims > 0:
                     iter_cfg = build_cfg(step_ops)
                     if iter_cfg.blocks:
-                        iter_sccp = self._compute_sccp(step_ops, iter_cfg)
+                        iter_sccp = self._compute_sccp(
+                            step_ops,
+                            iter_cfg,
+                            max_iters_override=sccp_iter_cap,
+                        )
                 if iter_cfg.blocks:
                     step_ops, branch_prunes = self._rewrite_structured_if_regions(
                         step_ops,
@@ -33489,8 +34215,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE", "LOOP_END"}
                 )
                 total_loop_rewrite_attempts += loop_rewrite_attempts
-                if threaded_cfg.blocks:
-                    threaded_sccp = self._compute_sccp(step_ops, threaded_cfg)
+                if threaded_cfg.blocks and enable_deep_edge_thread:
+                    threaded_sccp = self._compute_sccp(
+                        step_ops,
+                        threaded_cfg,
+                        max_iters_override=sccp_iter_cap,
+                    )
                     (
                         step_ops,
                         loop_rewrites,
@@ -33530,8 +34260,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 total_loop_rewrite_accepted += (
                     loop_rewrites + loop_marker_prunes + try_body_prunes
                 )
+                self._record_midend_pass_sample(
+                    "sccp_edge_thread",
+                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    accepted=(
+                        branch_prunes
+                        + loop_rewrites
+                        + loop_marker_prunes
+                        + try_marker_prunes
+                        + try_body_prunes
+                        + check_exception_threads
+                        + check_exception_elisions
+                        + phi_trims
+                    )
+                    > 0,
+                    degraded=degraded
+                    or (not enable_deep_edge_thread and loop_rewrite_attempts > 0),
+                )
+            else:
+                self._record_midend_pass_sample(
+                    "sccp_edge_thread",
+                    elapsed_ms=0.0,
+                    accepted=False,
+                    degraded=degraded,
+                )
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_sccp", round_index - 1
+            )
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_pre_join",
+                round_index - 1,
+                upcoming_pass="join_canonicalize",
+            )
 
             # 3) join canonicalize
+            pass_start = time.perf_counter()
             join_cfg = build_cfg(step_ops)
             if join_cfg.blocks:
                 step_ops, try_join_threads = self._normalize_try_except_join_labels(
@@ -33541,22 +34304,82 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 try_join_threads = 0
             total_try_join_threads += try_join_threads
             total_try_edge_prunes += try_join_threads
-
-            step_ops, guard_attempts, guard_accepts, guard_rejects = (
-                self._eliminate_redundant_guards_cfg(step_ops)
+            self._record_midend_pass_sample(
+                "join_canonicalize",
+                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                accepted=try_join_threads > 0,
+                degraded=degraded,
             )
-            self.midend_stats["guard_hoist_attempts"] += guard_attempts
-            self.midend_stats["guard_hoist_accepted"] += guard_accepts
-            self.midend_stats["guard_hoist_rejected"] += guard_rejects
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_join",
+                round_index - 1,
+                upcoming_pass="guard_hoist",
+            )
+
+            if enable_guard_hoist:
+                pass_start = time.perf_counter()
+                step_ops, guard_attempts, guard_accepts, guard_rejects = (
+                    self._eliminate_redundant_guards_cfg(step_ops)
+                )
+                self.midend_stats["guard_hoist_attempts"] += guard_attempts
+                self.midend_stats["guard_hoist_accepted"] += guard_accepts
+                self.midend_stats["guard_hoist_rejected"] += guard_rejects
+                self._record_midend_pass_sample(
+                    "guard_hoist",
+                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    accepted=guard_accepts > 0,
+                    degraded=degraded,
+                )
+            else:
+                self._record_midend_pass_sample(
+                    "guard_hoist",
+                    elapsed_ms=0.0,
+                    accepted=False,
+                    degraded=True,
+                )
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_guard_hoist",
+                round_index - 1,
+                upcoming_pass="licm",
+            )
 
             # Auxiliary: LICM/loop hoists in same deterministic round.
-            step_ops, licm_hoists = self._hoist_loop_invariant_pure_ops(step_ops)
+            if enable_licm:
+                pass_start = time.perf_counter()
+                step_ops, licm_hoists = self._hoist_loop_invariant_pure_ops(step_ops)
+                self._record_midend_pass_sample(
+                    "licm",
+                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    accepted=licm_hoists > 0,
+                    degraded=degraded,
+                )
+            else:
+                licm_hoists = 0
+                self._record_midend_pass_sample(
+                    "licm",
+                    elapsed_ms=0.0,
+                    accepted=False,
+                    degraded=True,
+                )
             total_licm_hoists += licm_hoists
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_hoists", round_index - 1
+            )
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_pre_prune",
+                round_index - 1,
+                upcoming_pass="prune",
+            )
 
             # 4) prune
+            pass_start = time.perf_counter()
             prune_cfg = build_cfg(step_ops)
             if prune_cfg.blocks:
-                prune_sccp = self._compute_sccp(step_ops, prune_cfg)
+                prune_sccp = self._compute_sccp(
+                    step_ops,
+                    prune_cfg,
+                    max_iters_override=sccp_iter_cap,
+                )
                 step_ops, region_prunes, unreachable_blocks = (
                     self._prune_unreachable_cfg_regions(
                         step_ops,
@@ -33576,41 +34399,114 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             total_jump_noops += jump_noops
             step_ops, round_structural_rewrites = self._ensure_structural_cfg_validity(
                 step_ops,
-                stage=f"midend_fixed_point_round_{_round + 1}",
+                stage=f"midend_fixed_point_round_{round_index}",
             )
             total_region_prunes += round_structural_rewrites
             self.midend_stats["cfg_structural_canonicalizations"] += (
                 round_structural_rewrites
             )
+            self._record_midend_pass_sample(
+                "prune",
+                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                accepted=(
+                    region_prunes
+                    + unreachable_blocks
+                    + label_prunes
+                    + jump_noops
+                    + round_structural_rewrites
+                )
+                > 0,
+                degraded=degraded,
+            )
+            maybe_apply_budget_degrade(
+                f"round_{round_index}_post_prune",
+                round_index - 1,
+                upcoming_pass="verifier",
+            )
 
             # 5) verifier
+            pass_start = time.perf_counter()
             round_predefined = self._infer_predefined_value_names(step_ops)
             round_failures = self._verify_definite_assignment_in_ops(
                 step_ops, predefined_value_names=round_predefined
             )
+            self._record_midend_pass_sample(
+                "verifier",
+                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                accepted=not round_failures,
+                degraded=degraded,
+            )
             if round_failures:
                 step_ops = step_before
+                self._record_midend_pass_sample(
+                    "dce",
+                    elapsed_ms=0.0,
+                    accepted=False,
+                    degraded=True,
+                )
+                self._record_midend_pass_sample(
+                    "cse",
+                    elapsed_ms=0.0,
+                    accepted=False,
+                    degraded=True,
+                )
             else:
                 # 6) DCE
+                pass_start = time.perf_counter()
+                dce_input = step_ops
                 dce_candidate = self._eliminate_dead_trivial_consts(step_ops)
                 dce_failures = self._verify_definite_assignment_in_ops(
                     dce_candidate, predefined_value_names=round_predefined
                 )
                 if not dce_failures:
                     step_ops = dce_candidate
+                self._record_midend_pass_sample(
+                    "dce",
+                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    accepted=(not dce_failures) and step_ops != dce_input,
+                    degraded=degraded,
+                )
+                maybe_apply_budget_degrade(
+                    f"round_{round_index}_post_dce",
+                    round_index - 1,
+                    upcoming_pass="cse",
+                )
 
                 # 7) CSE
-                cse_candidate, cse_phi_trims = self._run_cse_canonicalization_round(
-                    step_ops,
-                    allow_cross_block_const_dedupe=allow_cross_block_const_dedupe,
+                if enable_cse:
+                    pass_start = time.perf_counter()
+                    cse_input = step_ops
+                    cse_candidate, cse_phi_trims = self._run_cse_canonicalization_round(
+                        step_ops,
+                        allow_cross_block_const_dedupe=allow_cross_block_const_dedupe,
+                        max_cse_iterations_override=cse_iter_cap,
+                        sccp_iter_cap_override=sccp_iter_cap,
+                    )
+                    total_phi_edge_trims += cse_phi_trims
+                    cse_predefined = self._infer_predefined_value_names(cse_candidate)
+                    cse_failures = self._verify_definite_assignment_in_ops(
+                        cse_candidate, predefined_value_names=cse_predefined
+                    )
+                    if not cse_failures:
+                        step_ops = cse_candidate
+                    self._record_midend_pass_sample(
+                        "cse",
+                        elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                        accepted=(not cse_failures)
+                        and (step_ops != cse_input or cse_phi_trims > 0),
+                        degraded=degraded,
+                    )
+                else:
+                    self._record_midend_pass_sample(
+                        "cse",
+                        elapsed_ms=0.0,
+                        accepted=False,
+                        degraded=True,
+                    )
+                maybe_apply_budget_degrade(
+                    f"round_{round_index}_post_cse",
+                    round_index - 1,
                 )
-                total_phi_edge_trims += cse_phi_trims
-                cse_predefined = self._infer_predefined_value_names(cse_candidate)
-                cse_failures = self._verify_definite_assignment_in_ops(
-                    cse_candidate, predefined_value_names=cse_predefined
-                )
-                if not cse_failures:
-                    step_ops = cse_candidate
 
             rewritten_ops = step_ops
             if rewritten_ops == step_before:
@@ -33619,14 +34515,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         if not converged:
             self.midend_stats["fixed_point_fail_fast"] += 1
-            if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
-                return rewritten_ops
-            raise RuntimeError(
-                "midend deterministic fixed-point failed to converge within "
-                f"{max_rounds} rounds for {self._active_midend_function_name}"
+            add_degrade_event(
+                "fixed_point_round_cap",
+                "fixed_point_exit",
+                "accept_last_verified_round",
+                value=max_rounds,
             )
+            degraded = True
+            enable_idempotence_probe = False
+            if hard_fail_on_non_convergence:
+                self._record_midend_policy_outcome(
+                    policy=policy,
+                    spent_ms=spent_midend_ms(),
+                    degraded=degraded,
+                    degrade_events=degrade_events,
+                )
+                raise RuntimeError(
+                    "midend deterministic fixed-point failed to converge within "
+                    f"{max_rounds} rounds for {self._active_midend_function_name}"
+                )
 
-        if os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0":
+        if enable_idempotence_probe:
             probe_ops = rewritten_ops
             probe_ops, _probe_cfg_rewrites = self._canonicalize_cfg_before_optimization(
                 probe_ops
@@ -33642,9 +34551,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if probe_ops != rewritten_ops:
                 self.midend_stats["fixed_point_fail_fast"] += 1
-                if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
+                if not hard_fail_on_non_convergence:
+                    add_degrade_event(
+                        "idempotence_probe_mismatch",
+                        "idempotence_probe",
+                        "accept_probe_ops",
+                    )
+                    degraded = True
                     rewritten_ops = probe_ops
                 else:
+                    self._record_midend_policy_outcome(
+                        policy=policy,
+                        spent_ms=spent_midend_ms(),
+                        degraded=degraded,
+                        degrade_events=degrade_events,
+                    )
                     raise RuntimeError(
                         "midend idempotence check failed after convergence for "
                         f"{self._active_midend_function_name}"
@@ -33726,6 +34647,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.midend_stats.get("dce_removed_total", 0) > dce_removed_before:
             func_stats["dce_accepted"] += 1
 
+        self._record_midend_policy_outcome(
+            policy=policy,
+            spent_ms=spent_midend_ms(),
+            degraded=degraded,
+            degrade_events=degrade_events,
+        )
         return rewritten_ops
 
     def _canonicalize_control_aware_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
@@ -33749,19 +34676,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return safe_ops
 
     def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
-        safe_after_check = {
-            "CONST",
-            "CONST_BIGINT",
-            "CONST_BOOL",
-            "CONST_FLOAT",
-            "CONST_STR",
-            "CONST_BYTES",
-            "CONST_NONE",
-            "CONST_NOT_IMPLEMENTED",
-            "CONST_ELLIPSIS",
-            "MISSING",
-            "LINE",
-        }
+        # Keep coalescing conservative: moving checks across value-producing ops can
+        # expose uninitialized/missing operands when an exception is already pending.
+        # `LINE` is metadata-only and safe to commute with `CHECK_EXCEPTION`.
+        safe_after_check = {"LINE"}
         out: list[MoltOp] = []
         pending_check: MoltOp | None = None
         for op in ops:

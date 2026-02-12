@@ -1953,9 +1953,89 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_statistics_fmean",
+        symbol: "molt_statistics_fmean",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_statistics_stdev",
         symbol: "molt_statistics_stdev",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_variance",
+        symbol: "molt_statistics_variance",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_pvariance",
+        symbol: "molt_statistics_pvariance",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_pstdev",
+        symbol: "molt_statistics_pstdev",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_median",
+        symbol: "molt_statistics_median",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_median_low",
+        symbol: "molt_statistics_median_low",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_median_high",
+        symbol: "molt_statistics_median_high",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_median_grouped",
+        symbol: "molt_statistics_median_grouped",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_mode",
+        symbol: "molt_statistics_mode",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_multimode",
+        symbol: "molt_statistics_multimode",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_quantiles",
+        symbol: "molt_statistics_quantiles",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_harmonic_mean",
+        symbol: "molt_statistics_harmonic_mean",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_geometric_mean",
+        symbol: "molt_statistics_geometric_mean",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_covariance",
+        symbol: "molt_statistics_covariance",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_correlation",
+        symbol: "molt_statistics_correlation",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_linear_regression",
+        symbol: "molt_statistics_linear_regression",
+        arity: 3,
     },
     IntrinsicSpec {
         name: "molt_decimal_context_new",
@@ -2731,6 +2811,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_stringio_init",
         symbol: "molt_stringio_init",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_repr_from_obj",
+        symbol: "molt_repr_from_obj",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_string_capitalize",
+        symbol: "molt_string_capitalize",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_codecs_decode",
@@ -5534,7 +5624,51 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_math_acosh" => Some(crate::molt_math_acosh as *const () as usize as u64),
         "molt_math_atanh" => Some(crate::molt_math_atanh as *const () as usize as u64),
         "molt_statistics_mean" => Some(crate::molt_statistics_mean as *const () as usize as u64),
+        "molt_statistics_fmean" => Some(crate::molt_statistics_fmean as *const () as usize as u64),
         "molt_statistics_stdev" => Some(crate::molt_statistics_stdev as *const () as usize as u64),
+        "molt_statistics_variance" => {
+            Some(crate::molt_statistics_variance as *const () as usize as u64)
+        }
+        "molt_statistics_pvariance" => {
+            Some(crate::molt_statistics_pvariance as *const () as usize as u64)
+        }
+        "molt_statistics_pstdev" => {
+            Some(crate::molt_statistics_pstdev as *const () as usize as u64)
+        }
+        "molt_statistics_median" => {
+            Some(crate::molt_statistics_median as *const () as usize as u64)
+        }
+        "molt_statistics_median_low" => {
+            Some(crate::molt_statistics_median_low as *const () as usize as u64)
+        }
+        "molt_statistics_median_high" => {
+            Some(crate::molt_statistics_median_high as *const () as usize as u64)
+        }
+        "molt_statistics_median_grouped" => {
+            Some(crate::molt_statistics_median_grouped as *const () as usize as u64)
+        }
+        "molt_statistics_mode" => Some(crate::molt_statistics_mode as *const () as usize as u64),
+        "molt_statistics_multimode" => {
+            Some(crate::molt_statistics_multimode as *const () as usize as u64)
+        }
+        "molt_statistics_quantiles" => {
+            Some(crate::molt_statistics_quantiles as *const () as usize as u64)
+        }
+        "molt_statistics_harmonic_mean" => {
+            Some(crate::molt_statistics_harmonic_mean as *const () as usize as u64)
+        }
+        "molt_statistics_geometric_mean" => {
+            Some(crate::molt_statistics_geometric_mean as *const () as usize as u64)
+        }
+        "molt_statistics_covariance" => {
+            Some(crate::molt_statistics_covariance as *const () as usize as u64)
+        }
+        "molt_statistics_correlation" => {
+            Some(crate::molt_statistics_correlation as *const () as usize as u64)
+        }
+        "molt_statistics_linear_regression" => {
+            Some(crate::molt_statistics_linear_regression as *const () as usize as u64)
+        }
         "molt_decimal_context_new" => {
             Some(crate::molt_decimal_context_new as *const () as usize as u64)
         }
@@ -5740,6 +5874,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_bytesio_init" => Some(crate::molt_bytesio_init as *const () as usize as u64),
         "molt_stringio_new" => Some(crate::molt_stringio_new as *const () as usize as u64),
         "molt_stringio_init" => Some(crate::molt_stringio_init as *const () as usize as u64),
+        "molt_repr_from_obj" => Some(crate::molt_repr_from_obj as *const () as usize as u64),
+        "molt_string_capitalize" => {
+            Some(crate::molt_string_capitalize as *const () as usize as u64)
+        }
         "molt_codecs_decode" => Some(crate::molt_codecs_decode as *const () as usize as u64),
         "molt_codecs_encode" => Some(crate::molt_codecs_encode as *const () as usize as u64),
         "molt_codecs_lookup_name" => {

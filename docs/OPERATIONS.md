@@ -30,6 +30,287 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
 - **Interrupted-run cleanup**: before a new long sweep, clear stale harness workers from prior crashes (`ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>`/`kill -KILL <pid>` as needed). Keep one supervising diff run per shared target.
 
+## On-Call Runbook (Stdlib Intrinsics Gates)
+Use this section when `python3 tools/check_stdlib_intrinsics.py` fails in CI or
+on-call triage.
+
+### Standard First Commands
+Run these first to establish current state:
+```bash
+python3 tools/sync_stdlib_top_level_stubs.py
+python3 tools/sync_stdlib_submodule_stubs.py
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py --critical-allowlist
+cat tools/stdlib_intrinsics_ratchet.json
+python3 tools/check_stdlib_intrinsics.py --update-doc
+```
+
+### Failure String -> Copy-Paste Response
+`stdlib intrinsics lint failed: stdlib top-level coverage gate violated`
+```bash
+python3 tools/sync_stdlib_top_level_stubs.py --write
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: top-level module/package duplicate mapping`
+```bash
+uv run --python 3.12 python3 - <<'PY'
+from pathlib import Path
+root = Path("src/molt/stdlib")
+mods = {}
+pkgs = {}
+for p in root.rglob("*.py"):
+    rel = p.relative_to(root)
+    if p.name == "__init__.py" and len(rel.parts) == 2:
+        pkgs[rel.parts[0]] = str(rel)
+    elif len(rel.parts) == 1 and p.suffix == ".py":
+        mods[p.stem] = str(rel)
+for name in sorted(set(mods) & set(pkgs)):
+    print(name, mods[name], pkgs[name])
+PY
+```
+
+`stdlib intrinsics lint failed: stdlib package kind gate violated`
+```bash
+uv run --python 3.12 python3 - <<'PY'
+from pathlib import Path
+import runpy
+base = runpy.run_path("tools/stdlib_module_union.py")
+required_packages = set(base["STDLIB_PACKAGE_UNION"])
+root = Path("src/molt/stdlib")
+for name in sorted(required_packages):
+    mod = root / f"{name}.py"
+    pkg = root / name / "__init__.py"
+    if mod.exists() and not pkg.exists():
+        print(f"convert-to-package: {mod} -> {pkg}")
+PY
+```
+
+`stdlib intrinsics lint failed: stdlib submodule coverage gate violated`
+```bash
+python3 tools/sync_stdlib_submodule_stubs.py --write
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: submodule/package duplicate mapping`
+```bash
+uv run --python 3.12 python3 - <<'PY'
+from pathlib import Path
+root = Path("src/molt/stdlib")
+mods = {}
+pkgs = {}
+for p in root.rglob("*.py"):
+    rel = p.relative_to(root)
+    if p.name == "__init__.py":
+        if len(rel.parts) > 1:
+            pkgs[".".join(rel.parts[:-1])] = str(rel)
+    else:
+        mods[".".join((*rel.parts[:-1], p.stem))] = str(rel)
+for name in sorted((set(mods) & set(pkgs))):
+    if "." in name:
+        print(name, mods[name], pkgs[name])
+PY
+```
+
+`stdlib intrinsics lint failed: stdlib subpackage kind gate violated`
+```bash
+uv run --python 3.12 python3 - <<'PY'
+from pathlib import Path
+import runpy
+base = runpy.run_path("tools/stdlib_module_union.py")
+required = set(base["STDLIB_PY_SUBPACKAGE_UNION"])
+root = Path("src/molt/stdlib")
+for name in sorted(required):
+    parts = name.split(".")
+    mod = root.joinpath(*parts[:-1], f"{parts[-1]}.py")
+    pkg = root.joinpath(*parts, "__init__.py")
+    if mod.exists() and not pkg.exists():
+        print(f"convert-to-package: {mod} -> {pkg}")
+PY
+```
+
+`stdlib intrinsics lint failed: unknown intrinsic names`
+```bash
+python3 tools/gen_intrinsics.py
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: unknown strict-import modules requested`
+```bash
+python3 tools/check_stdlib_intrinsics.py --allowlist-modules builtins,sys,types,importlib,importlib.machinery,importlib.util
+```
+
+`stdlib intrinsics lint failed: strict-import roots must be intrinsic-backed`
+```bash
+python3 tools/check_stdlib_intrinsics.py --critical-allowlist
+rg -n "TODO\\(stdlib[^,]*,.*status:(missing|partial|planned|divergent)" src/molt/stdlib
+```
+
+`stdlib intrinsics lint failed: bootstrap strict roots are incomplete`
+```bash
+ls src/molt/stdlib/builtins.py src/molt/stdlib/sys.py src/molt/stdlib/types.py
+ls src/molt/stdlib/importlib/__init__.py src/molt/stdlib/importlib/machinery.py src/molt/stdlib/importlib/util.py
+```
+
+`stdlib intrinsics lint failed: bootstrap strict closure must be intrinsic-backed`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: bootstrap modules must be intrinsic-backed`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: non-python-only modules cannot depend on python-only stdlib modules`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: strict-import allowlist violated (intrinsic-backed roots imported non-intrinsic-backed stdlib modules)`
+```bash
+python3 tools/check_stdlib_intrinsics.py --critical-allowlist
+```
+
+`stdlib intrinsics lint failed: strict-import roots used forbidden fallback patterns`
+```bash
+rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
+python3 tools/check_stdlib_intrinsics.py --critical-allowlist
+```
+
+`stdlib intrinsics lint failed: intrinsic-backed modules used forbidden fallback patterns`
+```bash
+rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: all-stdlib fallback gate violated`
+```bash
+python3 tools/check_stdlib_intrinsics.py
+rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
+```
+
+`stdlib intrinsics lint failed: intrinsic runtime fallback gate violated`
+```bash
+rg -n "except .*:\\s*$|pass$" src/molt/stdlib/json/__init__.py
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: zero non-intrinsic gate violated`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/sync_stdlib_top_level_stubs.py --write
+python3 tools/sync_stdlib_submodule_stubs.py --write
+```
+
+`stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+cat tools/stdlib_intrinsics_ratchet.json
+# Lower intrinsic-partial modules first, then tighten max_intrinsic_partial.
+```
+
+`stdlib intrinsics lint failed: full-coverage attestation references unknown modules`
+```bash
+python3 - <<'PY'
+import runpy
+manifest = runpy.run_path("tools/stdlib_full_coverage_manifest.py")
+covered = set(manifest.get("STDLIB_FULLY_COVERED_MODULES", ()))
+print("covered_count", len(covered))
+for name in sorted(covered):
+    print(name)
+PY
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: full-coverage intrinsic contract has non-attested modules`
+```bash
+python3 - <<'PY'
+import runpy
+manifest = runpy.run_path("tools/stdlib_full_coverage_manifest.py")
+covered = set(manifest.get("STDLIB_FULLY_COVERED_MODULES", ()))
+contract = set(manifest.get("STDLIB_REQUIRED_INTRINSICS_BY_MODULE", {}).keys())
+print("contract_without_attestation", sorted(contract - covered))
+PY
+```
+
+`stdlib intrinsics lint failed: full-coverage intrinsic contract missing modules`
+```bash
+python3 - <<'PY'
+import runpy
+manifest = runpy.run_path("tools/stdlib_full_coverage_manifest.py")
+covered = set(manifest.get("STDLIB_FULLY_COVERED_MODULES", ()))
+contract = set(manifest.get("STDLIB_REQUIRED_INTRINSICS_BY_MODULE", {}).keys())
+print("attested_without_contract", sorted(covered - contract))
+PY
+```
+
+`stdlib intrinsics lint failed: full-coverage modules must remain intrinsic-backed`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --json-out /tmp/stdlib_intrinsics.json
+python3 - <<'PY'
+import json
+payload = json.load(open("/tmp/stdlib_intrinsics.json"))
+statuses = {entry["module"]: entry["status"] for entry in payload["modules"]}
+for name in payload.get("fully_covered_modules", []):
+    if statuses.get(name) != "intrinsic-backed":
+        print(name, statuses.get(name))
+PY
+```
+
+`stdlib intrinsics lint failed: full-coverage intrinsic contract references unknown intrinsics`
+```bash
+python3 tools/gen_intrinsics.py
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: full-coverage intrinsic contract violated`
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --json-out /tmp/stdlib_intrinsics.json
+python3 - <<'PY'
+import json
+payload = json.load(open("/tmp/stdlib_intrinsics.json"))
+print(payload.get("full_coverage_required_intrinsics", {}))
+PY
+```
+
+`Host fallback imports (\`_py_*\`) are forbidden in stdlib modules.` (file-level scan error)
+```bash
+rg -n "import _py_|from _py_|__import__\\(|import_module\\(" src/molt/stdlib
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed: ...` (dynamic message, e.g. baseline invalid/missing)
+```bash
+python3 tools/gen_stdlib_module_union.py
+python3 tools/sync_stdlib_top_level_stubs.py --write
+python3 tools/sync_stdlib_submodule_stubs.py --write
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+```
+
+`stdlib intrinsics lint failed:` (file-level scan errors block)
+```bash
+python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+uv run --python 3.12 ruff format src/molt/stdlib tools/check_stdlib_intrinsics.py
+```
+
+### Differential Expected-Failure Policy (Too Dynamic)
+Use this for intentionally unsupported dynamism (for example `exec`/`eval`)
+that is documented by vision/break-policy constraints.
+
+```bash
+# 1) Declare the planned differential tests in:
+#    tools/stdlib_full_coverage_manifest.py
+#    TOO_DYNAMIC_EXPECTED_FAILURE_TESTS
+#
+# 2) Run differential lane as normal; harness auto-converts fail->pass as XFAIL
+#    only when CPython passes and the test path is in that manifest tuple.
+MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/planned/exec_locals_scope.py
+
+# 3) XPASS is treated as failure; remove stale expected-failure entries when
+#    Molt gains support.
+```
+
 ## Build Throughput (Multi-Agent)
 - **Stable cache keys**: the CLI enforces `PYTHONHASHSEED=0` by default to keep IR/cache keys deterministic across invocations.
 - **Hash-seed override**: set `MOLT_HASH_SEED=<value>` to override; set `MOLT_HASH_SEED=random` to opt out.
@@ -81,6 +362,17 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
     resolved under the build artifacts directory).
   - Example:
     `MOLT_BUILD_DIAGNOSTICS=1 MOLT_BUILD_DIAGNOSTICS_FILE=build_diag.json uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache examples/hello.py`
+
+## Weekly Stdlib Scoreboard
+Update this table at least weekly during lowering burn-down.
+
+| Date | intrinsic-backed | intrinsic-partial | probe-only | python-only | missing top-level | missing submodules | native parity pass % | wasm parity pass % | memory regressions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 2026-02-12 | 177 | 696 | 0 | 0 | 0 | 0 | TBD | TBD | TBD |
+
+Rules:
+- Any PR that worsens this table requires explicit exception sign-off.
+- Ratchet updates (`tools/stdlib_intrinsics_ratchet.json`) must only move downward and must ship with real lowering progress in the same change.
 
 ### Fast Dev Playbook (Recommended)
 1. `tools/throughput_env.sh --apply`

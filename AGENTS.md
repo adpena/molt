@@ -32,6 +32,11 @@ module path, intrinsic names used, and confirmation that no host-Python fallback
 ## Mission (Non-Negotiable)
 Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
 
+## Strategic Target (Non-Negotiable)
+- Performance target: achieve parity with or superiority over Codon.
+- WASM performance target: achieve parity with or superiority over Pyodide on Molt’s canonical wasm benchmark suites and representative real-world workloads.
+- Compatibility/interoperability target: get close to or match Nuitka's CPython coverage and interoperability for Molt-supported semantics.
+
 ## Version Target (Non-Negotiable)
 - Molt targets Python 3.12+ semantics only. Do not spend effort on <=3.11 compatibility.
 - When behavior differs across 3.12/3.13/3.14, document the choice explicitly in specs/tests and keep the runtime aligned with the documented version.
@@ -89,7 +94,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
 - `python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage`: run regrtest with uv-managed Python + coverage.
 - `cargo test`: run Rust unit tests for runtime crates.
-- `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
+- `uv sync --group bench --python 3.12`: install optional benchmark deps before running `tools/bench.py` (PyPy/Codon/Nuitka/Pyodide lanes are optional and auto-skipped when unavailable).
 - If `uv run` panics in sandboxed or restricted environments, reuse the existing
   environment by setting `UV_NO_SYNC=1`. Prefer `UV_CACHE_DIR=/tmp/uv-cache` inside
   the sandbox when external volumes are blocked.

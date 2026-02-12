@@ -2,22 +2,22 @@
 Tests common to tuple, list and UserList.UserList
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 import pickle
 import sys
 import unittest
 from itertools import chain
 from typing import TYPE_CHECKING, Any
 
+_require_intrinsic("molt_capabilities_has", globals())
+
 if TYPE_CHECKING:
     from . import support
     from .support import ALWAYS_EQ, NEVER_EQ
 else:
-    try:
-        from test import support
-        from test.support import ALWAYS_EQ, NEVER_EQ
-    except ModuleNotFoundError:
-        from . import support
-        from .support import ALWAYS_EQ, NEVER_EQ
+    from . import support
+    from .support import ALWAYS_EQ, NEVER_EQ
 
 
 # Various iterables

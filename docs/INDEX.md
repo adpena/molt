@@ -38,6 +38,8 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0015 Stdlib Compatibility Matrix: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
 - 0015-IB Stdlib Intrinsics Backing Tracker: `docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md`
 - 0016 Stdlib Intrinsics Audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+- 0027 Stdlib Union Baseline: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
+- 0028 Stdlib Intrinsics Execution Plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`
 - 0026 Rust Lowering Program: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
 - 0214 libmolt C-API v0: `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`
 

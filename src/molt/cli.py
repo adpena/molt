@@ -1,6 +1,7 @@
 import argparse
 import ast
 import base64
+from concurrent.futures import ProcessPoolExecutor
 import errno
 import datetime as dt
 import hashlib
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tomllib
 import time
+import threading
 import tokenize
 import urllib.parse
 import urllib.request
@@ -1372,12 +1374,12 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     parts = module_name.split(".")
     rel = Path(*parts)
     for root in roots:
-        mod_path = root / f"{rel}.py"
-        if mod_path.exists():
-            return mod_path
         pkg_path = root / rel / "__init__.py"
         if pkg_path.exists():
             return pkg_path
+        mod_path = root / f"{rel}.py"
+        if mod_path.exists():
+            return mod_path
     return None
 
 
@@ -2227,6 +2229,9 @@ def _emit_build_diagnostics(
     total_sec = diagnostics.get("total_sec")
     module_count = diagnostics.get("module_count")
     reason_summary = diagnostics.get("module_reason_summary", {})
+    midend = diagnostics.get("midend", {})
+    frontend_parallel = diagnostics.get("frontend_parallel", {})
+    frontend_modules_top = diagnostics.get("frontend_module_timings_top", [])
     print("Build diagnostics:", file=sys.stderr)
     if isinstance(total_sec, (int, float)):
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
@@ -2242,8 +2247,658 @@ def _emit_build_diagnostics(
             value = reason_summary[name]
             if isinstance(value, int):
                 print(f"- reason.{name}: {value}", file=sys.stderr)
+    if isinstance(frontend_modules_top, list):
+        for idx, item in enumerate(frontend_modules_top[:10], start=1):
+            if not isinstance(item, dict):
+                continue
+            module_name = str(item.get("module", ""))
+            total_s = float(item.get("total_s", 0.0))
+            visit_s = float(item.get("visit_s", 0.0))
+            lower_s = float(item.get("lower_s", 0.0))
+            print(
+                "- frontend.hotspot."
+                f"{idx}: {module_name} total_s={total_s:.6f} "
+                f"visit_s={visit_s:.6f} lower_s={lower_s:.6f}",
+                file=sys.stderr,
+            )
+    if isinstance(frontend_parallel, dict):
+        enabled = bool(frontend_parallel.get("enabled", False))
+        workers = int(frontend_parallel.get("workers", 0))
+        mode = str(frontend_parallel.get("mode", "serial"))
+        print(
+            f"- frontend_parallel: enabled={enabled} workers={workers} mode={mode}",
+            file=sys.stderr,
+        )
+        reason = frontend_parallel.get("reason")
+        if isinstance(reason, str) and reason:
+            print(f"- frontend_parallel.reason: {reason}", file=sys.stderr)
+        policy = frontend_parallel.get("policy")
+        if isinstance(policy, dict):
+            min_modules = int(policy.get("min_modules", 0))
+            min_predicted_cost = float(policy.get("min_predicted_cost", 0.0))
+            target_cost = float(policy.get("target_cost_per_worker", 0.0))
+            print(
+                "- frontend_parallel.policy: "
+                f"min_modules={min_modules} "
+                f"min_predicted_cost={min_predicted_cost:.3f} "
+                f"target_cost_per_worker={target_cost:.3f}",
+                file=sys.stderr,
+            )
+        layer_stats = frontend_parallel.get("layers")
+        if isinstance(layer_stats, list):
+            print(f"- frontend_parallel.layers: {len(layer_stats)}", file=sys.stderr)
+            for item in layer_stats[:10]:
+                if not isinstance(item, dict):
+                    continue
+                layer_index = int(item.get("index", 0)) + 1
+                layer_mode = str(item.get("mode", "serial"))
+                layer_modules = int(item.get("module_count", 0))
+                layer_candidates = int(item.get("candidate_count", 0))
+                layer_workers = int(item.get("workers", 0))
+                queue_ms_total = float(item.get("queue_ms_total", 0.0))
+                wait_ms_total = float(item.get("wait_ms_total", 0.0))
+                exec_ms_total = float(item.get("exec_ms_total", 0.0))
+                print(
+                    "- frontend_parallel.layer."
+                    f"{layer_index}: mode={layer_mode} modules={layer_modules} "
+                    f"candidates={layer_candidates} workers={layer_workers} "
+                    f"queue_ms={queue_ms_total:.3f} wait_ms={wait_ms_total:.3f} "
+                    f"exec_ms={exec_ms_total:.3f}",
+                    file=sys.stderr,
+                )
+            if len(layer_stats) > 10:
+                print(
+                    f"- frontend_parallel.layers_truncated: {len(layer_stats) - 10}",
+                    file=sys.stderr,
+                )
+        worker_stats = frontend_parallel.get("worker_summary")
+        if isinstance(worker_stats, dict):
+            worker_count = int(worker_stats.get("count", 0))
+            queue_ms_total = float(worker_stats.get("queue_ms_total", 0.0))
+            wait_ms_total = float(worker_stats.get("wait_ms_total", 0.0))
+            exec_ms_total = float(worker_stats.get("exec_ms_total", 0.0))
+            queue_ms_max = float(worker_stats.get("queue_ms_max", 0.0))
+            wait_ms_max = float(worker_stats.get("wait_ms_max", 0.0))
+            exec_ms_max = float(worker_stats.get("exec_ms_max", 0.0))
+            print(
+                "- frontend_parallel.worker_ms: "
+                f"count={worker_count} queue_total={queue_ms_total:.3f} "
+                f"wait_total={wait_ms_total:.3f} exec_total={exec_ms_total:.3f} "
+                f"queue_max={queue_ms_max:.3f} wait_max={wait_ms_max:.3f} "
+                f"exec_max={exec_ms_max:.3f}",
+                file=sys.stderr,
+            )
+    if isinstance(midend, dict):
+        requested_profile = midend.get("requested_profile")
+        if isinstance(requested_profile, str) and requested_profile:
+            print(f"- midend.profile: {requested_profile}", file=sys.stderr)
+        degraded_functions = midend.get("degraded_functions")
+        if isinstance(degraded_functions, int):
+            print(
+                f"- midend.degraded_functions: {degraded_functions}",
+                file=sys.stderr,
+            )
+        tier_summary = midend.get("tier_summary")
+        if isinstance(tier_summary, dict):
+            for tier in sorted(tier_summary):
+                value = tier_summary[tier]
+                if isinstance(value, int):
+                    print(f"- midend.tier.{tier}: {value}", file=sys.stderr)
+        reason_counts = midend.get("degrade_reason_summary")
+        if isinstance(reason_counts, dict):
+            for reason in sorted(reason_counts):
+                value = reason_counts[reason]
+                if isinstance(value, int):
+                    print(f"- midend.degrade_reason.{reason}: {value}", file=sys.stderr)
+        hotspots = midend.get("pass_hotspots_top")
+        if isinstance(hotspots, list):
+            for idx, item in enumerate(hotspots[:10], start=1):
+                if not isinstance(item, dict):
+                    continue
+                module_name = str(item.get("module", ""))
+                function_name = str(item.get("function", ""))
+                pass_name = str(item.get("pass", ""))
+                total_ms = float(item.get("ms_total", 0.0))
+                p95_ms = float(item.get("ms_p95", 0.0))
+                print(
+                    "- midend.hotspot."
+                    f"{idx}: {module_name}::{function_name}:{pass_name} "
+                    f"total_ms={total_ms:.3f} p95_ms={p95_ms:.3f}",
+                    file=sys.stderr,
+                )
+        function_hotspots = midend.get("function_hotspots_top")
+        if isinstance(function_hotspots, list):
+            for idx, item in enumerate(function_hotspots[:10], start=1):
+                if not isinstance(item, dict):
+                    continue
+                module_name = str(item.get("module", ""))
+                function_name = str(item.get("function", ""))
+                spent_ms = float(item.get("spent_ms", 0.0))
+                budget_ms = float(item.get("budget_ms", 0.0))
+                degraded = bool(item.get("degraded", False))
+                print(
+                    "- midend.function_hotspot."
+                    f"{idx}: {module_name}::{function_name} "
+                    f"spent_ms={spent_ms:.3f} budget_ms={budget_ms:.3f} "
+                    f"degraded={degraded}",
+                    file=sys.stderr,
+                )
+        degrade_hotspots = midend.get("degrade_event_hotspots_top")
+        if isinstance(degrade_hotspots, list):
+            for idx, item in enumerate(degrade_hotspots[:10], start=1):
+                if not isinstance(item, dict):
+                    continue
+                module_name = str(item.get("module", ""))
+                function_name = str(item.get("function", ""))
+                reason = str(item.get("reason", ""))
+                action = str(item.get("action", ""))
+                spent_ms = float(item.get("spent_ms", 0.0))
+                print(
+                    "- midend.degrade_hotspot."
+                    f"{idx}: {module_name}::{function_name} reason={reason} "
+                    f"action={action} spent_ms={spent_ms:.3f}",
+                    file=sys.stderr,
+                )
     if diagnostics_path is not None:
         print(f"- wrote: {diagnostics_path}", file=sys.stderr)
+
+
+def _midend_sample_p95(samples: list[float]) -> float:
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+    return float(ordered[idx])
+
+
+def _duration_ms_from_ns(start_ns: Any, end_ns: Any) -> float:
+    if not isinstance(start_ns, int):
+        return 0.0
+    if not isinstance(end_ns, int):
+        return 0.0
+    delta_ns = end_ns - start_ns
+    if delta_ns <= 0:
+        return 0.0
+    return round(delta_ns / 1_000_000.0, 6)
+
+
+def _normalize_midend_pass_stat(raw: dict[str, Any]) -> dict[str, Any]:
+    samples = [
+        float(sample)
+        for sample in raw.get("samples_ms", [])
+        if isinstance(sample, (int, float))
+    ]
+    ms_total = float(raw.get("ms_total", 0.0))
+    ms_max = float(raw.get("ms_max", 0.0))
+    return {
+        "attempted": int(raw.get("attempted", 0)),
+        "accepted": int(raw.get("accepted", 0)),
+        "rejected": int(raw.get("rejected", 0)),
+        "degraded": int(raw.get("degraded", 0)),
+        "ms_total": round(max(0.0, ms_total), 6),
+        "ms_max": round(max(0.0, ms_max), 6),
+        "ms_p95": round(_midend_sample_p95(samples), 6),
+        "sample_count": len(samples),
+    }
+
+
+def _build_midend_diagnostics_payload(
+    *,
+    requested_profile: BuildProfile,
+    policy_outcomes_by_function: dict[str, dict[str, Any]],
+    pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    if not policy_outcomes_by_function and not pass_stats_by_function:
+        return None
+
+    normalized_policy: dict[str, dict[str, Any]] = {}
+    tier_summary: dict[str, int] = {}
+    reason_summary: dict[str, int] = {}
+    effective_profiles: set[str] = set()
+    degraded_functions = 0
+    function_hotspots: list[dict[str, Any]] = []
+    degrade_event_hotspots: list[dict[str, Any]] = []
+
+    for function_key in sorted(policy_outcomes_by_function):
+        module_name, _, function_name = function_key.partition("::")
+        raw_outcome = policy_outcomes_by_function[function_key]
+        degrade_events: list[dict[str, Any]] = []
+        for event in raw_outcome.get("degrade_events", []):
+            if not isinstance(event, dict):
+                continue
+            normalized_event = {
+                "reason": str(event.get("reason", "")),
+                "stage": str(event.get("stage", "")),
+                "action": str(event.get("action", "")),
+                "spent_ms": float(event.get("spent_ms", 0.0)),
+            }
+            if "value" in event:
+                normalized_event["value"] = event["value"]
+            degrade_events.append(normalized_event)
+            degrade_event_hotspots.append(
+                {
+                    "module": module_name,
+                    "function": function_name or module_name,
+                    "reason": normalized_event["reason"],
+                    "stage": normalized_event["stage"],
+                    "action": normalized_event["action"],
+                    "spent_ms": round(max(0.0, normalized_event["spent_ms"]), 6),
+                }
+            )
+            reason = normalized_event["reason"]
+            if reason:
+                reason_summary[reason] = reason_summary.get(reason, 0) + 1
+        profile = str(raw_outcome.get("profile", ""))
+        tier = str(raw_outcome.get("tier", ""))
+        if profile:
+            effective_profiles.add(profile)
+        if tier:
+            tier_summary[tier] = tier_summary.get(tier, 0) + 1
+        degraded = bool(raw_outcome.get("degraded", False))
+        if degraded:
+            degraded_functions += 1
+        spent_ms = float(raw_outcome.get("spent_ms", 0.0))
+        budget_ms = float(raw_outcome.get("budget_ms", 0.0))
+        function_hotspots.append(
+            {
+                "module": module_name,
+                "function": function_name or module_name,
+                "profile": profile,
+                "tier": tier,
+                "spent_ms": round(max(0.0, spent_ms), 6),
+                "budget_ms": round(max(0.0, budget_ms), 6),
+                "degraded": degraded,
+            }
+        )
+        normalized_policy[function_key] = {
+            "profile": profile,
+            "tier": tier,
+            "budget_ms": budget_ms,
+            "spent_ms": spent_ms,
+            "degraded": degraded,
+            "degrade_events": degrade_events,
+        }
+
+    normalized_pass_stats: dict[str, dict[str, dict[str, Any]]] = {}
+    hotspots: list[dict[str, Any]] = []
+    for function_key in sorted(pass_stats_by_function):
+        module_name, _, function_name = function_key.partition("::")
+        per_pass = pass_stats_by_function[function_key]
+        normalized_per_pass: dict[str, dict[str, Any]] = {}
+        for pass_name in sorted(per_pass):
+            normalized = _normalize_midend_pass_stat(per_pass[pass_name])
+            normalized_per_pass[pass_name] = normalized
+            hotspots.append(
+                {
+                    "module": module_name,
+                    "function": function_name or module_name,
+                    "pass": pass_name,
+                    "ms_total": normalized["ms_total"],
+                    "ms_p95": normalized["ms_p95"],
+                    "attempted": normalized["attempted"],
+                    "accepted": normalized["accepted"],
+                    "degraded": normalized["degraded"],
+                }
+            )
+        normalized_pass_stats[function_key] = normalized_per_pass
+
+    hotspots.sort(
+        key=lambda item: (
+            -float(item["ms_total"]),
+            item["module"],
+            item["function"],
+            item["pass"],
+        )
+    )
+    p95_hotspots = sorted(
+        hotspots,
+        key=lambda item: (
+            -float(item["ms_p95"]),
+            item["module"],
+            item["function"],
+            item["pass"],
+        ),
+    )
+    function_hotspots.sort(
+        key=lambda item: (
+            -float(item["spent_ms"]),
+            item["module"],
+            item["function"],
+        )
+    )
+    degrade_event_hotspots.sort(
+        key=lambda item: (
+            -float(item["spent_ms"]),
+            item["module"],
+            item["function"],
+            item["reason"],
+            item["action"],
+        )
+    )
+    return {
+        "requested_profile": requested_profile,
+        "effective_profiles": sorted(effective_profiles),
+        "function_count": max(
+            len(normalized_policy),
+            len(normalized_pass_stats),
+        ),
+        "degraded_functions": degraded_functions,
+        "tier_summary": {name: tier_summary[name] for name in sorted(tier_summary)},
+        "degrade_reason_summary": {
+            name: reason_summary[name] for name in sorted(reason_summary)
+        },
+        "policy_outcomes_by_function": normalized_policy,
+        "pass_stats_by_function": normalized_pass_stats,
+        "function_hotspots_top": function_hotspots[:10],
+        "degrade_event_hotspots_top": degrade_event_hotspots[:10],
+        "pass_hotspots_top": hotspots[:10],
+        "pass_hotspots_p95_top": p95_hotspots[:10],
+    }
+
+
+def _resolve_frontend_parallel_module_workers() -> int:
+    raw = os.environ.get("MOLT_FRONTEND_PARALLEL_MODULES", "").strip().lower()
+    if not raw:
+        return 0
+    if raw in {"0", "false", "no", "off"}:
+        return 0
+    if raw in {"auto", "1", "true", "yes", "on"}:
+        cpu_count = os.cpu_count() or 1
+        return max(2, cpu_count)
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return 0
+    if parsed < 2:
+        return 0
+    return parsed
+
+
+def _resolve_frontend_parallel_min_modules() -> int:
+    raw = os.environ.get("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "").strip()
+    if not raw:
+        return 2
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return 2
+    return max(2, parsed)
+
+
+def _resolve_frontend_parallel_min_predicted_cost() -> float:
+    raw = os.environ.get("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "").strip()
+    if not raw:
+        return 32768.0
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return 32768.0
+    return max(0.0, parsed)
+
+
+def _resolve_frontend_parallel_target_cost_per_worker() -> float:
+    raw = os.environ.get("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "").strip()
+    if not raw:
+        return 65536.0
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return 65536.0
+    return max(1.0, parsed)
+
+
+def _resolve_frontend_parallel_stdlib_min_cost_scale() -> float:
+    raw = os.environ.get("MOLT_FRONTEND_PARALLEL_STDLIB_MIN_COST_SCALE", "").strip()
+    if not raw:
+        return 0.5
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return 0.5
+    return max(0.0, parsed)
+
+
+def _looks_like_stdlib_module_name(module_name: str) -> bool:
+    if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
+        return True
+    root = module_name.split(".", 1)[0]
+    return root in {
+        "__future__",
+        "_collections_abc",
+        "abc",
+        "builtins",
+        "collections",
+        "dataclasses",
+        "importlib",
+        "os",
+        "pathlib",
+        "runpy",
+        "signal",
+        "sys",
+        "test",
+        "typing",
+        "warnings",
+        "zipfile",
+        "zipimport",
+    }
+
+
+def _predict_frontend_module_cost(
+    module_name: str,
+    module_sources: dict[str, str],
+    module_deps: dict[str, set[str]],
+) -> float:
+    source = module_sources.get(module_name, "")
+    source_cost = max(1.0, float(len(source)))
+    dep_cost = float(max(0, len(module_deps.get(module_name, set()))) * 512)
+    return source_cost + dep_cost
+
+
+def _choose_frontend_parallel_layer_workers(
+    *,
+    candidates: list[str],
+    module_sources: dict[str, str],
+    module_deps: dict[str, set[str]],
+    max_workers: int,
+    min_modules: int,
+    min_predicted_cost: float,
+    target_cost_per_worker: float,
+) -> dict[str, Any]:
+    candidate_count = len(candidates)
+    if candidate_count < min_modules:
+        return {
+            "enabled": False,
+            "workers": 1,
+            "reason": "layer_module_count_below_min",
+            "predicted_cost_total": 0.0,
+            "effective_min_predicted_cost": round(min_predicted_cost, 3),
+            "stdlib_candidates": 0,
+        }
+    predicted_cost_total = 0.0
+    for name in candidates:
+        predicted_cost_total += _predict_frontend_module_cost(
+            name, module_sources, module_deps
+        )
+    stdlib_candidates = sum(
+        1 for name in candidates if _looks_like_stdlib_module_name(name)
+    )
+    effective_min_predicted_cost = float(min_predicted_cost)
+    if stdlib_candidates > 0:
+        effective_min_predicted_cost *= (
+            _resolve_frontend_parallel_stdlib_min_cost_scale()
+        )
+    if predicted_cost_total < effective_min_predicted_cost:
+        return {
+            "enabled": False,
+            "workers": 1,
+            "reason": "layer_predicted_cost_below_min",
+            "predicted_cost_total": round(predicted_cost_total, 3),
+            "effective_min_predicted_cost": round(effective_min_predicted_cost, 3),
+            "stdlib_candidates": stdlib_candidates,
+        }
+    scaled_workers = int(
+        (predicted_cost_total / max(1.0, target_cost_per_worker)) + 0.999
+    )
+    chosen_workers = min(
+        max_workers,
+        candidate_count,
+        max(2, scaled_workers),
+    )
+    return {
+        "enabled": chosen_workers >= 2,
+        "workers": max(1, chosen_workers),
+        "reason": "enabled",
+        "predicted_cost_total": round(predicted_cost_total, 3),
+        "effective_min_predicted_cost": round(effective_min_predicted_cost, 3),
+        "stdlib_candidates": stdlib_candidates,
+    }
+
+
+def _module_dependency_layers(
+    module_order: list[str],
+    module_deps: dict[str, set[str]],
+) -> list[list[str]]:
+    if not module_order:
+        return []
+    depth_by_module: dict[str, int] = {}
+    for name in module_order:
+        deps = [
+            dep
+            for dep in module_deps.get(name, set())
+            if dep in depth_by_module and dep != name
+        ]
+        if not deps:
+            depth_by_module[name] = 0
+            continue
+        depth_by_module[name] = max(depth_by_module[dep] for dep in deps) + 1
+    grouped: dict[int, list[str]] = {}
+    for name in module_order:
+        grouped.setdefault(depth_by_module.get(name, 0), []).append(name)
+    return [grouped[level] for level in sorted(grouped)]
+
+
+def _module_order_has_back_edges(
+    module_order: list[str],
+    module_deps: dict[str, set[str]],
+) -> bool:
+    seen: set[str] = set()
+    module_set = set(module_order)
+    for name in module_order:
+        deps = {dep for dep in module_deps.get(name, set()) if dep in module_set}
+        if not deps.issubset(seen):
+            return True
+        seen.add(name)
+    return False
+
+
+def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    worker_started_ns = time.time_ns()
+    worker_pid = os.getpid()
+    module_name = str(payload["module_name"])
+    module_path = str(payload["module_path"])
+    source = str(payload["source"])
+    parse_codec = cast(ParseCodec, payload["parse_codec"])
+    type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
+    fallback_policy = cast(FallbackPolicy, payload["fallback_policy"])
+    module_is_namespace = bool(payload["module_is_namespace"])
+    entry_module = cast(str | None, payload["entry_module"])
+    enable_phi = bool(payload["enable_phi"])
+    known_modules = set(cast(list[str], payload["known_modules"]))
+    known_classes = cast(dict[str, Any], payload["known_classes"])
+    stdlib_allowlist = set(cast(list[str], payload["stdlib_allowlist"]))
+    known_func_defaults = cast(
+        dict[str, dict[str, dict[str, Any]]], payload["known_func_defaults"]
+    )
+    module_chunking = bool(payload["module_chunking"])
+    module_chunk_max_ops = int(payload["module_chunk_max_ops"])
+    optimization_profile = cast(BuildProfile, payload["optimization_profile"])
+
+    module_frontend_start = time.perf_counter()
+    visit_s = 0.0
+    lower_s = 0.0
+    try:
+        tree = ast.parse(source, filename=module_path)
+    except SyntaxError as exc:
+        worker_finished_ns = time.time_ns()
+        return {
+            "ok": False,
+            "error": f"Syntax error in {module_path}: {exc}",
+            "timings": {
+                "visit_s": visit_s,
+                "lower_s": lower_s,
+                "total_s": time.perf_counter() - module_frontend_start,
+            },
+            "worker": {
+                "pid": worker_pid,
+                "started_ns": worker_started_ns,
+                "finished_ns": worker_finished_ns,
+            },
+        }
+    gen = SimpleTIRGenerator(
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        source_path=module_path,
+        module_name=module_name,
+        module_is_namespace=module_is_namespace,
+        entry_module=entry_module,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        known_classes=known_classes,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+    )
+    try:
+        visit_start = time.perf_counter()
+        gen.visit(tree)
+        visit_s = time.perf_counter() - visit_start
+        lower_start = time.perf_counter()
+        ir = gen.to_json()
+        lower_s = time.perf_counter() - lower_start
+    except CompatibilityError as exc:
+        worker_finished_ns = time.time_ns()
+        return {
+            "ok": False,
+            "error": str(exc),
+            "timings": {
+                "visit_s": visit_s,
+                "lower_s": lower_s,
+                "total_s": time.perf_counter() - module_frontend_start,
+            },
+            "worker": {
+                "pid": worker_pid,
+                "started_ns": worker_started_ns,
+                "finished_ns": worker_finished_ns,
+            },
+        }
+    worker_finished_ns = time.time_ns()
+    return {
+        "ok": True,
+        "functions": ir["functions"],
+        "func_code_ids": dict(gen.func_code_ids),
+        "local_class_names": sorted(gen.local_class_names),
+        "local_classes": {
+            class_name: gen.classes[class_name]
+            for class_name in sorted(gen.local_class_names)
+        },
+        "midend_policy_outcomes_by_function": dict(
+            gen.midend_policy_outcomes_by_function
+        ),
+        "midend_pass_stats_by_function": dict(gen.midend_pass_stats_by_function),
+        "timings": {
+            "visit_s": visit_s,
+            "lower_s": lower_s,
+            "total_s": time.perf_counter() - module_frontend_start,
+        },
+        "worker": {
+            "pid": worker_pid,
+            "started_ns": worker_started_ns,
+            "finished_ns": worker_finished_ns,
+        },
+    }
 
 
 def _requires_spawn_entry_override(
@@ -4563,6 +5218,37 @@ def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
     return timeout, None
 
 
+@contextmanager
+def _phase_timeout(timeout_s: float | None, *, phase_name: str):
+    if timeout_s is None:
+        yield
+        return
+    if os.name != "posix" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    if not hasattr(signal, "setitimer") or not hasattr(signal, "ITIMER_REAL"):
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def _timeout_handler(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(
+            f"{phase_name} timed out after {timeout_s:.1f}s "
+            "(MOLT_FRONTEND_PHASE_TIMEOUT)"
+        )
+
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0 or previous_timer[1] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
 def _resolve_dev_linker() -> str | None:
     raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "none", "disable"}:
@@ -5048,6 +5734,40 @@ def build(
 
     diagnostics_enabled = _build_diagnostics_enabled()
     diagnostics_path_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+    frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
+    frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
+    frontend_timing_threshold = 0.0
+    if frontend_timing_raw and frontend_timing_raw.lower() not in {
+        "1",
+        "true",
+        "yes",
+        "all",
+    }:
+        try:
+            frontend_timing_threshold = max(0.0, float(frontend_timing_raw))
+        except ValueError:
+            frontend_timing_threshold = 0.0
+    frontend_module_timings: list[dict[str, Any]] = []
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
+    frontend_parallel_details: dict[str, Any] = {
+        "enabled": False,
+        "workers": 0,
+        "mode": "serial",
+        "reason": "disabled",
+        "policy": {},
+        "layers": [],
+        "worker_timings": [],
+        "worker_summary": {
+            "count": 0,
+            "queue_ms_total": 0.0,
+            "queue_ms_max": 0.0,
+            "wait_ms_total": 0.0,
+            "wait_ms_max": 0.0,
+            "exec_ms_total": 0.0,
+            "exec_ms_max": 0.0,
+        },
+    }
     diagnostics_start = time.perf_counter()
     phase_starts: dict[str, float] = {}
     module_reasons: dict[str, set[str]] = {}
@@ -5121,6 +5841,11 @@ def build(
     if timeout_err:
         return _fail(timeout_err, json_output, command="build")
     link_timeout, timeout_err = _resolve_timeout_env("MOLT_LINK_TIMEOUT")
+    if timeout_err:
+        return _fail(timeout_err, json_output, command="build")
+    frontend_phase_timeout, timeout_err = _resolve_timeout_env(
+        "MOLT_FRONTEND_PHASE_TIMEOUT"
+    )
     if timeout_err:
         return _fail(timeout_err, json_output, command="build")
     backend_profile, profile_err = _resolve_backend_profile(profile)
@@ -5391,6 +6116,42 @@ def build(
         project_root, out_dir_path, output_base
     )
 
+    def _record_frontend_timing(
+        *,
+        module_name: str,
+        module_path: Path,
+        visit_s: float,
+        lower_s: float,
+        total_s: float,
+        timed_out: bool = False,
+        detail: str | None = None,
+    ) -> None:
+        if not frontend_timing_enabled:
+            return
+        item: dict[str, Any] = {
+            "module": module_name,
+            "path": str(module_path),
+            "visit_s": round(max(0.0, visit_s), 6),
+            "lower_s": round(max(0.0, lower_s), 6),
+            "total_s": round(max(0.0, total_s), 6),
+            "timed_out": timed_out,
+        }
+        if detail:
+            item["detail"] = detail
+        frontend_module_timings.append(item)
+        if (
+            frontend_timing_raw
+            and (timed_out or total_s >= frontend_timing_threshold)
+            and not json_output
+        ):
+            suffix = f" timeout={detail}" if timed_out and detail else ""
+            print(
+                "frontend module timing: "
+                f"{module_name} visit={visit_s:.3f}s lower={lower_s:.3f}s "
+                f"total={total_s:.3f}s{suffix}",
+                file=sys.stderr,
+            )
+
     def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
         if not diagnostics_enabled:
             return None, None
@@ -5405,6 +6166,21 @@ def build(
             "module_reason_summary": _build_reason_summary(module_reasons),
             "module_reasons": module_reason_map,
         }
+        if frontend_module_timings:
+            payload["frontend_module_timings"] = frontend_module_timings
+            payload["frontend_module_timings_top"] = sorted(
+                frontend_module_timings,
+                key=lambda item: float(item.get("total_s", 0.0)),
+                reverse=True,
+            )[:20]
+        payload["frontend_parallel"] = dict(frontend_parallel_details)
+        midend_payload = _build_midend_diagnostics_payload(
+            requested_profile=profile,
+            policy_outcomes_by_function=midend_policy_outcomes_by_function,
+            pass_stats_by_function=midend_pass_stats_by_function,
+        )
+        if midend_payload is not None:
+            payload["midend"] = midend_payload
         out_path: Path | None = None
         if diagnostics_path_spec:
             out_path = _resolve_build_diagnostics_path(
@@ -5561,12 +6337,14 @@ def build(
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
     module_deps: dict[str, set[str]] = {}
+    module_sources: dict[str, str] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
     module_trees: dict[str, ast.AST] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     for module_name, module_path in module_graph.items():
         try:
             source = _read_module_source(module_path)
+            module_sources[module_name] = source
         except (SyntaxError, UnicodeDecodeError) as exc:
             if module_name == entry_module:
                 return _fail(
@@ -5712,35 +6490,97 @@ def build(
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
     known_classes: dict[str, Any] = {}
-    for module_name in module_order:
-        module_path = module_graph[module_name]
+
+    class _ModuleLowerError(RuntimeError):
+        def __init__(self, message: str, *, timed_out: bool = False) -> None:
+            super().__init__(message)
+            self.timed_out = timed_out
+
+    def _accumulate_midend_diagnostics(
+        module_name: str,
+        *,
+        policy_outcomes_by_func: dict[str, dict[str, Any]],
+        pass_stats_by_func: dict[str, dict[str, dict[str, Any]]],
+    ) -> None:
+        for function_name in sorted(policy_outcomes_by_func):
+            combined_name = f"{module_name}::{function_name}"
+            outcome = policy_outcomes_by_func[function_name]
+            copied_events: list[dict[str, Any]] = []
+            for event in outcome.get("degrade_events", []):
+                if isinstance(event, dict):
+                    copied_events.append(dict(event))
+            copied_outcome = dict(outcome)
+            copied_outcome["degrade_events"] = copied_events
+            midend_policy_outcomes_by_function[combined_name] = copied_outcome
+        for function_name in sorted(pass_stats_by_func):
+            combined_name = f"{module_name}::{function_name}"
+            per_pass = pass_stats_by_func[function_name]
+            copied_per_pass: dict[str, dict[str, Any]] = {}
+            for pass_name in sorted(per_pass):
+                copied_stats = dict(per_pass[pass_name])
+                samples = copied_stats.get("samples_ms")
+                if isinstance(samples, list):
+                    copied_stats["samples_ms"] = list(samples)
+                copied_per_pass[pass_name] = copied_stats
+            midend_pass_stats_by_function[combined_name] = copied_per_pass
+
+    def _integrate_module_frontend_result(
+        module_name: str,
+        *,
+        ir_functions: list[dict[str, Any]],
+        func_code_ids: dict[str, int],
+        local_class_names: list[str],
+        local_classes: dict[str, Any],
+    ) -> str | None:
+        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+        local_code_ids = dict(func_code_ids)
+        if "molt_main" in local_code_ids:
+            local_code_ids[init_symbol] = local_code_ids.pop("molt_main")
+        local_id_to_symbol = {
+            code_id: symbol for symbol, code_id in local_code_ids.items()
+        }
+        try:
+            _remap_module_code_ops(module_name, ir_functions, local_id_to_symbol)
+        except ValueError as exc:
+            return str(exc)
+        for func in ir_functions:
+            if func["name"] == "molt_main":
+                func["name"] = init_symbol
+        functions.extend(ir_functions)
+        for class_name in local_class_names:
+            class_info = local_classes.get(class_name)
+            if class_info is not None:
+                known_classes[class_name] = class_info
+        return None
+
+    def _resolve_tree_for_module(module_name: str, module_path: Path) -> ast.AST:
         if module_name in syntax_error_modules:
-            tree = _syntax_error_stub_ast(syntax_error_modules[module_name])
-        else:
-            tree = module_trees.get(module_name)
-            if tree is None:
-                try:
-                    source = _read_module_source(module_path)
-                except (SyntaxError, UnicodeDecodeError) as exc:
-                    return _fail(
-                        f"Syntax error in {module_path}: {exc}",
-                        json_output,
-                        command="build",
-                    )
-                except OSError as exc:
-                    return _fail(
-                        f"Failed to read module {module_path}: {exc}",
-                        json_output,
-                        command="build",
-                    )
-                try:
-                    tree = ast.parse(source, filename=str(module_path))
-                except SyntaxError as exc:
-                    return _fail(
-                        f"Syntax error in {module_path}: {exc}",
-                        json_output,
-                        command="build",
-                    )
+            return _syntax_error_stub_ast(syntax_error_modules[module_name])
+        tree = module_trees.get(module_name)
+        if tree is not None:
+            return tree
+        source = module_sources.get(module_name)
+        if source is None:
+            try:
+                source = _read_module_source(module_path)
+            except (SyntaxError, UnicodeDecodeError) as exc:
+                raise _ModuleLowerError(
+                    f"Syntax error in {module_path}: {exc}"
+                ) from exc
+            except OSError as exc:
+                raise _ModuleLowerError(
+                    f"Failed to read module {module_path}: {exc}"
+                ) from exc
+        try:
+            return ast.parse(source, filename=str(module_path))
+        except SyntaxError as exc:
+            raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
+
+    def _lower_module_serial(
+        module_name: str,
+        module_path: Path,
+    ) -> tuple[SimpleTIRGenerator, dict[str, Any], float, float, float]:
+        tree = _resolve_tree_for_module(module_name, module_path)
         entry_override = entry_module
         if module_name == entry_module and entry_module != "__main__":
             entry_override = None
@@ -5760,29 +6600,576 @@ def build(
             known_func_defaults=known_func_defaults,
             module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=profile,
         )
+        module_frontend_start = time.perf_counter()
+        visit_s = 0.0
+        lower_s = 0.0
         try:
-            gen.visit(tree)
+            visit_start = time.perf_counter()
+            with _phase_timeout(
+                frontend_phase_timeout,
+                phase_name=f"frontend visit ({module_name})",
+            ):
+                gen.visit(tree)
+            visit_s = time.perf_counter() - visit_start
+            lower_start = time.perf_counter()
+            with _phase_timeout(
+                frontend_phase_timeout,
+                phase_name=f"frontend IR lowering ({module_name})",
+            ):
+                ir = gen.to_json()
+            lower_s = time.perf_counter() - lower_start
+        except TimeoutError as exc:
+            raise _ModuleLowerError(str(exc), timed_out=True) from exc
         except CompatibilityError as exc:
-            return _fail(str(exc), json_output, command="build")
-        ir = gen.to_json()
-        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-        local_code_ids = dict(gen.func_code_ids)
-        if "molt_main" in local_code_ids:
-            local_code_ids[init_symbol] = local_code_ids.pop("molt_main")
-        local_id_to_symbol = {
-            code_id: symbol for symbol, code_id in local_code_ids.items()
+            raise _ModuleLowerError(str(exc)) from exc
+        total_s = time.perf_counter() - module_frontend_start
+        return gen, ir, visit_s, lower_s, total_s
+
+    frontend_parallel_workers = _resolve_frontend_parallel_module_workers()
+    frontend_parallel_min_modules = _resolve_frontend_parallel_min_modules()
+    frontend_parallel_min_predicted_cost = (
+        _resolve_frontend_parallel_min_predicted_cost()
+    )
+    frontend_parallel_target_cost_per_worker = (
+        _resolve_frontend_parallel_target_cost_per_worker()
+    )
+    frontend_parallel_stdlib_min_cost_scale = (
+        _resolve_frontend_parallel_stdlib_min_cost_scale()
+    )
+    frontend_parallel_enabled = False
+    frontend_parallel_reason = "disabled"
+    has_back_edges = _module_order_has_back_edges(module_order, module_deps)
+    if frontend_parallel_workers < 2:
+        frontend_parallel_reason = "workers<2"
+    elif len(module_order) < 2:
+        frontend_parallel_reason = "module_count<2"
+    elif has_back_edges:
+        frontend_parallel_reason = "dependency_back_edge"
+    elif type_facts is not None:
+        frontend_parallel_reason = "type_facts_present"
+    elif frontend_phase_timeout is not None:
+        frontend_parallel_reason = "phase_timeout_configured"
+    else:
+        frontend_parallel_enabled = True
+        frontend_parallel_reason = "enabled"
+    frontend_parallel_details["enabled"] = frontend_parallel_enabled
+    frontend_parallel_details["workers"] = frontend_parallel_workers
+    frontend_parallel_details["mode"] = (
+        "process_pool_reused" if frontend_parallel_enabled else "serial"
+    )
+    frontend_parallel_details["reason"] = frontend_parallel_reason
+    frontend_parallel_details["policy"] = {
+        "min_modules": frontend_parallel_min_modules,
+        "min_predicted_cost": round(frontend_parallel_min_predicted_cost, 3),
+        "target_cost_per_worker": round(frontend_parallel_target_cost_per_worker, 3),
+        "stdlib_min_cost_scale": round(frontend_parallel_stdlib_min_cost_scale, 3),
+    }
+    frontend_parallel_details["layers"] = []
+    frontend_parallel_details["worker_timings"] = []
+    frontend_parallel_layers = cast(
+        list[dict[str, Any]],
+        frontend_parallel_details["layers"],
+    )
+    frontend_parallel_worker_timings = cast(
+        list[dict[str, Any]],
+        frontend_parallel_details["worker_timings"],
+    )
+
+    def _record_frontend_parallel_worker_timing(
+        *,
+        layer_index: int,
+        module_name: str,
+        module_path: Path,
+        mode: str,
+        queue_ms: float,
+        wait_ms: float,
+        exec_ms: float,
+        roundtrip_ms: float,
+        worker_pid: int | None,
+    ) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "layer": layer_index,
+            "module": module_name,
+            "path": str(module_path),
+            "mode": mode,
+            "queue_ms": round(max(0.0, queue_ms), 6),
+            "wait_ms": round(max(0.0, wait_ms), 6),
+            "exec_ms": round(max(0.0, exec_ms), 6),
+            "roundtrip_ms": round(max(0.0, roundtrip_ms), 6),
         }
-        try:
-            _remap_module_code_ops(module_name, ir["functions"], local_id_to_symbol)
-        except ValueError as exc:
-            return _fail(str(exc), json_output, command="build")
-        for func in ir["functions"]:
-            if func["name"] == "molt_main":
-                func["name"] = init_symbol
-        functions.extend(ir["functions"])
-        for class_name in gen.local_class_names:
-            known_classes[class_name] = gen.classes[class_name]
+        if isinstance(worker_pid, int):
+            item["worker_pid"] = worker_pid
+        frontend_parallel_worker_timings.append(item)
+        return item
+
+    def _summarize_parallel_worker_timings() -> None:
+        queue_samples = [
+            float(item.get("queue_ms", 0.0))
+            for item in frontend_parallel_worker_timings
+        ]
+        wait_samples = [
+            float(item.get("wait_ms", 0.0)) for item in frontend_parallel_worker_timings
+        ]
+        exec_samples = [
+            float(item.get("exec_ms", 0.0)) for item in frontend_parallel_worker_timings
+        ]
+        frontend_parallel_details["worker_summary"] = {
+            "count": len(frontend_parallel_worker_timings),
+            "queue_ms_total": round(sum(queue_samples), 6),
+            "queue_ms_max": round(max(queue_samples, default=0.0), 6),
+            "wait_ms_total": round(sum(wait_samples), 6),
+            "wait_ms_max": round(max(wait_samples, default=0.0), 6),
+            "exec_ms_total": round(sum(exec_samples), 6),
+            "exec_ms_max": round(max(exec_samples, default=0.0), 6),
+        }
+
+    if frontend_parallel_enabled:
+        module_layers = _module_dependency_layers(module_order, module_deps)
+        parallel_pool_usable = True
+        with ProcessPoolExecutor(max_workers=frontend_parallel_workers) as executor:
+            for layer_index, layer in enumerate(module_layers):
+                layer_started_ns = time.time_ns()
+                candidates = [
+                    name for name in layer if name not in syntax_error_modules
+                ]
+                layer_results: dict[str, dict[str, Any]] = {}
+                worker_timing_by_module: dict[str, dict[str, Any]] = {}
+                layer_worker_timings: list[dict[str, Any]] = []
+                layer_fallback_reason: str | None = None
+                layer_policy = _choose_frontend_parallel_layer_workers(
+                    candidates=candidates,
+                    module_sources=module_sources,
+                    module_deps=module_deps,
+                    max_workers=frontend_parallel_workers,
+                    min_modules=frontend_parallel_min_modules,
+                    min_predicted_cost=frontend_parallel_min_predicted_cost,
+                    target_cost_per_worker=frontend_parallel_target_cost_per_worker,
+                )
+                layer_predicted_cost_total = float(
+                    layer_policy.get("predicted_cost_total", 0.0)
+                )
+                layer_effective_min_predicted_cost = float(
+                    layer_policy.get(
+                        "effective_min_predicted_cost",
+                        frontend_parallel_min_predicted_cost,
+                    )
+                )
+                layer_stdlib_candidates = int(layer_policy.get("stdlib_candidates", 0))
+                layer_workers = int(layer_policy.get("workers", 1))
+                layer_policy_reason = str(layer_policy.get("reason", "serial"))
+                layer_mode = "serial"
+                layer_parallel_failed = False
+
+                if (
+                    parallel_pool_usable
+                    and bool(layer_policy.get("enabled"))
+                    and len(candidates) > 1
+                ):
+                    layer_mode = "parallel"
+                    known_classes_snapshot = dict(known_classes)
+                    layer_workers = min(layer_workers, len(candidates))
+                    layer_failure_detail = ""
+                    for batch_start in range(0, len(candidates), layer_workers):
+                        batch = candidates[batch_start : batch_start + layer_workers]
+                        future_by_module: dict[str, Any] = {}
+                        submit_ns_by_module: dict[str, int] = {}
+                        for module_name in batch:
+                            module_path = module_graph[module_name]
+                            source = module_sources.get(module_name, "")
+                            entry_override = entry_module
+                            if (
+                                module_name == entry_module
+                                and entry_module != "__main__"
+                            ):
+                                entry_override = None
+                            payload = {
+                                "module_name": module_name,
+                                "module_path": str(module_path),
+                                "source": source,
+                                "parse_codec": parse_codec,
+                                "type_hint_policy": type_hint_policy,
+                                "fallback_policy": fallback_policy,
+                                "module_is_namespace": module_name
+                                in namespace_module_names,
+                                "entry_module": entry_override,
+                                "enable_phi": enable_phi,
+                                "known_modules": sorted(known_modules),
+                                "known_classes": known_classes_snapshot,
+                                "stdlib_allowlist": sorted(stdlib_allowlist),
+                                "known_func_defaults": known_func_defaults,
+                                "module_chunking": is_wasm and module_chunk_max_ops > 0,
+                                "module_chunk_max_ops": module_chunk_max_ops,
+                                "optimization_profile": profile,
+                            }
+                            submit_ns_by_module[module_name] = time.time_ns()
+                            future_by_module[module_name] = executor.submit(
+                                _frontend_lower_module_worker, payload
+                            )
+                        for module_name in sorted(future_by_module):
+                            future = future_by_module[module_name]
+                            try:
+                                layer_results[module_name] = future.result()
+                                received_ns = time.time_ns()
+                                result = layer_results[module_name]
+                                timings = cast(
+                                    dict[str, Any], result.get("timings", {})
+                                )
+                                worker_meta = cast(
+                                    dict[str, Any], result.get("worker", {})
+                                )
+                                worker_started_ns = worker_meta.get("started_ns")
+                                worker_finished_ns = worker_meta.get("finished_ns")
+                                submit_ns = submit_ns_by_module.get(module_name)
+                                exec_ms = float(timings.get("total_s", 0.0)) * 1000.0
+                                exec_from_ns = _duration_ms_from_ns(
+                                    worker_started_ns,
+                                    worker_finished_ns,
+                                )
+                                if exec_from_ns > 0.0:
+                                    exec_ms = exec_from_ns
+                                worker_timing_by_module[module_name] = {
+                                    "queue_ms": _duration_ms_from_ns(
+                                        submit_ns,
+                                        worker_started_ns,
+                                    ),
+                                    "wait_ms": _duration_ms_from_ns(
+                                        worker_finished_ns,
+                                        received_ns,
+                                    ),
+                                    "exec_ms": round(max(0.0, exec_ms), 6),
+                                    "roundtrip_ms": _duration_ms_from_ns(
+                                        submit_ns,
+                                        received_ns,
+                                    ),
+                                    "worker_pid": worker_meta.get("pid"),
+                                }
+                            except Exception as exc:
+                                layer_parallel_failed = True
+                                layer_failure_detail = (
+                                    f"{module_graph[module_name]}: {exc}"
+                                )
+                                break
+                        if layer_parallel_failed:
+                            break
+                    if layer_parallel_failed:
+                        layer_results = {}
+                        worker_timing_by_module = {}
+                        frontend_parallel_details["reason"] = (
+                            "worker_error_fallback_serial"
+                        )
+                        layer_mode = "serial_fallback"
+                        layer_workers = 1
+                        layer_policy_reason = "worker_error_fallback_serial"
+                        layer_fallback_reason = layer_failure_detail
+                        parallel_pool_usable = False
+                        warnings.append(
+                            "Frontend parallel lowering fallback to serial for layer: "
+                            f"{layer_failure_detail}"
+                        )
+                elif len(candidates) > 1:
+                    if not parallel_pool_usable:
+                        layer_policy_reason = "pool_unavailable_after_error"
+                    layer_mode = "serial_layer_policy"
+
+                for module_name in layer:
+                    module_path = module_graph[module_name]
+                    result = layer_results.get(module_name)
+                    if result is not None:
+                        timings = cast(dict[str, Any], result.get("timings", {}))
+                        visit_s = float(timings.get("visit_s", 0.0))
+                        lower_s = float(timings.get("lower_s", 0.0))
+                        total_s = float(timings.get("total_s", 0.0))
+                        if not bool(result.get("ok")):
+                            return _fail(
+                                str(
+                                    result.get(
+                                        "error",
+                                        f"Failed to lower module {module_name}",
+                                    )
+                                ),
+                                json_output,
+                                command="build",
+                            )
+                        _record_frontend_timing(
+                            module_name=module_name,
+                            module_path=module_path,
+                            visit_s=visit_s,
+                            lower_s=lower_s,
+                            total_s=total_s,
+                        )
+                        worker_timing = worker_timing_by_module.get(module_name, {})
+                        queue_ms = float(worker_timing.get("queue_ms", 0.0))
+                        wait_ms = float(worker_timing.get("wait_ms", 0.0))
+                        exec_ms = float(worker_timing.get("exec_ms", total_s * 1000.0))
+                        roundtrip_ms = float(
+                            worker_timing.get(
+                                "roundtrip_ms", max(queue_ms + wait_ms, exec_ms)
+                            )
+                        )
+                        worker_pid_raw = worker_timing.get("worker_pid")
+                        worker_pid = (
+                            worker_pid_raw if isinstance(worker_pid_raw, int) else None
+                        )
+                        layer_worker_timings.append(
+                            _record_frontend_parallel_worker_timing(
+                                layer_index=layer_index,
+                                module_name=module_name,
+                                module_path=module_path,
+                                mode="parallel",
+                                queue_ms=queue_ms,
+                                wait_ms=wait_ms,
+                                exec_ms=exec_ms,
+                                roundtrip_ms=roundtrip_ms,
+                                worker_pid=worker_pid,
+                            )
+                        )
+                        integration_error = _integrate_module_frontend_result(
+                            module_name,
+                            ir_functions=cast(
+                                list[dict[str, Any]], result["functions"]
+                            ),
+                            func_code_ids=cast(dict[str, int], result["func_code_ids"]),
+                            local_class_names=cast(
+                                list[str], result["local_class_names"]
+                            ),
+                            local_classes=cast(dict[str, Any], result["local_classes"]),
+                        )
+                        if integration_error is not None:
+                            return _fail(
+                                integration_error,
+                                json_output,
+                                command="build",
+                            )
+                        _accumulate_midend_diagnostics(
+                            module_name,
+                            policy_outcomes_by_func=cast(
+                                dict[str, dict[str, Any]],
+                                result.get("midend_policy_outcomes_by_function", {}),
+                            ),
+                            pass_stats_by_func=cast(
+                                dict[str, dict[str, dict[str, Any]]],
+                                result.get("midend_pass_stats_by_function", {}),
+                            ),
+                        )
+                        continue
+                    try:
+                        gen, ir, visit_s, lower_s, total_s = _lower_module_serial(
+                            module_name, module_path
+                        )
+                    except _ModuleLowerError as exc:
+                        _record_frontend_timing(
+                            module_name=module_name,
+                            module_path=module_path,
+                            visit_s=0.0,
+                            lower_s=0.0,
+                            total_s=0.0,
+                            timed_out=exc.timed_out,
+                            detail=str(exc),
+                        )
+                        return _fail(str(exc), json_output, command="build")
+                    _record_frontend_timing(
+                        module_name=module_name,
+                        module_path=module_path,
+                        visit_s=visit_s,
+                        lower_s=lower_s,
+                        total_s=total_s,
+                    )
+                    serial_mode = "serial"
+                    if layer_mode == "serial_fallback":
+                        serial_mode = "serial_fallback"
+                    elif layer_mode == "serial_layer_policy":
+                        serial_mode = "serial_layer_policy"
+                    layer_worker_timings.append(
+                        _record_frontend_parallel_worker_timing(
+                            layer_index=layer_index,
+                            module_name=module_name,
+                            module_path=module_path,
+                            mode=serial_mode,
+                            queue_ms=0.0,
+                            wait_ms=0.0,
+                            exec_ms=total_s * 1000.0,
+                            roundtrip_ms=total_s * 1000.0,
+                            worker_pid=None,
+                        )
+                    )
+                    integration_error = _integrate_module_frontend_result(
+                        module_name,
+                        ir_functions=ir["functions"],
+                        func_code_ids=dict(gen.func_code_ids),
+                        local_class_names=sorted(gen.local_class_names),
+                        local_classes=gen.classes,
+                    )
+                    if integration_error is not None:
+                        return _fail(
+                            integration_error,
+                            json_output,
+                            command="build",
+                        )
+                    _accumulate_midend_diagnostics(
+                        module_name,
+                        policy_outcomes_by_func=dict(
+                            gen.midend_policy_outcomes_by_function
+                        ),
+                        pass_stats_by_func=dict(gen.midend_pass_stats_by_function),
+                    )
+                queue_samples = [
+                    float(item.get("queue_ms", 0.0)) for item in layer_worker_timings
+                ]
+                wait_samples = [
+                    float(item.get("wait_ms", 0.0)) for item in layer_worker_timings
+                ]
+                exec_samples = [
+                    float(item.get("exec_ms", 0.0)) for item in layer_worker_timings
+                ]
+                roundtrip_samples = [
+                    float(item.get("roundtrip_ms", 0.0))
+                    for item in layer_worker_timings
+                ]
+                layer_detail: dict[str, Any] = {
+                    "index": layer_index,
+                    "mode": layer_mode,
+                    "policy_reason": layer_policy_reason,
+                    "module_count": len(layer),
+                    "candidate_count": len(candidates),
+                    "workers": layer_workers,
+                    "predicted_cost_total": round(layer_predicted_cost_total, 3),
+                    "effective_min_predicted_cost": round(
+                        layer_effective_min_predicted_cost, 3
+                    ),
+                    "stdlib_candidates": layer_stdlib_candidates,
+                    "target_cost_per_worker": round(
+                        frontend_parallel_target_cost_per_worker, 3
+                    ),
+                    "queue_ms_total": round(sum(queue_samples), 6),
+                    "queue_ms_max": round(max(queue_samples, default=0.0), 6),
+                    "wait_ms_total": round(sum(wait_samples), 6),
+                    "wait_ms_max": round(max(wait_samples, default=0.0), 6),
+                    "exec_ms_total": round(sum(exec_samples), 6),
+                    "exec_ms_max": round(max(exec_samples, default=0.0), 6),
+                    "roundtrip_ms_total": round(sum(roundtrip_samples), 6),
+                    "elapsed_ms": _duration_ms_from_ns(
+                        layer_started_ns,
+                        time.time_ns(),
+                    ),
+                }
+                if layer_fallback_reason:
+                    layer_detail["fallback_reason"] = layer_fallback_reason
+                frontend_parallel_layers.append(layer_detail)
+        _summarize_parallel_worker_timings()
+    else:
+        serial_layer_started_ns = time.time_ns()
+        serial_layer_worker_timings: list[dict[str, Any]] = []
+        for module_name in module_order:
+            module_path = module_graph[module_name]
+            try:
+                gen, ir, visit_s, lower_s, total_s = _lower_module_serial(
+                    module_name, module_path
+                )
+            except _ModuleLowerError as exc:
+                _record_frontend_timing(
+                    module_name=module_name,
+                    module_path=module_path,
+                    visit_s=0.0,
+                    lower_s=0.0,
+                    total_s=0.0,
+                    timed_out=exc.timed_out,
+                    detail=str(exc),
+                )
+                return _fail(str(exc), json_output, command="build")
+            _record_frontend_timing(
+                module_name=module_name,
+                module_path=module_path,
+                visit_s=visit_s,
+                lower_s=lower_s,
+                total_s=total_s,
+            )
+            serial_layer_worker_timings.append(
+                _record_frontend_parallel_worker_timing(
+                    layer_index=0,
+                    module_name=module_name,
+                    module_path=module_path,
+                    mode="serial_disabled",
+                    queue_ms=0.0,
+                    wait_ms=0.0,
+                    exec_ms=total_s * 1000.0,
+                    roundtrip_ms=total_s * 1000.0,
+                    worker_pid=None,
+                )
+            )
+            integration_error = _integrate_module_frontend_result(
+                module_name,
+                ir_functions=ir["functions"],
+                func_code_ids=dict(gen.func_code_ids),
+                local_class_names=sorted(gen.local_class_names),
+                local_classes=gen.classes,
+            )
+            if integration_error is not None:
+                return _fail(
+                    integration_error,
+                    json_output,
+                    command="build",
+                )
+            _accumulate_midend_diagnostics(
+                module_name,
+                policy_outcomes_by_func=dict(gen.midend_policy_outcomes_by_function),
+                pass_stats_by_func=dict(gen.midend_pass_stats_by_function),
+            )
+        queue_samples = [
+            float(item.get("queue_ms", 0.0)) for item in serial_layer_worker_timings
+        ]
+        wait_samples = [
+            float(item.get("wait_ms", 0.0)) for item in serial_layer_worker_timings
+        ]
+        exec_samples = [
+            float(item.get("exec_ms", 0.0)) for item in serial_layer_worker_timings
+        ]
+        roundtrip_samples = [
+            float(item.get("roundtrip_ms", 0.0)) for item in serial_layer_worker_timings
+        ]
+        frontend_parallel_layers.append(
+            {
+                "index": 0,
+                "mode": "serial_disabled",
+                "policy_reason": frontend_parallel_reason,
+                "module_count": len(module_order),
+                "candidate_count": len(module_order),
+                "workers": 1,
+                "predicted_cost_total": round(
+                    sum(
+                        _predict_frontend_module_cost(
+                            name,
+                            module_sources,
+                            module_deps,
+                        )
+                        for name in module_order
+                    ),
+                    3,
+                ),
+                "effective_min_predicted_cost": round(
+                    frontend_parallel_min_predicted_cost, 3
+                ),
+                "stdlib_candidates": sum(
+                    1 for name in module_order if _looks_like_stdlib_module_name(name)
+                ),
+                "target_cost_per_worker": round(
+                    frontend_parallel_target_cost_per_worker, 3
+                ),
+                "queue_ms_total": round(sum(queue_samples), 6),
+                "queue_ms_max": round(max(queue_samples, default=0.0), 6),
+                "wait_ms_total": round(sum(wait_samples), 6),
+                "wait_ms_max": round(max(wait_samples, default=0.0), 6),
+                "exec_ms_total": round(sum(exec_samples), 6),
+                "exec_ms_max": round(max(exec_samples, default=0.0), 6),
+                "roundtrip_ms_total": round(sum(roundtrip_samples), 6),
+                "elapsed_ms": _duration_ms_from_ns(
+                    serial_layer_started_ns,
+                    time.time_ns(),
+                ),
+            }
+        )
+        _summarize_parallel_worker_timings()
 
     entry_path: Path | None = None
     if entry_module != "__main__":
@@ -5832,12 +7219,46 @@ def build(
             known_func_defaults=known_func_defaults,
             module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=profile,
         )
+        main_frontend_start = time.perf_counter()
+        main_visit_s = 0.0
+        main_lower_s = 0.0
         try:
-            main_gen.visit(tree)
+            main_visit_start = time.perf_counter()
+            with _phase_timeout(
+                frontend_phase_timeout,
+                phase_name="frontend visit (__main__)",
+            ):
+                main_gen.visit(tree)
+            main_visit_s = time.perf_counter() - main_visit_start
+            main_lower_start = time.perf_counter()
+            with _phase_timeout(
+                frontend_phase_timeout,
+                phase_name="frontend IR lowering (__main__)",
+            ):
+                main_ir = main_gen.to_json()
+            main_lower_s = time.perf_counter() - main_lower_start
+        except TimeoutError as exc:
+            _record_frontend_timing(
+                module_name="__main__",
+                module_path=entry_path,
+                visit_s=main_visit_s,
+                lower_s=main_lower_s,
+                total_s=time.perf_counter() - main_frontend_start,
+                timed_out=True,
+                detail=str(exc),
+            )
+            return _fail(str(exc), json_output, command="build")
         except CompatibilityError as exc:
             return _fail(str(exc), json_output, command="build")
-        main_ir = main_gen.to_json()
+        _record_frontend_timing(
+            module_name="__main__",
+            module_path=entry_path,
+            visit_s=main_visit_s,
+            lower_s=main_lower_s,
+            total_s=time.perf_counter() - main_frontend_start,
+        )
         main_init = SimpleTIRGenerator.module_init_symbol("__main__")
         local_code_ids = dict(main_gen.func_code_ids)
         if "molt_main" in local_code_ids:
@@ -5853,6 +7274,11 @@ def build(
             if func["name"] == "molt_main":
                 func["name"] = main_init
         functions.extend(main_ir["functions"])
+        _accumulate_midend_diagnostics(
+            "__main__",
+            policy_outcomes_by_func=dict(main_gen.midend_policy_outcomes_by_function),
+            pass_stats_by_func=dict(main_gen.midend_pass_stats_by_function),
+        )
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)

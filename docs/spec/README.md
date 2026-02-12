@@ -53,6 +53,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0024 Asyncio Coverage Matrix: `docs/spec/areas/compat/0024_ASYNCIO_COVERAGE_MATRIX.md`
 - 0025 Core Language PEP Coverage: `docs/spec/areas/compat/0025_CORE_LANGUAGE_PEP_COVERAGE.md`
 - 0026 Rust Lowering Program: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+- 0027 Stdlib Union Baseline: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
+- 0028 Stdlib Intrinsics Execution Plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`
 - 0210 CPython Bridge PyO3: `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 - 0212 C API Symbol Matrix: `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`
