@@ -39,6 +39,17 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 
 ---
 
+## Runtime-Heavy Tranche Update (2026-02-12)
+- Implemented: differential RSS summary status resolution now uses final file outcome (`pass`/`fail`/`skip`/`oom`) rather than attempt-level run status, eliminating misleading `"run_failed"` top summaries on green runs.
+- Implemented: wasm linker resilience hardened (`tools/wasm_link.py`) so malformed UTF-8 in optional wasm `name` sections no longer hard-fails linked builds.
+- Implemented: deterministic Node resolver for wasm lanes (`MOLT_NODE_BIN` + auto-select Node >= 18) and explicit WASI import fallback in `run_wasm.js` (`node:wasi` then `wasi`).
+- Implemented: wasm socket constants payload now exports core CPython-facing names (`AF_INET`, `SOCK_STREAM`, `SOL_SOCKET`, etc.) from runtime intrinsic `molt_socket_constants`.
+- Implemented: `_asyncio` wasm running-loop panic root cause fixed in runtime zip layout strict-bits access (`read_unaligned`/`write_unaligned` in `runtime/molt-runtime/src/object/layout.rs`).
+- Implemented: Node wasm execution lanes now enforce deterministic flags (`--no-warnings`, `--no-wasm-tier-up`, `--no-wasm-dynamic-tiering`, `--wasm-num-compilation-tasks=1`) across parity + benchmark runners.
+- Active blockers (P0): runtime-heavy wasm server lanes that require `threading` remain unsupported (plus secondary wasm exception-reporting artifacts after thread errors), and Node/V8 Zone OOM can still reproduce in unrestricted/manual Node runs on some linked runtime-heavy modules.
+
+---
+
 ## ⚡ Build Throughput Program (TL2)
 **Goal:** Make iterative `--profile dev` builds and differential sweeps feel Go-like under heavy multi-agent concurrency.
 

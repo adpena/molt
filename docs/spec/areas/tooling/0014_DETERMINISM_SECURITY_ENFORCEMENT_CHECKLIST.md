@@ -29,17 +29,17 @@ lockfiles, SBOM/signature posture, and capability gating.
 - [ ] No hidden host-Python fallback path is introduced for compiled binaries.
 
 ## 4) SBOM/Signing And Supply-Chain Evidence
-- [ ] Packaged artifacts include SBOM sidecars and embedded metadata as documented in `docs/spec/areas/tooling/0009-packaging.md`.
+- [ ] Packaged artifacts include SBOM sidecars and embedded metadata as documented in [docs/spec/areas/tooling/0009-packaging.md](docs/spec/areas/tooling/0009-packaging.md).
 - [ ] Signature metadata/verification policy is enforced for publish/verify lanes where applicable.
 - [ ] Any supply-chain audit deltas are logged in release notes or task reports.
 
 ## 5) Required Reporting Artifacts
 - [ ] Record command transcript references in task logs under `logs/agents/<task>/`.
 - [ ] Record benchmark/profiling artifacts for performance-affecting security changes.
-- [ ] Keep docs aligned (`README.md`, `docs/spec/STATUS.md`, `ROADMAP.md`) when policy or behavior changes.
+- [ ] Keep docs aligned ([README.md](../../../../README.md), [docs/spec/STATUS.md](docs/spec/STATUS.md), [ROADMAP.md](../../../../ROADMAP.md)) when policy or behavior changes.
 
 ## Related Docs
-- `docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md`
-- `docs/spec/areas/tooling/0009-packaging.md`
-- `docs/spec/areas/security/0010-security.md`
-- `docs/OPERATIONS.md`
+- [docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md](docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md)
+- [docs/spec/areas/tooling/0009-packaging.md](docs/spec/areas/tooling/0009-packaging.md)
+- [docs/spec/areas/security/0010-security.md](docs/spec/areas/security/0010-security.md)
+- [docs/OPERATIONS.md](docs/OPERATIONS.md)

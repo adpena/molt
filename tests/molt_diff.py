@@ -2449,14 +2449,49 @@ def _top_rss_entries(
     return ranked[: max(0, limit)]
 
 
+@lru_cache(maxsize=8192)
+def _status_lookup_keys(path: str) -> tuple[str, ...]:
+    keys: list[str] = []
+
+    def _add(value: str) -> None:
+        if value and value not in keys:
+            keys.append(value)
+
+    _add(path)
+    parsed = Path(path)
+    _add(parsed.as_posix())
+
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        resolved = parsed.resolve()
+        _add(str(resolved))
+        _add(resolved.as_posix())
+        with contextlib.suppress(ValueError):
+            rel = resolved.relative_to(_repo_root())
+            _add(rel.as_posix())
+            _add(str(rel))
+
+    if not parsed.is_absolute():
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            from_cwd = (Path.cwd() / parsed).resolve()
+            _add(str(from_cwd))
+            _add(from_cwd.as_posix())
+            with contextlib.suppress(ValueError):
+                rel = from_cwd.relative_to(_repo_root())
+                _add(rel.as_posix())
+                _add(str(rel))
+
+    return tuple(keys)
+
+
 def _rss_display_status(
     entry: dict[str, object], status_by_path: dict[str, str] | None
 ) -> str:
     file_path = entry.get("file")
     if status_by_path and isinstance(file_path, str):
-        resolved = status_by_path.get(file_path)
-        if isinstance(resolved, str) and resolved:
-            return resolved
+        for key in _status_lookup_keys(file_path):
+            resolved = status_by_path.get(key)
+            if isinstance(resolved, str) and resolved:
+                return resolved
     raw = entry.get("status")
     if isinstance(raw, str):
         return raw

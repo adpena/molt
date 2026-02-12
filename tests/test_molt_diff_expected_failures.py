@@ -150,3 +150,21 @@ def test_rss_display_status_prefers_final_diff_status() -> None:
         {"tests/differential/stdlib/zipimport_basic.py": "pass"},
     )
     assert resolved == "pass"
+
+
+def test_rss_display_status_matches_absolute_and_repo_relative_paths() -> None:
+    module = _load_diff_module()
+    absolute = str(
+        (
+            REPO_ROOT / "tests" / "differential" / "stdlib" / "zipimport_basic.py"
+        ).resolve()
+    )
+    entry = {
+        "file": absolute,
+        "status": "run_failed",
+    }
+    resolved = module._rss_display_status(
+        entry,
+        {"tests/differential/stdlib/zipimport_basic.py": "pass"},
+    )
+    assert resolved == "pass"

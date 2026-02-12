@@ -89,11 +89,30 @@ pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
 }
 
 pub(crate) unsafe fn zip_strict_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *const u64)
+    std::ptr::read_unaligned(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *const u64)
 }
 
 pub(crate) unsafe fn zip_set_strict_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut u64) = bits;
+    std::ptr::write_unaligned(
+        ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut u64,
+        bits,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zip_set_strict_bits, zip_strict_bits};
+
+    #[test]
+    fn zip_strict_bits_unaligned_roundtrip() {
+        let mut buf = [0u8; 32];
+        let ptr = unsafe { buf.as_mut_ptr().add(1) };
+        let value = 0xA5A5_5A5A_DEAD_BEEFu64;
+        unsafe {
+            zip_set_strict_bits(ptr, value);
+            assert_eq!(zip_strict_bits(ptr), value);
+        }
+    }
 }
 
 pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {

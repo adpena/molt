@@ -13,9 +13,9 @@
 - **Enforcement:** use `molt.capabilities` to check or require capability tokens in stdlib shims.
 - **Intrinsic-only enforcement:** compiled binaries may only import stdlib modules that are intrinsic-backed; Python-only stdlib modules must fail fast (compile-time error or immediate `RuntimeError`) until lowered.
 - **Import-only stubs (tooling-only):** stubs may be used for dependency tracking in tooling, but are forbidden in compiled binaries.
-- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`.
+- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md](docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md).
 - **Intrinsic-partial ratchet:** `intrinsic-partial` count must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`), enforced by `tools/check_stdlib_intrinsics.py`.
-- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`.
+- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md](docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md).
 
 ## 0.1 Tier-0 Direct-Call Rule
 - **Direct-call allowlist:** Tier 0 compiles module-level calls to a static `CALL` only for allowlisted functions from allowlisted modules (this matrix + frontend allowlist).
@@ -51,7 +51,7 @@
 
 ## 3. Compatibility Matrix
 Program sequencing for full Rust lowering (core first, then stdlib) is tracked
-in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`.
+in [docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md](docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md).
 
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -388,7 +388,7 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 - Acceptance: Parity for supported features; deterministic runtime.
 
 ### 3.2 Cross-cutting Requirements
-- Update `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` and `docs/ROADMAP.md` as each module lands.
+- Update [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md) and [docs/ROADMAP.md](docs/ROADMAP.md) as each module lands.
 - TODO(docs, owner:docs, milestone:SL1, priority:P3, status:planned): add `TODO(stdlib-compat, ...)` markers for interim gaps.
 - Ensure capability gating for I/O-adjacent pieces (if introduced).
 - Add differential tests in `tests/differential/` as required.

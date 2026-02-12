@@ -6235,7 +6235,48 @@ include!(concat!(env!("OUT_DIR"), "/errno_constants.rs"));
 fn socket_constants() -> Vec<(&'static str, i64)> {
     #[cfg(target_arch = "wasm32")]
     {
-        return Vec::new();
+        // Keep wasm socket constants aligned with run_wasm.js host values so
+        // stdlib consumers (e.g. socketserver/smtplib) do not observe missing
+        // module attributes.
+        return vec![
+            ("AF_UNIX", libc::AF_UNIX as i64),
+            ("AF_INET", libc::AF_INET as i64),
+            ("AF_INET6", libc::AF_INET6 as i64),
+            ("SOCK_STREAM", libc::SOCK_STREAM as i64),
+            ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
+            ("SOCK_RAW", libc::SOCK_RAW as i64),
+            ("SOL_SOCKET", libc::SOL_SOCKET as i64),
+            ("SO_REUSEADDR", 2),
+            ("SO_KEEPALIVE", 9),
+            ("SO_SNDBUF", 7),
+            ("SO_RCVBUF", 8),
+            ("SO_ERROR", 4),
+            ("SO_LINGER", 13),
+            ("SO_BROADCAST", 6),
+            ("SO_REUSEPORT", 15),
+            ("IPPROTO_TCP", 6),
+            ("IPPROTO_UDP", 17),
+            ("IPPROTO_IPV6", 41),
+            ("IPV6_V6ONLY", 26),
+            ("TCP_NODELAY", 1),
+            ("SHUT_RD", 0),
+            ("SHUT_WR", 1),
+            ("SHUT_RDWR", 2),
+            ("AI_PASSIVE", 0x1),
+            ("AI_CANONNAME", 0x2),
+            ("AI_NUMERICHOST", 0x4),
+            ("AI_NUMERICSERV", 0x400),
+            ("NI_NUMERICHOST", 0x1),
+            ("NI_NUMERICSERV", 0x2),
+            ("MSG_PEEK", 2),
+            ("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64),
+            ("EAI_AGAIN", 2),
+            ("EAI_FAIL", 4),
+            ("EAI_FAMILY", 5),
+            ("EAI_NONAME", libc::EAI_NONAME as i64),
+            ("EAI_SERVICE", 9),
+            ("EAI_SOCKTYPE", 10),
+        ];
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

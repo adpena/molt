@@ -7,12 +7,12 @@ Welcome to the Molt codebase. This guide is designed to help you understand the 
 Molt is a research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries**. It is not just a compiler; it is a systems engineering platform that treats Python as a specification for high-performance native code.
 
 Key Differentiators:
-- **Verified Subset**: We don't support *everything* (see `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`).
+- **Verified Subset**: We don't support *everything* (see [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md)).
 - **Determinism**: Binaries are 100% deterministic.
 
 ## Project Vision and Scope
-For the canonical vision and scope, read `docs/spec/areas/core/0000-vision.md` and
-`docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`. At a high level:
+For the canonical vision and scope, read [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) and
+[docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md). At a high level:
 
 - **What Molt is**: a compiler + runtime for a verified, per-application subset
   of Python with explicit contracts and reproducible outputs.
@@ -30,12 +30,12 @@ For the canonical vision and scope, read `docs/spec/areas/core/0000-vision.md` a
 ## Cross-Platform Notes
 - **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
 - **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
-- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see `docs/spec/areas/tooling/0001-toolchains.md`).
+- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see [docs/spec/areas/tooling/0001-toolchains.md](docs/spec/areas/tooling/0001-toolchains.md)).
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms.
 
 ## Platform Pitfalls
 - **macOS SDK versioning**: if linking fails, ensure Xcode CLT is installed and `xcrun --show-sdk-version` works; set `MACOSX_DEPLOYMENT_TARGET` when cross-linking.
-- **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see `docs/spec/STATUS.md`).
+- **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see [docs/spec/STATUS.md](docs/spec/STATUS.md)).
 - **Windows toolchain conflicts**: prefer a single active toolchain (MSVC or clang); ensure `clang`, `cmake`, and `ninja` are on PATH.
 - **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` must be installed; use `--require-linked` to fail fast when they are missing.
@@ -66,15 +66,15 @@ Key controls:
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents; lock/fingerprint state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`) while daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
 - Keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` for diff runs so Cargo artifacts are reused instead of split across ad-hoc roots.
 
-Build-throughput roadmap lanes are tracked in `ROADMAP.md` under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
+Build-throughput roadmap lanes are tracked in [ROADMAP.md](../ROADMAP.md) under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
 
 ## Key Concepts
 
 Molt uses specific terminology that might be new to Python developers.
-- **Glossary**: See `docs/GLOSSARY.md` for definitions of terms like "Tier 0", "NaN-boxing", and "Monomorphization".
-- **Security & Capabilities**: See `docs/CAPABILITIES.md` for how Molt gates access to I/O and network operations.
-- **Security Hardening**: See `docs/SECURITY.md` for threat models and safety invariants.
-- **Performance & Benchmarking**: See `docs/BENCHMARKING.md` for how to measure and validate optimizations.
+- **Glossary**: See [docs/GLOSSARY.md](docs/GLOSSARY.md) for definitions of terms like "Tier 0", "NaN-boxing", and "Monomorphization".
+- **Security & Capabilities**: See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for how Molt gates access to I/O and network operations.
+- **Security Hardening**: See [docs/SECURITY.md](docs/SECURITY.md) for threat models and safety invariants.
+- **Performance & Benchmarking**: See [docs/BENCHMARKING.md](docs/BENCHMARKING.md) for how to measure and validate optimizations.
 
 ## Architecture Overview
 

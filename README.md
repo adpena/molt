@@ -5,7 +5,7 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 > Molt = Python shedding its skin into native code.
 
-Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are kept in sync).
+Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and [ROADMAP.md](ROADMAP.md) are kept in sync).
 
 ## Strategic Targets
 - Performance: parity with or superiority to Codon on tracked benchmarks.
@@ -14,29 +14,29 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
   constraints (determinism, capability gates, and no hidden host fallback).
 
 ## Documentation Quick Links
-- Docs index (canonical navigation): [`docs/INDEX.md`](docs/INDEX.md)
-- Spec index (full spec map): [`docs/spec/README.md`](docs/spec/README.md)
-- Differential suite organization + run ledger: [`tests/differential/INDEX.md`](tests/differential/INDEX.md)
-- Examples guide: [`examples/README.md`](examples/README.md)
-- Demo guide: [`demo/README.md`](demo/README.md)
-- Bench guides: [`bench/README.md`](bench/README.md), [`bench/friends/README.md`](bench/friends/README.md)
-- Packaging guides: [`packaging/README.md`](packaging/README.md), [`packaging/templates/linux/README.md`](packaging/templates/linux/README.md)
+- Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)
+- Spec index (full spec map): [docs/spec/README.md](docs/spec/README.md)
+- Differential suite organization + run ledger: [tests/differential/INDEX.md](tests/differential/INDEX.md)
+- Examples guide: [examples/README.md](examples/README.md)
+- Demo guide: [demo/README.md](demo/README.md)
+- Bench guides: [bench/README.md](bench/README.md), [bench/friends/README.md](bench/friends/README.md)
+- Packaging guides: [packaging/README.md](packaging/README.md), [packaging/templates/linux/README.md](packaging/templates/linux/README.md)
 
 ## Optimization Program Kickoff
 
 - Current phase: Week 1 observability complete with Week 0 baseline lock artifacts captured; next focus is Week 2 specialization + wasm stabilization clusters.
-- Canonical optimization scope: `OPTIMIZATIONS_PLAN.md`.
-- Canonical optimization execution log: `docs/benchmarks/optimization_progress.md`.
-- Latest observability artifact snapshot: `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md`.
-- Baseline lock summary: `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md`.
+- Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
+- Canonical optimization execution log: [docs/benchmarks/optimization_progress.md](docs/benchmarks/optimization_progress.md).
+- Latest observability artifact snapshot: [bench/results/optimization_progress/2026-02-11_week1_observability/summary.md](bench/results/optimization_progress/2026-02-11_week1_observability/summary.md).
+- Baseline lock summary: [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md).
 - Current compile-throughput recovery status: stdlib mid-end functions now default to Tier C unless explicitly promoted; budget degrade checkpoints are stage-level with pre-pass evaluation; frontend layer-parallel diagnostics include stdlib-aware effective min-cost policy details.
 - Stdlib integrity gate status: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (opt-down flag: `--fallback-intrinsic-backed-only`).
 - Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
 - Stdlib ratchet gate status: `tools/check_stdlib_intrinsics.py` enforces intrinsic-partial budget via `tools/stdlib_intrinsics_ratchet.json`.
 - Stdlib lowering audit snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`; bootstrap/critical strict-import gates are still active blockers during ongoing lowering burn-down.
 - Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific DB helpers now live in `moltlib.molt_db` (with `molt.molt_db` compatibility shim).
-- Stdlib union maintenance guide: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`.
-- Stdlib execution plan: `docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md`.
+- Stdlib union maintenance guide: [docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md](docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md).
+- Stdlib execution plan: [docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md](docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md).
 
 ## Capabilities (Current)
 
@@ -76,7 +76,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
 - **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction.
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; user-defined `__getattr__`/`__getattribute__`/`__setattr__`/`__delattr__` hooks work, but object-level builtins for these are not exposed; no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
-- **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
+- **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see [docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md](docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md)).
 - **Imports**: static module graph only; relative imports resolved within known packages; no dynamic import hooks or full package resolution.
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `statistics` (core function surface lowered through Rust intrinsics), `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
@@ -92,7 +92,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are ke
 - **List membership perf**: `in`/`count`/`index` snapshot list elements to avoid mutation during comparisons; optimization pending.
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
 - **C-extensions**: CPython ABI loading is not supported; the primary plan is recompiled extensions against `libmolt`, with an explicit opt-in bridge as an escape hatch.
-- **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`).
+- **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see [docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md](docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md)).
 - **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is wired for `list_items`, `compute`, `offload_table`, and `health` while other exports still return a clear error until compiled handlers exist. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
 - **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
 
