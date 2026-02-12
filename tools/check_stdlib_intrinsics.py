@@ -179,6 +179,10 @@ class ModuleAudit:
     status: str
 
 
+def _is_intrinsic_implemented(status: str) -> bool:
+    return status in {STATUS_INTRINSIC, STATUS_INTRINSIC_PARTIAL}
+
+
 def _display_path(path: Path) -> str:
     try:
         return str(path.relative_to(ROOT))
@@ -867,23 +871,23 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         [
             "",
             "## Core Lane Gate",
-            "- Required lane: `tests/differential/core/TESTS.txt` (import closure).",
-            "- Gate rule: core-lane imports must be `intrinsic-backed` only (no `intrinsic-partial`, `probe-only`, or `python-only`).",
+            "- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).",
+            "- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) with zero `probe-only` and zero `python-only` modules.",
             "- Enforced by: `python3 tools/check_core_lane_lowering.py`.",
             "",
             "## Bootstrap Gate",
             "- Strict roots: "
             + ", ".join(f"`{name}`" for name in BOOTSTRAP_STRICT_ROOTS),
-            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be `intrinsic-backed` (no `intrinsic-partial`, `probe-only`, or `python-only`).",
+            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).",
             "- Required modules: "
             + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
-            "- Gate rule: required bootstrap modules that are present must be `intrinsic-backed`.",
+            "- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).",
             "",
             "## Critical Strict-Import Gate",
             "- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.",
             "- Critical roots: "
             + ", ".join(f"`{name}`" for name in CRITICAL_STRICT_IMPORT_ROOTS),
-            "- Gate rule: for each listed root currently `intrinsic-backed`, every transitive stdlib import in its closure must also be `intrinsic-backed`.",
+            "- Gate rule: for each listed root currently intrinsic-implemented, every transitive stdlib import in its closure must also be intrinsic-implemented.",
             "- Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).",
             "",
             "## Intrinsic-Backed Fallback Gate",
@@ -964,7 +968,7 @@ def main() -> int:
         "--allowlist-modules",
         help=(
             "Comma-separated stdlib modules to enforce strict transitive import closure "
-            "(only roots currently intrinsic-backed are checked)."
+            "(only roots currently intrinsic-implemented are checked)."
         ),
     )
     parser.add_argument(
@@ -973,7 +977,7 @@ def main() -> int:
         help=(
             "Apply strict transitive import closure checks for critical modules: "
             + ", ".join(CRITICAL_STRICT_IMPORT_ROOTS)
-            + " (and require those roots to be intrinsic-backed)."
+            + " (and require those roots to be intrinsic-implemented)."
         ),
     )
     parser.add_argument(
@@ -1090,7 +1094,8 @@ def main() -> int:
     bootstrap_failures = [
         audit.module
         for audit in audits
-        if audit.module in BOOTSTRAP_MODULES and audit.status != STATUS_INTRINSIC
+        if audit.module in BOOTSTRAP_MODULES
+        and not _is_intrinsic_implemented(audit.status)
     ]
     modules_by_name = {audit.module: audit for audit in audits}
     dep_graph = _build_stdlib_dep_graph(modules_by_name)
@@ -1148,7 +1153,7 @@ def main() -> int:
             audit = modules_by_name.get(module_name)
             if audit is None:
                 continue
-            if audit.status != STATUS_INTRINSIC:
+            if not _is_intrinsic_implemented(audit.status):
                 bootstrap_closure_violations.append((module_name, audit.status))
     python_only_modules = {
         audit.module for audit in audits if audit.status == STATUS_PYTHON_ONLY
@@ -1183,23 +1188,23 @@ def main() -> int:
     strict_root_status_violations = [
         (root, modules_by_name[root].status)
         for root in sorted(strict_roots)
-        if modules_by_name[root].status != STATUS_INTRINSIC
+        if not _is_intrinsic_implemented(modules_by_name[root].status)
     ]
     if strict_root_status_violations:
         print(
-            "stdlib intrinsics lint failed: strict-import roots must be intrinsic-backed"
+            "stdlib intrinsics lint failed: strict-import roots must be intrinsic-implemented"
         )
         for root, status in strict_root_status_violations:
             print(f"- {root}: {status}")
         return 1
-    non_intrinsic_backed = {
-        audit.module for audit in audits if audit.status != STATUS_INTRINSIC
+    non_intrinsic_implemented = {
+        audit.module for audit in audits if not _is_intrinsic_implemented(audit.status)
     }
     strict_import_violations: list[tuple[str, tuple[str, ...]]] = []
     for root in sorted(strict_roots):
         imported_closure = _closure({root}, dep_graph)
         imported_closure.discard(root)
-        bad = tuple(sorted(imported_closure & non_intrinsic_backed))
+        bad = tuple(sorted(imported_closure & non_intrinsic_implemented))
         if bad:
             strict_import_violations.append((root, bad))
     fallback_errors_by_module: dict[str, tuple[str, ...]] = {}
@@ -1396,7 +1401,7 @@ def main() -> int:
 
     if bootstrap_closure_violations:
         print(
-            "stdlib intrinsics lint failed: bootstrap strict closure must be intrinsic-backed"
+            "stdlib intrinsics lint failed: bootstrap strict closure must be intrinsic-implemented"
         )
         for module, status in bootstrap_closure_violations:
             print(f"- {module}: {status}")
@@ -1404,7 +1409,7 @@ def main() -> int:
 
     if bootstrap_failures:
         print(
-            "stdlib intrinsics lint failed: bootstrap modules must be intrinsic-backed"
+            "stdlib intrinsics lint failed: bootstrap modules must be intrinsic-implemented"
         )
         for module in sorted(set(bootstrap_failures)):
             print(f"- {module}")
@@ -1423,7 +1428,7 @@ def main() -> int:
     if strict_import_violations:
         print(
             "stdlib intrinsics lint failed: strict-import allowlist violated "
-            "(intrinsic-backed roots imported non-intrinsic-backed stdlib modules)"
+            "(intrinsic-implemented roots imported non-intrinsic-implemented stdlib modules)"
         )
         for root, bad in strict_import_violations:
             joined = ", ".join(f"`{name}`" for name in bad)

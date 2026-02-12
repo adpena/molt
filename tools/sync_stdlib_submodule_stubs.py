@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 """
 Synchronize stdlib submodule/subpackage coverage stubs with the CPython union.
 
@@ -10,6 +8,8 @@ This script compares `tools/stdlib_module_union.py` submodule baselines to
 `--write` creates intrinsic-first placeholder stubs for missing submodules and
 subpackages. Without `--write`, this script is a dry-run check.
 """
+
+from __future__ import annotations
 
 import argparse
 import runpy

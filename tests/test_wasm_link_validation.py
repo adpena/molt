@@ -83,3 +83,28 @@ def test_wasm_link_allows_ref_null_element_expr() -> None:
     data = _build_minimal_module(bytes(payload))
     ok, err = wasm_link._validate_elements(data)
     assert ok, err
+
+
+def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
+    write_varuint = wasm_link._write_varuint
+    data = _build_minimal_module(write_varuint(0))
+    sections = wasm_link._parse_sections(data)
+
+    func_name_subsection = bytearray()
+    func_name_subsection.extend(write_varuint(1))  # one function-name mapping
+    func_name_subsection.extend(write_varuint(0))  # func index
+    func_name_subsection.extend(write_varuint(1))  # name length
+    func_name_subsection.extend(b"\x97")  # invalid UTF-8 byte
+
+    custom_name_payload = bytearray()
+    custom_name_payload.extend(wasm_link._write_string("name"))
+    custom_name_payload.append(1)  # function names subsection
+    custom_name_payload.extend(write_varuint(len(func_name_subsection)))
+    custom_name_payload.extend(func_name_subsection)
+
+    sections.insert(0, (0, bytes(custom_name_payload)))
+    malformed = wasm_link._build_sections(sections)
+
+    # Malformed name entries should be ignored, not crash wasm linking.
+    result = wasm_link._append_table_ref_elements(malformed)
+    assert result is None or isinstance(result, bytes)

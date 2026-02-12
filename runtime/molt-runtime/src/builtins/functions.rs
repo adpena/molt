@@ -9811,6 +9811,178 @@ pub extern "C" fn molt_csv_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }
 
+fn logging_percent_lookup_mapping_value(
+    _py: &crate::PyToken<'_>,
+    mapping_ptr: *mut u8,
+    key: &str,
+) -> Option<u64> {
+    let key_ptr = alloc_string(_py, key.as_bytes());
+    if key_ptr.is_null() {
+        return None;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    let value = unsafe { dict_get_in_place(_py, mapping_ptr, key_bits) };
+    dec_ref_bits(_py, key_bits);
+    value
+}
+
+fn logging_percent_render_str(_py: &crate::PyToken<'_>, value_bits: u64) -> Option<String> {
+    let rendered_bits = crate::molt_str_from_obj(value_bits);
+    if exception_pending(_py) {
+        return None;
+    }
+    let rendered = string_obj_to_owned(obj_from_bits(rendered_bits));
+    dec_ref_bits(_py, rendered_bits);
+    rendered
+}
+
+fn logging_percent_render_repr(_py: &crate::PyToken<'_>, value_bits: u64) -> Option<String> {
+    let rendered_bits = crate::molt_repr_from_obj(value_bits);
+    if exception_pending(_py) {
+        return None;
+    }
+    let rendered = string_obj_to_owned(obj_from_bits(rendered_bits));
+    dec_ref_bits(_py, rendered_bits);
+    rendered
+}
+
+fn logging_percent_render_value(
+    _py: &crate::PyToken<'_>,
+    spec: char,
+    value_bits: u64,
+) -> Option<String> {
+    match spec {
+        'd' => {
+            if let Some(value) = to_i64(obj_from_bits(value_bits)) {
+                return Some(value.to_string());
+            }
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            logging_percent_render_str(_py, value_bits)
+        }
+        'f' => {
+            if let Some(value) = to_f64(obj_from_bits(value_bits)) {
+                return Some(format!("{value:.6}"));
+            }
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            logging_percent_render_str(_py, value_bits)
+        }
+        'r' => logging_percent_render_repr(_py, value_bits),
+        _ => logging_percent_render_str(_py, value_bits),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fmt) = string_obj_to_owned(obj_from_bits(fmt_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "logging format string must be str");
+        };
+        let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
+        };
+        if unsafe { object_type_id(mapping_ptr) } != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
+        }
+
+        let chars: Vec<char> = fmt.chars().collect();
+        let mut out = String::with_capacity(fmt.len());
+        let mut idx = 0usize;
+
+        while idx < chars.len() {
+            let ch = chars[idx];
+            if ch != '%' {
+                out.push(ch);
+                idx += 1;
+                continue;
+            }
+            if idx + 1 >= chars.len() {
+                out.push('%');
+                break;
+            }
+            if chars[idx + 1] == '%' {
+                out.push('%');
+                idx += 2;
+                continue;
+            }
+            if chars[idx + 1] != '(' {
+                out.push('%');
+                idx += 1;
+                continue;
+            }
+            let mut close = idx + 2;
+            while close < chars.len() && chars[close] != ')' {
+                close += 1;
+            }
+            if close >= chars.len() || close + 1 >= chars.len() {
+                for ch in &chars[idx..] {
+                    out.push(*ch);
+                }
+                break;
+            }
+
+            let spec = chars[close + 1];
+            let token: String = chars[idx..=close + 1].iter().collect();
+            if !matches!(spec, 's' | 'd' | 'r' | 'f') {
+                out.push_str(token.as_str());
+                idx = close + 2;
+                continue;
+            }
+
+            let key: String = chars[idx + 2..close].iter().collect();
+            let Some(value_bits) =
+                logging_percent_lookup_mapping_value(_py, mapping_ptr, key.as_str())
+            else {
+                out.push_str(token.as_str());
+                idx = close + 2;
+                continue;
+            };
+
+            let Some(rendered) = logging_percent_render_value(_py, spec, value_bits) else {
+                return MoltObject::none().bits();
+            };
+            out.push_str(rendered.as_str());
+            idx = close + 2;
+        }
+
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
+        };
+        let Some(bytes) = (unsafe { bytes_like_slice(data_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
+        };
+
+        let mut crc = 0xFFFF_FFFFu32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                if (crc & 1) != 0 {
+                    crc = (crc >> 1) ^ 0xEDB8_8320;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+        crc ^= 0xFFFF_FFFF;
+        MoltObject::from_int(i64::from(crc)).bits()
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn molt_logging_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })

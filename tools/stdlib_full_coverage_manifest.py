@@ -36,12 +36,14 @@ TOO_DYNAMIC_POLICY_DOC_REFERENCES: tuple[str, ...] = (
 # Keep this list focused on behavior intentionally excluded from supported
 # semantics, not temporary lowering gaps.
 TOO_DYNAMIC_EXPECTED_FAILURE_TESTS: tuple[str, ...] = (
-    "tests/differential/planned/exec_eval_compile_capability_errors.py",
-    "tests/differential/planned/exec_class_body_locals.py",
-    "tests/differential/planned/exec_class_scope.py",
-    "tests/differential/planned/exec_in_function_locals.py",
-    "tests/differential/planned/exec_locals_mapping.py",
-    "tests/differential/planned/exec_locals_scope.py",
-    "tests/differential/planned/exec_locals_shadowing.py",
-    "tests/differential/planned/eval_locals_scope.py",
+    "tests/differential/basic/builtins_symbol_eval_822bc13e.py",
+    "tests/differential/basic/builtins_symbol_exec_be625627.py",
+    "tests/differential/basic/exec_eval_compile_capability_errors.py",
+    "tests/differential/basic/exec_class_body_locals.py",
+    "tests/differential/basic/exec_class_scope.py",
+    "tests/differential/basic/exec_in_function_locals.py",
+    "tests/differential/basic/exec_locals_mapping.py",
+    "tests/differential/basic/exec_locals_scope.py",
+    "tests/differential/basic/exec_locals_shadowing.py",
+    "tests/differential/basic/eval_locals_scope.py",
 )

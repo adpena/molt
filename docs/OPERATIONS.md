@@ -305,7 +305,7 @@ that is documented by vision/break-policy constraints.
 #
 # 2) Run differential lane as normal; harness auto-converts fail->pass as XFAIL
 #    only when CPython passes and the test path is in that manifest tuple.
-MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/planned/exec_locals_scope.py
+MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
 
 # 3) XPASS is treated as failure; remove stale expected-failure entries when
 #    Molt gains support.

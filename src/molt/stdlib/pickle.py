@@ -1,4 +1,4 @@
-"""Minimal pickle support for Molt (protocol 0 only)."""
+"""Minimal pickle support for Molt (protocols 0 and 1)."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ _require_intrinsic("molt_stdlib_probe", globals())
 _pickle_encode_protocol0 = _require_intrinsic("molt_pickle_encode_protocol0", globals())
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): support
-# pickle protocols >= 1, memoized cycles, and additional builtins (bytes, bytearray,
-# complex, dataclasses, custom reducers, and persistent IDs).
+# pickle protocols >= 2, memoized cycles, and additional builtins (complex,
+# dataclasses, custom reducers, and persistent IDs).
 
 
 class PickleError(Exception):
@@ -37,11 +37,16 @@ class UnpicklingError(PickleError):
     pass
 
 
-HIGHEST_PROTOCOL = 0
+HIGHEST_PROTOCOL = 1
 DEFAULT_PROTOCOL = 0
 
 _MARK = object()
 _ALLOWED_GLOBALS = {
+    ("_codecs", "encode"): lambda text, encoding="utf-8": _codecs_encode(
+        text, encoding
+    ),
+    ("builtins", "bytearray"): bytearray,
+    ("__builtin__", "bytearray"): bytearray,
     ("builtins", "slice"): slice,
     ("__builtin__", "slice"): slice,
     ("builtins", "set"): set,
@@ -64,10 +69,10 @@ def dump(obj: Any, file, protocol: int | None = None) -> None:
 def dumps(obj: Any, protocol: int | None = None) -> bytes:
     if protocol is None:
         protocol = DEFAULT_PROTOCOL
-    if protocol != 0:
-        raise ValueError("only pickle protocol 0 is supported")
+    if protocol not in (0, 1):
+        raise ValueError("only pickle protocols 0 and 1 are supported")
     out: list[str] = []
-    _dump_obj(obj, out)
+    _dump_obj(obj, out, protocol)
     out.append(".")
     return _pickle_encode_protocol0(out)
 
@@ -199,7 +204,7 @@ def _dump_global(module: str, name: str, out: list[str]) -> None:
     out.append(f"c{module}\n{name}\n")
 
 
-def _dump_obj(obj: Any, out: list[str]) -> None:
+def _dump_obj(obj: Any, out: list[str], protocol: int) -> None:
     if obj is None:
         out.append("N")
         return
@@ -215,47 +220,65 @@ def _dump_obj(obj: Any, out: list[str]) -> None:
     if isinstance(obj, str):
         out.append(f"S{obj!r}\n")
         return
+    if isinstance(obj, bytes):
+        _dump_global("_codecs", "encode", out)
+        _dump_obj((obj.decode("latin1"), "latin1"), out, protocol)
+        out.append("R")
+        return
+    if isinstance(obj, bytearray):
+        _dump_global("builtins", "bytearray", out)
+        _dump_obj((bytes(obj),), out, protocol)
+        out.append("R")
+        return
     if isinstance(obj, tuple):
         out.append("(")
         for item in obj:
-            _dump_obj(item, out)
+            _dump_obj(item, out, protocol)
         out.append("t")
         return
     if isinstance(obj, list):
         out.append("(")
         out.append("l")
         for item in obj:
-            _dump_obj(item, out)
+            _dump_obj(item, out, protocol)
             out.append("a")
         return
     if isinstance(obj, dict):
         out.append("(")
         out.append("d")
         for key, value in obj.items():
-            _dump_obj(key, out)
-            _dump_obj(value, out)
+            _dump_obj(key, out, protocol)
+            _dump_obj(value, out, protocol)
             out.append("s")
         return
     if isinstance(obj, set):
         _dump_global("builtins", "set", out)
         out.append("(")
-        _dump_obj(list(obj), out)
+        _dump_obj(list(obj), out, protocol)
         out.append("t")
         out.append("R")
         return
     if isinstance(obj, frozenset):
         _dump_global("builtins", "frozenset", out)
         out.append("(")
-        _dump_obj(list(obj), out)
+        _dump_obj(list(obj), out, protocol)
         out.append("t")
         out.append("R")
         return
     if isinstance(obj, slice):
         _dump_global("builtins", "slice", out)
-        _dump_obj((obj.start, obj.stop, obj.step), out)
+        _dump_obj((obj.start, obj.stop, obj.step), out, protocol)
         out.append("R")
         return
     raise PicklingError(f"unsupported type: {type(obj).__name__}")
+
+
+def _codecs_encode(text: str, encoding: str = "utf-8") -> bytes:
+    if not isinstance(text, str):
+        raise TypeError("text must be str")
+    if not isinstance(encoding, str):
+        raise TypeError("encoding must be str")
+    return text.encode(encoding)
 
 
 def _parse_string_literal(text: str) -> str:

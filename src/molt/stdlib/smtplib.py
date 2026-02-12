@@ -21,6 +21,7 @@ __all__ = [
     "SMTPException",
     "SMTPServerDisconnected",
     "SMTPResponseException",
+    "SMTPRecipientsRefused",
 ]
 
 
@@ -37,6 +38,12 @@ class SMTPResponseException(SMTPException):
         super().__init__(smtp_code, smtp_error)
         self.smtp_code = smtp_code
         self.smtp_error = smtp_error
+
+
+class SMTPRecipientsRefused(SMTPException):
+    def __init__(self, recipients: dict[str, tuple[int, bytes]]) -> None:
+        super().__init__(recipients)
+        self.recipients = recipients
 
 
 def _line_to_code(line: bytes) -> tuple[int, bytes]:
@@ -149,6 +156,42 @@ class SMTP:
         )
         self.sock.sendall(stuffed + b"\r\n.\r\n")
         return self._getreply()
+
+    def sendmail(
+        self,
+        from_addr: str,
+        to_addrs: str | list[str] | tuple[str, ...],
+        msg: str | bytes,
+        mail_options=(),
+        rcpt_options=(),
+    ) -> dict[str, tuple[int, bytes]]:
+        del mail_options, rcpt_options
+        if isinstance(to_addrs, str):
+            recipients = [to_addrs]
+        else:
+            recipients = [str(addr) for addr in to_addrs]
+        if not recipients:
+            raise ValueError("SMTP.sendmail requires at least one recipient")
+
+        code, resp = self.mail(from_addr)
+        if code != 250:
+            raise SMTPResponseException(code, resp)
+
+        refused: dict[str, tuple[int, bytes]] = {}
+        accepted = 0
+        for recipient in recipients:
+            code, resp = self.rcpt(recipient)
+            if code in (250, 251):
+                accepted += 1
+                continue
+            refused[recipient] = (code, resp)
+        if accepted == 0:
+            raise SMTPRecipientsRefused(refused)
+
+        code, resp = self.data(msg)
+        if code != 250:
+            raise SMTPResponseException(code, resp)
+        return refused
 
     def noop(self) -> tuple[int, bytes]:
         self._putcmd("NOOP")

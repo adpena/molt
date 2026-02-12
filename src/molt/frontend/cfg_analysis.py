@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 
 class OpLike(Protocol):
@@ -41,7 +41,7 @@ class CFGGraph:
     dominators: dict[int, set[int]]
 
 
-def _collect_control_maps(ops: list[OpLike]) -> ControlMaps:
+def _collect_control_maps(ops: Sequence[OpLike]) -> ControlMaps:
     if_stack: list[int] = []
     if_to_else: dict[int, int] = {}
     if_to_end: dict[int, int] = {}
@@ -100,7 +100,7 @@ def _collect_control_maps(ops: list[OpLike]) -> ControlMaps:
 
 
 def _build_basic_blocks(
-    ops: list[OpLike], control: ControlMaps
+    ops: Sequence[OpLike], control: ControlMaps
 ) -> tuple[list[BasicBlock], dict[int, int], dict[str, int], dict[int, str]]:
     if not ops:
         return [], {}, {}, {}
@@ -162,7 +162,7 @@ def _build_basic_blocks(
 
 def _compute_successors(
     *,
-    ops: list[OpLike],
+    ops: Sequence[OpLike],
     blocks: list[BasicBlock],
     index_to_block: dict[int, int],
     label_to_block: dict[str, int],
@@ -317,7 +317,7 @@ def _compute_dominators(
     return dominators
 
 
-def build_cfg(ops: list[OpLike]) -> CFGGraph:
+def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     control = _collect_control_maps(ops)
     blocks, index_to_block, label_to_block, block_entry_label = _build_basic_blocks(
         ops, control

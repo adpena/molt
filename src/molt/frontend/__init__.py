@@ -10,7 +10,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import string as _py_string
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Literal,
+    NoReturn,
+    Sequence,
+    TypedDict,
+    cast,
+)
 
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
@@ -809,6 +818,17 @@ class FuncInfo(TypedDict):
     ops: list[MoltOp]
 
 
+class CanonicalizationState(TypedDict):
+    aliases: dict[str, MoltValue]
+    const_int_values: dict[str, int]
+    value_type_tags: dict[str, int]
+    available_values: dict[tuple[Any, ...], MoltValue]
+    guard_dict_shapes: dict[str, tuple[str, str]]
+    alias_epochs: dict[str, int]
+    object_epochs: dict[str, int]
+    memory_epoch: int
+
+
 class SimpleTIRGenerator(ast.NodeVisitor):
     def __init__(
         self,
@@ -926,9 +946,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_chunk_symbols: list[str] = []
         if optimization_profile not in {"dev", "release"}:
             optimization_profile = "release"
-        self.optimization_profile: MidendProfile = cast(
-            MidendProfile, optimization_profile
-        )
+        self.optimization_profile: MidendProfile = optimization_profile
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
@@ -19712,9 +19730,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not isinstance(clause.left.slice, ast.Constant):
                 return None
             idx_val = clause.left.slice.value
+            if not isinstance(idx_val, int):
+                return None
             if idx_val not in (0, 4):
                 return None
-            checks.add((int(idx_val), rhs.value))
+            checks.add((idx_val, rhs.value))
         if checks != {(0, "END"), (4, "ENDP")}:
             return None
 
@@ -21724,7 +21744,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     vector_info = minmax_info
                 if vector_info:
                     acc_name, item_name, kind = vector_info
-                    if kind == "sum" and item_name == node.target.id:
+                    target_id = (
+                        node.target.id if isinstance(node.target, ast.Name) else None
+                    )
+                    if (
+                        kind == "sum"
+                        and target_id is not None
+                        and item_name == target_id
+                    ):
                         acc_val = self._load_local_value(acc_name)
                         if acc_val is not None:
                             seq_arg = self._emit_range_obj_from_args(start, stop, step)
@@ -29715,7 +29742,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return BUILTIN_TYPE_TAGS["bytes"]
         return None
 
-    def _empty_canonicalization_state(self) -> dict[str, dict]:
+    def _empty_canonicalization_state(self) -> CanonicalizationState:
         return {
             "aliases": {},
             "const_int_values": {},
@@ -29727,16 +29754,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "memory_epoch": 0,
         }
 
-    def _clone_canonicalization_state(self, state: dict[str, dict]) -> dict[str, dict]:
+    def _clone_canonicalization_state(
+        self, state: CanonicalizationState
+    ) -> CanonicalizationState:
         return {
             "aliases": state["aliases"].copy(),
             "const_int_values": state["const_int_values"].copy(),
             "value_type_tags": state["value_type_tags"].copy(),
             "available_values": state["available_values"].copy(),
             "guard_dict_shapes": state["guard_dict_shapes"].copy(),
-            "alias_epochs": state.get("alias_epochs", {}).copy(),
-            "object_epochs": state.get("object_epochs", {}).copy(),
-            "memory_epoch": int(state.get("memory_epoch", 0)),
+            "alias_epochs": state["alias_epochs"].copy(),
+            "object_epochs": state["object_epochs"].copy(),
+            "memory_epoch": state["memory_epoch"],
         }
 
     def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None:
@@ -30078,9 +30107,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         visiting: set[str] = set()
 
         def resolve(value_name: str) -> int | None:
-            cached = memo.get(value_name, _SCCP_UNKNOWN)
-            if cached is not _SCCP_UNKNOWN:
-                return cached
+            if value_name in memo:
+                return memo[value_name]
             if value_name in visiting:
                 memo[value_name] = None
                 return None
@@ -30663,7 +30691,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def _kill_value_in_canonicalization_state(
-        self, state: dict[str, dict], name: str
+        self, state: CanonicalizationState, name: str
     ) -> None:
         aliases: dict[str, MoltValue] = state["aliases"]
         aliases.pop(name, None)
@@ -30690,12 +30718,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ]
         for key in stale_dict_shapes:
             guard_dict_shapes.pop(key, None)
-        object_epochs: dict[str, int] = state.get("object_epochs", {})
+        object_epochs: dict[str, int] = state["object_epochs"]
         object_epochs.pop(name, None)
 
     def _intersect_canonicalization_state(
-        self, left: dict[str, dict], right: dict[str, dict]
-    ) -> dict[str, dict]:
+        self, left: CanonicalizationState, right: CanonicalizationState
+    ) -> CanonicalizationState:
         aliases: dict[str, MoltValue] = {}
         for key, left_value in left["aliases"].items():
             right_value = right["aliases"].get(key)
@@ -30737,8 +30765,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 guard_dict_shapes[key] = left_value
 
         alias_epochs: dict[str, int] = {}
-        left_alias_epochs = left.get("alias_epochs", {})
-        right_alias_epochs = right.get("alias_epochs", {})
+        left_alias_epochs = left["alias_epochs"]
+        right_alias_epochs = right["alias_epochs"]
         for key in set(left_alias_epochs.keys()).union(right_alias_epochs.keys()):
             alias_epochs[key] = max(
                 int(left_alias_epochs.get(key, 0)),
@@ -30746,8 +30774,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
 
         object_epochs: dict[str, int] = {}
-        left_object_epochs = left.get("object_epochs", {})
-        right_object_epochs = right.get("object_epochs", {})
+        left_object_epochs = left["object_epochs"]
+        right_object_epochs = right["object_epochs"]
         for key in set(left_object_epochs.keys()).union(right_object_epochs.keys()):
             object_epochs[key] = max(
                 int(left_object_epochs.get(key, 0)),
@@ -30762,14 +30790,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "guard_dict_shapes": guard_dict_shapes,
             "alias_epochs": alias_epochs,
             "object_epochs": object_epochs,
-            "memory_epoch": max(
-                int(left.get("memory_epoch", 0)), int(right.get("memory_epoch", 0))
-            ),
+            "memory_epoch": max(left["memory_epoch"], right["memory_epoch"]),
         }
 
     def _intersect_canonicalization_states(
-        self, states: list[dict[str, dict]]
-    ) -> dict[str, dict]:
+        self, states: list[CanonicalizationState]
+    ) -> CanonicalizationState:
         if not states:
             return self._empty_canonicalization_state()
         merged = self._clone_canonicalization_state(states[0])
@@ -30778,7 +30804,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return merged
 
     def _canonicalization_state_signature(
-        self, state: dict[str, dict]
+        self, state: CanonicalizationState
     ) -> tuple[
         tuple[tuple[str, str], ...],
         tuple[tuple[str, int], ...],
@@ -30800,9 +30826,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         dict_shape_items = tuple(sorted(state["guard_dict_shapes"].items()))
-        alias_epoch_items = tuple(sorted(state.get("alias_epochs", {}).items()))
-        object_epoch_items = tuple(sorted(state.get("object_epochs", {}).items()))
-        memory_epoch = int(state.get("memory_epoch", 0))
+        alias_epoch_items = tuple(sorted(state["alias_epochs"].items()))
+        object_epoch_items = tuple(sorted(state["object_epochs"].items()))
+        memory_epoch = state["memory_epoch"]
         return (
             alias_items,
             const_items,
@@ -30817,10 +30843,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _canonicalize_block_with_state(
         self,
         ops: list[MoltOp],
-        in_state: dict[str, dict],
+        in_state: CanonicalizationState,
         *,
         induction_steps: dict[str, int],
-    ) -> tuple[list[MoltOp], dict[str, dict]]:
+    ) -> tuple[list[MoltOp], CanonicalizationState]:
         func_stats = self._midend_function_stats()
         state = self._clone_canonicalization_state(in_state)
         aliases: dict[str, MoltValue] = state["aliases"]
@@ -30828,9 +30854,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         value_type_tags: dict[str, int] = state["value_type_tags"]
         available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
         guard_dict_shapes: dict[str, tuple[str, str]] = state["guard_dict_shapes"]
-        alias_epochs: dict[str, int] = state.get("alias_epochs", {})
-        object_epochs: dict[str, int] = state.get("object_epochs", {})
-        memory_epoch = int(state.get("memory_epoch", 0))
+        alias_epochs: dict[str, int] = state["alias_epochs"]
+        object_epochs: dict[str, int] = state["object_epochs"]
+        memory_epoch = state["memory_epoch"]
 
         out: list[MoltOp] = []
         for op in ops:
@@ -33383,7 +33409,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         rewritten: list[MoltOp] = []
         rewrites = 0
 
-        def fail(message: str) -> None:
+        def fail(message: str) -> NoReturn:
             self.midend_stats["cfg_structural_failures"] += 1
             raise RuntimeError(
                 f"Malformed control flow after {stage} in "
@@ -33488,6 +33514,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             label_key = self._control_label_key(op.args[0])
             if label_key is None:
                 fail(f"{op.kind} at op index {idx} has invalid label {op.args[0]!r}")
+            assert label_key is not None
             if label_key in labels:
                 prior = labels[label_key]
                 fail(
@@ -33504,6 +33531,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             label_key = self._control_label_key(op.args[0])
             if label_key is None:
                 fail(f"{op.kind} at op index {idx} has invalid target {op.args[0]!r}")
+            assert label_key is not None
             if label_key not in labels:
                 fail(f"{op.kind} at op index {idx} targets unknown label {label_key!r}")
 
@@ -33809,10 +33837,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         sccp_in_consts = self._sccp_in_const_int_values(sccp)
         induction_steps = self._analyze_loop_induction_steps(working_ops, round_cfg)
 
-        block_inputs: dict[int, dict[str, dict]] = {
+        block_inputs: dict[int, CanonicalizationState] = {
             block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
         }
-        block_outputs: dict[int, dict[str, dict]] = {
+        block_outputs: dict[int, CanonicalizationState] = {
             block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
         }
         block_canonical_ops: dict[int, list[MoltOp]] = {

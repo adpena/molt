@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 """
 Generate the versioned CPython stdlib top-level union baseline.
 
@@ -13,6 +11,8 @@ It queries `sys.stdlib_module_names` for each selected Python version using
 
 The output is intentionally deterministic and sorted so diffs are reviewable.
 """
+
+from __future__ import annotations
 
 import argparse
 import json

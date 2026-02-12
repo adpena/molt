@@ -29,7 +29,7 @@
 - **Capability parity:** submodules that touch I/O/OS/process boundaries inherit the same capability gates as their parent module.
 
 ## 0.3 Coverage Notes
-- Differential coverage includes a Click/Trio stdlib surface pack (see `tests/differential/COVERAGE_INDEX.yaml` and `tests/differential/planned/*_basic.py`).
+- Differential coverage includes a Click/Trio stdlib surface pack (see `tests/differential/COVERAGE_INDEX.yaml` and `tests/differential/stdlib/*_basic.py`).
 
 ## 0.4 Version Policy
 - This matrix targets CPython **3.12+** semantics.
@@ -440,9 +440,9 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 ## 7. Matrix Audit (2026-01-16)
 Coverage evidence (selected):
 - `tests/differential/stdlib/heapq_basic.py`, `tests/differential/stdlib/heapq_more.py` (heapq core + merge/max-heap helpers).
-- `tests/differential/basic/bisect_basic.py` (bisect/insort + key support).
+- `tests/differential/stdlib/bisect_basic.py` (bisect/insort + key support).
 - `tests/differential/stdlib/itertools_core.py` (core itertools iterators and combinatorics).
-- `tests/differential/basic/collections_basic.py`, `tests/differential/stdlib/collections_deque.py` (collections shims + deque core).
+- `tests/differential/stdlib/collections_basic.py`, `tests/differential/stdlib/collections_deque.py` (collections shims + deque core).
 - `tests/differential/stdlib/functools_more.py` (cmp_to_key + total_ordering parity).
 - `tests/differential/stdlib/operator_basic.py` (itemgetter/attrgetter/methodcaller).
 - `tests/differential/stdlib/fnmatch_basic.py` (fnmatch core patterns).

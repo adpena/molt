@@ -41,8 +41,8 @@ Landed:
    - `tests/test_stdlib_importlib_machinery.py`
    - `tests/test_check_stdlib_intrinsics.py` (ratchet + fallback-pattern lanes)
 5. targeted differential confirmations:
-   - `tests/differential/basic/importlib_find_spec_path_importer_cache_intrinsic.py`
-   - `tests/differential/basic/importlib_find_spec_path_hooks_intrinsic.py`
+   - `tests/differential/stdlib/importlib_find_spec_path_importer_cache_intrinsic.py`
+   - `tests/differential/stdlib/importlib_find_spec_path_hooks_intrinsic.py`
 
 ## Active Queue
 1. `pickle` (`intrinsic-partial`) to intrinsic-backed completion.

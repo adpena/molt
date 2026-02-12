@@ -10,239 +10,61 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `873`
-- `intrinsic-backed`: `180`
-- `intrinsic-partial`: `693`
+- `intrinsic-backed`: `0`
+- `intrinsic-partial`: `873`
 - `probe-only`: `0`
 - `python-only`: `0`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
-- `socket`: `intrinsic-backed`
-- `select`: `intrinsic-backed`
-- `selectors`: `intrinsic-backed`
-- `threading`: `intrinsic-backed`
-- `asyncio`: `intrinsic-backed`
+- `socket`: `intrinsic-partial`
+- `select`: `intrinsic-partial`
+- `selectors`: `intrinsic-partial`
+- `threading`: `intrinsic-partial`
+- `asyncio`: `intrinsic-partial`
 
 ### P1 queue (Phase 3: core-adjacent stdlib)
-- `builtins`: `intrinsic-backed`
-- `types`: `intrinsic-backed`
-- `weakref`: `intrinsic-backed`
+- `builtins`: `intrinsic-partial`
+- `types`: `intrinsic-partial`
+- `weakref`: `intrinsic-partial`
 - `math`: `intrinsic-partial`
-- `re`: `intrinsic-backed`
-- `struct`: `intrinsic-backed`
-- `time`: `intrinsic-backed`
+- `re`: `intrinsic-partial`
+- `struct`: `intrinsic-partial`
+- `time`: `intrinsic-partial`
 - `inspect`: `intrinsic-partial`
 - `functools`: `intrinsic-partial`
-- `itertools`: `intrinsic-backed`
-- `operator`: `intrinsic-backed`
-- `contextlib`: `intrinsic-backed`
+- `itertools`: `intrinsic-partial`
+- `operator`: `intrinsic-partial`
+- `contextlib`: `intrinsic-partial`
 
 ### P2 queue (Phase 4: import/data/network long tail)
-- `pathlib`: `intrinsic-backed`
-- `importlib`: `intrinsic-backed`
-- `importlib.util`: `intrinsic-backed`
-- `importlib.machinery`: `intrinsic-backed`
-- `pkgutil`: `intrinsic-backed`
-- `glob`: `intrinsic-backed`
-- `shutil`: `intrinsic-backed`
-- `py_compile`: `intrinsic-backed`
-- `compileall`: `intrinsic-backed`
+- `pathlib`: `intrinsic-partial`
+- `importlib`: `intrinsic-partial`
+- `importlib.util`: `intrinsic-partial`
+- `importlib.machinery`: `intrinsic-partial`
+- `pkgutil`: `intrinsic-partial`
+- `glob`: `intrinsic-partial`
+- `shutil`: `intrinsic-partial`
+- `py_compile`: `intrinsic-partial`
+- `compileall`: `intrinsic-partial`
 - `json`: `intrinsic-partial`
-- `csv`: `intrinsic-backed`
+- `csv`: `intrinsic-partial`
 - `pickle`: `intrinsic-partial`
-- `enum`: `intrinsic-backed`
-- `ipaddress`: `intrinsic-backed`
-- `encodings`: `intrinsic-backed`
-- `ssl`: `intrinsic-backed`
-- `subprocess`: `intrinsic-backed`
-- `concurrent.futures`: `intrinsic-backed`
-- `http.client`: `intrinsic-backed`
-- `http.server`: `intrinsic-backed`
+- `enum`: `intrinsic-partial`
+- `ipaddress`: `intrinsic-partial`
+- `encodings`: `intrinsic-partial`
+- `ssl`: `intrinsic-partial`
+- `subprocess`: `intrinsic-partial`
+- `concurrent.futures`: `intrinsic-partial`
+- `http.client`: `intrinsic-partial`
+- `http.server`: `intrinsic-partial`
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
-- `__future__`
-- `_abc`
-- `_collections_abc`
-- `_intrinsics`
-- `_weakref`
-- `_weakrefset`
-- `abc`
-- `ast`
-- `asyncio`
-- `base64`
-- `bdb`
-- `bisect`
-- `builtins`
-- `cProfile`
-- `calendar`
-- `cmath`
-- `cmd`
-- `code`
-- `codecs`
-- `codeop`
-- `collections`
-- `collections.abc`
-- `colorsys`
-- `compileall`
-- `concurrent`
-- `concurrent.futures`
-- `configparser`
-- `contextlib`
-- `contextvars`
-- `copy`
-- `copyreg`
-- `csv`
-- `curses`
-- `dataclasses`
-- `datetime`
-- `dbm`
-- `difflib`
-- `dis`
-- `email`
-- `email.headerregistry`
-- `email.parser`
-- `email.utils`
-- `encodings`
-- `encodings.aliases`
-- `ensurepip`
-- `enum`
-- `errno`
-- `faulthandler`
-- `fcntl`
-- `filecmp`
-- `fileinput`
-- `fnmatch`
-- `ftplib`
-- `gc`
-- `genericpath`
-- `getpass`
-- `glob`
-- `graphlib`
-- `grp`
-- `hashlib`
-- `heapq`
-- `hmac`
-- `http`
-- `http.client`
-- `http.cookiejar`
-- `http.server`
-- `imaplib`
-- `importlib`
-- `importlib.machinery`
-- `importlib.resources`
-- `importlib.util`
-- `io`
-- `ipaddress`
-- `itertools`
-- `keyword`
-- `linecache`
-- `logging`
-- `mailbox`
-- `marshal`
-- `mmap`
-- `modulefinder`
-- `molt.stdlib`
-- `multiprocessing`
-- `multiprocessing.spawn`
-- `netrc`
-- `opcode`
-- `operator`
-- `optparse`
-- `os`
-- `pathlib`
-- `pdb`
-- `pickletools`
-- `pkgutil`
-- `plistlib`
-- `poplib`
-- `posix`
-- `posixpath`
-- `pprint`
-- `profile`
-- `pstats`
-- `pty`
-- `pwd`
-- `py_compile`
-- `pyclbr`
-- `pydoc`
-- `pydoc_data`
-- `pyexpat`
-- `queue`
-- `quopri`
-- `random`
-- `re`
-- `readline`
-- `reprlib`
-- `resource`
-- `rlcompleter`
-- `runpy`
-- `sched`
-- `select`
-- `selectors`
-- `shlex`
-- `shutil`
-- `signal`
-- `socket`
-- `socketserver`
-- `sre_compile`
-- `sre_constants`
-- `sre_parse`
-- `ssl`
-- `stat`
-- `string`
-- `stringprep`
-- `struct`
-- `subprocess`
-- `symtable`
-- `sys`
-- `syslog`
-- `tabnanny`
-- `tempfile`
-- `termios`
-- `test`
-- `test.list_tests`
-- `test.seq_tests`
-- `test.support`
-- `test.support._fallback_support`
-- `test.support.warnings_helper`
-- `test.tokenizedata`
-- `test.tokenizedata.badsyntax_3131`
-- `test.tokenizedata.badsyntax_pep3120`
-- `textwrap`
-- `this`
-- `threading`
-- `time`
-- `timeit`
-- `token`
-- `tokenize`
-- `tomllib`
-- `trace`
-- `traceback`
-- `tracemalloc`
-- `tty`
-- `types`
-- `typing`
-- `unicodedata`
-- `urllib`
-- `urllib.error`
-- `urllib.parse`
-- `urllib.request`
-- `uuid`
-- `venv`
-- `warnings`
-- `wave`
-- `weakref`
-- `webbrowser`
-- `wsgiref`
-- `wsgiref.headers`
-- `wsgiref.simple_server`
-- `wsgiref.util`
-- `xmlrpc`
-- `xmlrpc.client`
-- `zlib`
 
 ### Intrinsic-backed modules (partial lowering pending)
+- `__future__`
+- `_abc`
 - `_aix_support`
 - `_android_support`
 - `_apple_support`
@@ -260,6 +82,7 @@
 - `_codecs_kr`
 - `_codecs_tw`
 - `_collections`
+- `_collections_abc`
 - `_colorize`
 - `_compat_pickle`
 - `_compression`
@@ -284,6 +107,7 @@
 - `_interpchannels`
 - `_interpqueues`
 - `_interpreters`
+- `_intrinsics`
 - `_io`
 - `_ios_support`
 - `_json`
@@ -366,15 +190,20 @@
 - `_typing`
 - `_uuid`
 - `_warnings`
+- `_weakref`
+- `_weakrefset`
 - `_winapi`
 - `_wmi`
 - `_zoneinfo`
 - `_zstd`
+- `abc`
 - `aifc`
 - `annotationlib`
 - `antigravity`
 - `argparse`
 - `array`
+- `ast`
+- `asyncio`
 - `asyncio.__main__`
 - `asyncio.base_events`
 - `asyncio.base_futures`
@@ -411,11 +240,26 @@
 - `asyncio.windows_utils`
 - `atexit`
 - `audioop`
+- `base64`
+- `bdb`
 - `binascii`
+- `bisect`
+- `builtins`
 - `bz2`
+- `cProfile`
+- `calendar`
 - `cgi`
 - `cgitb`
 - `chunk`
+- `cmath`
+- `cmd`
+- `code`
+- `codecs`
+- `codeop`
+- `collections`
+- `collections.abc`
+- `colorsys`
+- `compileall`
 - `compression`
 - `compression._common`
 - `compression._common._streams`
@@ -425,6 +269,8 @@
 - `compression.zlib`
 - `compression.zstd`
 - `compression.zstd._zstdfile`
+- `concurrent`
+- `concurrent.futures`
 - `concurrent.futures._base`
 - `concurrent.futures.interpreter`
 - `concurrent.futures.process`
@@ -432,7 +278,13 @@
 - `concurrent.interpreters`
 - `concurrent.interpreters._crossinterp`
 - `concurrent.interpreters._queues`
+- `configparser`
+- `contextlib`
+- `contextvars`
+- `copy`
+- `copyreg`
 - `crypt`
+- `csv`
 - `ctypes`
 - `ctypes._aix`
 - `ctypes._endian`
@@ -443,16 +295,23 @@
 - `ctypes.macholib.framework`
 - `ctypes.util`
 - `ctypes.wintypes`
+- `curses`
 - `curses.ascii`
 - `curses.has_key`
 - `curses.panel`
 - `curses.textpad`
+- `dataclasses`
+- `datetime`
+- `dbm`
 - `dbm.dumb`
 - `dbm.gnu`
 - `dbm.ndbm`
 - `dbm.sqlite3`
 - `decimal`
+- `difflib`
+- `dis`
 - `doctest`
+- `email`
 - `email._encoded_words`
 - `email._header_value_parser`
 - `email._parseaddr`
@@ -465,6 +324,7 @@
 - `email.feedparser`
 - `email.generator`
 - `email.header`
+- `email.headerregistry`
 - `email.iterators`
 - `email.message`
 - `email.mime`
@@ -476,9 +336,13 @@
 - `email.mime.multipart`
 - `email.mime.nonmultipart`
 - `email.mime.text`
+- `email.parser`
 - `email.policy`
 - `email.quoprimime`
+- `email.utils`
+- `encodings`
 - `encodings._win_cp_codecs`
+- `encodings.aliases`
 - `encodings.ascii`
 - `encodings.base64_codec`
 - `encodings.big5`
@@ -599,17 +463,39 @@
 - `encodings.utf_8_sig`
 - `encodings.uu_codec`
 - `encodings.zlib_codec`
+- `ensurepip`
 - `ensurepip.__main__`
 - `ensurepip._uninstall`
+- `enum`
+- `errno`
+- `faulthandler`
+- `fcntl`
+- `filecmp`
+- `fileinput`
+- `fnmatch`
 - `fractions`
+- `ftplib`
 - `functools`
+- `gc`
+- `genericpath`
 - `getopt`
+- `getpass`
 - `gettext`
+- `glob`
+- `graphlib`
+- `grp`
 - `gzip`
+- `hashlib`
+- `heapq`
+- `hmac`
 - `html`
 - `html.entities`
 - `html.parser`
+- `http`
+- `http.client`
+- `http.cookiejar`
 - `http.cookies`
+- `http.server`
 - `idlelib`
 - `idlelib.__main__`
 - `idlelib.autocomplete`
@@ -670,11 +556,14 @@
 - `idlelib.window`
 - `idlelib.zoomheight`
 - `idlelib.zzdummy`
+- `imaplib`
 - `imghdr`
+- `importlib`
 - `importlib._abc`
 - `importlib._bootstrap`
 - `importlib._bootstrap_external`
 - `importlib.abc`
+- `importlib.machinery`
 - `importlib.metadata`
 - `importlib.metadata._adapters`
 - `importlib.metadata._collections`
@@ -684,6 +573,7 @@
 - `importlib.metadata._text`
 - `importlib.metadata.diagnose`
 - `importlib.readers`
+- `importlib.resources`
 - `importlib.resources._adapters`
 - `importlib.resources._common`
 - `importlib.resources._functional`
@@ -693,13 +583,18 @@
 - `importlib.resources.readers`
 - `importlib.resources.simple`
 - `importlib.simple`
+- `importlib.util`
 - `inspect`
+- `io`
+- `ipaddress`
+- `itertools`
 - `json`
 - `json.__main__`
 - `json.decoder`
 - `json.encoder`
 - `json.scanner`
 - `json.tool`
+- `keyword`
 - `lib2to3`
 - `lib2to3.__main__`
 - `lib2to3.btm_matcher`
@@ -773,15 +668,23 @@
 - `lib2to3.pygram`
 - `lib2to3.pytree`
 - `lib2to3.refactor`
+- `linecache`
 - `locale`
+- `logging`
 - `logging.config`
 - `logging.handlers`
 - `lzma`
+- `mailbox`
 - `mailcap`
+- `marshal`
 - `math`
 - `mimetypes`
+- `mmap`
+- `modulefinder`
+- `molt.stdlib`
 - `msilib`
 - `msvcrt`
+- `multiprocessing`
 - `multiprocessing.connection`
 - `multiprocessing.context`
 - `multiprocessing.dummy`
@@ -801,46 +704,116 @@
 - `multiprocessing.resource_tracker`
 - `multiprocessing.shared_memory`
 - `multiprocessing.sharedctypes`
+- `multiprocessing.spawn`
 - `multiprocessing.synchronize`
 - `multiprocessing.util`
+- `netrc`
 - `nis`
 - `nntplib`
 - `nt`
 - `ntpath`
 - `nturl2path`
 - `numbers`
+- `opcode`
+- `operator`
+- `optparse`
+- `os`
 - `ossaudiodev`
+- `pathlib`
 - `pathlib._abc`
 - `pathlib._local`
 - `pathlib._os`
 - `pathlib.types`
+- `pdb`
 - `pickle`
+- `pickletools`
 - `pipes`
+- `pkgutil`
 - `platform`
+- `plistlib`
+- `poplib`
+- `posix`
+- `posixpath`
+- `pprint`
+- `profile`
+- `pstats`
+- `pty`
+- `pwd`
+- `py_compile`
+- `pyclbr`
+- `pydoc`
+- `pydoc_data`
 - `pydoc_data.topics`
+- `pyexpat`
+- `queue`
+- `quopri`
+- `random`
+- `re`
 - `re._casefix`
 - `re._compiler`
 - `re._constants`
 - `re._parser`
+- `readline`
+- `reprlib`
+- `resource`
+- `rlcompleter`
+- `runpy`
+- `sched`
 - `secrets`
+- `select`
+- `selectors`
 - `shelve`
+- `shlex`
+- `shutil`
+- `signal`
 - `site`
 - `smtplib`
 - `sndhdr`
+- `socket`
+- `socketserver`
 - `spwd`
 - `sqlite3`
 - `sqlite3.__main__`
 - `sqlite3.dbapi2`
 - `sqlite3.dump`
+- `sre_compile`
+- `sre_constants`
+- `sre_parse`
+- `ssl`
+- `stat`
 - `statistics`
+- `string`
 - `string.templatelib`
+- `stringprep`
+- `struct`
+- `subprocess`
 - `sunau`
+- `symtable`
+- `sys`
 - `sysconfig`
 - `sysconfig.__main__`
+- `syslog`
+- `tabnanny`
 - `tarfile`
 - `telnetlib`
+- `tempfile`
+- `termios`
+- `test`
+- `test.list_tests`
+- `test.seq_tests`
+- `test.support`
+- `test.support._fallback_support`
 - `test.support.import_helper`
 - `test.support.os_helper`
+- `test.support.warnings_helper`
+- `test.tokenizedata`
+- `test.tokenizedata.badsyntax_3131`
+- `test.tokenizedata.badsyntax_pep3120`
+- `textwrap`
+- `this`
+- `threading`
+- `time`
+- `timeit`
 - `tkinter`
 - `tkinter.__main__`
 - `tkinter.colorchooser`
@@ -855,9 +828,16 @@
 - `tkinter.simpledialog`
 - `tkinter.tix`
 - `tkinter.ttk`
+- `token`
+- `tokenize`
+- `tomllib`
 - `tomllib._parser`
 - `tomllib._re`
 - `tomllib._types`
+- `trace`
+- `traceback`
+- `tracemalloc`
+- `tty`
 - `turtle`
 - `turtledemo`
 - `turtledemo.__main__`
@@ -880,6 +860,9 @@
 - `turtledemo.tree`
 - `turtledemo.two_canvases`
 - `turtledemo.yinyang`
+- `types`
+- `typing`
+- `unicodedata`
 - `unittest`
 - `unittest.__main__`
 - `unittest._log`
@@ -893,14 +876,28 @@
 - `unittest.signals`
 - `unittest.suite`
 - `unittest.util`
+- `urllib`
+- `urllib.error`
+- `urllib.parse`
+- `urllib.request`
 - `urllib.response`
 - `urllib.robotparser`
 - `uu`
+- `uuid`
+- `venv`
 - `venv.__main__`
+- `warnings`
+- `wave`
+- `weakref`
+- `webbrowser`
 - `winreg`
 - `winsound`
+- `wsgiref`
 - `wsgiref.handlers`
+- `wsgiref.headers`
+- `wsgiref.simple_server`
 - `wsgiref.types`
+- `wsgiref.util`
 - `wsgiref.validate`
 - `xdrlib`
 - `xml`
@@ -925,6 +922,8 @@
 - `xml.sax.handler`
 - `xml.sax.saxutils`
 - `xml.sax.xmlreader`
+- `xmlrpc`
+- `xmlrpc.client`
 - `xmlrpc.server`
 - `zipapp`
 - `zipfile`
@@ -932,6 +931,7 @@
 - `zipfile._path`
 - `zipfile._path.glob`
 - `zipimport`
+- `zlib`
 - `zoneinfo`
 - `zoneinfo._common`
 - `zoneinfo._tzpath`
@@ -942,20 +942,20 @@
 ### Python-only modules (intrinsic missing)
 
 ## Core Lane Gate
-- Required lane: `tests/differential/core/TESTS.txt` (import closure).
-- Gate rule: core-lane imports must be `intrinsic-backed` only (no `intrinsic-partial`, `probe-only`, or `python-only`).
+- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).
+- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) with zero `probe-only` and zero `python-only` modules.
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
 - Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
-- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be `intrinsic-backed` (no `intrinsic-partial`, `probe-only`, or `python-only`).
+- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: required bootstrap modules that are present must be `intrinsic-backed`.
+- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
 - Critical roots: `socket`, `threading`, `asyncio`, `pathlib`, `time`, `traceback`, `sys`, `os`
-- Gate rule: for each listed root currently `intrinsic-backed`, every transitive stdlib import in its closure must also be `intrinsic-backed`.
+- Gate rule: for each listed root currently intrinsic-implemented, every transitive stdlib import in its closure must also be intrinsic-implemented.
 - Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).
 
 ## Intrinsic-Backed Fallback Gate
@@ -979,6 +979,13 @@
 - Global rule: `intrinsic-partial` count must be less than or equal to the ratchet budget and trend to zero.
 - Ratchet source: `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`).
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+
+## Full-Coverage Attestation Rule
+- Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
+- Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).
+- Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).
+- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.
+- This rule applies to all stdlib modules and submodules.
 
 ## CPython Top-Level Union Gate
 - Global rule: Molt must expose one top-level stdlib module or package for every CPython stdlib entry in the 3.12/3.13/3.14 union baseline.

@@ -81,6 +81,82 @@ _MOLT_PATH_RELATIVE_TO_MANY = _require_intrinsic(
 )
 
 
+def _coerce_windows_text(path: str | Path) -> str:
+    if isinstance(path, Path):
+        return path._path
+    text = _os.fspath(path)
+    if isinstance(text, bytes):
+        raise TypeError(
+            "argument should be a str or an os.PathLike object "
+            "where __fspath__ returns a str, not 'bytes'"
+        )
+    return text.replace("/", "\\")
+
+
+def _parse_windows_parts(path: str) -> tuple[str, tuple[str, ...]]:
+    text = _coerce_windows_text(path)
+    if text.startswith("\\\\"):
+        remainder = text[2:]
+        parts = [item for item in remainder.split("\\") if item]
+        if len(parts) >= 2:
+            anchor = f"\\\\{parts[0]}\\{parts[1]}\\"
+            return anchor, (anchor, *tuple(parts[2:]))
+        if len(parts) == 1:
+            anchor = f"\\\\{parts[0]}\\"
+            return anchor, (anchor,)
+        return "\\\\", ("\\\\",)
+
+    if len(text) >= 2 and text[1] == ":":
+        if len(text) >= 3 and text[2] == "\\":
+            anchor = f"{text[:2]}\\"
+            tail = tuple(item for item in text[3:].split("\\") if item)
+            return anchor, (anchor, *tail)
+        anchor = text[:2]
+        tail = tuple(item for item in text[2:].split("\\") if item)
+        return anchor, (anchor, *tail)
+
+    if text.startswith("\\"):
+        anchor = "\\"
+        tail = tuple(item for item in text[1:].split("\\") if item)
+        return anchor, (anchor, *tail)
+
+    return "", tuple(item for item in text.split("\\") if item)
+
+
+def _windows_drive(anchor: str) -> str:
+    if not anchor:
+        return ""
+    if anchor.startswith("\\\\"):
+        return anchor[:-1]
+    return anchor[:-1] if anchor.endswith("\\") else anchor
+
+
+def _windows_root(anchor: str) -> str:
+    if not anchor:
+        return ""
+    if anchor.startswith("\\\\"):
+        return "\\"
+    return "\\" if anchor.endswith("\\") else ""
+
+
+def _windows_name(parts: tuple[str, ...], anchor: str) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0] == anchor:
+        return ""
+    return parts[-1]
+
+
+def _join_windows_parts(parts: tuple[str, ...], is_unc: bool) -> str:
+    if not parts:
+        return "."
+    if len(parts) == 1:
+        return parts[0]
+    normalized = list(parts)
+    normalized[0] = normalized[0].rstrip("\\")
+    return "\\".join(normalized)
+
+
 class Path:
     def __init__(self, path: str | Path | None = None) -> None:
         if path is None:
@@ -459,5 +535,101 @@ class Path:
 
 
 PurePosixPath = Path
-PureWindowsPath = Path
 PurePath = Path
+
+
+class _PureWindowsPath(Path):
+    __slots__ = ()
+
+    def _parse(self) -> tuple[str, tuple[str, ...]]:
+        return _parse_windows_parts(self._path)
+
+    @property
+    def anchor(self) -> str:
+        return self._parse()[0]
+
+    @property
+    def drive(self) -> str:
+        return _windows_drive(self.anchor)
+
+    @property
+    def root(self) -> str:
+        return _windows_root(self.anchor)
+
+    @property
+    def parts(self) -> tuple[str, ...]:
+        return self._parse()[1]
+
+    @property
+    def name(self) -> str:
+        anchor, parts = self._parse()
+        return _windows_name(parts, anchor)
+
+    @property
+    def suffix(self) -> str:
+        name = self.name
+        if not name:
+            return ""
+        dot = name.rfind(".")
+        if dot <= 0:
+            return ""
+        return name[dot:]
+
+    @property
+    def stem(self) -> str:
+        name = self.name
+        if not name:
+            return ""
+        dot = name.rfind(".")
+        if dot <= 0:
+            return name
+        return name[:dot]
+
+    @property
+    def parent(self) -> Path:
+        parts = self.parts
+        if not parts:
+            return self._wrap(".")
+        if len(parts) == 1 and parts[0] == self.anchor:
+            return self._wrap(parts[0])
+        if len(parts) == 1:
+            return self._wrap(".")
+        return self._wrap(
+            _join_windows_parts(parts[:-1], is_unc=self.anchor.startswith("\\"))
+        )
+
+    def with_suffix(self, suffix: str) -> Path:
+        name = self.name
+        if not name:
+            return self._wrap(self._path)
+        suffix_text = str(suffix)
+        if not suffix_text:
+            base = name
+        else:
+            dot = name.rfind(".")
+            base = name if dot <= 0 else name[:dot]
+            base += suffix_text
+        new_parts = self.parts[:-1] + (base,)
+        return self._wrap(
+            _join_windows_parts(new_parts, is_unc=self.anchor.startswith("\\"))
+        )
+
+    def with_name(self, name: str) -> Path:
+        if not name:
+            raise ValueError("empty name")
+        name_text = _coerce_windows_text(name)
+        return self._wrap(
+            _join_windows_parts(
+                (self.parts[:-1] + (name_text,)),
+                is_unc=self.anchor.startswith("\\"),
+            )
+        )
+
+    def as_posix(self) -> str:
+        return self._path.replace("\\", "/")
+
+    def is_absolute(self) -> bool:
+        return bool(self.anchor)
+
+
+PureWindowsPath = _PureWindowsPath

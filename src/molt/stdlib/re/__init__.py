@@ -723,8 +723,15 @@ class Pattern:
 
 
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
-    start = max(0, pos)
-    end = length if endpos is None else max(0, endpos)
+    start = pos
+    if start < 0:
+        start = 0
+    if endpos is None:
+        end = length
+    else:
+        end = endpos
+        if end < 0:
+            end = 0
     if end > length:
         end = length
     if start > end:
