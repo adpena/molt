@@ -11,24 +11,24 @@ use crate::{
     dict_update_method, dict_update_set_in_place, dict_update_set_via_store, exception_class_bits,
     exception_pending, exception_type_bits_from_name, function_arity, function_attr_bits,
     function_closure_bits, function_fn_ptr, function_name_bits, generic_alias_origin_bits,
-    inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits, is_truthy,
-    isinstance_bits, issubclass_bits, list_len, lookup_call_attr, maybe_ptr_from_bits,
-    missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
-    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_rfind_slice,
-    molt_bytearray_rsplit_max, molt_bytearray_split_max, molt_bytearray_splitlines,
-    molt_bytearray_startswith_slice, molt_bytes_count_slice, molt_bytes_decode,
-    molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex, molt_bytes_maketrans,
-    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
-    molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
-    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
-    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new,
-    molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_iter, molt_iter_next,
-    molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
-    molt_object_init, molt_object_init_subclass, molt_object_new_bound, molt_open_builtin,
-    molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_intersection_multi,
+    has_capability, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
+    is_trusted, is_truthy, isinstance_bits, issubclass_bits, list_len, lookup_call_attr,
+    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
+    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
+    molt_bytearray_rfind_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
+    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
+    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
+    molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max,
+    molt_bytes_splitlines, molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new,
+    molt_dataclass_set_class, molt_dict_from_obj, molt_dict_new, molt_file_reconfigure,
+    molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,
+    molt_frozenset_isdisjoint, molt_frozenset_issubset, molt_frozenset_issuperset,
+    molt_frozenset_symmetric_difference, molt_frozenset_union_multi, molt_function_default_kind,
+    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable,
+    molt_iter, molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop,
+    molt_list_sort, molt_memoryview_cast, molt_object_init, molt_object_init_subclass,
+    molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
     molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
     molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
     molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
@@ -36,15 +36,17 @@ use crate::{
     molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
     molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
     molt_string_startswith_slice, molt_type_call, molt_type_init, molt_type_new, obj_eq,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, ptr_from_bits,
-    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, tuple_len, type_name, type_of_bits, MoltHeader, MoltObject, PtrDropGuard,
-    PyToken, BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW,
-    FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE,
-    FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
-    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION,
-    TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_OBJECT,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, profile_hit_unchecked,
+    ptr_from_bits, raise_exception, raise_not_callable, raise_not_iterable, runtime_state,
+    seq_vec_ref, string_obj_to_owned, tuple_len, type_name, type_of_bits, MoltHeader, MoltObject,
+    PtrDropGuard, PyToken, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT,
+    CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE,
+    FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE,
+    FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
+    GEN_CONTROL_SIZE, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, TYPE_ID_BOUND_METHOD,
+    TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -1037,33 +1039,95 @@ unsafe fn try_call_bind_ic_fast(
 /// `builder_bits`.
 pub extern "C" fn molt_call_bind_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        unsafe {
-            let Some(site_id) = ic_site_from_bits(site_bits) else {
-                return molt_call_bind(call_bits, builder_bits);
-            };
-            let builder_ptr = ptr_from_bits(builder_bits);
-            let mut builder_guard = PtrDropGuard::new(builder_ptr);
+        unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
+    })
+}
 
-            if !builder_ptr.is_null() {
-                // Keep cache lock scope explicit so we never hold it while executing Python call paths.
-                let cached_entry = {
-                    let cache = call_bind_ic_cache().lock().unwrap();
-                    cache.get(&site_id).copied()
-                };
-                if let Some(entry) = cached_entry {
-                    if let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr) {
-                        return res;
-                    }
-                }
-            }
+unsafe fn call_bind_ic_dispatch(
+    _py: &PyToken<'_>,
+    site_bits: u64,
+    call_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    let Some(site_id) = ic_site_from_bits(site_bits) else {
+        return molt_call_bind(call_bits, builder_bits);
+    };
+    let builder_ptr = ptr_from_bits(builder_bits);
+    let mut builder_guard = PtrDropGuard::new(builder_ptr);
 
-            builder_guard.release();
-            let res = molt_call_bind(call_bits, builder_bits);
-            if let Some(entry) = call_bind_ic_entry_for_call(call_bits) {
-                call_bind_ic_cache().lock().unwrap().insert(site_id, entry);
+    if !builder_ptr.is_null() {
+        // Keep cache lock scope explicit so we never hold it while executing Python call paths.
+        let cached_entry = {
+            let cache = call_bind_ic_cache().lock().unwrap();
+            cache.get(&site_id).copied()
+        };
+        if let Some(entry) = cached_entry {
+            if let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr) {
+                profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
+                return res;
             }
-            res
         }
+    }
+
+    profile_hit_unchecked(&CALL_BIND_IC_MISS_COUNT);
+    builder_guard.release();
+    let res = molt_call_bind(call_bits, builder_bits);
+    if let Some(entry) = call_bind_ic_entry_for_call(call_bits) {
+        call_bind_ic_cache().lock().unwrap().insert(site_id, entry);
+    }
+    res
+}
+
+fn bool_flag_from_bits(bits: u64) -> bool {
+    let obj = obj_from_bits(bits);
+    if let Some(v) = obj.as_int() {
+        return v != 0;
+    }
+    if obj.is_bool() {
+        return obj.as_bool().unwrap_or(false);
+    }
+    false
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
+/// `builder_bits`. When `require_bridge_cap_bits` is truthy, runtime enforces
+/// `python.bridge` capability in non-trusted mode.
+pub extern "C" fn molt_invoke_ffi_ic(
+    site_bits: u64,
+    call_bits: u64,
+    builder_bits: u64,
+    require_bridge_cap_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if bool_flag_from_bits(require_bridge_cap_bits)
+            && !is_trusted(_py)
+            && !has_capability(_py, "python.bridge")
+        {
+            profile_hit_unchecked(&INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT);
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "missing python.bridge capability",
+            );
+        }
+        unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
+/// `builder_bits`.
+pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let is_callable_bits = molt_is_callable(call_bits);
+        if !bool_flag_from_bits(is_callable_bits) {
+            profile_hit_unchecked(&CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT);
+            return raise_not_callable(_py, obj_from_bits(call_bits));
+        }
+        unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
 

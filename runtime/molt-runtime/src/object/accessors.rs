@@ -4,8 +4,14 @@ use std::sync::OnceLock;
 use crate::{
     class_layout_version_bits, dec_ref_bits, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
     obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size, object_type_id,
-    profile_hit, raise_exception, to_i64, usize_from_bits, PyToken, LAYOUT_GUARD_COUNT,
-    LAYOUT_GUARD_FAIL, STRUCT_FIELD_STORE_COUNT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    profile_hit, raise_exception, to_i64, usize_from_bits, PyToken,
+    GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
+    GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
+    GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT,
+    GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
+    GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
+    GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL,
+    STRUCT_FIELD_STORE_COUNT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -158,25 +164,30 @@ unsafe fn guard_layout_match(
     profile_hit(_py, &LAYOUT_GUARD_COUNT);
     if obj_ptr.is_null() {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT);
         return false;
     }
     let header = header_from_obj_ptr(obj_ptr);
     if (*header).type_id != TYPE_ID_OBJECT {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
         return false;
     }
     let obj_class_bits = object_class_bits(obj_ptr);
     if obj_class_bits == 0 || obj_class_bits != class_bits {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
         return false;
     }
     let class_obj = obj_from_bits(class_bits);
     let Some(class_ptr) = class_obj.as_ptr() else {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
         return false;
     };
     if object_type_id(class_ptr) != TYPE_ID_TYPE {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
         return false;
     }
     let version = class_layout_version_bits(class_ptr);
@@ -184,11 +195,16 @@ unsafe fn guard_layout_match(
         Some(val) if val >= 0 => val as u64,
         _ => {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(
+                _py,
+                &GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
+            );
             return false;
         }
     };
     if version != expected {
         profile_hit(_py, &LAYOUT_GUARD_FAIL);
+        profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT);
         return false;
     }
     true
@@ -203,13 +219,11 @@ pub unsafe extern "C" fn molt_guard_layout_ptr(
     expected_version: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        MoltObject::from_bool(guard_layout_match(
-            _py,
-            obj_ptr,
-            class_bits,
-            expected_version,
-        ))
-        .bits()
+        let matches = guard_layout_match(_py, obj_ptr, class_bits, expected_version);
+        if !matches {
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT);
+        }
+        MoltObject::from_bool(matches).bits()
     })
 }
 

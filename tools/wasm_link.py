@@ -875,11 +875,24 @@ def _validate_linked(linked: Path) -> bool:
 
 
 def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int:
-    runtime_exports = _collect_exports(runtime.read_bytes())
+    try:
+        runtime_exports = _collect_exports(runtime.read_bytes())
+    except ValueError as exc:
+        print(
+            f"Failed to parse runtime wasm exports ({runtime}): {exc}", file=sys.stderr
+        )
+        runtime_exports = {}
     if not runtime_exports and runtime.name.endswith("_reloc.wasm"):
         fallback = runtime.with_name(runtime.name.replace("_reloc", ""))
         if fallback.exists():
-            runtime_exports = _collect_exports(fallback.read_bytes())
+            try:
+                runtime_exports = _collect_exports(fallback.read_bytes())
+            except ValueError as exc:
+                print(
+                    f"Failed to parse fallback runtime wasm exports ({fallback}): {exc}",
+                    file=sys.stderr,
+                )
+                runtime_exports = {}
     if not runtime_exports:
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
@@ -909,6 +922,13 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
+        if not linked.exists():
+            print(
+                "wasm-ld exited successfully but produced no linked output: "
+                f"{linked}",
+                file=sys.stderr,
+            )
+            return 1
         output_table_min = _table_import_min(output.read_bytes())
         if output_table_min is not None:
             try:

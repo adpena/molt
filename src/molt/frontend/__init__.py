@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import ast
 import bisect
+import os
 import sys
+from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import string as _py_string
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypedDict, cast
 
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
+from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.type_facts import normalize_type_hint
 
 if TYPE_CHECKING:
@@ -28,6 +31,34 @@ class MoltOp:
     args: list[Any]
     result: MoltValue
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class SCCPResult:
+    in_values: dict[int, dict[str, Any]]
+    out_values: dict[int, dict[str, Any]]
+    executable_blocks: set[int]
+    executable_edges: set[tuple[int, int]]
+    branch_choice_by_if_index: dict[int, bool]
+    loop_break_choice_by_index: dict[int, bool]
+    try_exception_possible_by_start: dict[int, bool]
+    try_normal_possible_by_start: dict[int, bool]
+    guard_fail_indices: set[int]
+
+
+@dataclass(frozen=True)
+class LoopBoundFact:
+    iv_name: str
+    start: int
+    step: int
+    bound: int
+    compare_op: str
+    compare_index: int
+    compare_result: str
+
+
+_SCCP_OVERDEFINED = object()
+_SCCP_UNKNOWN = object()
 
 
 @dataclass
@@ -936,6 +967,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.async_context = False
         self.lambda_counter = 0
         self.genexpr_counter = 0
+        self.midend_stats: dict[str, int] = {
+            "expanded_attempts": 0,
+            "expanded_accepted": 0,
+            "expanded_fallbacks": 0,
+            "invalid_unbound_rollback": 0,
+            "invalid_unbound_uses": 0,
+            "fixed_point_fail_fast": 0,
+            "cfg_structural_failures": 0,
+            "cfg_structural_canonicalizations": 0,
+            "sccp_iteration_cap_hits": 0,
+            "sccp_branch_prunes": 0,
+            "loop_edge_thread_prunes": 0,
+            "try_edge_thread_prunes": 0,
+            "unreachable_blocks_removed": 0,
+            "cfg_region_prunes": 0,
+            "label_prunes": 0,
+            "jump_noop_elisions": 0,
+            "licm_hoists": 0,
+            "guard_hoist_attempts": 0,
+            "guard_hoist_accepted": 0,
+            "guard_hoist_rejected": 0,
+            "phi_edge_trims": 0,
+            "gvn_hits": 0,
+            "dce_removed_total": 0,
+        }
+        self.midend_stats_by_function: dict[str, dict[str, int]] = {}
+        self._active_midend_function_name = "<direct>"
+        self._midend_stats_reported = False
         self.qualname_stack: list[tuple[str, bool]] = []
         self.current_class: str | None = None
         self.current_method_first_param: str | None = None
@@ -3789,7 +3848,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         tag_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[tag], result=tag_val))
         self.emit(
-            MoltOp(kind="GUARD_TYPE", args=[value, tag_val], result=MoltValue("none"))
+            MoltOp(kind="GUARD_TAG", args=[value, tag_val], result=MoltValue("none"))
         )
 
     def _emit_module_attr_set(
@@ -5160,8 +5219,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[1], result=res))
             return res
+        # Evaluate the handler expression with the pending exception temporarily
+        # cleared. Attribute-based handlers (e.g. `except mod.Error`) otherwise
+        # fail to resolve correctly while an exception is active.
+        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         class_val = self.visit(handler.type)
         if class_val is None:
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_SET_LAST",
+                    args=[exc_val],
+                    result=MoltValue("none"),
+                )
+            )
             self._bridge_fallback(
                 handler,
                 "except (unsupported handler)",
@@ -5171,6 +5241,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
             return res
+        eval_exc = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=eval_exc))
+        none_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        eval_ok = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[eval_exc, none_val], result=eval_ok))
+        self.emit(MoltOp(kind="IF", args=[eval_ok], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[exc_val],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="RAISE", args=[eval_exc], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="ISINSTANCE", args=[exc_val, class_val], result=res))
         return res
@@ -8563,6 +8650,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue:
+        if expected_class == "dict":
+            return self._emit_guard_dict_shape(obj)
         class_info = self.classes.get(expected_class)
         if class_info and not class_info.get("static"):
             class_ref = self._load_local_value(expected_class)
@@ -8589,6 +8678,60 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         return guard
+
+    def _emit_guard_dict_shape(self, obj: MoltValue) -> MoltValue:
+        dict_type = self._emit_builtin_type_value("dict")
+        expected_version = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=expected_version))
+        guard = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(
+                kind="GUARD_DICT_SHAPE",
+                args=[obj, dict_type, expected_version],
+                result=guard,
+            )
+        )
+        return guard
+
+    def _emit_inc_ref(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(MoltOp(kind="INC_REF", args=[value], result=res))
+        return res
+
+    def _emit_dec_ref(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(MoltOp(kind="DEC_REF", args=[value], result=res))
+        return res
+
+    def _emit_borrow(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(MoltOp(kind="BORROW", args=[value], result=res))
+        return res
+
+    def _emit_release(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(MoltOp(kind="RELEASE", args=[value], result=res))
+        return res
+
+    def _emit_box(self, value: MoltValue, *, hint: str | None = None) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=hint or value.type_hint)
+        self.emit(MoltOp(kind="BOX", args=[value], result=res))
+        return res
+
+    def _emit_unbox(self, value: MoltValue, *, hint: str | None = None) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=hint or value.type_hint)
+        self.emit(MoltOp(kind="UNBOX", args=[value], result=res))
+        return res
+
+    def _emit_cast(self, value: MoltValue, *, hint: str | None = None) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=hint or value.type_hint)
+        self.emit(MoltOp(kind="CAST", args=[value], result=res))
+        return res
+
+    def _emit_widen(self, value: MoltValue, *, hint: str | None = None) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=hint or value.type_hint)
+        self.emit(MoltOp(kind="WIDEN", args=[value], result=res))
+        return res
 
     def _loop_guard_assumption(self, obj_name: str, expected_class: str) -> bool | None:
         for guard_map in reversed(self.loop_guard_assumptions):
@@ -13158,7 +13301,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if needs_bind:
             callargs = self._emit_call_args_builder(node)
             res = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+            self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
             return res
         if callee.type_hint.startswith("BoundMethod:"):
             args = self._emit_call_args(node.args)
@@ -13173,7 +13316,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if args is None:
                 callargs = self._emit_call_args_builder(node)
                 res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+                self.emit(
+                    MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res)
+                )
                 return res
             func_name = self.func_symbol_names.get(func_symbol)
             if func_name and func_name in self.globals:
@@ -13202,7 +13347,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 fallback_res = MoltValue(self.next_var(), type_hint=res_hint)
                 self.emit(
                     MoltOp(
-                        kind="CALL_FUNC",
+                        kind="INVOKE_FFI",
                         args=[callee] + args,
                         result=fallback_res,
                     )
@@ -13223,7 +13368,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint=res_hint)
-        self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+        self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
         return res
 
     def _function_needs_classcell(
@@ -15063,9 +15208,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             args = self._emit_call_args(node.args)
                             self.emit(
                                 MoltOp(
-                                    kind="CALL_FUNC",
+                                    kind="INVOKE_FFI",
                                     args=[callee] + args,
                                     result=res,
+                                    metadata={"ffi_lane": "bridge"},
                                 )
                             )
                         return res
@@ -19261,6 +19407,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             key_obj = self.visit(key_expr)
             delta_obj = self.visit(delta_expr)
             if dict_obj is not None and key_obj is not None and delta_obj is not None:
+                # Fast-path increment lanes assume a stable dict object shape.
+                self._emit_guard_dict_shape(dict_obj)
                 self.emit(
                     MoltOp(
                         kind="DICT_STR_INT_INC",
@@ -19371,6 +19519,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         delta_obj = self.visit(delta_expr)
         if dict_obj is None or line_obj is None or delta_obj is None:
             return False
+        # Keep split+count lanes guarded so deopt/profile tooling can track
+        # dict-shape assumptions explicitly.
+        self._emit_guard_dict_shape(dict_obj)
         pair = MoltValue(self.next_var(), type_hint="tuple")
         if sep_expr is None:
             self.emit(
@@ -25806,8 +25957,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=result))
         return result
 
-    def map_ops_to_json(self, ops: list[MoltOp]) -> list[dict[str, Any]]:
-        ops = self._coalesce_check_exception_ops(ops)
+    def map_ops_to_json(
+        self, ops: list[MoltOp], *, function_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        if function_name is not None:
+            self._active_midend_function_name = function_name
+        else:
+            self._active_midend_function_name = "<direct>"
+        ops = self._run_ir_midend_passes(ops)
         json_ops: list[dict[str, Any]] = []
 
         def field_offset(expected_class: str, attr: str) -> int | None:
@@ -25815,6 +25972,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not class_info:
                 return None
             return class_info.get("fields", {}).get(attr)
+
+        def control_value(op: MoltOp) -> int:
+            raw = op.args[0]
+            if isinstance(raw, bool):
+                return int(raw)
+            if isinstance(raw, int):
+                return raw
+            if isinstance(raw, str):
+                text = raw.strip()
+                if text.startswith(("+", "-")):
+                    sign = text[0]
+                    digits = text[1:]
+                    if digits.isdigit():
+                        return int(f"{sign}{digits}")
+                elif text.isdigit():
+                    return int(text)
+            raise RuntimeError(
+                f"Control-flow op {op.kind} requires int label, got {raw!r} ({type(raw).__name__})"
+            )
 
         for op in ops:
             if op.kind == "CONST":
@@ -26221,6 +26397,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "CALL_INDIRECT":
+                json_ops.append(
+                    {
+                        "kind": "call_indirect",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "CALL_GUARDED":
                 target = op.metadata["target"] if op.metadata else ""
                 json_ops.append(
@@ -26239,6 +26423,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "INVOKE_FFI":
+                lane = ""
+                if op.metadata is not None:
+                    raw_lane = op.metadata.get("ffi_lane")
+                    if isinstance(raw_lane, str):
+                        lane = raw_lane
+                invoke_op = {
+                    "kind": "invoke_ffi",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if lane:
+                    invoke_op["s_value"] = lane
+                json_ops.append(invoke_op)
             elif op.kind == "CALL_BIND":
                 json_ops.append(
                     {
@@ -26737,11 +26935,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "TRY_END":
                 json_ops.append({"kind": "try_end"})
             elif op.kind == "LABEL":
-                json_ops.append({"kind": "label", "value": op.args[0]})
+                json_ops.append({"kind": "label", "value": control_value(op)})
             elif op.kind == "STATE_LABEL":
-                json_ops.append({"kind": "state_label", "value": op.args[0]})
+                json_ops.append({"kind": "state_label", "value": control_value(op)})
             elif op.kind == "JUMP":
-                json_ops.append({"kind": "jump", "value": op.args[0]})
+                json_ops.append({"kind": "jump", "value": control_value(op)})
             elif op.kind == "PHI":
                 json_ops.append(
                     {
@@ -26751,7 +26949,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "CHECK_EXCEPTION":
-                json_ops.append({"kind": "check_exception", "value": op.args[0]})
+                json_ops.append({"kind": "check_exception", "value": control_value(op)})
             elif op.kind == "FILE_OPEN":
                 json_ops.append(
                     {
@@ -27236,6 +27434,77 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "args": [arg.name for arg in op.args],
                     }
                 )
+            elif op.kind == "GUARD_TAG":
+                json_ops.append(
+                    {
+                        "kind": "guard_tag",
+                        "args": [arg.name for arg in op.args],
+                    }
+                )
+            elif op.kind == "GUARD_DICT_SHAPE":
+                json_ops.append(
+                    {
+                        "kind": "guard_dict_shape",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "INC_REF":
+                json_ops.append(
+                    {
+                        "kind": "inc_ref",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DEC_REF":
+                json_ops.append(
+                    {
+                        "kind": "dec_ref",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BORROW":
+                json_ops.append(
+                    {
+                        "kind": "borrow",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "RELEASE":
+                json_ops.append(
+                    {
+                        "kind": "release",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind in {
+                "BOX",
+                "UNBOX",
+                "CAST",
+                "WIDEN",
+            }:
+                if (
+                    op.args
+                    and isinstance(op.args[0], MoltValue)
+                    and op.result.name != "none"
+                ):
+                    lowered_kind = {
+                        "BOX": "box",
+                        "UNBOX": "unbox",
+                        "CAST": "cast",
+                        "WIDEN": "widen",
+                    }[op.kind]
+                    json_ops.append(
+                        {
+                            "kind": lowered_kind,
+                            "args": [op.args[0].name],
+                            "out": op.result.name,
+                        }
+                    )
             elif op.kind == "JSON_PARSE":
                 json_ops.append(
                     {
@@ -28861,6 +29130,4624 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             json_ops.append({"kind": "ret_void"})
         return json_ops
 
+    def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
+        ops = self._coalesce_check_exception_ops(ops)
+        try:
+            ops, structural_rewrites = self._ensure_structural_cfg_validity(
+                ops, stage="midend_entry"
+            )
+        except RuntimeError:
+            if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
+                return ops
+            raise
+        self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
+        return self._canonicalize_control_aware_ops(ops)
+
+    def _midend_function_stats(self) -> dict[str, int]:
+        name = self._active_midend_function_name
+        stats = self.midend_stats_by_function.get(name)
+        if stats is None:
+            stats = {
+                "sccp_attempted": 0,
+                "sccp_accepted": 0,
+                "sccp_iteration_cap_hits": 0,
+                "edge_thread_attempted": 0,
+                "edge_thread_accepted": 0,
+                "edge_thread_rejected": 0,
+                "loop_rewrite_attempted": 0,
+                "loop_rewrite_accepted": 0,
+                "loop_rewrite_rejected": 0,
+                "guard_hoist_attempted": 0,
+                "guard_hoist_accepted": 0,
+                "guard_hoist_rejected": 0,
+                "cse_attempted": 0,
+                "cse_accepted": 0,
+                "cse_readheap_attempted": 0,
+                "cse_readheap_accepted": 0,
+                "cse_readheap_rejected": 0,
+                "gvn_attempted": 0,
+                "gvn_accepted": 0,
+                "licm_attempted": 0,
+                "licm_accepted": 0,
+                "licm_rejected": 0,
+                "dce_attempted": 0,
+                "dce_accepted": 0,
+                "dce_pure_op_attempted": 0,
+                "dce_pure_op_accepted": 0,
+                "dce_pure_op_rejected": 0,
+            }
+            self.midend_stats_by_function[name] = stats
+        return stats
+
+    def _maybe_report_midend_stats(self) -> None:
+        if self._midend_stats_reported:
+            return
+        if os.getenv("MOLT_MIDEND_STATS") is None:
+            return
+        self._midend_stats_reported = True
+        ordered_keys = [
+            "expanded_attempts",
+            "expanded_accepted",
+            "expanded_fallbacks",
+            "invalid_unbound_rollback",
+            "invalid_unbound_uses",
+            "fixed_point_fail_fast",
+            "cfg_structural_failures",
+            "cfg_structural_canonicalizations",
+            "sccp_iteration_cap_hits",
+            "sccp_branch_prunes",
+            "loop_edge_thread_prunes",
+            "try_edge_thread_prunes",
+            "unreachable_blocks_removed",
+            "cfg_region_prunes",
+            "label_prunes",
+            "jump_noop_elisions",
+            "licm_hoists",
+            "guard_hoist_attempts",
+            "guard_hoist_accepted",
+            "guard_hoist_rejected",
+            "phi_edge_trims",
+            "gvn_hits",
+            "dce_removed_total",
+        ]
+        rendered = " ".join(
+            f"{key}={self.midend_stats.get(key, 0)}" for key in ordered_keys
+        )
+        print(
+            f"molt midend stats: {rendered}",
+            file=sys.stderr,
+        )
+        per_func = []
+        for func_name in sorted(self.midend_stats_by_function):
+            stats = self.midend_stats_by_function[func_name]
+            per_func.append(
+                f"{func_name}:"
+                f"sccp={stats.get('sccp_accepted', 0)}/{stats.get('sccp_attempted', 0)},"
+                f"sccp_cap={stats.get('sccp_iteration_cap_hits', 0)},"
+                f"edge_thread={stats.get('edge_thread_accepted', 0)}/{stats.get('edge_thread_attempted', 0)}"
+                f"(rej={stats.get('edge_thread_rejected', 0)}),"
+                f"loop_rewrite={stats.get('loop_rewrite_accepted', 0)}/{stats.get('loop_rewrite_attempted', 0)}"
+                f"(rej={stats.get('loop_rewrite_rejected', 0)}),"
+                f"guard_hoist={stats.get('guard_hoist_accepted', 0)}/{stats.get('guard_hoist_attempted', 0)}"
+                f"(rej={stats.get('guard_hoist_rejected', 0)}),"
+                f"cse={stats.get('cse_accepted', 0)}/{stats.get('cse_attempted', 0)},"
+                f"cse_readheap={stats.get('cse_readheap_accepted', 0)}/{stats.get('cse_readheap_attempted', 0)}"
+                f"(rej={stats.get('cse_readheap_rejected', 0)}),"
+                f"gvn={stats.get('gvn_accepted', 0)}/{stats.get('gvn_attempted', 0)},"
+                f"licm={stats.get('licm_accepted', 0)}/{stats.get('licm_attempted', 0)}"
+                f"(rej={stats.get('licm_rejected', 0)}),"
+                f"dce={stats.get('dce_accepted', 0)}/{stats.get('dce_attempted', 0)},"
+                f"dce_pure={stats.get('dce_pure_op_accepted', 0)}/{stats.get('dce_pure_op_attempted', 0)}"
+                f"(rej={stats.get('dce_pure_op_rejected', 0)})"
+            )
+        if per_func:
+            print(
+                "molt midend function stats: " + " | ".join(per_func),
+                file=sys.stderr,
+            )
+            hotspot_candidates: list[tuple[int, str, str, int, int]] = []
+            tracked = [
+                ("sccp_iteration_cap_hits", "sccp_cap"),
+                ("edge_thread_rejected", "edge_thread"),
+                ("loop_rewrite_rejected", "loop_rewrite"),
+                ("cse_readheap_rejected", "cse_readheap"),
+                ("dce_pure_op_rejected", "dce_pure_op"),
+                ("guard_hoist_rejected", "guard_hoist"),
+                ("licm_rejected", "licm"),
+            ]
+            for func_name, stats in self.midend_stats_by_function.items():
+                for key, family in tracked:
+                    rejected = int(stats.get(key, 0))
+                    attempted = int(
+                        stats.get(
+                            {
+                                "sccp_iteration_cap_hits": "sccp_attempted",
+                                "edge_thread_rejected": "edge_thread_attempted",
+                                "loop_rewrite_rejected": "loop_rewrite_attempted",
+                                "cse_readheap_rejected": "cse_readheap_attempted",
+                                "dce_pure_op_rejected": "dce_pure_op_attempted",
+                                "guard_hoist_rejected": "guard_hoist_attempted",
+                                "licm_rejected": "licm_attempted",
+                            }[key],
+                            0,
+                        )
+                    )
+                    if rejected > 0:
+                        hotspot_candidates.append(
+                            (rejected, func_name, family, rejected, attempted)
+                        )
+            if hotspot_candidates:
+                hotspot_candidates.sort(reverse=True)
+                _score, func_name, family, rejected, attempted = hotspot_candidates[0]
+                print(
+                    "molt midend hotspot: "
+                    f"{func_name} family={family} rejected={rejected} attempted={attempted}",
+                    file=sys.stderr,
+                )
+
+    def _resolve_alias_value(
+        self, value: MoltValue, aliases: dict[str, MoltValue]
+    ) -> MoltValue:
+        current = value
+        visited: set[str] = set()
+        while current.name in aliases and current.name not in visited:
+            visited.add(current.name)
+            current = aliases[current.name]
+        return current
+
+    def _rewrite_aliases_in_arg(self, value: Any, aliases: dict[str, MoltValue]) -> Any:
+        if isinstance(value, MoltValue):
+            return self._resolve_alias_value(value, aliases)
+        if isinstance(value, list):
+            return [self._rewrite_aliases_in_arg(item, aliases) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._rewrite_aliases_in_arg(item, aliases) for item in value)
+        if isinstance(value, dict):
+            return {
+                self._rewrite_aliases_in_arg(k, aliases): self._rewrite_aliases_in_arg(
+                    v, aliases
+                )
+                for k, v in value.items()
+            }
+        return value
+
+    def _is_canonicalization_barrier_op(self, op_kind: str) -> bool:
+        if op_kind in {"RETURN", "RAISE", "RAISE_CAUSE", "RERAISE"}:
+            return True
+        if op_kind.startswith("EXCEPTION_"):
+            return True
+        if op_kind.startswith("STATE_"):
+            return True
+        return False
+
+    def _const_type_tag(self, op: MoltOp) -> int | None:
+        if op.kind == "CONST_BOOL":
+            return BUILTIN_TYPE_TAGS["bool"]
+        if op.kind == "CONST":
+            value = op.args[0]
+            if isinstance(value, int) and not isinstance(value, bool):
+                return BUILTIN_TYPE_TAGS["int"]
+        if op.kind == "CONST_BIGINT":
+            return BUILTIN_TYPE_TAGS["int"]
+        if op.kind == "CONST_FLOAT":
+            return BUILTIN_TYPE_TAGS["float"]
+        if op.kind == "CONST_STR":
+            return BUILTIN_TYPE_TAGS["str"]
+        if op.kind == "CONST_BYTES":
+            return BUILTIN_TYPE_TAGS["bytes"]
+        return None
+
+    def _empty_canonicalization_state(self) -> dict[str, dict]:
+        return {
+            "aliases": {},
+            "const_int_values": {},
+            "value_type_tags": {},
+            "available_values": {},
+            "guard_dict_shapes": {},
+            "alias_epochs": {},
+            "object_epochs": {},
+            "memory_epoch": 0,
+        }
+
+    def _clone_canonicalization_state(self, state: dict[str, dict]) -> dict[str, dict]:
+        return {
+            "aliases": state["aliases"].copy(),
+            "const_int_values": state["const_int_values"].copy(),
+            "value_type_tags": state["value_type_tags"].copy(),
+            "available_values": state["available_values"].copy(),
+            "guard_dict_shapes": state["guard_dict_shapes"].copy(),
+            "alias_epochs": state.get("alias_epochs", {}).copy(),
+            "object_epochs": state.get("object_epochs", {}).copy(),
+            "memory_epoch": int(state.get("memory_epoch", 0)),
+        }
+
+    def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None:
+        if op.kind in {"CONST_NONE", "CONST_NOT_IMPLEMENTED", "CONST_ELLIPSIS"}:
+            return (op.kind,)
+        if op.kind == "CONST_BYTES":
+            return ("CONST_BYTES", bytes(op.args[0]))
+        if op.kind in {"CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_STR"}:
+            value = op.args[0]
+            try:
+                hash(value)
+                normalized = value
+            except TypeError:
+                normalized = repr(value)
+            return (op.kind, normalized)
+        if op.kind == "CONST":
+            value = op.args[0]
+            try:
+                hash(value)
+                normalized = value
+            except TypeError:
+                normalized = repr(value)
+            return ("CONST", type(value).__name__, normalized)
+        return None
+
+    def _op_effect_class(self, op_kind: str) -> str:
+        if op_kind in {
+            "CONST",
+            "CONST_BIGINT",
+            "CONST_BOOL",
+            "CONST_FLOAT",
+            "CONST_STR",
+            "CONST_BYTES",
+            "CONST_NONE",
+            "CONST_NOT_IMPLEMENTED",
+            "CONST_ELLIPSIS",
+            "MISSING",
+            "PHI",
+            "NOT",
+            "IS",
+            "TYPE_OF",
+            "ADD",
+            "SUB",
+            "MUL",
+            "ABS",
+            "AND",
+            "OR",
+            "EQ",
+            "NE",
+            "LT",
+            "LE",
+            "GT",
+            "GE",
+            "STRING_EQ",
+        }:
+            return "pure"
+        if op_kind in {
+            "LEN",
+            "INDEX",
+            "GET_ATTR",
+            "GETATTR",
+            "LOAD_ATTR",
+            "GETATTR_NAME",
+            "HASATTR_NAME",
+            "GETATTR_SPECIAL_OBJ",
+            "GETATTR_GENERIC_OBJ",
+            "GETATTR_GENERIC_PTR",
+            "GETATTR_NAME_DEFAULT",
+            "GUARDED_GETATTR",
+            "MODULE_GET_ATTR",
+            "ISINSTANCE",
+            "CONTAINS",
+        }:
+            return "reads_heap"
+        if op_kind in {
+            "CALL",
+            "CALL_INDIRECT",
+            "CALL_INTERNAL",
+            "INVOKE_FFI",
+            "STORE_ATTR",
+            "SETATTR",
+            "SET_ATTR",
+            "STORE_INDEX",
+            "SET_INDEX",
+            "LIST_APPEND",
+            "LIST_EXTEND",
+            "LIST_POP",
+            "LIST_REMOVE",
+            "LIST_INSERT",
+            "LIST_CLEAR",
+            "LIST_REVERSE",
+            "DICT_SET",
+            "DICT_STR_INT_INC",
+            "DICT_SPLIT_COUNT_INT_INC",
+            "DICT_SETDEFAULT",
+            "DICT_POP",
+            "DICT_POPITEM",
+            "DICT_CLEAR",
+            "DICT_UPDATE",
+            "DICT_UPDATE_KWSTAR",
+            "DEL_ATTR",
+            "DELATTR",
+            "SETATTR_NAME",
+            "DELATTR_NAME",
+            "DEL_INDEX",
+        }:
+            return "writes_heap"
+        if op_kind.startswith("EXCEPTION_") or op_kind.startswith("STATE_"):
+            return "control"
+        if op_kind in {
+            "IF",
+            "ELSE",
+            "END_IF",
+            "LOOP_START",
+            "LOOP_END",
+            "LOOP_BREAK",
+            "LOOP_BREAK_IF_TRUE",
+            "LOOP_BREAK_IF_FALSE",
+            "LOOP_CONTINUE",
+            "TRY_START",
+            "TRY_END",
+            "JUMP",
+            "RETURN",
+            "RAISE",
+            "RAISE_CAUSE",
+            "RERAISE",
+            "LABEL",
+            "STATE_LABEL",
+            "CHECK_EXCEPTION",
+            "GUARD_TAG",
+            "GUARD_TYPE",
+            "GUARD_LAYOUT",
+            "GUARD_DICT_SHAPE",
+        }:
+            return "control"
+        return "unknown"
+
+    def _is_pure_op_for_global_cse(self, op_kind: str) -> bool:
+        return self._op_effect_class(op_kind) == "pure"
+
+    def _is_cse_eligible_op(self, op_kind: str) -> bool:
+        return self._op_effect_class(op_kind) in {"pure", "reads_heap"}
+
+    def _normalize_value_operand_key(
+        self, value: Any, const_int_values: dict[str, int]
+    ) -> tuple[str, Any] | None:
+        if not isinstance(value, MoltValue):
+            return None
+        const_value = const_int_values.get(value.name)
+        if const_value is not None:
+            return ("const_int", const_value)
+        return ("ssa", value.name)
+
+    def _normalize_operand_key_for_value_numbering(
+        self, value: Any, const_int_values: dict[str, int]
+    ) -> tuple[str, Any] | None:
+        if isinstance(value, MoltValue):
+            return self._normalize_value_operand_key(value, const_int_values)
+        try:
+            hash(value)
+            return ("const", value)
+        except TypeError:
+            return ("const_repr", repr(value))
+
+    def _const_type_tag_for_lattice_value(self, value: Any) -> int | None:
+        if isinstance(value, bool):
+            return BUILTIN_TYPE_TAGS["bool"]
+        if isinstance(value, int):
+            return BUILTIN_TYPE_TAGS["int"]
+        if isinstance(value, float):
+            return BUILTIN_TYPE_TAGS["float"]
+        if isinstance(value, str):
+            return BUILTIN_TYPE_TAGS["str"]
+        if isinstance(value, bytes):
+            return BUILTIN_TYPE_TAGS["bytes"]
+        if isinstance(value, list):
+            return BUILTIN_TYPE_TAGS["list"]
+        if isinstance(value, tuple):
+            return BUILTIN_TYPE_TAGS["tuple"]
+        if isinstance(value, dict):
+            return BUILTIN_TYPE_TAGS["dict"]
+        if isinstance(value, set):
+            return BUILTIN_TYPE_TAGS["set"]
+        if isinstance(value, frozenset):
+            return BUILTIN_TYPE_TAGS["frozenset"]
+        if isinstance(value, range):
+            return BUILTIN_TYPE_TAGS["range"]
+        return None
+
+    def _heap_alias_class_for_read_op(
+        self, op: MoltOp, value_type_tags: dict[str, int]
+    ) -> str | None:
+        if not op.args:
+            return None
+        primary = op.args[0]
+        if not isinstance(primary, MoltValue):
+            return "indexable"
+        type_tag = value_type_tags.get(primary.name)
+        if op.kind == "LEN":
+            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
+                return "dict"
+            if type_tag == BUILTIN_TYPE_TAGS["list"]:
+                return "list"
+            if type_tag in {
+                BUILTIN_TYPE_TAGS["str"],
+                BUILTIN_TYPE_TAGS["bytes"],
+                BUILTIN_TYPE_TAGS["tuple"],
+                BUILTIN_TYPE_TAGS["frozenset"],
+                BUILTIN_TYPE_TAGS["range"],
+            }:
+                return "immutable_len"
+            return "indexable"
+        if op.kind == "INDEX":
+            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
+                return "dict"
+            if type_tag == BUILTIN_TYPE_TAGS["list"]:
+                return "list"
+            if type_tag in {
+                BUILTIN_TYPE_TAGS["str"],
+                BUILTIN_TYPE_TAGS["bytes"],
+                BUILTIN_TYPE_TAGS["tuple"],
+                BUILTIN_TYPE_TAGS["range"],
+            }:
+                return "immutable_len"
+            return "indexable"
+        if op.kind == "CONTAINS":
+            if type_tag in {
+                BUILTIN_TYPE_TAGS["str"],
+                BUILTIN_TYPE_TAGS["bytes"],
+                BUILTIN_TYPE_TAGS["tuple"],
+                BUILTIN_TYPE_TAGS["frozenset"],
+                BUILTIN_TYPE_TAGS["range"],
+            }:
+                return "immutable_len"
+            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
+                return "dict"
+            if type_tag == BUILTIN_TYPE_TAGS["list"]:
+                return "list"
+            return "indexable"
+        if op.kind in {
+            "GET_ATTR",
+            "GETATTR",
+            "LOAD_ATTR",
+            "GETATTR_NAME",
+            "HASATTR_NAME",
+            "GETATTR_SPECIAL_OBJ",
+            "GETATTR_GENERIC_OBJ",
+            "GETATTR_GENERIC_PTR",
+            "GETATTR_NAME_DEFAULT",
+            "GUARDED_GETATTR",
+            "MODULE_GET_ATTR",
+        }:
+            return "attr"
+        return "indexable"
+
+    def _is_uncertain_heap_boundary(self, op_kind: str) -> bool:
+        return op_kind in {
+            "CALL",
+            "CALL_INDIRECT",
+            "CALL_INTERNAL",
+            "INVOKE_FFI",
+        }
+
+    def _heap_alias_classes_for_write_op(
+        self, op: MoltOp, value_type_tags: dict[str, int]
+    ) -> set[str]:
+        if op.kind in {
+            "DICT_SET",
+            "DICT_STR_INT_INC",
+            "DICT_SPLIT_COUNT_INT_INC",
+            "DICT_SETDEFAULT",
+            "DICT_POP",
+            "DICT_POPITEM",
+            "DICT_CLEAR",
+            "DICT_UPDATE",
+            "DICT_UPDATE_KWSTAR",
+        }:
+            return {"dict", "indexable"}
+        if op.kind in {
+            "LIST_APPEND",
+            "LIST_EXTEND",
+            "LIST_POP",
+            "LIST_REMOVE",
+            "LIST_INSERT",
+            "LIST_CLEAR",
+            "LIST_REVERSE",
+        }:
+            return {"list", "indexable"}
+        if op.kind in {
+            "STORE_ATTR",
+            "SET_ATTR",
+            "SETATTR",
+            "DEL_ATTR",
+            "DELATTR",
+            "SETATTR_NAME",
+            "DELATTR_NAME",
+        }:
+            return {"attr"}
+        if op.kind in {"STORE_INDEX", "SET_INDEX", "DEL_INDEX"}:
+            if not op.args or not isinstance(op.args[0], MoltValue):
+                return {"dict", "list", "indexable"}
+            type_tag = value_type_tags.get(op.args[0].name)
+            if type_tag == BUILTIN_TYPE_TAGS["dict"]:
+                return {"dict", "indexable"}
+            if type_tag == BUILTIN_TYPE_TAGS["list"]:
+                return {"list", "indexable"}
+            return {"dict", "list", "indexable"}
+        return {"dict", "list", "indexable", "attr"}
+
+    def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool:
+        return bool(key) and key[0] == "READ_HEAP_CLASS"
+
+    def _heap_read_key_class(self, key: tuple[Any, ...]) -> str | None:
+        if not self._is_heap_read_key(key):
+            return None
+        if len(key) < 2:
+            return None
+        read_class = key[1]
+        if not isinstance(read_class, str):
+            return None
+        return read_class
+
+    def _is_read_key_invalidated_by_alias_classes(
+        self, key: tuple[Any, ...], alias_classes: set[str]
+    ) -> bool:
+        read_class = self._heap_read_key_class(key)
+        if read_class is None:
+            return False
+        if read_class == "immutable_len":
+            return False
+        if read_class == "indexable":
+            return bool(alias_classes.intersection({"indexable", "dict", "list"}))
+        return read_class in alias_classes
+
+    def _int_const_from_definition(
+        self, name: str, definitions: dict[str, MoltOp]
+    ) -> int | None:
+        memo: dict[str, int | None] = {}
+        visiting: set[str] = set()
+
+        def resolve(value_name: str) -> int | None:
+            cached = memo.get(value_name, _SCCP_UNKNOWN)
+            if cached is not _SCCP_UNKNOWN:
+                return cached
+            if value_name in visiting:
+                memo[value_name] = None
+                return None
+            visiting.add(value_name)
+            op = definitions.get(value_name)
+            resolved: int | None = None
+            if op is not None:
+                if op.kind in {"CONST", "CONST_BIGINT"} and op.args:
+                    raw = op.args[0]
+                    if isinstance(raw, int) and not isinstance(raw, bool):
+                        resolved = raw
+                elif op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+                    lhs = op.args[0]
+                    rhs = op.args[1]
+                    if isinstance(lhs, MoltValue) and isinstance(rhs, MoltValue):
+                        lhs_const = resolve(lhs.name)
+                        rhs_const = resolve(rhs.name)
+                        if lhs_const is not None and rhs_const is not None:
+                            if op.kind == "ADD":
+                                resolved = lhs_const + rhs_const
+                            elif op.kind == "SUB":
+                                resolved = lhs_const - rhs_const
+                            else:
+                                resolved = lhs_const * rhs_const
+                elif op.kind == "ABS" and len(op.args) == 1:
+                    arg = op.args[0]
+                    if isinstance(arg, MoltValue):
+                        arg_const = resolve(arg.name)
+                        if arg_const is not None:
+                            resolved = abs(arg_const)
+                elif op.kind == "PHI" and op.args:
+                    phi_values: list[int] = []
+                    for arg in op.args:
+                        if not isinstance(arg, MoltValue):
+                            phi_values = []
+                            break
+                        phi_const = resolve(arg.name)
+                        if phi_const is None:
+                            phi_values = []
+                            break
+                        phi_values.append(phi_const)
+                    if phi_values and all(v == phi_values[0] for v in phi_values):
+                        resolved = phi_values[0]
+            visiting.discard(value_name)
+            memo[value_name] = resolved
+            return resolved
+
+        return resolve(name)
+
+    def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None:
+        if op_kind == "EQ":
+            return lhs == rhs
+        if op_kind == "NE":
+            return lhs != rhs
+        if op_kind == "LT":
+            return lhs < rhs
+        if op_kind == "LE":
+            return lhs <= rhs
+        if op_kind == "GT":
+            return lhs > rhs
+        if op_kind == "GE":
+            return lhs >= rhs
+        return None
+
+    def _detect_induction_step_from_recurrence(
+        self, phi_name: str, recurrence: MoltOp, definitions: dict[str, MoltOp]
+    ) -> int | None:
+        if recurrence.kind not in {"ADD", "SUB"} or len(recurrence.args) != 2:
+            return None
+        lhs = recurrence.args[0]
+        rhs = recurrence.args[1]
+        if (
+            isinstance(lhs, MoltValue)
+            and lhs.name == phi_name
+            and isinstance(rhs, MoltValue)
+        ):
+            rhs_const = self._int_const_from_definition(rhs.name, definitions)
+            if rhs_const is None:
+                return None
+            if recurrence.kind == "ADD":
+                return rhs_const
+            return -rhs_const
+        if (
+            isinstance(rhs, MoltValue)
+            and rhs.name == phi_name
+            and isinstance(lhs, MoltValue)
+            and recurrence.kind == "ADD"
+        ):
+            return self._int_const_from_definition(lhs.name, definitions)
+        return None
+
+    def _normalize_compare_for_induction(
+        self, compare_op: str, lhs_is_iv: bool
+    ) -> str | None:
+        if lhs_is_iv:
+            if compare_op in {"LT", "LE", "GT", "GE"}:
+                return compare_op
+            return None
+        swapped = {
+            "LT": "GT",
+            "LE": "GE",
+            "GT": "LT",
+            "GE": "LE",
+        }
+        return swapped.get(compare_op)
+
+    def _prove_monotonic_loop_compare(self, fact: LoopBoundFact) -> bool | None:
+        start = fact.start
+        step = fact.step
+        bound = fact.bound
+        compare_op = fact.compare_op
+
+        if step == 0:
+            return self._compare_int_truth(compare_op, start, bound)
+
+        if step > 0:
+            if compare_op == "LT" and start >= bound:
+                return False
+            if compare_op == "LE" and start > bound:
+                return False
+            if compare_op == "GT" and start > bound:
+                return True
+            if compare_op == "GE" and start >= bound:
+                return True
+            if compare_op == "EQ" and start > bound:
+                return False
+            if compare_op == "NE" and start > bound:
+                return True
+            return None
+
+        if compare_op == "LT" and start < bound:
+            return True
+        if compare_op == "LE" and start <= bound:
+            return True
+        if compare_op == "GT" and start <= bound:
+            return False
+        if compare_op == "GE" and start < bound:
+            return False
+        if compare_op == "EQ" and start < bound:
+            return False
+        if compare_op == "NE" and start < bound:
+            return True
+        return None
+
+    def _analyze_loop_bound_facts(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[int, LoopBoundFact]:
+        definitions: dict[str, MoltOp] = {
+            op.result.name: op for op in ops if op.result.name != "none"
+        }
+        loop_bound_facts: dict[int, LoopBoundFact] = {}
+
+        def resolve_affine_iv_term(
+            value: MoltValue,
+            induction: dict[str, tuple[int, int]],
+            *,
+            seen: set[str] | None = None,
+        ) -> tuple[str, int] | None:
+            if value.name in induction:
+                return value.name, 0
+            if seen is None:
+                seen = set()
+            if value.name in seen:
+                return None
+            next_seen = set(seen)
+            next_seen.add(value.name)
+            def_op = definitions.get(value.name)
+            if (
+                def_op is None
+                or def_op.kind not in {"ADD", "SUB"}
+                or len(def_op.args) != 2
+            ):
+                return None
+            lhs = def_op.args[0]
+            rhs = def_op.args[1]
+            if isinstance(lhs, MoltValue):
+                lhs_term = resolve_affine_iv_term(lhs, induction, seen=next_seen)
+            else:
+                lhs_term = None
+            if isinstance(rhs, MoltValue):
+                rhs_term = resolve_affine_iv_term(rhs, induction, seen=next_seen)
+            else:
+                rhs_term = None
+            if lhs_term is not None and isinstance(rhs, MoltValue):
+                c = self._int_const_from_definition(rhs.name, definitions)
+                if c is None:
+                    return None
+                if def_op.kind == "SUB":
+                    c = -c
+                return lhs_term[0], lhs_term[1] + c
+            if (
+                rhs_term is not None
+                and isinstance(lhs, MoltValue)
+                and def_op.kind == "ADD"
+            ):
+                c = self._int_const_from_definition(lhs.name, definitions)
+                if c is None:
+                    return None
+                return rhs_term[0], rhs_term[1] + c
+            return None
+
+        for loop_start, loop_end in cfg.control.loop_start_to_end.items():
+            if loop_end <= loop_start:
+                continue
+
+            induction_by_phi: dict[str, tuple[int, int]] = {}
+            for idx in range(loop_start + 1, loop_end):
+                op = ops[idx]
+                if op.kind != "PHI" or not op.args or op.result.name == "none":
+                    continue
+                phi_name = op.result.name
+                start_value: int | None = None
+                step_value: int | None = None
+                for arg in op.args:
+                    if not isinstance(arg, MoltValue):
+                        continue
+                    recurrence = definitions.get(arg.name)
+                    if recurrence is not None:
+                        step = self._detect_induction_step_from_recurrence(
+                            phi_name, recurrence, definitions
+                        )
+                        if step is not None:
+                            step_value = step
+                            continue
+                    start_candidate = self._int_const_from_definition(
+                        arg.name, definitions
+                    )
+                    if start_candidate is not None:
+                        start_value = start_candidate
+                if step_value is not None and start_value is not None:
+                    induction_by_phi[phi_name] = (start_value, step_value)
+
+            if not induction_by_phi:
+                continue
+
+            for idx in range(loop_start + 1, loop_end):
+                op = ops[idx]
+                if (
+                    op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
+                    or len(op.args) != 2
+                ):
+                    continue
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    continue
+
+                iv_name: str | None = None
+                bound_value: int | None = None
+                normalized_op: str | None = None
+                lhs_term = resolve_affine_iv_term(lhs, induction_by_phi)
+                rhs_term = resolve_affine_iv_term(rhs, induction_by_phi)
+                if lhs_term is not None and rhs_term is None:
+                    iv_name = lhs_term[0]
+                    rhs_bound = self._int_const_from_definition(rhs.name, definitions)
+                    if rhs_bound is None:
+                        continue
+                    bound_value = rhs_bound - lhs_term[1]
+                    normalized_op = self._normalize_compare_for_induction(
+                        op.kind, lhs_is_iv=True
+                    )
+                elif rhs_term is not None and lhs_term is None:
+                    iv_name = rhs_term[0]
+                    lhs_bound = self._int_const_from_definition(lhs.name, definitions)
+                    if lhs_bound is None:
+                        continue
+                    bound_value = lhs_bound - rhs_term[1]
+                    normalized_op = self._normalize_compare_for_induction(
+                        op.kind, lhs_is_iv=False
+                    )
+                else:
+                    continue
+
+                if iv_name is None or bound_value is None or normalized_op is None:
+                    continue
+                start_value, step_value = induction_by_phi[iv_name]
+                if op.result.name == "none":
+                    continue
+                loop_bound_facts[idx] = LoopBoundFact(
+                    iv_name=iv_name,
+                    start=start_value,
+                    step=step_value,
+                    bound=bound_value,
+                    compare_op=normalized_op,
+                    compare_index=idx,
+                    compare_result=op.result.name,
+                )
+
+        return loop_bound_facts
+
+    def _analyze_affine_loop_compare_truth(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[int, bool]:
+        definitions: dict[str, MoltOp] = {
+            op.result.name: op for op in ops if op.result.name != "none"
+        }
+        compare_truth: dict[int, bool] = {}
+
+        def resolve_affine_iv_term(
+            value: MoltValue,
+            induction: dict[str, tuple[int, int]],
+            *,
+            seen: set[str] | None = None,
+        ) -> tuple[str, int] | None:
+            if value.name in induction:
+                return value.name, 0
+            if seen is None:
+                seen = set()
+            if value.name in seen:
+                return None
+            next_seen = set(seen)
+            next_seen.add(value.name)
+            def_op = definitions.get(value.name)
+            if (
+                def_op is None
+                or def_op.kind not in {"ADD", "SUB"}
+                or len(def_op.args) != 2
+            ):
+                return None
+            lhs = def_op.args[0]
+            rhs = def_op.args[1]
+            lhs_term = (
+                resolve_affine_iv_term(lhs, induction, seen=next_seen)
+                if isinstance(lhs, MoltValue)
+                else None
+            )
+            rhs_term = (
+                resolve_affine_iv_term(rhs, induction, seen=next_seen)
+                if isinstance(rhs, MoltValue)
+                else None
+            )
+            if lhs_term is not None and isinstance(rhs, MoltValue):
+                rhs_const = self._int_const_from_definition(rhs.name, definitions)
+                if rhs_const is None:
+                    return None
+                if def_op.kind == "SUB":
+                    rhs_const = -rhs_const
+                return lhs_term[0], lhs_term[1] + rhs_const
+            if (
+                rhs_term is not None
+                and isinstance(lhs, MoltValue)
+                and def_op.kind == "ADD"
+            ):
+                lhs_const = self._int_const_from_definition(lhs.name, definitions)
+                if lhs_const is None:
+                    return None
+                return rhs_term[0], rhs_term[1] + lhs_const
+            return None
+
+        for loop_start, loop_end in cfg.control.loop_start_to_end.items():
+            if loop_end <= loop_start:
+                continue
+
+            induction_by_phi: dict[str, tuple[int, int]] = {}
+            for idx in range(loop_start + 1, loop_end):
+                op = ops[idx]
+                if op.kind != "PHI" or not op.args or op.result.name == "none":
+                    continue
+                phi_name = op.result.name
+                start_value: int | None = None
+                step_value: int | None = None
+                for arg in op.args:
+                    if not isinstance(arg, MoltValue):
+                        continue
+                    recurrence = definitions.get(arg.name)
+                    if recurrence is not None:
+                        step = self._detect_induction_step_from_recurrence(
+                            phi_name, recurrence, definitions
+                        )
+                        if step is not None:
+                            step_value = step
+                            continue
+                    start_candidate = self._int_const_from_definition(
+                        arg.name, definitions
+                    )
+                    if start_candidate is not None:
+                        start_value = start_candidate
+                if step_value is not None and start_value is not None:
+                    induction_by_phi[phi_name] = (start_value, step_value)
+
+            if not induction_by_phi:
+                continue
+
+            for idx in range(loop_start + 1, loop_end):
+                op = ops[idx]
+                if (
+                    op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
+                    or len(op.args) != 2
+                ):
+                    continue
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    continue
+                lhs_term = resolve_affine_iv_term(lhs, induction_by_phi)
+                rhs_term = resolve_affine_iv_term(rhs, induction_by_phi)
+                if lhs_term is None or rhs_term is None:
+                    continue
+                if lhs_term[0] != rhs_term[0]:
+                    continue
+                proven = self._compare_int_truth(op.kind, lhs_term[1], rhs_term[1])
+                if isinstance(proven, bool):
+                    compare_truth[idx] = proven
+
+        return compare_truth
+
+    def _analyze_loop_induction_steps(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[str, int]:
+        induction_steps: dict[str, int] = {}
+        for fact in self._analyze_loop_bound_facts(ops, cfg).values():
+            induction_steps.setdefault(fact.iv_name, fact.step)
+        if induction_steps:
+            return induction_steps
+
+        definitions: dict[str, MoltOp] = {
+            op.result.name: op for op in ops if op.result.name != "none"
+        }
+        for op in ops:
+            if op.kind != "PHI" or not op.args or op.result.name == "none":
+                continue
+            phi_name = op.result.name
+            for arg in op.args:
+                if not isinstance(arg, MoltValue):
+                    continue
+                recurrence = definitions.get(arg.name)
+                if recurrence is None:
+                    continue
+                step = self._detect_induction_step_from_recurrence(
+                    phi_name, recurrence, definitions
+                )
+                if step is not None:
+                    induction_steps[phi_name] = step
+                    break
+        return induction_steps
+
+    def _value_number_key_for_op(
+        self,
+        op: MoltOp,
+        const_int_values: dict[str, int],
+        value_type_tags: dict[str, int],
+        induction_steps: dict[str, int],
+        *,
+        alias_epochs: dict[str, int],
+        object_epochs: dict[str, int],
+        memory_epoch: int,
+    ) -> tuple[Any, ...] | None:
+        if not self._is_cse_eligible_op(op.kind):
+            return None
+        effect_class = self._op_effect_class(op.kind)
+
+        const_key = self._const_cache_key_for_op(op)
+        if const_key is not None:
+            return ("CONST",) + const_key
+
+        if op.kind == "IS" and len(op.args) == 2:
+            lhs = self._normalize_value_operand_key(op.args[0], const_int_values)
+            rhs = self._normalize_value_operand_key(op.args[1], const_int_values)
+            if lhs is not None and rhs is not None:
+                return ("IS", lhs, rhs)
+
+        if op.kind == "TYPE_OF" and len(op.args) == 1:
+            arg = self._normalize_value_operand_key(op.args[0], const_int_values)
+            if arg is not None:
+                if effect_class == "reads_heap":
+                    return ("READ_HEAP", memory_epoch, "TYPE_OF", arg)
+                return ("TYPE_OF", arg)
+
+        if op.kind == "NOT" and len(op.args) == 1:
+            arg = self._normalize_value_operand_key(op.args[0], const_int_values)
+            if arg is not None:
+                return ("NOT", arg)
+
+        if op.kind == "ABS" and len(op.args) == 1:
+            arg = self._normalize_value_operand_key(op.args[0], const_int_values)
+            if arg is not None:
+                return ("ABS", arg)
+
+        if op.kind in {"AND", "OR"} and len(op.args) == 2:
+            lhs = self._normalize_value_operand_key(op.args[0], const_int_values)
+            rhs = self._normalize_value_operand_key(op.args[1], const_int_values)
+            if lhs is not None and rhs is not None:
+                return ("BOOL_BINOP", op.kind, lhs, rhs)
+
+        if (
+            op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE", "STRING_EQ"}
+            and len(op.args) == 2
+        ):
+            lhs_key = self._normalize_operand_key_for_value_numbering(
+                op.args[0], const_int_values
+            )
+            rhs_key = self._normalize_operand_key_for_value_numbering(
+                op.args[1], const_int_values
+            )
+            if lhs_key is None or rhs_key is None:
+                return None
+            if op.kind in {"EQ", "NE", "STRING_EQ"} and rhs_key < lhs_key:
+                lhs_key, rhs_key = rhs_key, lhs_key
+            return ("CMP_PURE", op.kind, lhs_key, rhs_key)
+
+        if op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+            lhs_key = self._normalize_value_operand_key(op.args[0], const_int_values)
+            rhs_key = self._normalize_value_operand_key(op.args[1], const_int_values)
+            if lhs_key is None or rhs_key is None:
+                return None
+
+            if op.kind in {"ADD", "MUL"} and rhs_key < lhs_key:
+                lhs_key, rhs_key = rhs_key, lhs_key
+
+            lhs = op.args[0]
+            rhs = op.args[1]
+            if (
+                op.kind in {"ADD", "SUB"}
+                and isinstance(lhs, MoltValue)
+                and isinstance(rhs, MoltValue)
+                and lhs.name in induction_steps
+                and rhs.name in const_int_values
+            ):
+                return (
+                    "INDUCT_ARITH",
+                    op.kind,
+                    lhs.name,
+                    induction_steps[lhs.name],
+                    const_int_values[rhs.name],
+                )
+
+            return ("ARITH_PURE", op.kind, lhs_key, rhs_key)
+        if effect_class == "reads_heap":
+            normalized_args: list[tuple[str, Any]] = []
+            for arg in op.args:
+                key = self._normalize_operand_key_for_value_numbering(
+                    arg, const_int_values
+                )
+                if key is None:
+                    return None
+                normalized_args.append(key)
+            read_alias_class = self._heap_alias_class_for_read_op(op, value_type_tags)
+            if read_alias_class is None:
+                return None
+            object_epoch = 0
+            if op.args and isinstance(op.args[0], MoltValue):
+                object_epoch = object_epochs.get(op.args[0].name, 0)
+            if read_alias_class == "immutable_len":
+                return (
+                    "READ_HEAP_CLASS",
+                    read_alias_class,
+                    object_epoch,
+                    op.kind,
+                    tuple(normalized_args),
+                )
+            class_epoch = alias_epochs.get(read_alias_class, 0)
+            if read_alias_class in {"dict", "list"}:
+                return (
+                    "READ_HEAP_CLASS",
+                    read_alias_class,
+                    class_epoch,
+                    object_epoch,
+                    op.kind,
+                    tuple(normalized_args),
+                )
+            if read_alias_class == "indexable":
+                indexable_epoch = alias_epochs.get("indexable", 0)
+                return (
+                    "READ_HEAP_CLASS",
+                    read_alias_class,
+                    indexable_epoch,
+                    object_epoch,
+                    op.kind,
+                    tuple(normalized_args),
+                )
+            return (
+                "READ_HEAP_CLASS",
+                read_alias_class,
+                class_epoch,
+                object_epoch,
+                memory_epoch,
+                op.kind,
+                tuple(normalized_args),
+            )
+        return None
+
+    def _kill_value_in_canonicalization_state(
+        self, state: dict[str, dict], name: str
+    ) -> None:
+        aliases: dict[str, MoltValue] = state["aliases"]
+        aliases.pop(name, None)
+        stale_aliases = [key for key, value in aliases.items() if value.name == name]
+        for key in stale_aliases:
+            aliases.pop(key, None)
+
+        state["const_int_values"].pop(name, None)
+        state["value_type_tags"].pop(name, None)
+
+        available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
+        stale_values = [
+            key for key, value in available_values.items() if value.name == name
+        ]
+        for key in stale_values:
+            available_values.pop(key, None)
+
+        guard_dict_shapes: dict[str, tuple[str, str]] = state["guard_dict_shapes"]
+        guard_dict_shapes.pop(name, None)
+        stale_dict_shapes = [
+            key
+            for key, (dict_type_name, version_name) in guard_dict_shapes.items()
+            if dict_type_name == name or version_name == name
+        ]
+        for key in stale_dict_shapes:
+            guard_dict_shapes.pop(key, None)
+        object_epochs: dict[str, int] = state.get("object_epochs", {})
+        object_epochs.pop(name, None)
+
+    def _intersect_canonicalization_state(
+        self, left: dict[str, dict], right: dict[str, dict]
+    ) -> dict[str, dict]:
+        aliases: dict[str, MoltValue] = {}
+        for key, left_value in left["aliases"].items():
+            right_value = right["aliases"].get(key)
+            if (
+                isinstance(right_value, MoltValue)
+                and right_value.name == left_value.name
+            ):
+                aliases[key] = left_value
+
+        const_int_values: dict[str, int] = {}
+        for key, left_value in left["const_int_values"].items():
+            right_value = right["const_int_values"].get(key)
+            if isinstance(right_value, int) and right_value == left_value:
+                const_int_values[key] = left_value
+
+        value_type_tags: dict[str, int] = {}
+        for key, left_value in left["value_type_tags"].items():
+            right_value = right["value_type_tags"].get(key)
+            if isinstance(right_value, int) and right_value == left_value:
+                value_type_tags[key] = left_value
+
+        available_values: dict[tuple[Any, ...], MoltValue] = {}
+        for key, left_value in left["available_values"].items():
+            right_value = right["available_values"].get(key)
+            if (
+                isinstance(right_value, MoltValue)
+                and right_value.name == left_value.name
+            ):
+                available_values[key] = left_value
+
+        guard_dict_shapes: dict[str, tuple[str, str]] = {}
+        for key, left_value in left["guard_dict_shapes"].items():
+            right_value = right["guard_dict_shapes"].get(key)
+            if (
+                isinstance(right_value, tuple)
+                and len(right_value) == 2
+                and right_value == left_value
+            ):
+                guard_dict_shapes[key] = left_value
+
+        alias_epochs: dict[str, int] = {}
+        left_alias_epochs = left.get("alias_epochs", {})
+        right_alias_epochs = right.get("alias_epochs", {})
+        for key in set(left_alias_epochs.keys()).union(right_alias_epochs.keys()):
+            alias_epochs[key] = max(
+                int(left_alias_epochs.get(key, 0)),
+                int(right_alias_epochs.get(key, 0)),
+            )
+
+        object_epochs: dict[str, int] = {}
+        left_object_epochs = left.get("object_epochs", {})
+        right_object_epochs = right.get("object_epochs", {})
+        for key in set(left_object_epochs.keys()).union(right_object_epochs.keys()):
+            object_epochs[key] = max(
+                int(left_object_epochs.get(key, 0)),
+                int(right_object_epochs.get(key, 0)),
+            )
+
+        return {
+            "aliases": aliases,
+            "const_int_values": const_int_values,
+            "value_type_tags": value_type_tags,
+            "available_values": available_values,
+            "guard_dict_shapes": guard_dict_shapes,
+            "alias_epochs": alias_epochs,
+            "object_epochs": object_epochs,
+            "memory_epoch": max(
+                int(left.get("memory_epoch", 0)), int(right.get("memory_epoch", 0))
+            ),
+        }
+
+    def _intersect_canonicalization_states(
+        self, states: list[dict[str, dict]]
+    ) -> dict[str, dict]:
+        if not states:
+            return self._empty_canonicalization_state()
+        merged = self._clone_canonicalization_state(states[0])
+        for state in states[1:]:
+            merged = self._intersect_canonicalization_state(merged, state)
+        return merged
+
+    def _canonicalization_state_signature(
+        self, state: dict[str, dict]
+    ) -> tuple[
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[tuple[Any, ...], str], ...],
+        tuple[tuple[str, tuple[str, str]], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, int], ...],
+        int,
+    ]:
+        alias_items = tuple(
+            sorted((key, value.name) for key, value in state["aliases"].items())
+        )
+        const_items = tuple(sorted(state["const_int_values"].items()))
+        tag_items = tuple(sorted(state["value_type_tags"].items()))
+        available_items = tuple(
+            sorted(
+                (key, value.name) for key, value in state["available_values"].items()
+            )
+        )
+        dict_shape_items = tuple(sorted(state["guard_dict_shapes"].items()))
+        alias_epoch_items = tuple(sorted(state.get("alias_epochs", {}).items()))
+        object_epoch_items = tuple(sorted(state.get("object_epochs", {}).items()))
+        memory_epoch = int(state.get("memory_epoch", 0))
+        return (
+            alias_items,
+            const_items,
+            tag_items,
+            available_items,
+            dict_shape_items,
+            alias_epoch_items,
+            object_epoch_items,
+            memory_epoch,
+        )
+
+    def _canonicalize_block_with_state(
+        self,
+        ops: list[MoltOp],
+        in_state: dict[str, dict],
+        *,
+        induction_steps: dict[str, int],
+    ) -> tuple[list[MoltOp], dict[str, dict]]:
+        func_stats = self._midend_function_stats()
+        state = self._clone_canonicalization_state(in_state)
+        aliases: dict[str, MoltValue] = state["aliases"]
+        const_int_values: dict[str, int] = state["const_int_values"]
+        value_type_tags: dict[str, int] = state["value_type_tags"]
+        available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
+        guard_dict_shapes: dict[str, tuple[str, str]] = state["guard_dict_shapes"]
+        alias_epochs: dict[str, int] = state.get("alias_epochs", {})
+        object_epochs: dict[str, int] = state.get("object_epochs", {})
+        memory_epoch = int(state.get("memory_epoch", 0))
+
+        out: list[MoltOp] = []
+        for op in ops:
+            canonical_args = [
+                self._rewrite_aliases_in_arg(arg, aliases) for arg in op.args
+            ]
+            canonical_op = MoltOp(
+                kind=op.kind,
+                args=canonical_args,
+                result=op.result,
+                metadata=op.metadata,
+            )
+
+            result_name = canonical_op.result.name
+            if result_name != "none":
+                self._kill_value_in_canonicalization_state(state, result_name)
+
+            if canonical_op.kind == "PHI" and canonical_op.args:
+                phi_args = canonical_op.args
+                if all(
+                    isinstance(arg, MoltValue) and arg.name == phi_args[0].name
+                    for arg in phi_args
+                ):
+                    shared = self._resolve_alias_value(phi_args[0], aliases)
+                    aliases[result_name] = shared
+                    if shared.name in const_int_values:
+                        const_int_values[result_name] = const_int_values[shared.name]
+                    if shared.name in value_type_tags:
+                        value_type_tags[result_name] = value_type_tags[shared.name]
+                    continue
+
+            if canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3:
+                guarded_obj = canonical_op.args[0]
+                dict_type = canonical_op.args[1]
+                version = canonical_op.args[2]
+                if (
+                    isinstance(guarded_obj, MoltValue)
+                    and isinstance(dict_type, MoltValue)
+                    and isinstance(version, MoltValue)
+                ):
+                    expected = (dict_type.name, version.name)
+                    if guard_dict_shapes.get(guarded_obj.name) == expected:
+                        continue
+
+            if canonical_op.kind == "GUARD_TAG" and len(canonical_op.args) == 2:
+                guarded = canonical_op.args[0]
+                expected = canonical_op.args[1]
+                if isinstance(guarded, MoltValue) and isinstance(expected, MoltValue):
+                    actual_tag = value_type_tags.get(guarded.name)
+                    expected_tag = const_int_values.get(expected.name)
+                    if actual_tag is not None and expected_tag == actual_tag:
+                        continue
+
+            value_key = self._value_number_key_for_op(
+                canonical_op,
+                const_int_values,
+                value_type_tags,
+                induction_steps,
+                alias_epochs=alias_epochs,
+                object_epochs=object_epochs,
+                memory_epoch=memory_epoch,
+            )
+            effect_class = self._op_effect_class(canonical_op.kind)
+            if (
+                effect_class == "reads_heap"
+                and value_key is not None
+                and result_name != "none"
+            ):
+                func_stats["cse_readheap_attempted"] += 1
+            if value_key is not None and result_name != "none":
+                cached = available_values.get(value_key)
+                if cached is not None:
+                    shared = self._resolve_alias_value(cached, aliases)
+                    aliases[result_name] = shared
+                    self.midend_stats["gvn_hits"] += 1
+                    if effect_class == "reads_heap":
+                        func_stats["cse_readheap_accepted"] += 1
+                    if shared.name in const_int_values:
+                        const_int_values[result_name] = const_int_values[shared.name]
+                    if shared.name in value_type_tags:
+                        value_type_tags[result_name] = value_type_tags[shared.name]
+                    continue
+                if effect_class == "reads_heap":
+                    func_stats["cse_readheap_rejected"] += 1
+
+            out.append(canonical_op)
+
+            if canonical_op.kind == "CONST":
+                value = canonical_op.args[0]
+                if isinstance(value, int) and not isinstance(value, bool):
+                    const_int_values[result_name] = value
+            elif (
+                canonical_op.kind in {"ADD", "SUB", "MUL"}
+                and len(canonical_op.args) == 2
+            ):
+                lhs, rhs = canonical_op.args
+                if isinstance(lhs, MoltValue) and isinstance(rhs, MoltValue):
+                    lhs_const = const_int_values.get(lhs.name)
+                    rhs_const = const_int_values.get(rhs.name)
+                    if lhs_const is not None and rhs_const is not None:
+                        if canonical_op.kind == "ADD":
+                            const_int_values[result_name] = lhs_const + rhs_const
+                        elif canonical_op.kind == "SUB":
+                            const_int_values[result_name] = lhs_const - rhs_const
+                        elif canonical_op.kind == "MUL":
+                            const_int_values[result_name] = lhs_const * rhs_const
+            elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
+                arg = canonical_op.args[0]
+                if isinstance(arg, MoltValue):
+                    arg_const = const_int_values.get(arg.name)
+                    if arg_const is not None:
+                        const_int_values[result_name] = abs(arg_const)
+            elif canonical_op.kind == "GUARD_TAG" and len(canonical_op.args) == 2:
+                guarded, expected = canonical_op.args
+                if isinstance(guarded, MoltValue) and isinstance(expected, MoltValue):
+                    expected_tag = const_int_values.get(expected.name)
+                    if expected_tag is not None:
+                        value_type_tags[guarded.name] = expected_tag
+            elif (
+                canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3
+            ):
+                guarded_obj, dict_type, version = canonical_op.args
+                if (
+                    isinstance(guarded_obj, MoltValue)
+                    and isinstance(dict_type, MoltValue)
+                    and isinstance(version, MoltValue)
+                ):
+                    guard_dict_shapes[guarded_obj.name] = (dict_type.name, version.name)
+            type_tag = self._const_type_tag(canonical_op)
+            if type_tag is None and result_name != "none":
+                if canonical_op.kind in {
+                    "NOT",
+                    "IS",
+                    "AND",
+                    "OR",
+                    "EQ",
+                    "NE",
+                    "LT",
+                    "LE",
+                    "GT",
+                    "GE",
+                    "STRING_EQ",
+                    "ISINSTANCE",
+                }:
+                    type_tag = BUILTIN_TYPE_TAGS["bool"]
+                elif canonical_op.kind in {"LEN", "TYPE_OF"}:
+                    type_tag = BUILTIN_TYPE_TAGS["int"]
+                elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
+                    abs_arg = canonical_op.args[0]
+                    if isinstance(abs_arg, MoltValue):
+                        abs_arg_tag = value_type_tags.get(abs_arg.name)
+                        if abs_arg_tag in {
+                            BUILTIN_TYPE_TAGS["int"],
+                            BUILTIN_TYPE_TAGS["float"],
+                        }:
+                            type_tag = abs_arg_tag
+                elif canonical_op.kind == "DICT_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["dict"]
+                elif canonical_op.kind == "LIST_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["list"]
+                elif canonical_op.kind == "TUPLE_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["tuple"]
+                elif canonical_op.kind == "SET_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["set"]
+                elif canonical_op.kind == "FROZENSET_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["frozenset"]
+                elif canonical_op.kind == "RANGE_NEW":
+                    type_tag = BUILTIN_TYPE_TAGS["range"]
+            if type_tag is not None and result_name != "none":
+                value_type_tags[result_name] = type_tag
+            if canonical_op.kind == "IS" and result_name != "none":
+                value_type_tags[result_name] = BUILTIN_TYPE_TAGS["bool"]
+            if value_key is not None and result_name != "none":
+                available_values[value_key] = canonical_op.result
+
+            if self._is_canonicalization_barrier_op(canonical_op.kind):
+                aliases.clear()
+                const_int_values.clear()
+                value_type_tags.clear()
+                available_values.clear()
+                guard_dict_shapes.clear()
+
+            if effect_class == "writes_heap":
+                write_alias_classes = self._heap_alias_classes_for_write_op(
+                    canonical_op, value_type_tags
+                )
+                if self._is_uncertain_heap_boundary(canonical_op.kind):
+                    memory_epoch += 1
+                    stale_read_keys = [
+                        key
+                        for key in list(available_values.keys())
+                        if self._is_heap_read_key(key)
+                    ]
+                    for key in stale_read_keys:
+                        available_values.pop(key, None)
+                    for alias_class in sorted(alias_epochs):
+                        alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
+                    guard_dict_shapes.clear()
+                    continue
+                if canonical_op.args and isinstance(canonical_op.args[0], MoltValue):
+                    obj_name = canonical_op.args[0].name
+                    object_epochs[obj_name] = object_epochs.get(obj_name, 0) + 1
+                if write_alias_classes:
+                    for alias_class in sorted(write_alias_classes):
+                        alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
+                    stale_read_keys = [
+                        key
+                        for key in list(available_values.keys())
+                        if self._is_read_key_invalidated_by_alias_classes(
+                            key, write_alias_classes
+                        )
+                    ]
+                    for key in stale_read_keys:
+                        available_values.pop(key, None)
+                else:
+                    memory_epoch += 1
+                    stale_read_keys = [
+                        key
+                        for key in list(available_values.keys())
+                        if self._is_heap_read_key(key)
+                    ]
+                    for key in stale_read_keys:
+                        available_values.pop(key, None)
+                guard_dict_shapes.clear()
+
+        state["alias_epochs"] = alias_epochs
+        state["object_epochs"] = object_epochs
+        state["memory_epoch"] = memory_epoch
+        return out, state
+
+    def _collect_arg_value_names(self, value: Any, out: set[str]) -> None:
+        if isinstance(value, MoltValue):
+            out.add(value.name)
+            return
+        if isinstance(value, list):
+            for item in value:
+                self._collect_arg_value_names(item, out)
+            return
+        if isinstance(value, tuple):
+            for item in value:
+                self._collect_arg_value_names(item, out)
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                self._collect_arg_value_names(key, out)
+                self._collect_arg_value_names(item, out)
+
+    def _compute_block_use_def(self, ops: list[MoltOp]) -> tuple[set[str], set[str]]:
+        use: set[str] = set()
+        defs: set[str] = set()
+        for op in ops:
+            arg_names: set[str] = set()
+            for arg in op.args:
+                self._collect_arg_value_names(arg, arg_names)
+            use.update(name for name in arg_names if name not in defs)
+            out_name = op.result.name
+            if out_name != "none":
+                defs.add(out_name)
+        return use, defs
+
+    def _collect_defined_value_names(self, ops: list[MoltOp]) -> set[str]:
+        defined: set[str] = set()
+        for op in ops:
+            out_name = op.result.name
+            if out_name != "none":
+                defined.add(out_name)
+        return defined
+
+    def _find_unbound_value_uses(
+        self, ops: list[MoltOp], *, params: Sequence[str] = ()
+    ) -> list[tuple[int, str, str]]:
+        defined: set[str] = set(params)
+        defined.update(self._collect_defined_value_names(ops))
+        missing: list[tuple[int, str, str]] = []
+        for idx, op in enumerate(ops):
+            used_names: set[str] = set()
+            for arg in op.args:
+                self._collect_arg_value_names(arg, used_names)
+            for name in sorted(used_names):
+                if name != "none" and name not in defined:
+                    missing.append((idx, op.kind, name))
+        return missing
+
+    def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]:
+        used: set[str] = set()
+        for op in ops:
+            for arg in op.args:
+                self._collect_arg_value_names(arg, used)
+        defined = self._collect_defined_value_names(ops)
+        return used - defined
+
+    def _verify_definite_assignment_in_ops(
+        self,
+        ops: list[MoltOp],
+        *,
+        predefined_value_names: set[str] | None = None,
+    ) -> list[tuple[int, str, str]]:
+        if not ops:
+            return []
+
+        predefined = set(predefined_value_names or set())
+        cfg: CFGGraph = build_cfg(ops)
+        if not cfg.blocks:
+            return []
+        all_defs = self._collect_defined_value_names(ops).union(predefined)
+
+        block_defs: dict[int, set[str]] = {}
+        for block in cfg.blocks:
+            defs: set[str] = set()
+            for op in ops[block.start : block.end]:
+                out_name = op.result.name
+                if out_name != "none":
+                    defs.add(out_name)
+            block_defs[block.id] = defs
+
+        in_defs: dict[int, set[str]] = {}
+        out_defs: dict[int, set[str]] = {}
+        for block_id in range(len(cfg.blocks)):
+            if block_id == 0:
+                initial = set(predefined)
+            elif block_id in cfg.reachable:
+                initial = set(all_defs)
+            else:
+                initial = set()
+            in_defs[block_id] = initial
+            out_defs[block_id] = initial.union(block_defs[block_id])
+
+        changed = True
+        while changed:
+            changed = False
+            for block_id in range(1, len(cfg.blocks)):
+                if block_id not in cfg.reachable:
+                    continue
+                preds = [
+                    pred
+                    for pred in cfg.predecessors.get(block_id, [])
+                    if pred in cfg.reachable
+                ]
+                if not preds:
+                    new_in = set(predefined)
+                else:
+                    new_in = set.intersection(*(out_defs[pred] for pred in preds))
+                new_out = new_in.union(block_defs[block_id])
+                if new_in != in_defs[block_id] or new_out != out_defs[block_id]:
+                    in_defs[block_id] = new_in
+                    out_defs[block_id] = new_out
+                    changed = True
+
+        failures: list[tuple[int, str, str]] = []
+        definition_index: dict[str, int] = {}
+        definition_block: dict[str, int] = {}
+        for op_idx, op in enumerate(ops):
+            out_name = op.result.name
+            if out_name == "none":
+                continue
+            if out_name in definition_index:
+                failures.append((op_idx, op.kind, out_name))
+                continue
+            definition_index[out_name] = op_idx
+            definition_block[out_name] = cfg.index_to_block[op_idx]
+
+        for block in cfg.blocks:
+            block_id = block.id
+            if block_id not in cfg.reachable:
+                continue
+            local_defs = set(in_defs[block_id])
+            for op_idx in range(block.start, block.end):
+                op = ops[op_idx]
+                used: set[str] = set()
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, used)
+                missing = sorted(name for name in used if name not in local_defs)
+                for name in missing:
+                    failures.append((op_idx, op.kind, name))
+                for name in sorted(used):
+                    if name in predefined:
+                        continue
+                    def_idx = definition_index.get(name)
+                    if def_idx is None:
+                        continue
+                    def_block = definition_block[name]
+                    if def_block not in cfg.dominators.get(block_id, set()):
+                        failures.append((op_idx, op.kind, name))
+                        continue
+                    if def_block == block_id and def_idx >= op_idx:
+                        failures.append((op_idx, op.kind, name))
+                out_name = op.result.name
+                if out_name != "none":
+                    local_defs.add(out_name)
+        return failures
+
+    def _dead_op_lattice_class(self, op_kind: str) -> str:
+        effect = self._op_effect_class(op_kind)
+        if effect == "control":
+            return "protected"
+        if effect == "pure":
+            return "pure"
+        if effect in {"reads_heap", "writes_heap"}:
+            return effect
+        return "unknown"
+
+    def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]:
+        if not ops:
+            return []
+
+        func_stats = self._midend_function_stats()
+        cfg: CFGGraph = build_cfg(ops)
+        if not cfg.blocks:
+            return []
+
+        block_ops: dict[int, list[MoltOp]] = {
+            block.id: ops[block.start : block.end] for block in cfg.blocks
+        }
+
+        def normalize_anchor_arg(value: Any) -> Any:
+            if isinstance(value, MoltValue):
+                return ("v", value.name)
+            if isinstance(value, tuple):
+                return ("t", tuple(normalize_anchor_arg(item) for item in value))
+            if isinstance(value, list):
+                return ("l", tuple(normalize_anchor_arg(item) for item in value))
+            if isinstance(value, dict):
+                return (
+                    "d",
+                    tuple(
+                        sorted(
+                            (
+                                normalize_anchor_arg(key),
+                                normalize_anchor_arg(item),
+                            )
+                            for key, item in value.items()
+                        )
+                    ),
+                )
+            try:
+                hash(value)
+                return ("c", value)
+            except TypeError:
+                return ("r", repr(value))
+
+        def anchor_key(op: MoltOp) -> tuple[Any, ...] | None:
+            out_name = op.result.name
+            if out_name == "none":
+                return None
+            if self._dead_op_lattice_class(op.kind) != "pure":
+                return None
+            return (op.kind, tuple(normalize_anchor_arg(arg) for arg in op.args))
+
+        anchor_first_result: dict[tuple[Any, ...], str] = {}
+        anchor_counts: dict[tuple[Any, ...], int] = {}
+        for op in ops:
+            key = anchor_key(op)
+            if key is None:
+                continue
+            anchor_counts[key] = anchor_counts.get(key, 0) + 1
+            anchor_first_result.setdefault(key, op.result.name)
+        preserve_anchor_results: set[str] = {
+            anchor_first_result[key]
+            for key, count in anchor_counts.items()
+            if count > 1 and key in anchor_first_result
+        }
+
+        block_use: dict[int, set[str]] = {}
+        block_def: dict[int, set[str]] = {}
+        for block_id, current_ops in block_ops.items():
+            use, defs = self._compute_block_use_def(current_ops)
+            block_use[block_id] = use
+            block_def[block_id] = defs
+
+        in_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
+        out_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
+        changed = True
+        while changed:
+            changed = False
+            for block_id in reversed(range(len(cfg.blocks))):
+                if block_id not in cfg.reachable:
+                    continue
+                new_out: set[str] = set()
+                for succ in cfg.successors.get(block_id, []):
+                    new_out.update(in_live.get(succ, set()))
+                new_in = block_use[block_id].union(new_out - block_def[block_id])
+                if new_out != out_live[block_id] or new_in != in_live[block_id]:
+                    out_live[block_id] = new_out
+                    in_live[block_id] = new_in
+                    changed = True
+
+        removed_count = 0
+        pure_attempted = 0
+        pure_removed = 0
+        new_block_ops: dict[int, list[MoltOp]] = {}
+        for block_id, current_ops in block_ops.items():
+            live = set(out_live.get(block_id, set()))
+            kept_reversed: list[MoltOp] = []
+            for op in reversed(current_ops):
+                out_name = op.result.name
+                uses: set[str] = set()
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, uses)
+
+                lattice_class = self._dead_op_lattice_class(op.kind)
+                if out_name != "none" and lattice_class == "pure":
+                    pure_attempted += 1
+                is_dead_const = (
+                    out_name != "none"
+                    and out_name not in live
+                    and lattice_class == "pure"
+                )
+                if is_dead_const and out_name in preserve_anchor_results:
+                    is_dead_const = False
+                if is_dead_const:
+                    removed_count += 1
+                    pure_removed += 1
+                    continue
+
+                if out_name != "none":
+                    live.discard(out_name)
+                live.update(uses)
+                kept_reversed.append(op)
+            kept_reversed.reverse()
+            new_block_ops[block_id] = kept_reversed
+
+        out: list[MoltOp] = []
+        for block_id in range(len(cfg.blocks)):
+            out.extend(new_block_ops[block_id])
+        self.midend_stats["dce_removed_total"] += removed_count
+        func_stats["dce_pure_op_attempted"] += pure_attempted
+        func_stats["dce_pure_op_accepted"] += pure_removed
+        func_stats["dce_pure_op_rejected"] += max(0, pure_attempted - pure_removed)
+        return out
+
+    def _op_may_raise_for_sccp(self, op_kind: str) -> bool:
+        non_raising = {
+            "LINE",
+            "IF",
+            "ELSE",
+            "END_IF",
+            "LOOP_START",
+            "LOOP_END",
+            "LOOP_BREAK",
+            "LOOP_BREAK_IF_TRUE",
+            "LOOP_BREAK_IF_FALSE",
+            "LOOP_CONTINUE",
+            "TRY_START",
+            "TRY_END",
+            "JUMP",
+            "LABEL",
+            "STATE_LABEL",
+            "PHI",
+            "CONST",
+            "CONST_BIGINT",
+            "CONST_BOOL",
+            "CONST_FLOAT",
+            "CONST_STR",
+            "CONST_BYTES",
+            "CONST_NONE",
+            "CONST_NOT_IMPLEMENTED",
+            "CONST_ELLIPSIS",
+            "MISSING",
+            "ADD",
+            "SUB",
+            "MUL",
+            "NOT",
+            "IS",
+            "TYPE_OF",
+            "LEN",
+        }
+        if op_kind in non_raising:
+            return False
+        if op_kind.startswith("STATE_"):
+            return False
+        return True
+
+    def _compute_sccp(self, ops: list[MoltOp], cfg: CFGGraph) -> SCCPResult:
+        # TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial):
+        # extend loop/try edge threading beyond current executable-edge +
+        # conservative loop-marker rewrites into full loop-end and
+        # exceptional-handler CFG rewrites with dominance/post-dominance
+        # preservation.
+        in_values: dict[int, dict[str, Any]] = {block.id: {} for block in cfg.blocks}
+        out_values: dict[int, dict[str, Any]] = {block.id: {} for block in cfg.blocks}
+        executable_blocks: set[int] = {0} if cfg.blocks else set()
+        executable_edges: set[tuple[int, int]] = set()
+        branch_choice_by_if_index: dict[int, bool] = {}
+        loop_break_choice_by_index: dict[int, bool] = {}
+        try_exception_possible_by_start: dict[int, bool] = {}
+        try_normal_possible_by_start: dict[int, bool] = {}
+        guard_fail_indices: set[int] = set()
+        loop_bound_facts = self._analyze_loop_bound_facts(ops, cfg)
+        loop_compare_truth = self._analyze_affine_loop_compare_truth(ops, cfg)
+        type_of_origin: dict[str, str] = {}
+        for op in ops:
+            if (
+                op.kind == "TYPE_OF"
+                and len(op.args) == 1
+                and isinstance(op.args[0], MoltValue)
+                and op.result.name != "none"
+            ):
+                type_of_origin[op.result.name] = op.args[0].name
+
+        def type_fact_key(name: str) -> str:
+            return f"__tag__:{name}"
+
+        def dict_shape_fact_key(name: str) -> str:
+            return f"__dict_shape__:{name}"
+
+        def is_overdefined(value: Any) -> bool:
+            return value is _SCCP_OVERDEFINED
+
+        def merge_lattice(left: Any, right: Any) -> Any:
+            if left is _SCCP_UNKNOWN:
+                return right
+            if right is _SCCP_UNKNOWN:
+                return left
+            if is_overdefined(left) or is_overdefined(right):
+                return _SCCP_OVERDEFINED
+            if left == right:
+                return left
+            return _SCCP_OVERDEFINED
+
+        def merge_states(states: list[dict[str, Any]]) -> dict[str, Any]:
+            if not states:
+                return {}
+            merged: dict[str, Any] = {}
+            all_keys: set[str] = set()
+            for state in states:
+                all_keys.update(state.keys())
+            for key in all_keys:
+                current: Any = _SCCP_UNKNOWN
+                for state in states:
+                    current = merge_lattice(current, state.get(key, _SCCP_UNKNOWN))
+                    if is_overdefined(current):
+                        break
+                if current is not _SCCP_UNKNOWN:
+                    merged[key] = current
+            return merged
+
+        def value_lattice(name: str, known: dict[str, Any]) -> Any:
+            return known.get(name, _SCCP_UNKNOWN)
+
+        def value_type_tag(name: str, known: dict[str, Any]) -> int | None:
+            fact = known.get(type_fact_key(name))
+            if isinstance(fact, int):
+                return fact
+            value = value_lattice(name, known)
+            if value is _SCCP_UNKNOWN or is_overdefined(value):
+                return None
+            return self._const_type_tag_for_lattice_value(value)
+
+        def scalar_cmp_supported(value: Any) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, bool):
+                return True
+            if isinstance(value, int):
+                return True
+            if isinstance(value, float):
+                return True
+            if isinstance(value, str):
+                return True
+            if isinstance(value, bytes):
+                return True
+            return False
+
+        def eval_lattice_value(op: MoltOp, known: dict[str, Any], op_index: int) -> Any:
+            if op.kind == "CONST":
+                return op.args[0]
+            if op.kind == "CONST_BOOL":
+                return bool(op.args[0])
+            if op.kind == "CONST_BIGINT":
+                return int(op.args[0])
+            if op.kind == "CONST_FLOAT":
+                return float(op.args[0])
+            if op.kind == "CONST_STR":
+                return str(op.args[0])
+            if op.kind == "CONST_BYTES":
+                return bytes(op.args[0])
+            if op.kind == "CONST_NONE":
+                return None
+            if op.kind == "CONST_NOT_IMPLEMENTED":
+                return NotImplemented
+            if op.kind == "CONST_ELLIPSIS":
+                return Ellipsis
+            if op.kind == "PHI" and op.args:
+                block_id = cfg.index_to_block.get(op_index)
+                if block_id is not None:
+                    block_preds = cfg.predecessors.get(block_id, [])
+                    if len(block_preds) == len(op.args):
+                        merged: Any = _SCCP_UNKNOWN
+                        seen_exec = False
+                        for arg, pred in zip(op.args, block_preds):
+                            if (pred, block_id) not in executable_edges:
+                                continue
+                            if not isinstance(arg, MoltValue):
+                                return _SCCP_OVERDEFINED
+                            seen_exec = True
+                            merged = merge_lattice(
+                                merged, value_lattice(arg.name, known)
+                            )
+                            if is_overdefined(merged):
+                                return _SCCP_OVERDEFINED
+                        if seen_exec:
+                            return merged
+                        return _SCCP_UNKNOWN
+                merged = _SCCP_UNKNOWN
+                for arg in op.args:
+                    if not isinstance(arg, MoltValue):
+                        return _SCCP_OVERDEFINED
+                    merged = merge_lattice(merged, value_lattice(arg.name, known))
+                    if is_overdefined(merged):
+                        return _SCCP_OVERDEFINED
+                return merged
+            if op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    return _SCCP_OVERDEFINED
+                lhs_value = value_lattice(lhs.name, known)
+                rhs_value = value_lattice(rhs.name, known)
+                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if (
+                    isinstance(lhs_value, int)
+                    and not isinstance(lhs_value, bool)
+                    and isinstance(rhs_value, int)
+                    and not isinstance(rhs_value, bool)
+                ):
+                    if op.kind == "ADD":
+                        return lhs_value + rhs_value
+                    if op.kind == "SUB":
+                        return lhs_value - rhs_value
+                    return lhs_value * rhs_value
+                return _SCCP_OVERDEFINED
+            if op.kind == "NOT" and len(op.args) == 1:
+                arg = op.args[0]
+                if not isinstance(arg, MoltValue):
+                    return _SCCP_OVERDEFINED
+                arg_value = value_lattice(arg.name, known)
+                if arg_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(arg_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(arg_value, bool):
+                    return not arg_value
+                return _SCCP_OVERDEFINED
+            if op.kind == "ABS" and len(op.args) == 1:
+                arg = op.args[0]
+                if not isinstance(arg, MoltValue):
+                    return _SCCP_OVERDEFINED
+                arg_value = value_lattice(arg.name, known)
+                if arg_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(arg_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(arg_value, (int, float)):
+                    return abs(arg_value)
+                return _SCCP_OVERDEFINED
+            if op.kind in {"AND", "OR"} and len(op.args) == 2:
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    return _SCCP_OVERDEFINED
+                lhs_value = value_lattice(lhs.name, known)
+                rhs_value = value_lattice(rhs.name, known)
+                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(lhs_value, bool) and isinstance(rhs_value, bool):
+                    if op.kind == "AND":
+                        return lhs_value and rhs_value
+                    return lhs_value or rhs_value
+                return _SCCP_OVERDEFINED
+            if op.kind == "IS" and len(op.args) == 2:
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    return _SCCP_OVERDEFINED
+                lhs_value = value_lattice(lhs.name, known)
+                rhs_value = value_lattice(rhs.name, known)
+                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                return lhs_value is rhs_value
+            if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
+                proven_static = loop_compare_truth.get(op_index)
+                if isinstance(proven_static, bool):
+                    return proven_static
+                loop_fact = loop_bound_facts.get(op_index)
+                if loop_fact is not None:
+                    proven = self._prove_monotonic_loop_compare(loop_fact)
+                    if isinstance(proven, bool):
+                        return proven
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    return _SCCP_OVERDEFINED
+                lhs_value = value_lattice(lhs.name, known)
+                rhs_value = value_lattice(rhs.name, known)
+                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if not scalar_cmp_supported(lhs_value) or not scalar_cmp_supported(
+                    rhs_value
+                ):
+                    return _SCCP_OVERDEFINED
+                try:
+                    if op.kind == "EQ":
+                        return lhs_value == rhs_value
+                    if op.kind == "NE":
+                        return lhs_value != rhs_value
+                    if op.kind == "LT":
+                        return lhs_value < rhs_value
+                    if op.kind == "LE":
+                        return lhs_value <= rhs_value
+                    if op.kind == "GT":
+                        return lhs_value > rhs_value
+                    return lhs_value >= rhs_value
+                except Exception:
+                    return _SCCP_OVERDEFINED
+            if op.kind == "STRING_EQ" and len(op.args) == 2:
+                lhs = op.args[0]
+                rhs = op.args[1]
+                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
+                    return _SCCP_OVERDEFINED
+                lhs_value = value_lattice(lhs.name, known)
+                rhs_value = value_lattice(rhs.name, known)
+                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(lhs_value, str) and isinstance(rhs_value, str):
+                    return lhs_value == rhs_value
+                return _SCCP_OVERDEFINED
+            if op.kind == "TYPE_OF" and len(op.args) == 1:
+                arg = op.args[0]
+                if not isinstance(arg, MoltValue):
+                    return _SCCP_OVERDEFINED
+                tag = value_type_tag(arg.name, known)
+                if tag is not None:
+                    return tag
+                arg_value = value_lattice(arg.name, known)
+                if arg_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(arg_value):
+                    return _SCCP_OVERDEFINED
+                return _SCCP_OVERDEFINED
+            if op.kind == "ISINSTANCE" and len(op.args) == 2:
+                obj = op.args[0]
+                classinfo = op.args[1]
+                if not isinstance(obj, MoltValue) or not isinstance(
+                    classinfo, MoltValue
+                ):
+                    return _SCCP_OVERDEFINED
+                class_value = value_lattice(classinfo.name, known)
+                if class_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(class_value):
+                    return _SCCP_OVERDEFINED
+                obj_tag = value_type_tag(obj.name, known)
+                if obj_tag is None:
+                    return _SCCP_UNKNOWN
+                if isinstance(class_value, int):
+                    return obj_tag == class_value
+                if isinstance(class_value, tuple) and all(
+                    isinstance(item, int) for item in class_value
+                ):
+                    return obj_tag in class_value
+                return _SCCP_OVERDEFINED
+            if op.kind == "LEN" and len(op.args) == 1:
+                arg = op.args[0]
+                if not isinstance(arg, MoltValue):
+                    return _SCCP_OVERDEFINED
+                arg_value = value_lattice(arg.name, known)
+                if arg_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(arg_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(
+                    arg_value, (str, bytes, tuple, list, dict, set, frozenset, range)
+                ):
+                    return len(arg_value)
+                return _SCCP_OVERDEFINED
+            if op.kind == "CONTAINS" and len(op.args) == 2:
+                container = op.args[0]
+                item = op.args[1]
+                if not isinstance(container, MoltValue) or not isinstance(
+                    item, MoltValue
+                ):
+                    return _SCCP_OVERDEFINED
+                container_value = value_lattice(container.name, known)
+                item_value = value_lattice(item.name, known)
+                if container_value is _SCCP_UNKNOWN or item_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(container_value) or is_overdefined(item_value):
+                    return _SCCP_OVERDEFINED
+                if not isinstance(
+                    container_value,
+                    (str, bytes, tuple, list, dict, set, frozenset, range),
+                ):
+                    return _SCCP_OVERDEFINED
+                try:
+                    return item_value in container_value
+                except Exception:
+                    return _SCCP_OVERDEFINED
+            if op.kind == "INDEX" and len(op.args) == 2:
+                container = op.args[0]
+                index = op.args[1]
+                if not isinstance(container, MoltValue) or not isinstance(
+                    index, MoltValue
+                ):
+                    return _SCCP_OVERDEFINED
+                container_value = value_lattice(container.name, known)
+                index_value = value_lattice(index.name, known)
+                if container_value is _SCCP_UNKNOWN or index_value is _SCCP_UNKNOWN:
+                    return _SCCP_UNKNOWN
+                if is_overdefined(container_value) or is_overdefined(index_value):
+                    return _SCCP_OVERDEFINED
+                if isinstance(container_value, (tuple, list, str, bytes, range)):
+                    if isinstance(index_value, int) and not isinstance(
+                        index_value, bool
+                    ):
+                        try:
+                            return container_value[index_value]
+                        except Exception:
+                            return _SCCP_OVERDEFINED
+                    return _SCCP_OVERDEFINED
+                if isinstance(container_value, dict):
+                    try:
+                        if index_value in container_value:
+                            return container_value[index_value]
+                    except Exception:
+                        return _SCCP_OVERDEFINED
+                return _SCCP_OVERDEFINED
+            return _SCCP_OVERDEFINED
+
+        def evaluate_try_behavior(start_idx: int, end_idx: int) -> tuple[bool, bool]:
+            known: dict[str, Any] = {}
+            may_raise = False
+            may_complete_normally = True
+            if end_idx <= start_idx + 1:
+                return False, True
+            for op_idx in range(start_idx + 1, end_idx):
+                op = ops[op_idx]
+                if op.kind in {
+                    "IF",
+                    "ELSE",
+                    "END_IF",
+                    "LOOP_START",
+                    "LOOP_END",
+                    "LOOP_BREAK",
+                    "LOOP_BREAK_IF_TRUE",
+                    "LOOP_BREAK_IF_FALSE",
+                    "LOOP_CONTINUE",
+                    "TRY_START",
+                    "TRY_END",
+                    "JUMP",
+                    "LABEL",
+                    "STATE_LABEL",
+                }:
+                    return True, True
+                if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
+                    guarded = op.args[0]
+                    expected = op.args[1]
+                    if isinstance(guarded, MoltValue) and isinstance(
+                        expected, MoltValue
+                    ):
+                        expected_value = value_lattice(expected.name, known)
+                        guarded_tag = value_type_tag(guarded.name, known)
+                        if (
+                            isinstance(expected_value, int)
+                            and guarded_tag is not None
+                            and guarded_tag == expected_value
+                        ):
+                            known[type_fact_key(guarded.name)] = expected_value
+                            continue
+                    return True, False
+                if op.kind == "GUARD_DICT_SHAPE" and len(op.args) == 3:
+                    guarded = op.args[0]
+                    dict_type = op.args[1]
+                    version = op.args[2]
+                    if (
+                        isinstance(guarded, MoltValue)
+                        and isinstance(dict_type, MoltValue)
+                        and isinstance(version, MoltValue)
+                    ):
+                        shape_key = dict_shape_fact_key(guarded.name)
+                        expected = (dict_type.name, version.name)
+                        known_shape = known.get(shape_key)
+                        if isinstance(known_shape, tuple):
+                            if known_shape == expected:
+                                continue
+                            return True, False
+                        known[shape_key] = expected
+                        continue
+                    return True, True
+                if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+                    return True, False
+                out_name = op.result.name
+                lattice_value: Any = _SCCP_UNKNOWN
+                if out_name != "none":
+                    known.pop(out_name, None)
+                    known.pop(type_fact_key(out_name), None)
+                    known.pop(dict_shape_fact_key(out_name), None)
+                    lattice_value = eval_lattice_value(op, known, op_idx)
+                    if (
+                        lattice_value is not _SCCP_UNKNOWN
+                        and lattice_value is not _SCCP_OVERDEFINED
+                    ):
+                        known[out_name] = lattice_value
+                        tag = self._const_type_tag_for_lattice_value(lattice_value)
+                        if tag is not None:
+                            known[type_fact_key(out_name)] = tag
+                if self._op_may_raise_for_sccp(op.kind):
+                    if (
+                        lattice_value is _SCCP_OVERDEFINED
+                        or lattice_value is _SCCP_UNKNOWN
+                    ):
+                        may_raise = True
+            return may_raise, may_complete_normally
+
+        for try_start_idx, try_end_idx in cfg.control.try_start_to_end.items():
+            may_raise, may_complete_normally = evaluate_try_behavior(
+                try_start_idx, try_end_idx
+            )
+            try_exception_possible_by_start[try_start_idx] = may_raise
+            try_normal_possible_by_start[try_start_idx] = may_complete_normally
+        check_exception_try_owner: dict[int, int] = {}
+        for try_start_idx, try_end_idx in cfg.control.try_start_to_end.items():
+            for op_idx in range(try_start_idx + 1, try_end_idx):
+                if op_idx >= len(ops) or ops[op_idx].kind != "CHECK_EXCEPTION":
+                    continue
+                owner = check_exception_try_owner.get(op_idx)
+                if owner is None or try_start_idx > owner:
+                    check_exception_try_owner[op_idx] = try_start_idx
+
+        value_users: dict[str, set[int]] = {}
+        for op_idx, op in enumerate(ops):
+            block_id = cfg.index_to_block.get(op_idx)
+            if block_id is None:
+                continue
+            for arg in op.args:
+                if isinstance(arg, MoltValue):
+                    value_users.setdefault(arg.name, set()).add(block_id)
+
+        iterations = 0
+        ssa_defs = sum(1 for op in ops if op.result.name != "none")
+        max_iterations_env = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
+        if max_iterations_env:
+            try:
+                parsed = int(max_iterations_env)
+            except ValueError:
+                parsed = 0
+            max_iterations = parsed if parsed > 0 else 256
+        else:
+            # Dynamic cap keeps compile-time bounded while scaling with function/CFG size.
+            # Keep the default ceiling conservative so wasm builds cannot stall for
+            # minutes in pathological SCCP worklists.
+            cfg_edge_count = sum(len(succs) for succs in cfg.successors.values())
+            max_iterations = max(
+                2048,
+                min(
+                    131072,
+                    (len(cfg.blocks) * 96) + (cfg_edge_count * 48) + (ssa_defs * 24),
+                ),
+            )
+        func_stats = self._midend_function_stats()
+
+        block_queue: deque[int] = deque()
+        queued_blocks: set[int] = set()
+        edge_queue: deque[tuple[int, int]] = deque()
+        queued_edges: set[tuple[int, int]] = set()
+        value_queue: deque[str] = deque()
+        queued_values: set[str] = set()
+
+        def enqueue_block(block_id: int) -> None:
+            if block_id in queued_blocks:
+                return
+            queued_blocks.add(block_id)
+            block_queue.append(block_id)
+
+        def enqueue_edge(src: int, dst: int) -> None:
+            edge = (src, dst)
+            if edge in executable_edges or edge in queued_edges:
+                return
+            queued_edges.add(edge)
+            edge_queue.append(edge)
+
+        def enqueue_value(name: str) -> None:
+            if name in queued_values:
+                return
+            queued_values.add(name)
+            value_queue.append(name)
+
+        if cfg.blocks:
+            enqueue_block(0)
+
+        while block_queue or edge_queue or value_queue:
+            if edge_queue:
+                src, dst = edge_queue.popleft()
+                queued_edges.discard((src, dst))
+                if (src, dst) in executable_edges:
+                    continue
+                executable_edges.add((src, dst))
+                if dst not in executable_blocks:
+                    executable_blocks.add(dst)
+                enqueue_block(dst)
+                continue
+
+            if value_queue:
+                value_name = value_queue.popleft()
+                queued_values.discard(value_name)
+                for block_id in value_users.get(value_name, ()):
+                    if block_id in executable_blocks:
+                        enqueue_block(block_id)
+                continue
+
+            iterations += 1
+            if iterations > max_iterations:
+                self.midend_stats["sccp_iteration_cap_hits"] = (
+                    self.midend_stats.get("sccp_iteration_cap_hits", 0) + 1
+                )
+                func_stats["sccp_iteration_cap_hits"] += 1
+                all_blocks = {block.id for block in cfg.blocks}
+                all_edges = {
+                    (src, dst) for src, succs in cfg.successors.items() for dst in succs
+                }
+                conservative_try = {
+                    start_idx: True for start_idx in cfg.control.try_start_to_end
+                }
+                return SCCPResult(
+                    in_values={block.id: {} for block in cfg.blocks},
+                    out_values={block.id: {} for block in cfg.blocks},
+                    executable_blocks=all_blocks,
+                    executable_edges=all_edges,
+                    branch_choice_by_if_index={},
+                    loop_break_choice_by_index={},
+                    try_exception_possible_by_start=conservative_try,
+                    try_normal_possible_by_start=dict(conservative_try),
+                    guard_fail_indices=set(),
+                )
+
+            block_id = block_queue.popleft()
+            queued_blocks.discard(block_id)
+            if block_id not in executable_blocks:
+                continue
+            block = cfg.blocks[block_id]
+
+            if block_id == 0:
+                new_in: dict[str, Any] = {}
+            else:
+                exec_preds = [
+                    pred
+                    for pred in cfg.predecessors.get(block_id, [])
+                    if (pred, block_id) in executable_edges
+                ]
+                pred_states = [out_values[pred] for pred in exec_preds]
+                new_in = merge_states(pred_states)
+
+            if new_in != in_values[block_id]:
+                in_values[block_id] = new_in
+
+            known = dict(new_in)
+            block_traps = False
+            for op_idx in range(block.start, block.end):
+                op = ops[op_idx]
+                if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
+                    guarded = op.args[0]
+                    expected = op.args[1]
+                    if isinstance(guarded, MoltValue) and isinstance(
+                        expected, MoltValue
+                    ):
+                        expected_value = known.get(expected.name, _SCCP_UNKNOWN)
+                        if isinstance(expected_value, int):
+                            guarded_tag = value_type_tag(guarded.name, known)
+                            if (
+                                guarded_tag is not None
+                                and guarded_tag != expected_value
+                            ):
+                                guard_fail_indices.add(op_idx)
+                                block_traps = True
+                                break
+                            known[type_fact_key(guarded.name)] = expected_value
+                    continue
+                if op.kind == "GUARD_DICT_SHAPE" and len(op.args) == 3:
+                    guarded = op.args[0]
+                    dict_type = op.args[1]
+                    version = op.args[2]
+                    if (
+                        isinstance(guarded, MoltValue)
+                        and isinstance(dict_type, MoltValue)
+                        and isinstance(version, MoltValue)
+                    ):
+                        shape_key = dict_shape_fact_key(guarded.name)
+                        expected_shape = (dict_type.name, version.name)
+                        known_shape = known.get(shape_key)
+                        if isinstance(known_shape, tuple):
+                            if known_shape != expected_shape:
+                                guard_fail_indices.add(op_idx)
+                                block_traps = True
+                                break
+                        else:
+                            known[shape_key] = expected_shape
+                    continue
+                out_name = op.result.name
+                if out_name == "none":
+                    continue
+                known.pop(out_name, None)
+                known.pop(type_fact_key(out_name), None)
+                known.pop(dict_shape_fact_key(out_name), None)
+                lattice_value = eval_lattice_value(op, known, op_idx)
+                if lattice_value is _SCCP_UNKNOWN:
+                    continue
+                known[out_name] = lattice_value
+                tag = self._const_type_tag_for_lattice_value(lattice_value)
+                if tag is not None:
+                    known[type_fact_key(out_name)] = tag
+                if (
+                    op.kind in {"EQ", "NE"}
+                    and isinstance(lattice_value, bool)
+                    and len(op.args) == 2
+                ):
+                    lhs = op.args[0]
+                    rhs = op.args[1]
+                    for type_side, tag_side in ((lhs, rhs), (rhs, lhs)):
+                        if not isinstance(type_side, MoltValue) or not isinstance(
+                            tag_side, MoltValue
+                        ):
+                            continue
+                        guarded_name = type_of_origin.get(type_side.name)
+                        if guarded_name is None:
+                            continue
+                        expected_tag = known.get(tag_side.name, _SCCP_UNKNOWN)
+                        if not isinstance(expected_tag, int):
+                            continue
+                        implies_equal = (
+                            lattice_value if op.kind == "EQ" else not lattice_value
+                        )
+                        if implies_equal:
+                            known[type_fact_key(guarded_name)] = expected_tag
+                if (
+                    op.kind == "ISINSTANCE"
+                    and lattice_value is True
+                    and len(op.args) == 2
+                ):
+                    guarded_obj = op.args[0]
+                    classinfo = op.args[1]
+                    if isinstance(guarded_obj, MoltValue) and isinstance(
+                        classinfo, MoltValue
+                    ):
+                        class_value = known.get(classinfo.name, _SCCP_UNKNOWN)
+                        if isinstance(class_value, int):
+                            known[type_fact_key(guarded_obj.name)] = class_value
+                        elif isinstance(class_value, tuple):
+                            tags = [
+                                item for item in class_value if isinstance(item, int)
+                            ]
+                            if len(tags) == 1:
+                                known[type_fact_key(guarded_obj.name)] = tags[0]
+
+            prior_out = out_values[block_id]
+            out_changed_keys: list[str] = []
+            if known != prior_out:
+                all_keys = set(prior_out.keys()) | set(known.keys())
+                out_changed_keys = [
+                    key
+                    for key in all_keys
+                    if prior_out.get(key, _SCCP_UNKNOWN)
+                    != known.get(key, _SCCP_UNKNOWN)
+                ]
+                out_values[block_id] = known
+
+            succs = cfg.successors.get(block_id, [])
+            chosen_succs = succs
+            if block_traps:
+                chosen_succs = []
+            elif block.start < block.end:
+                terminator_idx = block.end - 1
+                terminator = ops[terminator_idx]
+                if terminator.kind == "IF" and len(terminator.args) == 1:
+                    cond = terminator.args[0]
+                    cond_value: Any = _SCCP_UNKNOWN
+                    if isinstance(cond, MoltValue):
+                        cond_value = known.get(cond.name, _SCCP_UNKNOWN)
+                    if isinstance(cond_value, bool):
+                        branch_choice_by_if_index[terminator_idx] = cond_value
+                        if cond_value and succs:
+                            chosen_succs = [succs[0]]
+                        elif not cond_value and len(succs) >= 2:
+                            chosen_succs = [succs[1]]
+                    else:
+                        branch_choice_by_if_index.pop(terminator_idx, None)
+                elif (
+                    terminator.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+                    and len(terminator.args) == 1
+                ):
+                    cond = terminator.args[0]
+                    cond_value: Any = _SCCP_UNKNOWN
+                    if isinstance(cond, MoltValue):
+                        cond_value = known.get(cond.name, _SCCP_UNKNOWN)
+                    if isinstance(cond_value, bool) and len(succs) >= 2:
+                        if terminator.kind == "LOOP_BREAK_IF_TRUE":
+                            break_taken = bool(cond_value)
+                        else:
+                            break_taken = not bool(cond_value)
+                        loop_break_choice_by_index[terminator_idx] = break_taken
+                        chosen_succs = [succs[1] if break_taken else succs[0]]
+                    else:
+                        loop_break_choice_by_index.pop(terminator_idx, None)
+                elif terminator.kind == "TRY_START":
+                    can_raise = try_exception_possible_by_start.get(
+                        terminator_idx, True
+                    )
+                    if not can_raise and succs:
+                        chosen_succs = [succs[0]]
+                elif terminator.kind == "CHECK_EXCEPTION":
+                    owner_start = check_exception_try_owner.get(terminator_idx)
+                    if owner_start is not None:
+                        can_raise = try_exception_possible_by_start.get(
+                            owner_start, True
+                        )
+                        if not can_raise and succs:
+                            chosen_succs = [succs[0]]
+                elif terminator.kind == "LOOP_END" and len(succs) >= 2:
+                    loop_start_idx = cfg.control.loop_end_to_start.get(terminator_idx)
+                    back_succ = (
+                        None
+                        if loop_start_idx is None
+                        else cfg.index_to_block.get(loop_start_idx)
+                    )
+                    if back_succ is not None:
+                        exit_succ = next(
+                            (succ for succ in succs if succ != back_succ),
+                            None,
+                        )
+                        back_exec = back_succ in executable_blocks
+                        exit_exec = (
+                            exit_succ in executable_blocks
+                            if exit_succ is not None
+                            else False
+                        )
+                        if back_exec and not exit_exec:
+                            chosen_succs = [back_succ]
+                        elif exit_succ is not None and exit_exec and not back_exec:
+                            chosen_succs = [exit_succ]
+
+            for succ in chosen_succs:
+                enqueue_edge(block_id, succ)
+
+            if out_changed_keys:
+                for key in out_changed_keys:
+                    if not key.startswith("__"):
+                        enqueue_value(key)
+                for succ in cfg.successors.get(block_id, []):
+                    if succ in executable_blocks:
+                        enqueue_block(succ)
+
+        return SCCPResult(
+            in_values=in_values,
+            out_values=out_values,
+            executable_blocks=executable_blocks,
+            executable_edges=executable_edges,
+            branch_choice_by_if_index=branch_choice_by_if_index,
+            loop_break_choice_by_index=loop_break_choice_by_index,
+            try_exception_possible_by_start=try_exception_possible_by_start,
+            try_normal_possible_by_start=try_normal_possible_by_start,
+            guard_fail_indices=guard_fail_indices,
+        )
+
+    def _sccp_in_const_int_values(self, sccp: SCCPResult) -> dict[int, dict[str, int]]:
+        in_int_values: dict[int, dict[str, int]] = {}
+        for block_id, known in sccp.in_values.items():
+            in_int_values[block_id] = {
+                key: value
+                for key, value in known.items()
+                if (
+                    not str(key).startswith("__tag__:")
+                    and value is not _SCCP_OVERDEFINED
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                )
+            }
+        return in_int_values
+
+    def _trim_phi_args_by_executable_edges(
+        self,
+        ops: list[MoltOp],
+        cfg: CFGGraph,
+        executable_edges: set[tuple[int, int]],
+    ) -> tuple[list[MoltOp], int]:
+        if not ops or not cfg.blocks:
+            return ops, 0
+
+        trimmed = 0
+        out: list[MoltOp] = []
+        for block in cfg.blocks:
+            block_preds = cfg.predecessors.get(block.id, [])
+            for op_idx in range(block.start, block.end):
+                op = ops[op_idx]
+                if (
+                    op.kind == "PHI"
+                    and op.args
+                    and len(op.args) == len(block_preds)
+                    and len(block_preds) > 1
+                ):
+                    kept_args = [
+                        arg
+                        for arg, pred in zip(op.args, block_preds)
+                        if (pred, block.id) in executable_edges
+                    ]
+                    normalized_args = kept_args
+                    if all(
+                        isinstance(arg, MoltValue)
+                        and isinstance(kept_args[0], MoltValue)
+                        and arg.name == kept_args[0].name
+                        for arg in kept_args
+                    ):
+                        normalized_args = [kept_args[0]]
+                    if 0 < len(normalized_args) < len(op.args):
+                        out.append(
+                            MoltOp(
+                                kind=op.kind,
+                                args=normalized_args,
+                                result=op.result,
+                                metadata=op.metadata,
+                            )
+                        )
+                        trimmed += len(op.args) - len(normalized_args)
+                        continue
+                out.append(op)
+        return out, trimmed
+
+    def _align_phi_args_to_cfg_predecessors(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> tuple[list[MoltOp], int]:
+        if not ops or not cfg.blocks:
+            return ops, 0
+
+        rewrites = 0
+        out: list[MoltOp] = []
+        for block in cfg.blocks:
+            block_preds = cfg.predecessors.get(block.id, [])
+            expected = len(block_preds)
+            for op_idx in range(block.start, block.end):
+                op = ops[op_idx]
+                if op.kind != "PHI" or not op.args:
+                    out.append(op)
+                    continue
+                if expected == 0:
+                    out.append(op)
+                    continue
+                args = list(op.args)
+                if len(args) == expected:
+                    out.append(op)
+                    continue
+                if not all(isinstance(arg, MoltValue) for arg in args):
+                    out.append(op)
+                    continue
+                first = cast(MoltValue, args[0])
+                all_same = all(
+                    isinstance(arg, MoltValue) and arg.name == first.name
+                    for arg in args
+                )
+                if not all_same:
+                    out.append(op)
+                    continue
+                if expected > 0:
+                    normalized = [first for _ in range(expected)]
+                    out.append(
+                        MoltOp(
+                            kind=op.kind,
+                            args=normalized,
+                            result=op.result,
+                            metadata=op.metadata,
+                        )
+                    )
+                    rewrites += abs(len(args) - expected)
+                    continue
+                out.append(op)
+        return out, rewrites
+
+    def _canonicalize_cfg_before_optimization(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]:
+        if not ops:
+            return ops, 0
+
+        current = ops
+        total_rewrites = 0
+        for _ in range(8):
+            round_rewrites = 0
+            round_cfg = build_cfg(current)
+            if not round_cfg.blocks:
+                break
+
+            step_ops, phi_align = self._align_phi_args_to_cfg_predecessors(
+                current, round_cfg
+            )
+            round_rewrites += phi_align
+
+            step_cfg = build_cfg(step_ops)
+            if step_cfg.blocks:
+                step_ops, ladder_threads = self._normalize_try_except_join_labels(
+                    step_ops, cfg=step_cfg
+                )
+                round_rewrites += ladder_threads
+
+            step_ops, label_prunes, jump_noops = self._prune_dead_labels_and_noop_jumps(
+                step_ops
+            )
+            round_rewrites += label_prunes + jump_noops
+
+            step_ops, structural_prunes = (
+                self._canonicalize_structured_regions_pre_sccp(step_ops)
+            )
+            round_rewrites += structural_prunes
+
+            if step_ops == current:
+                break
+            total_rewrites += round_rewrites
+            current = step_ops
+
+        return current, total_rewrites
+
+    def _can_hoist_guard_pair(self, first: MoltOp, second: MoltOp) -> bool:
+        if first.kind != second.kind:
+            return False
+        if first.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
+            return False
+        if first.result.name != "none" or second.result.name != "none":
+            return False
+        if len(first.args) != len(second.args):
+            return False
+        for left, right in zip(first.args, second.args):
+            if isinstance(left, MoltValue) and isinstance(right, MoltValue):
+                if left.name != right.name:
+                    return False
+                continue
+            if left != right:
+                return False
+        return True
+
+    def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
+        if op.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
+            return None
+        if op.result.name != "none":
+            return None
+        normalized_args: list[Any] = []
+        for arg in op.args:
+            if isinstance(arg, MoltValue):
+                normalized_args.append(("v", arg.name))
+            else:
+                normalized_args.append(("c", arg))
+        return (op.kind, tuple(normalized_args))
+
+    def _collect_branch_defined_names(self, ops: list[MoltOp]) -> set[str]:
+        out: set[str] = set()
+        for op in ops:
+            if op.result.name != "none":
+                out.add(op.result.name)
+        return out
+
+    def _collect_movable_common_guards(
+        self, then_ops: list[MoltOp], else_ops: list[MoltOp]
+    ) -> list[MoltOp]:
+        then_defined = self._collect_branch_defined_names(then_ops)
+        else_defined = self._collect_branch_defined_names(else_ops)
+        branch_defined = then_defined.union(else_defined)
+
+        def candidates(ops: list[MoltOp]) -> dict[tuple[Any, ...], MoltOp]:
+            found: dict[tuple[Any, ...], MoltOp] = {}
+            for op in ops:
+                sig = self._guard_signature(op)
+                if sig is None:
+                    continue
+                arg_names: set[str] = set()
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, arg_names)
+                if arg_names.intersection(branch_defined):
+                    continue
+                found.setdefault(sig, op)
+            return found
+
+        then_guards = candidates(then_ops)
+        else_guards = candidates(else_ops)
+        common_sigs = sorted(set(then_guards.keys()).intersection(else_guards.keys()))
+        hoisted: list[MoltOp] = []
+        for sig in common_sigs:
+            source = then_guards[sig]
+            hoisted.append(
+                MoltOp(
+                    kind=source.kind,
+                    args=list(source.args),
+                    result=MoltValue("none"),
+                    metadata=source.metadata,
+                )
+            )
+        return hoisted
+
+    def _clear_invalidated_guard_signatures(
+        self, available: set[tuple[Any, ...]], op: MoltOp
+    ) -> None:
+        if not available:
+            return
+        effect_class = self._op_effect_class(op.kind)
+        if self._is_uncertain_heap_boundary(op.kind):
+            available.clear()
+            return
+        if effect_class == "writes_heap":
+            stale = [
+                sig
+                for sig in available
+                if sig and isinstance(sig, tuple) and sig[0] == "GUARD_DICT_SHAPE"
+            ]
+            for sig in stale:
+                available.discard(sig)
+
+    def _eliminate_redundant_guards_cfg(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int, int, int]:
+        if not ops:
+            return ops, 0, 0, 0
+        cfg = build_cfg(ops)
+        control = cfg.control
+        if_to_else = control.if_to_else
+        if_to_end = control.if_to_end
+        loop_start_to_end = control.loop_start_to_end
+        try_start_to_end = control.try_start_to_end
+
+        def process_range(
+            start: int,
+            end: int,
+            in_guards: set[tuple[Any, ...]],
+        ) -> tuple[list[MoltOp], set[tuple[Any, ...]], int, int]:
+            out: list[MoltOp] = []
+            available = set(in_guards)
+            attempted = 0
+            accepted = 0
+            i = start
+            while i < end:
+                op = ops[i]
+                if op.kind == "IF" and i in if_to_end:
+                    else_idx = if_to_else.get(i)
+                    end_if_idx = if_to_end[i]
+                    then_start = i + 1
+                    then_end = else_idx if else_idx is not None else end_if_idx
+                    then_ops, then_out, then_attempts, then_accepted = process_range(
+                        then_start,
+                        then_end,
+                        set(available),
+                    )
+                    if else_idx is not None:
+                        else_ops, else_out, else_attempts, else_accepted = (
+                            process_range(
+                                else_idx + 1,
+                                end_if_idx,
+                                set(available),
+                            )
+                        )
+                    else:
+                        else_ops, else_out, else_attempts, else_accepted = (
+                            [],
+                            set(available),
+                            0,
+                            0,
+                        )
+                    attempted += then_attempts + else_attempts
+                    accepted += then_accepted + else_accepted
+                    out.append(op)
+                    out.extend(then_ops)
+                    if else_idx is not None:
+                        out.append(ops[else_idx])
+                        out.extend(else_ops)
+                    out.append(ops[end_if_idx])
+                    available = then_out.intersection(else_out)
+                    i = end_if_idx + 1
+                    continue
+
+                if op.kind == "LOOP_START" and i in loop_start_to_end:
+                    loop_end = loop_start_to_end[i]
+                    body_ops, body_out, body_attempts, body_accepted = process_range(
+                        i + 1,
+                        loop_end,
+                        set(available),
+                    )
+                    attempted += body_attempts
+                    accepted += body_accepted
+                    out.append(op)
+                    out.extend(body_ops)
+                    out.append(ops[loop_end])
+                    # Loop may execute zero times, so only guards guaranteed on both
+                    # paths remain available after the loop region.
+                    available = available.intersection(body_out)
+                    i = loop_end + 1
+                    continue
+
+                if op.kind == "TRY_START" and i in try_start_to_end:
+                    try_end = try_start_to_end[i]
+                    body_ops, body_out, body_attempts, body_accepted = process_range(
+                        i + 1,
+                        try_end,
+                        set(available),
+                    )
+                    attempted += body_attempts
+                    accepted += body_accepted
+                    out.append(op)
+                    out.extend(body_ops)
+                    out.append(ops[try_end])
+                    # Try body may exit via exceptional edge, so preserve only
+                    # guards guaranteed on both normal and exceptional paths.
+                    available = available.intersection(body_out)
+                    i = try_end + 1
+                    continue
+
+                sig = self._guard_signature(op)
+                if sig is not None:
+                    attempted += 1
+                    if sig in available:
+                        accepted += 1
+                        i += 1
+                        continue
+                    available.add(sig)
+                    out.append(op)
+                    i += 1
+                    continue
+
+                self._clear_invalidated_guard_signatures(available, op)
+                out.append(op)
+                i += 1
+
+            return out, available, attempted, accepted
+
+        rewritten, _out_guards, attempted, accepted = process_range(0, len(ops), set())
+        rejected = max(0, attempted - accepted)
+        return rewritten, attempted, accepted, rejected
+
+    def _op_equal_for_tail_merge(self, left: MoltOp, right: MoltOp) -> bool:
+        return (
+            left.kind == right.kind
+            and left.result.name == right.result.name
+            and left.args == right.args
+            and left.metadata == right.metadata
+        )
+
+    def _can_tail_merge_op(self, op: MoltOp) -> bool:
+        if op.result.name != "none":
+            return False
+        if op.kind in {
+            "IF",
+            "ELSE",
+            "END_IF",
+            "LOOP_START",
+            "LOOP_END",
+            "LOOP_BREAK",
+            "LOOP_BREAK_IF_TRUE",
+            "LOOP_BREAK_IF_FALSE",
+            "LOOP_CONTINUE",
+            "TRY_START",
+            "TRY_END",
+            "JUMP",
+            "RETURN",
+            "RAISE",
+            "RAISE_CAUSE",
+            "RERAISE",
+            "LABEL",
+            "STATE_LABEL",
+        }:
+            return False
+        return True
+
+    def _rewrite_structured_if_regions(
+        self,
+        ops: list[MoltOp],
+        *,
+        control: ControlMaps,
+        branch_choice_by_if_index: dict[int, bool],
+    ) -> tuple[list[MoltOp], int]:
+        if_to_else = control.if_to_else
+        if_to_end = control.if_to_end
+
+        branch_prunes = 0
+
+        def rewrite_range(start: int, end: int) -> list[MoltOp]:
+            nonlocal branch_prunes
+            out: list[MoltOp] = []
+            i = start
+            while i < end:
+                op = ops[i]
+                if op.kind != "IF" or i not in if_to_end:
+                    out.append(op)
+                    i += 1
+                    continue
+
+                else_idx = if_to_else.get(i)
+                end_if_idx = if_to_end[i]
+                then_start = i + 1
+                then_end = else_idx if else_idx is not None else end_if_idx
+                then_ops = rewrite_range(then_start, then_end)
+                else_ops = (
+                    rewrite_range(else_idx + 1, end_if_idx)
+                    if else_idx is not None
+                    else []
+                )
+
+                branch_choice = branch_choice_by_if_index.get(i)
+                if branch_choice is True:
+                    out.extend(then_ops)
+                    branch_prunes += 1
+                    i = end_if_idx + 1
+                    continue
+                if branch_choice is False:
+                    out.extend(else_ops)
+                    branch_prunes += 1
+                    i = end_if_idx + 1
+                    continue
+
+                if else_idx is not None and then_ops and else_ops:
+                    hoisted_guards = self._collect_movable_common_guards(
+                        then_ops, else_ops
+                    )
+                    self.midend_stats["guard_hoist_attempts"] += max(
+                        1, len(hoisted_guards)
+                    )
+                    if hoisted_guards:
+                        self.midend_stats["guard_hoist_accepted"] += len(hoisted_guards)
+                        for hoisted in hoisted_guards:
+                            sig = self._guard_signature(hoisted)
+                            if sig is None:
+                                continue
+                            then_ops = [
+                                op
+                                for op in then_ops
+                                if self._guard_signature(op) != sig
+                            ]
+                            else_ops = [
+                                op
+                                for op in else_ops
+                                if self._guard_signature(op) != sig
+                            ]
+                        out.extend(hoisted_guards)
+                    else:
+                        self.midend_stats["guard_hoist_rejected"] += 1
+
+                shared_tail: list[MoltOp] = []
+                while then_ops and else_ops:
+                    tail_then = then_ops[-1]
+                    tail_else = else_ops[-1]
+                    if not self._op_equal_for_tail_merge(tail_then, tail_else):
+                        break
+                    if not self._can_tail_merge_op(tail_then):
+                        break
+                    shared_tail.append(tail_then)
+                    then_ops = then_ops[:-1]
+                    else_ops = else_ops[:-1]
+                shared_tail.reverse()
+
+                if not then_ops and not else_ops:
+                    out.extend(shared_tail)
+                    i = end_if_idx + 1
+                    continue
+
+                out.append(op)
+                out.extend(then_ops)
+                if else_idx is not None and else_ops:
+                    out.append(ops[else_idx])
+                    out.extend(else_ops)
+                out.append(ops[end_if_idx])
+                out.extend(shared_tail)
+                i = end_if_idx + 1
+            return out
+
+        rewritten = rewrite_range(0, len(ops))
+        return rewritten, branch_prunes
+
+    def _canonicalize_structured_regions_pre_sccp(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]:
+        if not ops:
+            return ops, 0
+        cfg = build_cfg(ops)
+        control = cfg.control
+        if_to_else = control.if_to_else
+        if_to_end = control.if_to_end
+        loop_start_to_end = control.loop_start_to_end
+        try_start_to_end = control.try_start_to_end
+
+        structural_prunes = 0
+
+        def rewrite_range(start: int, end: int) -> list[MoltOp]:
+            nonlocal structural_prunes
+            out: list[MoltOp] = []
+            i = start
+            while i < end:
+                op = ops[i]
+                if op.kind == "IF" and i in if_to_end:
+                    else_idx = if_to_else.get(i)
+                    end_if_idx = if_to_end[i]
+                    then_start = i + 1
+                    then_end = else_idx if else_idx is not None else end_if_idx
+                    then_ops = rewrite_range(then_start, then_end)
+                    else_ops = (
+                        rewrite_range(else_idx + 1, end_if_idx)
+                        if else_idx is not None
+                        else []
+                    )
+                    if not then_ops and not else_ops:
+                        structural_prunes += 1
+                        i = end_if_idx + 1
+                        continue
+                    if else_idx is not None and then_ops == else_ops:
+                        structural_prunes += 1
+                        out.extend(then_ops)
+                        i = end_if_idx + 1
+                        continue
+                    out.append(op)
+                    out.extend(then_ops)
+                    if else_idx is not None and else_ops:
+                        out.append(ops[else_idx])
+                        out.extend(else_ops)
+                    out.append(ops[end_if_idx])
+                    i = end_if_idx + 1
+                    continue
+                if op.kind == "LOOP_START" and i in loop_start_to_end:
+                    loop_end = loop_start_to_end[i]
+                    body = rewrite_range(i + 1, loop_end)
+                    if not body:
+                        structural_prunes += 1
+                        i = loop_end + 1
+                        continue
+                    out.append(op)
+                    out.extend(body)
+                    out.append(ops[loop_end])
+                    i = loop_end + 1
+                    continue
+                if op.kind == "TRY_START" and i in try_start_to_end:
+                    try_end = try_start_to_end[i]
+                    body = rewrite_range(i + 1, try_end)
+                    if not body:
+                        structural_prunes += 1
+                        i = try_end + 1
+                        continue
+                    out.append(op)
+                    out.extend(body)
+                    out.append(ops[try_end])
+                    i = try_end + 1
+                    continue
+                out.append(op)
+                i += 1
+            return out
+
+        rewritten = rewrite_range(0, len(ops))
+        return rewritten, structural_prunes
+
+    def _compute_postdominators_for_cfg(self, cfg: CFGGraph) -> dict[int, set[int]]:
+        block_count = len(cfg.blocks)
+        if block_count == 0:
+            return {}
+        reachable = set(cfg.reachable)
+        postdom: dict[int, set[int]] = {}
+        for block_id in range(block_count):
+            if block_id in reachable:
+                postdom[block_id] = set(reachable)
+            else:
+                postdom[block_id] = {block_id}
+
+        exits = [
+            block_id
+            for block_id in reachable
+            if not any(succ in reachable for succ in cfg.successors.get(block_id, []))
+        ]
+        if not exits and reachable:
+            exits = [max(reachable)]
+        for exit_block in exits:
+            postdom[exit_block] = {exit_block}
+
+        changed = True
+        while changed:
+            changed = False
+            for block_id in reversed(range(block_count)):
+                if block_id not in reachable or block_id in exits:
+                    continue
+                succs = [s for s in cfg.successors.get(block_id, []) if s in reachable]
+                if not succs:
+                    new_set = {block_id}
+                else:
+                    new_set = set.intersection(*(postdom[s] for s in succs))
+                    new_set.add(block_id)
+                if new_set != postdom[block_id]:
+                    postdom[block_id] = new_set
+                    changed = True
+        return postdom
+
+    def _rewrite_loop_try_edge_threading(
+        self,
+        ops: list[MoltOp],
+        *,
+        cfg: CFGGraph,
+        control: ControlMaps,
+        executable_edges: set[tuple[int, int]],
+        loop_break_choice_by_index: dict[int, bool],
+        try_exception_possible_by_start: dict[int, bool],
+        try_normal_possible_by_start: dict[int, bool],
+        guard_fail_indices: set[int],
+    ) -> tuple[list[MoltOp], int, int, int, int, int, int]:
+        single_exec_succ_by_block: dict[int, int] = {}
+        executable_blocks: set[int] = {0} if cfg.blocks else set()
+        postdominators = self._compute_postdominators_for_cfg(cfg)
+        for block in cfg.blocks:
+            succs = cfg.successors.get(block.id, [])
+            chosen = [succ for succ in succs if (block.id, succ) in executable_edges]
+            for succ in chosen:
+                executable_blocks.add(block.id)
+                executable_blocks.add(succ)
+            if len(chosen) == 1:
+                single_exec_succ_by_block[block.id] = chosen[0]
+
+        try_remove_starts = {
+            start
+            for start, can_raise in try_exception_possible_by_start.items()
+            if not can_raise
+        }
+        for start in control.try_start_to_end:
+            block_id = cfg.index_to_block.get(start)
+            if block_id is None:
+                continue
+            chosen = single_exec_succ_by_block.get(block_id)
+            succs = cfg.successors.get(block_id, [])
+            if chosen is not None and succs and chosen == succs[0]:
+                try_remove_starts.add(start)
+        try_remove_ends = {
+            control.try_start_to_end[start]
+            for start in try_remove_starts
+            if start in control.try_start_to_end
+        }
+
+        try_unreachable_body_indices: set[int] = set()
+        threaded_check_exception_jumps: dict[int, Any] = {}
+        check_exception_elisions: set[int] = set()
+        check_try_owner: dict[int, int] = {}
+        for start, end in control.try_start_to_end.items():
+            for idx in range(start + 1, end):
+                if idx >= len(ops) or ops[idx].kind != "CHECK_EXCEPTION":
+                    continue
+                owner = check_try_owner.get(idx)
+                if owner is None or start > owner:
+                    check_try_owner[idx] = start
+        for idx, start in check_try_owner.items():
+            if not try_exception_possible_by_start.get(start, True):
+                check_exception_elisions.add(idx)
+
+        for start, end in control.try_start_to_end.items():
+            if try_normal_possible_by_start.get(start, True):
+                continue
+            stop_idx: int | None = None
+            for idx in range(start + 1, end):
+                if idx in guard_fail_indices:
+                    stop_idx = idx
+                    break
+                if ops[idx].kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+                    stop_idx = idx
+                    break
+            if stop_idx is None:
+                continue
+            start_block = cfg.index_to_block.get(start)
+            stop_block = cfg.index_to_block.get(stop_idx)
+            end_block = cfg.index_to_block.get(end)
+            if start_block is None or stop_block is None or end_block is None:
+                continue
+            if stop_block not in cfg.dominators.get(end_block, {end_block}):
+                continue
+            stop_postdominates_start = stop_block in postdominators.get(
+                start_block, {start_block}
+            )
+
+            threaded_check_idx: int | None = None
+            for check_idx in range(stop_idx + 1, end):
+                check_op = ops[check_idx]
+                if check_op.kind != "CHECK_EXCEPTION" or not check_op.args:
+                    continue
+                if any(
+                    ops[mid].kind not in {"LINE", "LABEL", "STATE_LABEL"}
+                    for mid in range(stop_idx + 1, check_idx)
+                ):
+                    continue
+                check_block = cfg.index_to_block.get(check_idx)
+                if check_block is None:
+                    continue
+                if stop_block not in cfg.dominators.get(check_block, {check_block}):
+                    continue
+                target_label = str(check_op.args[0])
+                target_block = cfg.label_to_block.get(target_label)
+                if target_block is None:
+                    continue
+                if target_block not in cfg.successors.get(check_block, []):
+                    continue
+                threaded_check_idx = check_idx
+                threaded_check_exception_jumps[check_idx] = check_op.args[0]
+                break
+
+            if threaded_check_idx is not None:
+                for idx in range(stop_idx + 1, threaded_check_idx):
+                    try_unreachable_body_indices.add(idx)
+                for idx in range(threaded_check_idx + 1, end):
+                    try_unreachable_body_indices.add(idx)
+            else:
+                if not stop_postdominates_start:
+                    continue
+                for idx in range(stop_idx + 1, end):
+                    try_unreachable_body_indices.add(idx)
+            # Only remove try markers for exceptional-only lanes when we can
+            # prove no in-region CHECK_EXCEPTION dispatch depends on marker
+            # structure before the guaranteed trap point.
+            has_pretrap_check_exception = any(
+                ops[idx].kind == "CHECK_EXCEPTION"
+                for idx in range(start + 1, stop_idx + 1)
+            )
+            if not has_pretrap_check_exception and (
+                stop_postdominates_start or threaded_check_idx is not None
+            ):
+                try_remove_starts.add(start)
+                try_remove_ends.add(end)
+
+        loop_remove_markers: set[int] = set()
+        for loop_start, loop_end in control.loop_start_to_end.items():
+            end_block = cfg.index_to_block.get(loop_end)
+            start_block = cfg.index_to_block.get(loop_start)
+            if end_block is None or start_block is None:
+                continue
+            if (end_block, start_block) in executable_edges:
+                continue
+            body_has_dynamic_loop_control = any(
+                ops[idx].kind
+                in {
+                    "LOOP_BREAK",
+                    "LOOP_BREAK_IF_TRUE",
+                    "LOOP_BREAK_IF_FALSE",
+                    "LOOP_CONTINUE",
+                }
+                and cfg.index_to_block.get(idx) in executable_blocks
+                for idx in range(loop_start + 1, loop_end)
+            )
+            if body_has_dynamic_loop_control:
+                continue
+            loop_remove_markers.add(loop_start)
+            loop_remove_markers.add(loop_end)
+
+        out: list[MoltOp] = []
+        loop_rewrites = 0
+        try_marker_prunes = 0
+        loop_marker_prunes = 0
+        try_body_prunes = 0
+        check_exception_threads = 0
+        check_exception_elisions_count = 0
+        block_jump_label_arg: dict[int, Any] = dict(cfg.block_entry_label)
+
+        for idx, op in enumerate(ops):
+            if op.kind == "CHECK_EXCEPTION":
+                target = threaded_check_exception_jumps.get(idx)
+                if target is not None:
+                    out.append(
+                        MoltOp(
+                            kind="JUMP",
+                            args=[target],
+                            result=MoltValue("none"),
+                            metadata=op.metadata,
+                        )
+                    )
+                    check_exception_threads += 1
+                    continue
+                if idx in check_exception_elisions:
+                    check_exception_elisions_count += 1
+                    continue
+            if idx in try_unreachable_body_indices:
+                try_body_prunes += 1
+                continue
+            if idx in loop_remove_markers and op.kind in {"LOOP_START", "LOOP_END"}:
+                loop_marker_prunes += 1
+                continue
+            if op.kind == "LOOP_END":
+                block_id = cfg.index_to_block.get(idx)
+                if block_id is not None:
+                    chosen = single_exec_succ_by_block.get(block_id)
+                    succs = cfg.successors.get(block_id, [])
+                    loop_start_idx = control.loop_end_to_start.get(idx)
+                    back_succ = (
+                        None
+                        if loop_start_idx is None
+                        else cfg.index_to_block.get(loop_start_idx)
+                    )
+                    if chosen is not None and len(succs) >= 2 and back_succ is not None:
+                        exit_succ = next(
+                            (succ for succ in succs if succ != back_succ), None
+                        )
+                        if chosen == back_succ and exit_succ is not None:
+                            loop_rewrites += 1
+                            back_label = block_jump_label_arg.get(back_succ)
+                            if back_label is not None:
+                                out.append(
+                                    MoltOp(
+                                        kind="JUMP",
+                                        args=[back_label],
+                                        result=MoltValue("none"),
+                                        metadata=op.metadata,
+                                    )
+                                )
+                                continue
+                            out.append(
+                                MoltOp(
+                                    kind="LOOP_CONTINUE",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                    metadata=op.metadata,
+                                )
+                            )
+                            continue
+                        if chosen == exit_succ:
+                            loop_rewrites += 1
+                            exit_label = (
+                                None
+                                if exit_succ is None
+                                else block_jump_label_arg.get(exit_succ)
+                            )
+                            if exit_label is not None:
+                                out.append(
+                                    MoltOp(
+                                        kind="JUMP",
+                                        args=[exit_label],
+                                        result=MoltValue("none"),
+                                        metadata=op.metadata,
+                                    )
+                                )
+                                continue
+                            out.append(
+                                MoltOp(
+                                    kind="LOOP_BREAK",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                    metadata=op.metadata,
+                                )
+                            )
+                            continue
+            if op.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}:
+                break_taken = loop_break_choice_by_index.get(idx)
+                if break_taken is None:
+                    block_id = cfg.index_to_block.get(idx)
+                    if block_id is not None:
+                        chosen = single_exec_succ_by_block.get(block_id)
+                        succs = cfg.successors.get(block_id, [])
+                        if chosen is not None and len(succs) >= 2:
+                            break_taken = chosen == succs[1]
+                if break_taken is True:
+                    loop_rewrites += 1
+                    block_id = cfg.index_to_block.get(idx)
+                    succs = [] if block_id is None else cfg.successors.get(block_id, [])
+                    break_succ = succs[1] if len(succs) >= 2 else None
+                    break_label = (
+                        None
+                        if break_succ is None
+                        else block_jump_label_arg.get(break_succ)
+                    )
+                    if break_label is not None:
+                        out.append(
+                            MoltOp(
+                                kind="JUMP",
+                                args=[break_label],
+                                result=MoltValue("none"),
+                                metadata=op.metadata,
+                            )
+                        )
+                        continue
+                    out.append(
+                        MoltOp(
+                            kind="LOOP_BREAK",
+                            args=[],
+                            result=MoltValue("none"),
+                            metadata=op.metadata,
+                        )
+                    )
+                    continue
+                if break_taken is False:
+                    loop_rewrites += 1
+                    continue
+            if idx in try_remove_starts and op.kind == "TRY_START":
+                try_marker_prunes += 1
+                continue
+            if idx in try_remove_ends and op.kind == "TRY_END":
+                try_marker_prunes += 1
+                continue
+            out.append(op)
+
+        return (
+            out,
+            loop_rewrites,
+            try_marker_prunes,
+            loop_marker_prunes,
+            try_body_prunes,
+            check_exception_threads,
+            check_exception_elisions_count,
+        )
+
+    def _range_overlaps_executable_blocks(
+        self,
+        cfg: CFGGraph,
+        *,
+        start: int,
+        end_inclusive: int,
+        executable_blocks: set[int],
+    ) -> bool:
+        for block in cfg.blocks:
+            if block.id not in executable_blocks:
+                continue
+            if block.start <= end_inclusive and block.end > start:
+                return True
+        return False
+
+    def _prune_unreachable_cfg_regions(
+        self,
+        ops: list[MoltOp],
+        *,
+        cfg: CFGGraph,
+        executable_blocks: set[int],
+    ) -> tuple[list[MoltOp], int, int]:
+        if not cfg.blocks:
+            return ops, 0, 0
+
+        keep = [True] * len(ops)
+        region_ranges: list[tuple[int, int]] = []
+
+        control = cfg.control
+        region_maps = [
+            control.if_to_end,
+            control.loop_start_to_end,
+            control.try_start_to_end,
+        ]
+        for mapping in region_maps:
+            for start, end in mapping.items():
+                if start < 0 or end < start or end >= len(ops):
+                    continue
+                if not self._range_overlaps_executable_blocks(
+                    cfg,
+                    start=start,
+                    end_inclusive=end,
+                    executable_blocks=executable_blocks,
+                ):
+                    region_ranges.append((start, end))
+
+        region_ranges.sort()
+        merged_ranges: list[tuple[int, int]] = []
+        for start, end in region_ranges:
+            if not merged_ranges:
+                merged_ranges.append((start, end))
+                continue
+            prev_start, prev_end = merged_ranges[-1]
+            if start <= prev_end + 1:
+                merged_ranges[-1] = (prev_start, max(prev_end, end))
+            else:
+                merged_ranges.append((start, end))
+
+        for start, end in merged_ranges:
+            for idx in range(start, end + 1):
+                keep[idx] = False
+
+        structural_keep = {
+            "IF",
+            "ELSE",
+            "END_IF",
+            "LOOP_START",
+            "LOOP_END",
+            "TRY_START",
+            "TRY_END",
+            "LABEL",
+            "STATE_LABEL",
+        }
+        removed_blocks = 0
+        for block in cfg.blocks:
+            if block.id in executable_blocks:
+                continue
+            removed_any = False
+            for idx in range(block.start, block.end):
+                if not keep[idx]:
+                    removed_any = True
+                    continue
+                op = ops[idx]
+                if op.kind in structural_keep:
+                    continue
+                keep[idx] = False
+                removed_any = True
+            if removed_any:
+                removed_blocks += 1
+
+        out = [op for idx, op in enumerate(ops) if keep[idx]]
+        if out == ops:
+            return ops, 0, 0
+        return out, len(merged_ranges), removed_blocks
+
+    def _control_label_key(self, value: Any) -> str | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            return text
+        return None
+
+    def _coerce_control_label_like(self, exemplar: Any, key: str) -> Any:
+        if isinstance(exemplar, bool):
+            return exemplar
+        if isinstance(exemplar, int):
+            if key.startswith(("+", "-")):
+                sign = key[0]
+                digits = key[1:]
+                if digits.isdigit():
+                    return int(f"{sign}{digits}")
+            elif key.isdigit():
+                return int(key)
+            return exemplar
+        if isinstance(exemplar, str):
+            return key
+        return key
+
+    def _ensure_structural_cfg_validity(
+        self, ops: list[MoltOp], *, stage: str
+    ) -> tuple[list[MoltOp], int]:
+        if not ops:
+            return ops, 0
+
+        close_for_open = {
+            "IF": "END_IF",
+            "LOOP_START": "LOOP_END",
+            "TRY_START": "TRY_END",
+        }
+        open_for_close = {close: open_ for open_, close in close_for_open.items()}
+        control_stack: list[tuple[str, bool]] = []
+        rewritten: list[MoltOp] = []
+        rewrites = 0
+
+        def fail(message: str) -> None:
+            self.midend_stats["cfg_structural_failures"] += 1
+            raise RuntimeError(
+                f"Malformed control flow after {stage} in "
+                f"{self._active_midend_function_name}: {message}"
+            )
+
+        def append_synthetic_close(open_kind: str) -> None:
+            nonlocal rewrites
+            close_kind = close_for_open[open_kind]
+            rewritten.append(
+                MoltOp(
+                    kind=close_kind,
+                    args=[],
+                    result=MoltValue("none"),
+                    metadata={
+                        "synthetic": "cfg_structural_canonicalizer",
+                        "stage": stage,
+                    },
+                )
+            )
+            rewrites += 1
+
+        for idx, op in enumerate(ops):
+            kind = op.kind
+            if kind in {"IF", "LOOP_START", "TRY_START"}:
+                seen_else = kind != "IF"
+                control_stack.append((kind, seen_else))
+                rewritten.append(op)
+                continue
+
+            if kind == "ELSE":
+                if_indices = [
+                    i
+                    for i, (open_kind, _seen_else) in enumerate(control_stack)
+                    if open_kind == "IF"
+                ]
+                if not if_indices:
+                    rewrites += 1
+                    continue
+                while control_stack and control_stack[-1][0] != "IF":
+                    dangling_kind, _ = control_stack.pop()
+                    append_synthetic_close(dangling_kind)
+                if not control_stack:
+                    rewrites += 1
+                    continue
+                open_kind, seen_else = control_stack[-1]
+                if open_kind != "IF":
+                    rewrites += 1
+                    continue
+                if seen_else:
+                    rewrites += 1
+                    continue
+                control_stack[-1] = ("IF", True)
+                rewritten.append(op)
+                continue
+
+            if kind in open_for_close:
+                required_open = open_for_close[kind]
+                open_indices = [
+                    i
+                    for i, (open_kind, _seen_else) in enumerate(control_stack)
+                    if open_kind == required_open
+                ]
+                if not open_indices:
+                    rewrites += 1
+                    continue
+                while control_stack and control_stack[-1][0] != required_open:
+                    dangling_kind, _ = control_stack.pop()
+                    append_synthetic_close(dangling_kind)
+                if control_stack:
+                    control_stack.pop()
+                rewritten.append(op)
+                continue
+
+            if kind in {
+                "LOOP_BREAK",
+                "LOOP_BREAK_IF_TRUE",
+                "LOOP_BREAK_IF_FALSE",
+                "LOOP_CONTINUE",
+            }:
+                if not any(open_kind == "LOOP_START" for open_kind, _ in control_stack):
+                    fail(f"{kind} at op index {idx} is outside LOOP_START/LOOP_END")
+                rewritten.append(op)
+                continue
+
+            rewritten.append(op)
+
+        while control_stack:
+            dangling_kind, _ = control_stack.pop()
+            append_synthetic_close(dangling_kind)
+
+        labels: dict[str, int] = {}
+        for idx, op in enumerate(rewritten):
+            if op.kind not in {"LABEL", "STATE_LABEL"}:
+                continue
+            if not op.args:
+                fail(f"{op.kind} at op index {idx} is missing label argument")
+            label_key = self._control_label_key(op.args[0])
+            if label_key is None:
+                fail(f"{op.kind} at op index {idx} has invalid label {op.args[0]!r}")
+            if label_key in labels:
+                prior = labels[label_key]
+                fail(
+                    f"duplicate label {label_key!r} at op index {idx}; "
+                    f"already defined at {prior}"
+                )
+            labels[label_key] = idx
+
+        for idx, op in enumerate(rewritten):
+            if op.kind not in {"JUMP", "CHECK_EXCEPTION"}:
+                continue
+            if not op.args:
+                fail(f"{op.kind} at op index {idx} is missing target label")
+            label_key = self._control_label_key(op.args[0])
+            if label_key is None:
+                fail(f"{op.kind} at op index {idx} has invalid target {op.args[0]!r}")
+            if label_key not in labels:
+                fail(f"{op.kind} at op index {idx} targets unknown label {label_key!r}")
+
+        return rewritten, rewrites
+
+    def _normalize_try_except_join_labels(
+        self,
+        ops: list[MoltOp],
+        *,
+        cfg: CFGGraph,
+    ) -> tuple[list[MoltOp], int]:
+        if not ops or not cfg.blocks:
+            return ops, 0
+
+        def collect_alias_labels(
+            local_ops: list[MoltOp], local_cfg: CFGGraph
+        ) -> dict[str, str]:
+            alias_label: dict[str, str] = {}
+
+            def extract_alias_target(body_ops: list[MoltOp]) -> str | None:
+                if (
+                    len(body_ops) == 1
+                    and body_ops[0].kind == "JUMP"
+                    and body_ops[0].args
+                ):
+                    return self._control_label_key(body_ops[0].args[0])
+                if (
+                    len(body_ops) == 2
+                    and body_ops[0].kind == "CHECK_EXCEPTION"
+                    and body_ops[0].args
+                    and body_ops[1].kind == "JUMP"
+                    and body_ops[1].args
+                ):
+                    exc_target = self._control_label_key(body_ops[0].args[0])
+                    normal_target = self._control_label_key(body_ops[1].args[0])
+                    if exc_target is not None and exc_target == normal_target:
+                        return exc_target
+                return None
+
+            for block in local_cfg.blocks:
+                if block.start >= block.end:
+                    continue
+                head = local_ops[block.start]
+                if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
+                    continue
+                label_key = self._control_label_key(head.args[0])
+                if label_key is None:
+                    continue
+
+                body_ops = [
+                    local_ops[idx]
+                    for idx in range(block.start + 1, block.end)
+                    if local_ops[idx].kind != "LINE"
+                ]
+                target_key = extract_alias_target(body_ops)
+                if target_key is None and not body_ops:
+                    succs = local_cfg.successors.get(block.id, [])
+                    if len(succs) == 1:
+                        succ_block = local_cfg.blocks[succs[0]]
+                        succ_body = [
+                            local_ops[idx]
+                            for idx in range(succ_block.start, succ_block.end)
+                            if local_ops[idx].kind != "LINE"
+                        ]
+                        target_key = extract_alias_target(succ_body)
+                if target_key is None or target_key == label_key:
+                    continue
+                if local_cfg.label_to_block.get(target_key) is None:
+                    continue
+                alias_label[label_key] = target_key
+            return alias_label
+
+        total_rewrites = 0
+        current = ops
+        for _ in range(6):
+            local_cfg = build_cfg(current)
+            if not local_cfg.blocks:
+                break
+            alias_label = collect_alias_labels(current, local_cfg)
+
+            def resolve_alias(label: str) -> str:
+                resolved = label
+                seen: set[str] = set()
+                while resolved in alias_label and resolved not in seen:
+                    seen.add(resolved)
+                    resolved = alias_label[resolved]
+                return resolved
+
+            round_rewrites = 0
+            skip_indices: set[int] = set()
+            out: list[MoltOp] = []
+            i = 0
+            while i < len(current):
+                if i in skip_indices:
+                    i += 1
+                    continue
+                op = current[i]
+                rewritten = op
+                if op.kind in {"JUMP", "CHECK_EXCEPTION"} and op.args:
+                    first = op.args[0]
+                    label_key = self._control_label_key(first)
+                    if label_key is not None:
+                        resolved = resolve_alias(label_key)
+                        if resolved != label_key:
+                            new_first = self._coerce_control_label_like(first, resolved)
+                            rewritten = MoltOp(
+                                kind=op.kind,
+                                args=[new_first, *op.args[1:]],
+                                result=op.result,
+                                metadata=op.metadata,
+                            )
+                            round_rewrites += 1
+
+                if rewritten.kind == "CHECK_EXCEPTION" and rewritten.args:
+                    check_target_key = self._control_label_key(rewritten.args[0])
+                    if check_target_key is not None:
+                        j = i + 1
+                        while j < len(current) and current[j].kind == "LINE":
+                            j += 1
+                        if (
+                            j < len(current)
+                            and current[j].kind == "JUMP"
+                            and current[j].args
+                        ):
+                            jump_target_key = self._control_label_key(
+                                current[j].args[0]
+                            )
+                            if jump_target_key is not None:
+                                resolved_check = resolve_alias(check_target_key)
+                                resolved_jump = resolve_alias(jump_target_key)
+                                if resolved_check == resolved_jump:
+                                    out.append(
+                                        MoltOp(
+                                            kind="JUMP",
+                                            args=[
+                                                self._coerce_control_label_like(
+                                                    rewritten.args[0], resolved_check
+                                                )
+                                            ],
+                                            result=MoltValue("none"),
+                                            metadata=rewritten.metadata,
+                                        )
+                                    )
+                                    skip_indices.add(j)
+                                    round_rewrites += 1
+                                    i += 1
+                                    continue
+
+                out.append(rewritten)
+                i += 1
+
+            total_rewrites += round_rewrites
+            if out == current:
+                break
+            current = out
+
+        return current, total_rewrites
+
+    def _prune_dead_labels_and_noop_jumps(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int, int]:
+        if not ops:
+            return ops, 0, 0
+
+        current = ops
+        total_label_prunes = 0
+        total_jump_elisions = 0
+
+        for _ in range(6):
+            jump_elisions = 0
+            no_noop_jumps: list[MoltOp] = []
+            i = 0
+            while i < len(current):
+                op = current[i]
+                if op.kind == "JUMP" and op.args:
+                    target = str(op.args[0])
+                    j = i + 1
+                    while j < len(current) and current[j].kind == "LINE":
+                        j += 1
+                    if (
+                        j < len(current)
+                        and current[j].kind == "LABEL"
+                        and current[j].args
+                        and str(current[j].args[0]) == target
+                    ):
+                        jump_elisions += 1
+                        i += 1
+                        continue
+                no_noop_jumps.append(op)
+                i += 1
+
+            referenced_labels: set[str] = set()
+            for op in no_noop_jumps:
+                if op.kind == "JUMP" and op.args:
+                    referenced_labels.add(str(op.args[0]))
+                elif op.kind == "CHECK_EXCEPTION" and op.args:
+                    referenced_labels.add(str(op.args[0]))
+
+            label_prunes = 0
+            cleaned: list[MoltOp] = []
+            for idx, op in enumerate(no_noop_jumps):
+                if op.kind == "LABEL" and op.args:
+                    name = str(op.args[0])
+                    if name not in referenced_labels:
+                        label_prunes += 1
+                        continue
+                cleaned.append(op)
+
+            total_label_prunes += label_prunes
+            total_jump_elisions += jump_elisions
+            if cleaned == current:
+                break
+            current = cleaned
+
+        return current, total_label_prunes, total_jump_elisions
+
+    def _hoist_loop_invariant_pure_ops(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]:
+        cfg = build_cfg(ops)
+        if not cfg.blocks:
+            return ops, 0
+
+        control = cfg.control
+        target_start_by_index: dict[int, int] = {}
+        loop_ranges = sorted(
+            (
+                (start, end)
+                for start, end in control.loop_start_to_end.items()
+                if end > start
+            ),
+            key=lambda item: (item[1] - item[0], item[0]),
+        )
+
+        for loop_start, loop_end in loop_ranges:
+            if loop_end is None or loop_end <= loop_start:
+                continue
+            pre_defs = self._collect_defined_value_names(ops[:loop_start])
+            hoisted_defs: set[str] = set()
+            for idx in range(loop_start + 1, loop_end):
+                op = ops[idx]
+                if op.result.name == "none":
+                    continue
+                if op.kind == "PHI":
+                    continue
+                if self._op_effect_class(op.kind) != "pure":
+                    continue
+                uses: set[str] = set()
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, uses)
+                if uses.issubset(pre_defs.union(hoisted_defs)):
+                    target_start_by_index.setdefault(idx, loop_start)
+                    hoisted_defs.add(op.result.name)
+
+        if not target_start_by_index:
+            return ops, 0
+
+        out: list[MoltOp] = []
+        hoisted_count = 0
+        for idx, op in enumerate(ops):
+            if op.kind == "LOOP_START":
+                hoisted_here = [
+                    ops[candidate_idx]
+                    for candidate_idx, target_start in sorted(
+                        target_start_by_index.items()
+                    )
+                    if target_start == idx
+                ]
+                out.extend(hoisted_here)
+                hoisted_count += len(hoisted_here)
+            if idx in target_start_by_index:
+                continue
+            out.append(op)
+
+        return out, hoisted_count
+
+    def _run_cse_canonicalization_round(
+        self,
+        ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+    ) -> tuple[list[MoltOp], int]:
+        round_cfg = build_cfg(ops)
+        if not round_cfg.blocks:
+            return ops, 0
+        sccp = self._compute_sccp(ops, round_cfg)
+        working_ops, phi_trims = self._trim_phi_args_by_executable_edges(
+            ops, round_cfg, sccp.executable_edges
+        )
+        if phi_trims > 0:
+            round_cfg = build_cfg(working_ops)
+            if not round_cfg.blocks:
+                return working_ops, phi_trims
+            sccp = self._compute_sccp(working_ops, round_cfg)
+        sccp_in_consts = self._sccp_in_const_int_values(sccp)
+        induction_steps = self._analyze_loop_induction_steps(working_ops, round_cfg)
+
+        block_inputs: dict[int, dict[str, dict]] = {
+            block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
+        }
+        block_outputs: dict[int, dict[str, dict]] = {
+            block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
+        }
+        block_canonical_ops: dict[int, list[MoltOp]] = {
+            block.id: [] for block in round_cfg.blocks
+        }
+
+        changed = True
+        iterations = 0
+        max_cse_iterations_env = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
+        max_cse_iterations = 20
+        if max_cse_iterations_env:
+            try:
+                parsed = int(max_cse_iterations_env)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                max_cse_iterations = parsed
+        while changed and iterations < max_cse_iterations:
+            iterations += 1
+            changed = False
+            for block in round_cfg.blocks:
+                block_id = block.id
+                if block_id == 0 or block_id not in round_cfg.reachable:
+                    in_state = self._empty_canonicalization_state()
+                else:
+                    pred_states = [
+                        block_outputs[pred]
+                        for pred in round_cfg.predecessors.get(block_id, [])
+                        if pred in round_cfg.reachable
+                    ]
+                    in_state = self._intersect_canonicalization_states(pred_states)
+                    if not allow_cross_block_const_dedupe:
+                        # Keep cross-block propagation limited to must-facts only.
+                        # Alias/value-reuse state remains block-local to avoid
+                        # rewriting gaps at control joins.
+                        in_state["aliases"] = {}
+                        in_state["available_values"] = {}
+
+                for name, value in sccp_in_consts.get(block_id, {}).items():
+                    in_state["const_int_values"][name] = value
+                    in_state["value_type_tags"][name] = BUILTIN_TYPE_TAGS["int"]
+
+                if self._canonicalization_state_signature(
+                    in_state
+                ) != self._canonicalization_state_signature(block_inputs[block_id]):
+                    block_inputs[block_id] = self._clone_canonicalization_state(
+                        in_state
+                    )
+                    changed = True
+
+                canonical_ops, out_state = self._canonicalize_block_with_state(
+                    working_ops[block.start : block.end],
+                    in_state,
+                    induction_steps=induction_steps,
+                )
+                if self._canonicalization_state_signature(
+                    out_state
+                ) != self._canonicalization_state_signature(block_outputs[block_id]):
+                    block_outputs[block_id] = self._clone_canonicalization_state(
+                        out_state
+                    )
+                    changed = True
+                if canonical_ops != block_canonical_ops[block_id]:
+                    block_canonical_ops[block_id] = canonical_ops
+                    changed = True
+
+        if changed:
+            self.midend_stats["cse_iteration_cap_hits"] = (
+                self.midend_stats.get("cse_iteration_cap_hits", 0) + 1
+            )
+            return working_ops, phi_trims
+
+        canonicalized_ops: list[MoltOp] = []
+        for block_id in range(len(round_cfg.blocks)):
+            canonicalized_ops.extend(block_canonical_ops[block_id])
+        return canonicalized_ops, phi_trims
+
+    def _canonicalize_control_aware_ops_impl(
+        self,
+        ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+    ) -> list[MoltOp]:
+        # TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial):
+        # extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of
+        # coverage into broader heap/call-specialization families and a
+        # stronger loop-bound solver for cross-iteration constant reasoning.
+        validated_ops, preflight_rewrites = self._ensure_structural_cfg_validity(
+            ops, stage="midend_fixed_point_entry"
+        )
+        self.midend_stats["cfg_structural_canonicalizations"] += preflight_rewrites
+        cfg: CFGGraph = build_cfg(validated_ops)
+        if not cfg.blocks:
+            return validated_ops
+
+        func_stats = self._midend_function_stats()
+        func_stats["sccp_attempted"] += 1
+        func_stats["edge_thread_attempted"] += 1
+        func_stats["gvn_attempted"] += 1
+        func_stats["cse_attempted"] += 1
+        func_stats["licm_attempted"] += 1
+        func_stats["dce_attempted"] += 1
+
+        rewritten_ops, pre_cfg_rewrites = self._canonicalize_cfg_before_optimization(
+            validated_ops
+        )
+        total_branch_prunes = 0
+        total_loop_edge_prunes = 0
+        total_try_edge_prunes = 0
+        total_loop_marker_prunes = 0
+        total_unreachable_blocks = 0
+        total_region_prunes = pre_cfg_rewrites
+        total_label_prunes = 0
+        total_jump_noops = 0
+        total_try_join_threads = 0
+        total_licm_hoists = 0
+        total_phi_edge_trims = 0
+        total_loop_rewrite_attempts = 0
+        total_loop_rewrite_accepted = 0
+
+        gvn_hits_before = self.midend_stats.get("gvn_hits", 0)
+        dce_removed_before = self.midend_stats.get("dce_removed_total", 0)
+        guard_hoist_attempts_before = self.midend_stats.get("guard_hoist_attempts", 0)
+        guard_hoist_accepted_before = self.midend_stats.get("guard_hoist_accepted", 0)
+        guard_hoist_rejected_before = self.midend_stats.get("guard_hoist_rejected", 0)
+
+        converged = False
+        max_rounds_env = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
+        max_rounds = 10
+        if max_rounds_env:
+            try:
+                parsed = int(max_rounds_env)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                max_rounds = parsed
+        for _round in range(max_rounds):
+            step_before = rewritten_ops
+            step_ops = rewritten_ops
+
+            # 1) simplify
+            step_ops, structural_prunes = (
+                self._canonicalize_structured_regions_pre_sccp(step_ops)
+            )
+            total_region_prunes += structural_prunes
+
+            # 2) SCCP/edge-thread
+            iter_cfg = build_cfg(step_ops)
+            if iter_cfg.blocks:
+                iter_sccp = self._compute_sccp(step_ops, iter_cfg)
+                step_ops, phi_trims = self._trim_phi_args_by_executable_edges(
+                    step_ops, iter_cfg, iter_sccp.executable_edges
+                )
+                total_phi_edge_trims += phi_trims
+                if phi_trims > 0:
+                    iter_cfg = build_cfg(step_ops)
+                    if iter_cfg.blocks:
+                        iter_sccp = self._compute_sccp(step_ops, iter_cfg)
+                if iter_cfg.blocks:
+                    step_ops, branch_prunes = self._rewrite_structured_if_regions(
+                        step_ops,
+                        control=iter_cfg.control,
+                        branch_choice_by_if_index=iter_sccp.branch_choice_by_if_index,
+                    )
+                    total_branch_prunes += branch_prunes
+                else:
+                    branch_prunes = 0
+
+                threaded_cfg = build_cfg(step_ops)
+                loop_rewrite_attempts = sum(
+                    1
+                    for op in step_ops
+                    if op.kind
+                    in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE", "LOOP_END"}
+                )
+                total_loop_rewrite_attempts += loop_rewrite_attempts
+                if threaded_cfg.blocks:
+                    threaded_sccp = self._compute_sccp(step_ops, threaded_cfg)
+                    (
+                        step_ops,
+                        loop_rewrites,
+                        try_marker_prunes,
+                        loop_marker_prunes,
+                        try_body_prunes,
+                        check_exception_threads,
+                        check_exception_elisions,
+                    ) = self._rewrite_loop_try_edge_threading(
+                        step_ops,
+                        cfg=threaded_cfg,
+                        control=threaded_cfg.control,
+                        executable_edges=threaded_sccp.executable_edges,
+                        loop_break_choice_by_index=threaded_sccp.loop_break_choice_by_index,
+                        try_exception_possible_by_start=threaded_sccp.try_exception_possible_by_start,
+                        try_normal_possible_by_start=threaded_sccp.try_normal_possible_by_start,
+                        guard_fail_indices=threaded_sccp.guard_fail_indices,
+                    )
+                else:
+                    (
+                        loop_rewrites,
+                        try_marker_prunes,
+                        loop_marker_prunes,
+                        try_body_prunes,
+                        check_exception_threads,
+                        check_exception_elisions,
+                    ) = (0, 0, 0, 0, 0, 0)
+
+                total_loop_edge_prunes += loop_rewrites
+                total_try_edge_prunes += (
+                    try_marker_prunes
+                    + try_body_prunes
+                    + check_exception_threads
+                    + check_exception_elisions
+                )
+                total_loop_marker_prunes += loop_marker_prunes
+                total_loop_rewrite_accepted += (
+                    loop_rewrites + loop_marker_prunes + try_body_prunes
+                )
+
+            # 3) join canonicalize
+            join_cfg = build_cfg(step_ops)
+            if join_cfg.blocks:
+                step_ops, try_join_threads = self._normalize_try_except_join_labels(
+                    step_ops, cfg=join_cfg
+                )
+            else:
+                try_join_threads = 0
+            total_try_join_threads += try_join_threads
+            total_try_edge_prunes += try_join_threads
+
+            step_ops, guard_attempts, guard_accepts, guard_rejects = (
+                self._eliminate_redundant_guards_cfg(step_ops)
+            )
+            self.midend_stats["guard_hoist_attempts"] += guard_attempts
+            self.midend_stats["guard_hoist_accepted"] += guard_accepts
+            self.midend_stats["guard_hoist_rejected"] += guard_rejects
+
+            # Auxiliary: LICM/loop hoists in same deterministic round.
+            step_ops, licm_hoists = self._hoist_loop_invariant_pure_ops(step_ops)
+            total_licm_hoists += licm_hoists
+
+            # 4) prune
+            prune_cfg = build_cfg(step_ops)
+            if prune_cfg.blocks:
+                prune_sccp = self._compute_sccp(step_ops, prune_cfg)
+                step_ops, region_prunes, unreachable_blocks = (
+                    self._prune_unreachable_cfg_regions(
+                        step_ops,
+                        cfg=prune_cfg,
+                        executable_blocks=prune_sccp.executable_blocks,
+                    )
+                )
+            else:
+                region_prunes, unreachable_blocks = 0, 0
+            total_region_prunes += region_prunes
+            total_unreachable_blocks += unreachable_blocks
+
+            step_ops, label_prunes, jump_noops = self._prune_dead_labels_and_noop_jumps(
+                step_ops
+            )
+            total_label_prunes += label_prunes
+            total_jump_noops += jump_noops
+            step_ops, round_structural_rewrites = self._ensure_structural_cfg_validity(
+                step_ops,
+                stage=f"midend_fixed_point_round_{_round + 1}",
+            )
+            total_region_prunes += round_structural_rewrites
+            self.midend_stats["cfg_structural_canonicalizations"] += (
+                round_structural_rewrites
+            )
+
+            # 5) verifier
+            round_predefined = self._infer_predefined_value_names(step_ops)
+            round_failures = self._verify_definite_assignment_in_ops(
+                step_ops, predefined_value_names=round_predefined
+            )
+            if round_failures:
+                step_ops = step_before
+            else:
+                # 6) DCE
+                dce_candidate = self._eliminate_dead_trivial_consts(step_ops)
+                dce_failures = self._verify_definite_assignment_in_ops(
+                    dce_candidate, predefined_value_names=round_predefined
+                )
+                if not dce_failures:
+                    step_ops = dce_candidate
+
+                # 7) CSE
+                cse_candidate, cse_phi_trims = self._run_cse_canonicalization_round(
+                    step_ops,
+                    allow_cross_block_const_dedupe=allow_cross_block_const_dedupe,
+                )
+                total_phi_edge_trims += cse_phi_trims
+                cse_predefined = self._infer_predefined_value_names(cse_candidate)
+                cse_failures = self._verify_definite_assignment_in_ops(
+                    cse_candidate, predefined_value_names=cse_predefined
+                )
+                if not cse_failures:
+                    step_ops = cse_candidate
+
+            rewritten_ops = step_ops
+            if rewritten_ops == step_before:
+                converged = True
+                break
+
+        if not converged:
+            self.midend_stats["fixed_point_fail_fast"] += 1
+            if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
+                return rewritten_ops
+            raise RuntimeError(
+                "midend deterministic fixed-point failed to converge within "
+                f"{max_rounds} rounds for {self._active_midend_function_name}"
+            )
+
+        if os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0":
+            probe_ops = rewritten_ops
+            probe_ops, _probe_cfg_rewrites = self._canonicalize_cfg_before_optimization(
+                probe_ops
+            )
+            probe_ops, _probe_region_prunes = (
+                self._canonicalize_structured_regions_pre_sccp(probe_ops)
+            )
+            probe_ops, _probe_label_prunes, _probe_jump_noops = (
+                self._prune_dead_labels_and_noop_jumps(probe_ops)
+            )
+            probe_ops, _probe_validity_rewrites = self._ensure_structural_cfg_validity(
+                probe_ops, stage="midend_idempotence_probe"
+            )
+            if probe_ops != rewritten_ops:
+                self.midend_stats["fixed_point_fail_fast"] += 1
+                if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
+                    rewritten_ops = probe_ops
+                else:
+                    raise RuntimeError(
+                        "midend idempotence check failed after convergence for "
+                        f"{self._active_midend_function_name}"
+                    )
+
+        self.midend_stats["sccp_branch_prunes"] += total_branch_prunes
+        self.midend_stats["loop_edge_thread_prunes"] += (
+            total_loop_edge_prunes + total_loop_marker_prunes
+        )
+        self.midend_stats["try_edge_thread_prunes"] += total_try_edge_prunes
+        self.midend_stats["licm_hoists"] += total_licm_hoists
+        self.midend_stats["unreachable_blocks_removed"] += total_unreachable_blocks
+        self.midend_stats["cfg_region_prunes"] += total_region_prunes
+        self.midend_stats["label_prunes"] += total_label_prunes
+        self.midend_stats["jump_noop_elisions"] += total_jump_noops
+        self.midend_stats["phi_edge_trims"] += total_phi_edge_trims
+
+        sccp_applied = (
+            total_branch_prunes
+            + total_loop_edge_prunes
+            + total_try_edge_prunes
+            + total_loop_marker_prunes
+            + total_region_prunes
+            + total_unreachable_blocks
+            + total_label_prunes
+            + total_jump_noops
+            + total_try_join_threads
+            + total_phi_edge_trims
+            + total_licm_hoists
+        )
+        if sccp_applied > 0:
+            func_stats["sccp_accepted"] += 1
+
+        edge_thread_applied = (
+            total_branch_prunes
+            + total_loop_edge_prunes
+            + total_try_edge_prunes
+            + total_loop_marker_prunes
+            + total_region_prunes
+            + total_unreachable_blocks
+            + total_label_prunes
+            + total_jump_noops
+            + total_try_join_threads
+        )
+        if edge_thread_applied > 0:
+            func_stats["edge_thread_accepted"] += 1
+        else:
+            func_stats["edge_thread_rejected"] += 1
+
+        func_stats["loop_rewrite_attempted"] += total_loop_rewrite_attempts
+        func_stats["loop_rewrite_accepted"] += total_loop_rewrite_accepted
+        func_stats["loop_rewrite_rejected"] += max(
+            0, total_loop_rewrite_attempts - total_loop_rewrite_accepted
+        )
+
+        guard_hoist_attempt_delta = (
+            self.midend_stats.get("guard_hoist_attempts", 0)
+            - guard_hoist_attempts_before
+        )
+        guard_hoist_accept_delta = (
+            self.midend_stats.get("guard_hoist_accepted", 0)
+            - guard_hoist_accepted_before
+        )
+        guard_hoist_reject_delta = (
+            self.midend_stats.get("guard_hoist_rejected", 0)
+            - guard_hoist_rejected_before
+        )
+        func_stats["guard_hoist_attempted"] += max(0, guard_hoist_attempt_delta)
+        func_stats["guard_hoist_accepted"] += max(0, guard_hoist_accept_delta)
+        func_stats["guard_hoist_rejected"] += max(0, guard_hoist_reject_delta)
+
+        if self.midend_stats.get("gvn_hits", 0) > gvn_hits_before:
+            func_stats["gvn_accepted"] += 1
+            func_stats["cse_accepted"] += 1
+        if total_licm_hoists > 0:
+            func_stats["licm_accepted"] += 1
+        else:
+            func_stats["licm_rejected"] += 1
+        if self.midend_stats.get("dce_removed_total", 0) > dce_removed_before:
+            func_stats["dce_accepted"] += 1
+
+        return rewritten_ops
+
+    def _canonicalize_control_aware_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
+        predefined = self._infer_predefined_value_names(ops)
+        self.midend_stats["expanded_attempts"] += 1
+
+        expanded_ops = self._canonicalize_control_aware_ops_impl(
+            ops, allow_cross_block_const_dedupe=True
+        )
+        expanded_failures = self._verify_definite_assignment_in_ops(
+            expanded_ops, predefined_value_names=predefined
+        )
+        if not expanded_failures:
+            self.midend_stats["expanded_accepted"] += 1
+            return expanded_ops
+
+        self.midend_stats["expanded_fallbacks"] += 1
+        safe_ops = self._canonicalize_control_aware_ops_impl(
+            ops, allow_cross_block_const_dedupe=False
+        )
+        return safe_ops
+
     def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
         safe_after_check = {
             "CONST",
@@ -28927,7 +33814,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 {
                     "name": name,
                     "params": data["params"],
-                    "ops": self.map_ops_to_json(data["ops"]),
+                    "ops": self.map_ops_to_json(data["ops"], function_name=name),
                 }
             )
         max_code_id = -1
@@ -28949,6 +33836,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         0, {"kind": "code_slots_init", "value": max_code_id + 1}
                     )
                 break
+        self._maybe_report_midend_stats()
         return {"functions": funcs_json}
 
 

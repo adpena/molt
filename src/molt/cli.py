@@ -4198,6 +4198,73 @@ def _read_wasm_data_end(path: Path) -> int | None:
     return max_end
 
 
+def _read_wasm_memory_min_bytes(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    memory_pages: int | None = None
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            if section_id == 2:  # import section
+                count, cursor = _read_wasm_varuint(payload, cursor)
+                for _ in range(count):
+                    module, cursor = _read_wasm_string(payload, cursor)
+                    name, cursor = _read_wasm_string(payload, cursor)
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading import")
+                    kind = payload[cursor]
+                    cursor += 1
+                    if kind == 0:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    elif kind == 1:
+                        if cursor >= len(payload):
+                            raise ValueError("Unexpected EOF while reading table type")
+                        cursor += 1
+                        flags, cursor = _read_wasm_varuint(payload, cursor)
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                        if flags & 0x1:
+                            _, cursor = _read_wasm_varuint(payload, cursor)
+                    elif kind == 2:
+                        flags, cursor = _read_wasm_varuint(payload, cursor)
+                        minimum, cursor = _read_wasm_varuint(payload, cursor)
+                        if flags & 0x1:
+                            _, cursor = _read_wasm_varuint(payload, cursor)
+                        if module == "env" and name == "memory":
+                            memory_pages = max(memory_pages or 0, minimum)
+                    elif kind == 3:
+                        if cursor + 2 > len(payload):
+                            raise ValueError("Unexpected EOF while reading global type")
+                        cursor += 2
+                    else:
+                        raise ValueError("Unknown import kind")
+            elif section_id == 5:  # memory section
+                count, cursor = _read_wasm_varuint(payload, cursor)
+                for _ in range(count):
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    minimum, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    memory_pages = max(memory_pages or 0, minimum)
+    except ValueError:
+        return None
+    if memory_pages is None:
+        return None
+    return memory_pages * 65536
+
+
 def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
 
@@ -6138,17 +6205,13 @@ def build(
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
     runtime_lib: Path | None = None
+    runtime_wasm: Path | None = None
+    runtime_reloc_wasm: Path | None = None
+    runtime_wasm_ready = False
+    runtime_reloc_wasm_ready = False
     if is_wasm:
         runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
-        if not _ensure_runtime_wasm(
-            runtime_wasm,
-            reloc=False,
-            json_output=json_output,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-        ):
-            return _fail("Runtime wasm build failed", json_output, command="build")
+        runtime_reloc_wasm = _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
     elif emit_mode == "bin":
         profile_dir = _cargo_profile_dir(runtime_cargo_profile)
         target_root = _cargo_target_root(molt_root)
@@ -6167,6 +6230,39 @@ def build(
             cargo_timeout,
         ):
             return _fail("Runtime build failed", json_output, command="build")
+
+    def ensure_runtime_wasm_shared() -> bool:
+        nonlocal runtime_wasm_ready
+        if runtime_wasm is None or runtime_wasm_ready:
+            return True
+        if not _ensure_runtime_wasm(
+            runtime_wasm,
+            reloc=False,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+        ):
+            return False
+        runtime_wasm_ready = True
+        return True
+
+    def ensure_runtime_wasm_reloc() -> bool:
+        nonlocal runtime_reloc_wasm_ready
+        if runtime_reloc_wasm is None or runtime_reloc_wasm_ready:
+            return True
+        if not _ensure_runtime_wasm(
+            runtime_reloc_wasm,
+            reloc=True,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+        ):
+            return False
+        runtime_reloc_wasm_ready = True
+        return True
+
     cache_hit = False
     cache_key = None
     cache_path: Path | None = None
@@ -6235,56 +6331,53 @@ def build(
             )
             if is_wasm and backend_env is not None:
                 if "MOLT_WASM_DATA_BASE" not in backend_env:
-                    runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
-                    if not _ensure_runtime_wasm(
-                        runtime_wasm,
-                        reloc=False,
-                        json_output=json_output,
-                        cargo_profile=runtime_cargo_profile,
-                        cargo_timeout=cargo_timeout,
-                        project_root=molt_root,
-                    ):
+                    if not ensure_runtime_wasm_shared():
                         return _fail(
                             "Runtime wasm build failed",
                             json_output,
                             command="build",
                         )
-                if runtime_wasm.exists():
+                if runtime_wasm is not None and runtime_wasm.exists():
+                    data_base_candidates: list[int] = []
                     data_end = _read_wasm_data_end(runtime_wasm)
                     if data_end is not None:
-                        aligned = (data_end + 7) & ~7
-                        backend_env["MOLT_WASM_DATA_BASE"] = str(aligned)
+                        data_base_candidates.append((data_end + 7) & ~7)
+                    memory_min = _read_wasm_memory_min_bytes(runtime_wasm)
+                    if memory_min is not None:
+                        data_base_candidates.append((memory_min + 7) & ~7)
+                    if data_base_candidates:
+                        backend_env["MOLT_WASM_DATA_BASE"] = str(
+                            max(data_base_candidates)
+                        )
                     else:
                         warnings.append(
-                            "Failed to read runtime data size; using default data base."
+                            "Failed to read runtime memory layout; using default data base."
                         )
-            if reloc_requested and backend_env is not None:
-                backend_env["MOLT_WASM_LINK"] = "1"
                 if "MOLT_WASM_TABLE_BASE" not in backend_env:
-                    runtime_reloc = (
-                        _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
-                    )
-                    if linked and not _ensure_runtime_wasm(
-                        runtime_reloc,
-                        reloc=True,
-                        json_output=json_output,
-                        cargo_profile=runtime_cargo_profile,
-                        cargo_timeout=cargo_timeout,
-                        project_root=molt_root,
-                    ):
-                        return _fail(
-                            "Runtime wasm build failed",
-                            json_output,
-                            command="build",
-                        )
-                    if runtime_reloc.exists():
-                        table_base = _read_wasm_table_min(runtime_reloc)
+                    table_probe_path = runtime_wasm
+                    if reloc_requested:
+                        if linked and not ensure_runtime_wasm_reloc():
+                            return _fail(
+                                "Runtime wasm build failed",
+                                json_output,
+                                command="build",
+                            )
+                        if (
+                            linked
+                            and runtime_reloc_wasm is not None
+                            and runtime_reloc_wasm.exists()
+                        ):
+                            table_probe_path = runtime_reloc_wasm
+                    if table_probe_path is not None and table_probe_path.exists():
+                        table_base = _read_wasm_table_min(table_probe_path)
                         if table_base is not None:
                             backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
                         else:
                             warnings.append(
                                 "Failed to read runtime table size; using default table base."
                             )
+            if reloc_requested and backend_env is not None:
+                backend_env["MOLT_WASM_LINK"] = "1"
             backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
             if not _ensure_backend_binary(
                 backend_bin,
@@ -6508,15 +6601,13 @@ def build(
     if is_wasm:
         output_wasm = output_artifact
         if linked:
-            runtime_reloc = _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
-            if not _ensure_runtime_wasm(
-                runtime_reloc,
-                reloc=True,
-                json_output=json_output,
-                cargo_profile=runtime_cargo_profile,
-                cargo_timeout=cargo_timeout,
-                project_root=molt_root,
-            ):
+            if not ensure_runtime_wasm_reloc():
+                return _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if runtime_reloc_wasm is None:
                 return _fail(
                     "Runtime wasm build failed",
                     json_output,
@@ -6532,7 +6623,7 @@ def build(
                     sys.executable,
                     str(tool),
                     "--runtime",
-                    str(runtime_reloc),
+                    str(runtime_reloc_wasm),
                     "--input",
                     str(output_wasm),
                     "--output",

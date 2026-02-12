@@ -128,3 +128,29 @@ pub(crate) static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_SLEEP_REGISTER_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// Week 1 perf observability counters (Codon/general workload attribution).
+pub(crate) static CALL_BIND_IC_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CALL_BIND_IC_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ATTR_SITE_NAME_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ATTR_SITE_NAME_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SPLIT_WS_ASCII_FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SPLIT_WS_UNICODE_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DICT_STR_INT_PREHASH_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DICT_STR_INT_PREHASH_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DICT_STR_INT_PREHASH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TAQ_INGEST_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TAQ_INGEST_SKIP_MARKER_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ASCII_I64_PARSE_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT: AtomicU64 =
+    AtomicU64::new(0);
+pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT: AtomicU64 =
+    AtomicU64::new(0);

@@ -1703,6 +1703,134 @@ fn ptr_from_i64(ptr: i64) -> Result<usize, i32> {
     usize::try_from(ptr_u64).map_err(|_| 1)
 }
 
+#[cfg(unix)]
+fn local_tm_for_secs(secs: i64) -> Option<libc::tm> {
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    let mut ts = secs as libc::time_t;
+    let ptr = unsafe { libc::localtime_r(&mut ts, tm.as_mut_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { tm.assume_init() })
+}
+
+#[cfg(unix)]
+fn local_noon_epoch(year: i32, month_zero_based: i32, day: i32) -> Option<i64> {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month_zero_based;
+    tm.tm_mday = day;
+    tm.tm_hour = 12;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    let ts = unsafe { libc::mktime(&mut tm as *mut libc::tm) };
+    if ts < 0 {
+        return None;
+    }
+    Some(ts as i64)
+}
+
+#[cfg(unix)]
+fn local_offset_west_seconds_for(secs: i64) -> Option<i64> {
+    let tm = local_tm_for_secs(secs)?;
+    Some(-(tm.tm_gmtoff as i64))
+}
+
+#[cfg(unix)]
+fn tzname_for_secs(secs: i64) -> Option<String> {
+    let tm = local_tm_for_secs(secs)?;
+    let mut buf = [0 as libc::c_char; 96];
+    let fmt = b"%Z\0";
+    let written = unsafe {
+        libc::strftime(
+            buf.as_mut_ptr(),
+            buf.len(),
+            fmt.as_ptr() as *const libc::c_char,
+            &tm as *const libc::tm,
+        )
+    };
+    if written == 0 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, written as usize) };
+    Some(String::from_utf8_lossy(bytes).to_string())
+}
+
+#[cfg(unix)]
+fn timezone_profile_now() -> Option<(i64, String, String)> {
+    let now_secs = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()?;
+    let year = local_tm_for_secs(now_secs)?.tm_year + 1900;
+    let jan_secs = local_noon_epoch(year, 0, 1).unwrap_or(now_secs);
+    let jul_secs = local_noon_epoch(year, 6, 1).unwrap_or(now_secs);
+    let jan_off = local_offset_west_seconds_for(jan_secs).unwrap_or(0);
+    let jul_off = local_offset_west_seconds_for(jul_secs).unwrap_or(0);
+    let jan_name = tzname_for_secs(jan_secs).unwrap_or_else(|| "UTC".to_string());
+    let jul_name = tzname_for_secs(jul_secs).unwrap_or_else(|| jan_name.clone());
+    if jan_off >= jul_off {
+        let dst = if jan_off == jul_off {
+            jan_name.clone()
+        } else {
+            jul_name
+        };
+        Some((jan_off, jan_name, dst))
+    } else {
+        let dst = if jan_off == jul_off {
+            jul_name.clone()
+        } else {
+            jan_name
+        };
+        Some((jul_off, jul_name, dst))
+    }
+}
+
+fn host_time_timezone() -> i64 {
+    #[cfg(unix)]
+    {
+        return timezone_profile_now().map(|profile| profile.0).unwrap_or(i64::MIN);
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+fn host_time_local_offset(secs: i64) -> i64 {
+    #[cfg(unix)]
+    {
+        return local_offset_west_seconds_for(secs).unwrap_or(i64::MIN);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = secs;
+        0
+    }
+}
+
+fn host_time_tzname(which: i32) -> Option<String> {
+    if which != 0 && which != 1 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let profile = timezone_profile_now()?;
+        if which == 0 {
+            return Some(profile.1);
+        }
+        return Some(profile.2);
+    }
+    #[cfg(not(unix))]
+    {
+        Some("UTC".to_string())
+    }
+}
+
 fn handle_db_host(
     mut caller: Caller<'_, HostState>,
     entry: &str,
@@ -2211,6 +2339,83 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             -map_io_error(&std::io::Error::last_os_error())
         },
     );
+    let socket_sendmsg = Func::wrap(
+        &mut *store,
+        |mut caller: Caller<'_, HostState>,
+         handle: i64,
+         buf_ptr: i32,
+         buf_len: i32,
+         flags: i32,
+         addr_ptr: i32,
+         addr_len: i32,
+         anc_ptr: i32,
+         anc_len: i32|
+         -> i32 {
+            let memory = match ensure_memory(&mut caller) {
+                Ok(mem) => mem,
+                Err(_) => return -libc::EFAULT,
+            };
+            let data = match read_bytes(&mut caller, &memory, buf_ptr, buf_len) {
+                Ok(buf) => buf,
+                Err(_) => return -libc::EFAULT,
+            };
+            let addr = if addr_len > 0 {
+                let addr_bytes = match read_bytes(&mut caller, &memory, addr_ptr, addr_len) {
+                    Ok(buf) => buf,
+                    Err(_) => return -libc::EFAULT,
+                };
+                match decode_sockaddr(&addr_bytes) {
+                    Ok(addr) => Some(addr),
+                    Err(_) => return -libc::EAFNOSUPPORT,
+                }
+            } else {
+                None
+            };
+            let mut ancillary = if anc_len > 0 {
+                match read_bytes(&mut caller, &memory, anc_ptr, anc_len) {
+                    Ok(buf) => buf,
+                    Err(_) => return -libc::EFAULT,
+                }
+            } else {
+                Vec::new()
+            };
+            let socket = match socket_get_mut(caller.data_mut(), handle) {
+                Ok(sock) => sock,
+                Err(errno) => return -errno,
+            };
+            let rc = {
+                #[cfg(unix)]
+                {
+                    let fd = socket.as_raw_fd();
+                    let mut iov = libc::iovec {
+                        iov_base: data.as_ptr() as *mut libc::c_void,
+                        iov_len: data.len(),
+                    };
+                    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+                    msg.msg_iov = &mut iov as *mut libc::iovec;
+                    msg.msg_iovlen = 1;
+                    if let Some(ref addr) = addr {
+                        msg.msg_name = addr.as_ptr() as *mut libc::c_void;
+                        msg.msg_namelen = addr.len();
+                    }
+                    if !ancillary.is_empty() {
+                        msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
+                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                    }
+                    unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
+                }
+                #[cfg(windows)]
+                {
+                    let _ = (socket, data, addr, ancillary, flags);
+                    return -libc::ENOSYS;
+                }
+            };
+            if rc >= 0 {
+                return rc as i32;
+            }
+            -map_io_error(&std::io::Error::last_os_error())
+        },
+    );
     let socket_recvfrom = Func::wrap(
         &mut *store,
         |mut caller: Caller<'_, HostState>,
@@ -2278,6 +2483,125 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     return -libc::EFAULT;
                 }
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
+                return n as i32;
+            }
+            -map_io_error(&std::io::Error::last_os_error())
+        },
+    );
+    let socket_recvmsg = Func::wrap(
+        &mut *store,
+        |mut caller: Caller<'_, HostState>,
+         handle: i64,
+         buf_ptr: i32,
+         buf_len: i32,
+         flags: i32,
+         addr_ptr: i32,
+         addr_cap: i32,
+         out_addr_len_ptr: i32,
+         anc_ptr: i32,
+         anc_cap: i32,
+         out_anc_len_ptr: i32,
+         out_msg_flags_ptr: i32|
+         -> i32 {
+            let memory = match ensure_memory(&mut caller) {
+                Ok(mem) => mem,
+                Err(_) => return -libc::EFAULT,
+            };
+            let socket = match socket_get_mut(caller.data_mut(), handle) {
+                Ok(sock) => sock,
+                Err(errno) => return -errno,
+            };
+            let mut buf = vec![0u8; buf_len.max(0) as usize];
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut name_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let mut ancillary = vec![0u8; anc_cap.max(0) as usize];
+            let rc = {
+                #[cfg(unix)]
+                {
+                    let fd = socket.as_raw_fd();
+                    let mut iov = libc::iovec {
+                        iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                        iov_len: buf.len(),
+                    };
+                    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+                    msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+                    msg.msg_namelen = name_len;
+                    msg.msg_iov = &mut iov as *mut libc::iovec;
+                    msg.msg_iovlen = 1;
+                    if !ancillary.is_empty() {
+                        msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
+                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                    }
+                    let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
+                    name_len = msg.msg_namelen;
+                    if out_msg_flags_ptr != 0 {
+                        let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, msg.msg_flags as u32);
+                    }
+                    if out_anc_len_ptr != 0 {
+                        let _ = write_u32(
+                            &mut caller,
+                            &memory,
+                            out_anc_len_ptr,
+                            msg.msg_controllen as u32,
+                        );
+                    }
+                    rc
+                }
+                #[cfg(windows)]
+                {
+                    let _ = (
+                        socket,
+                        flags,
+                        addr_ptr,
+                        addr_cap,
+                        out_addr_len_ptr,
+                        anc_ptr,
+                        anc_cap,
+                        out_anc_len_ptr,
+                        out_msg_flags_ptr,
+                    );
+                    if out_addr_len_ptr != 0 {
+                        let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, 0);
+                    }
+                    if out_anc_len_ptr != 0 {
+                        let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, 0);
+                    }
+                    if out_msg_flags_ptr != 0 {
+                        let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, 0);
+                    }
+                    return -libc::ENOSYS;
+                }
+            };
+            if rc >= 0 {
+                let n = rc as usize;
+                if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
+                    return -libc::EFAULT;
+                }
+                let addr = unsafe { SockAddr::new(storage, name_len) };
+                let encoded = encode_sockaddr(&addr).unwrap_or_default();
+                if out_addr_len_ptr != 0 {
+                    let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, encoded.len() as u32);
+                }
+                if encoded.len() > addr_cap.max(0) as usize {
+                    return -libc::ENOMEM;
+                }
+                if !encoded.is_empty()
+                    && write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err()
+                {
+                    return -libc::EFAULT;
+                }
+                let anc_len_usize = ancillary.len().min(anc_cap.max(0) as usize);
+                if anc_len_usize > 0
+                    && write_bytes(
+                        &mut caller,
+                        &memory,
+                        anc_ptr,
+                        &ancillary[..anc_len_usize],
+                    )
+                    .is_err()
+                {
+                    return -libc::EFAULT;
+                }
                 return n as i32;
             }
             -map_io_error(&std::io::Error::last_os_error())
@@ -2918,12 +3242,14 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
     linker.define(&mut *store, "env", "molt_socket_recv_host", socket_recv)?;
     linker.define(&mut *store, "env", "molt_socket_send_host", socket_send)?;
     linker.define(&mut *store, "env", "molt_socket_sendto_host", socket_sendto)?;
+    linker.define(&mut *store, "env", "molt_socket_sendmsg_host", socket_sendmsg)?;
     linker.define(
         &mut *store,
         "env",
         "molt_socket_recvfrom_host",
         socket_recvfrom,
     )?;
+    linker.define(&mut *store, "env", "molt_socket_recvmsg_host", socket_recvmsg)?;
     linker.define(
         &mut *store,
         "env",
@@ -3746,6 +4072,57 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
     Ok(())
 }
 
+fn define_time_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) -> Result<()> {
+    let timezone = Func::wrap(&mut *store, || -> i64 { host_time_timezone() });
+    let local_offset = Func::wrap(&mut *store, |secs: i64| -> i64 {
+        host_time_local_offset(secs)
+    });
+    let tzname = Func::wrap(
+        &mut *store,
+        |mut caller: Caller<'_, HostState>,
+         which: i32,
+         buf_ptr: i32,
+         buf_cap: i32,
+         out_len_ptr: i32|
+         -> i32 {
+            if out_len_ptr == 0 {
+                return -libc::EINVAL;
+            }
+            if buf_cap < 0 {
+                return -libc::EINVAL;
+            }
+            let Some(label) = host_time_tzname(which) else {
+                return -libc::EINVAL;
+            };
+            let bytes = label.as_bytes();
+            let memory = match ensure_memory(&mut caller) {
+                Ok(mem) => mem,
+                Err(_) => return -libc::ENOSYS,
+            };
+            if write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32).is_err() {
+                return -libc::EINVAL;
+            }
+            let cap = buf_cap as usize;
+            if bytes.len() > cap {
+                return -libc::ENOMEM;
+            }
+            if !bytes.is_empty() && write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
+                return -libc::EINVAL;
+            }
+            0
+        },
+    );
+    linker.define(&mut *store, "env", "molt_time_timezone_host", timezone)?;
+    linker.define(
+        &mut *store,
+        "env",
+        "molt_time_local_offset_host",
+        local_offset,
+    )?;
+    linker.define(&mut *store, "env", "molt_time_tzname_host", tzname)?;
+    Ok(())
+}
+
 fn set_memory_from_exports(store: &mut Store<HostState>, instance: &wasmtime::Instance) {
     if store.data().memory.is_some() {
         return;
@@ -3924,6 +4301,7 @@ fn main() -> Result<()> {
     define_socket_host(&mut linker, &mut store)?;
     define_ws_host(&mut linker, &mut store)?;
     define_process_host(&mut linker, &mut store)?;
+    define_time_host(&mut linker, &mut store)?;
     let getpid = Func::wrap(&mut store, || -> i64 { std::process::id() as i64 });
     linker.define(&mut store, "env", "molt_getpid_host", getpid)?;
 

@@ -5,7 +5,15 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 > Molt = Python shedding its skin into native code.
 
-Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in sync).
+Canonical status lives in `docs/spec/STATUS.md` (README and `/ROADMAP.md` are kept in sync).
+
+## Optimization Program Kickoff
+
+- Current phase: Week 1 observability complete with Week 0 baseline lock artifacts captured; next focus is Week 2 specialization + wasm stabilization clusters.
+- Canonical optimization scope: `OPTIMIZATIONS_PLAN.md`.
+- Canonical optimization execution log: `docs/benchmarks/optimization_progress.md`.
+- Latest observability artifact snapshot: `bench/results/optimization_progress/2026-02-11_week1_observability/summary.md`.
+- Baseline lock summary: `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md`.
 
 ## Capabilities (Current)
 

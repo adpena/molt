@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import os
 import platform
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -90,7 +91,6 @@ def _wasm_runtime_root() -> Path:
 _RUNTIME_ROOT = _wasm_runtime_root()
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
-LINKED_WASM = Path("output_linked.wasm")
 WASM_LD = shutil.which("wasm-ld")
 _LINK_WARNED = False
 _LINK_DISABLED = False
@@ -112,9 +112,30 @@ class _RunResult:
     stderr: str = ""
 
 
+@dataclass(frozen=True)
+class _SampleResult:
+    elapsed_s: float | None
+    returncode: int
+    error: str | None
+    error_class: str | None
+
+
+def _is_valid_wasm(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            magic = fh.read(4)
+    except OSError:
+        return False
+    return magic == b"\x00asm"
+
+
 def _external_root() -> Path | None:
     root = Path("/Volumes/APDataStore/Molt")
     return root if root.is_dir() else None
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
 def _cargo_target_root() -> Path:
@@ -226,6 +247,49 @@ def _run_cmd(
     return _RunResult(proc.wait(), "".join(output), "")
 
 
+def _summarize_error_text(
+    text: str, *, max_lines: int = 8, max_chars: int = 1200
+) -> str:
+    trimmed = text.strip()
+    if not trimmed:
+        return ""
+    lines = trimmed.splitlines()
+    if len(lines) > max_lines:
+        trimmed = "\n".join(lines[:max_lines]) + "\n... (truncated)"
+    if len(trimmed) > max_chars:
+        trimmed = trimmed[:max_chars].rstrip() + "... (truncated)"
+    return trimmed
+
+
+def _classify_failure(error: str, *, runner: str, returncode: int) -> str:
+    text = error.lower()
+    if runner == "node":
+        if "zone allocation failed" in text:
+            return "node_v8_zone_oom"
+        if "fatal process out of memory: zone" in text:
+            return "node_v8_zone_oom"
+        if (
+            "fatal process out of memory" in text
+            or "javascript heap out of memory" in text
+        ):
+            return "node_v8_heap_oom"
+        if "webassembly.instantiate" in text and "out of memory" in text:
+            return "node_wasm_compile_oom"
+        if "compiled wasm function limit" in text:
+            return "node_wasm_function_limit"
+    if returncode < 0:
+        return "process_signal"
+    if "out of memory" in text:
+        return "runner_oom"
+    if "trap" in text:
+        return "wasm_trap"
+    if "linked wasm required" in text:
+        return "linked_artifact_missing"
+    if "wasi proc_exit" in text:
+        return "wasi_proc_exit"
+    return "runner_error"
+
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -247,10 +311,17 @@ def _base_env() -> dict[str, str]:
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
+    # Keep wasm benchmark compiles deterministic and bounded when mid-end
+    # optimization passes regress on specific stress benchmarks.
+    env.setdefault("MOLT_SCCP_MAX_ITERS", "8")
+    env.setdefault("MOLT_CSE_MAX_ITERS", "8")
+    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "3")
+    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     external_root = _external_root()
     if external_root is not None:
         env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
         env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
+    env.setdefault("MOLT_RUNTIME_WASM", str(RUNTIME_WASM))
     return env
 
 
@@ -261,14 +332,30 @@ def _open_log(log_path: Path | None) -> TextIO | None:
     return log_path.open("a", encoding="utf-8", buffering=1)
 
 
-def _python_executable() -> str:
+def _python_cmd() -> list[str]:
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "run", "--python", platform.python_version(), "python3"]
     exe = Path(sys.executable)
     if exe.exists():
-        return sys.executable
+        return [sys.executable]
     base = getattr(sys, "_base_executable", None)
     if base and Path(base).exists():
-        return base
-    return sys.executable
+        return [base]
+    return [sys.executable]
+
+
+def _parse_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise RuntimeError(f"{name} must be an integer, got: {value!r}") from None
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be > 0, got: {parsed}")
+    return parsed
 
 
 def _append_rustflags(env: dict[str, str], flags: str) -> None:
@@ -281,9 +368,10 @@ def build_runtime_wasm(
     *, reloc: bool, output: Path, tty: bool, log: TextIO | None
 ) -> bool:
     env = os.environ.copy()
-    external_root = _external_root()
-    if external_root is not None:
-        env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
+    # Runtime wasm artifacts have shown intermittent corruption on external
+    # target roots in this environment. Keep runtime builds on local target.
+    target_root = _repo_root() / "target"
+    env["CARGO_TARGET_DIR"] = str(target_root)
     if reloc:
         base_flags = (
             "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
@@ -295,16 +383,17 @@ def build_runtime_wasm(
             " -C link-arg=--growable-table"
         )
     _append_rustflags(env, base_flags)
+    build_cmd = [
+        "cargo",
+        "build",
+        "--release",
+        "--package",
+        "molt-runtime",
+        "--target",
+        "wasm32-wasip1",
+    ]
     res = _run_cmd(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--package",
-            "molt-runtime",
-            "--target",
-            "wasm32-wasip1",
-        ],
+        build_cmd,
         env=env,
         capture=not tty,
         tty=tty,
@@ -318,12 +407,80 @@ def build_runtime_wasm(
         else:
             print("WASM runtime build failed.", file=sys.stderr)
         return False
-    src = _cargo_target_root() / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
+    src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
     if not src.exists():
         print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
         return False
+    if not _is_valid_wasm(src):
+        print(
+            "WASM runtime artifact is invalid; forcing clean rebuild.",
+            file=sys.stderr,
+        )
+        try:
+            src.unlink(missing_ok=True)
+        except OSError:
+            pass
+        clean_res = _run_cmd(
+            [
+                "cargo",
+                "clean",
+                "--target",
+                "wasm32-wasip1",
+            ],
+            env=env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+        )
+        if clean_res.returncode != 0:
+            err = (clean_res.stderr or clean_res.stdout).strip()
+            if err:
+                print(f"WASM runtime clean failed: {err}", file=sys.stderr)
+            return False
+        res = _run_cmd(
+            build_cmd,
+            env=env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+        )
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout).strip()
+            if err:
+                print(f"WASM runtime rebuild failed: {err}", file=sys.stderr)
+            return False
+        if not src.exists() or not _is_valid_wasm(src):
+            # One more attempt: remove the artifact and rebuild from scratch.
+            try:
+                src.unlink(missing_ok=True)
+            except OSError:
+                pass
+            res = _run_cmd(
+                build_cmd,
+                env=env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+            )
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout).strip()
+                if err:
+                    print(f"WASM runtime second rebuild failed: {err}", file=sys.stderr)
+                return False
+            if not src.exists() or not _is_valid_wasm(src):
+                print(
+                    "WASM runtime rebuild completed but artifact is still invalid.",
+                    file=sys.stderr,
+                )
+                return False
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, output)
+    if not _is_valid_wasm(output):
+        print(
+            f"WASM runtime output is invalid after copy: {output}",
+            file=sys.stderr,
+        )
+        return False
     return True
 
 
@@ -357,19 +514,32 @@ def _link_wasm(
                 file=sys.stderr,
             )
         return None
-    if LINKED_WASM.exists():
-        LINKED_WASM.unlink()
+    linked_wasm = input_path.with_name("output_linked.wasm")
+    if linked_wasm.exists():
+        linked_wasm.unlink()
     runtime_path = RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
+    runtime_reloc = runtime_path == RUNTIME_WASM_RELOC
+    if not _is_valid_wasm(runtime_path):
+        print(
+            f"Runtime wasm artifact is invalid; rebuilding: {runtime_path}",
+            file=sys.stderr,
+        )
+        if not build_runtime_wasm(
+            reloc=runtime_reloc, output=runtime_path, tty=False, log=log
+        ):
+            if require_linked:
+                print("Linked output is required; aborting.", file=sys.stderr)
+            return None
     res = _run_cmd(
         [
-            sys.executable,
+            *_python_cmd(),
             "tools/wasm_link.py",
             "--runtime",
             str(runtime_path),
             "--input",
             str(input_path),
             "--output",
-            str(LINKED_WASM),
+            str(linked_wasm),
         ],
         env=env,
         capture=True,
@@ -394,14 +564,22 @@ def _link_wasm(
         if require_linked:
             print("Linked output is required; aborting.", file=sys.stderr)
         return None
-    if not LINKED_WASM.exists():
+    if not linked_wasm.exists():
         print("WASM link produced no output artifact.", file=sys.stderr)
         return None
-    return LINKED_WASM
+    if not _is_valid_wasm(linked_wasm):
+        print("WASM link produced an invalid output artifact.", file=sys.stderr)
+        try:
+            linked_wasm.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _LINK_DISABLED = True
+        return None
+    return linked_wasm
 
 
 def _build_wasm_output(
-    python_exe: str,
+    python_cmd: list[str],
     env: dict[str, str],
     output_path: Path,
     script: str,
@@ -410,21 +588,22 @@ def _build_wasm_output(
     log: TextIO | None,
 ) -> float | None:
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
+    build_cmd = [
+        *python_cmd,
+        "-m",
+        "molt.cli",
+        "build",
+        "--no-cache",
+        "--target",
+        "wasm",
+        "--out-dir",
+        str(output_path.parent),
+        *extra_args,
+        script,
+    ]
     start = time.perf_counter()
     build_res = _run_cmd(
-        [
-            python_exe,
-            "-m",
-            "molt.cli",
-            "build",
-            "--no-cache",
-            "--target",
-            "wasm",
-            "--out-dir",
-            str(output_path.parent),
-            *extra_args,
-            script,
-        ],
+        build_cmd,
         env=env,
         capture=not tty,
         tty=tty,
@@ -442,6 +621,37 @@ def _build_wasm_output(
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
         return None
+    if not _is_valid_wasm(output_path):
+        print(
+            f"WASM build produced invalid output.wasm for {script}; retrying once.",
+            file=sys.stderr,
+        )
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        start = time.perf_counter()
+        build_res = _run_cmd(
+            build_cmd,
+            env=env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+        )
+        build_s = time.perf_counter() - start
+        if build_res.returncode != 0:
+            err = (build_res.stderr or build_res.stdout).strip()
+            if err:
+                print(f"WASM build retry failed for {script}: {err}", file=sys.stderr)
+            else:
+                print(f"WASM build retry failed for {script}.", file=sys.stderr)
+            return None
+        if not output_path.exists() or not _is_valid_wasm(output_path):
+            print(
+                f"WASM build produced invalid output.wasm for {script} after retry.",
+                file=sys.stderr,
+            )
+            return None
     return build_s
 
 
@@ -463,7 +673,7 @@ def prepare_wasm_binary(
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     base_env["MOLT_WASM_PATH"] = str(output_path)
-    python_exe = _python_executable()
+    python_cmd = _python_cmd()
 
     env = base_env.copy()
     want_linked = _want_linked() or require_linked
@@ -472,7 +682,7 @@ def prepare_wasm_binary(
     else:
         env.pop("MOLT_WASM_LINK", None)
 
-    build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty, log=log)
+    build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
     if build_s is None:
         if not keep_temp:
             temp_dir.cleanup()
@@ -499,35 +709,70 @@ def prepare_wasm_binary(
         )
         env = base_env.copy()
         env.pop("MOLT_WASM_LINK", None)
+        env["MOLT_WASM_PREFER_LINKED"] = "0"
         build_s = _build_wasm_output(
-            python_exe, env, output_path, script, tty=tty, log=log
+            python_cmd, env, output_path, script, tty=tty, log=log
         )
         if build_s is None:
             if not keep_temp:
                 temp_dir.cleanup()
             return None
+        stale_linked = output_path.with_name("output_linked.wasm")
+        if stale_linked.exists():
+            stale_linked.unlink()
 
     wasm_path = linked if linked_used else output_path
     wasm_size = wasm_path.stat().st_size / 1024
     run_env = env.copy()
+    # Runtime executions should not inherit host-Python import environment knobs.
+    # Keep run-time behavior aligned with standalone compiled binaries.
+    run_env.pop("PYTHONPATH", None)
+    run_env.pop("PYTHONHASHSEED", None)
+    run_env.pop("PYTHONUNBUFFERED", None)
     if linked_used:
+        run_env["MOLT_WASM_PATH"] = str(linked)
         run_env["MOLT_WASM_LINKED"] = "1"
         run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
+    else:
+        run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     return WasmBinary(run_env, temp_dir, build_s, wasm_size, linked_used)
 
 
 def measure_wasm_run(
-    run_env: dict[str, str], runner_cmd: list[str], *, log: TextIO | None
-) -> float | None:
+    run_env: dict[str, str],
+    runner_cmd: list[str],
+    *,
+    runner_name: str,
+    log: TextIO | None,
+) -> _SampleResult:
     start = time.perf_counter()
     run_res = _run_cmd(runner_cmd, run_env, capture=True, tty=False, log=log)
     end = time.perf_counter()
     if run_res.returncode != 0:
-        err = run_res.stderr.strip() or run_res.stdout.strip()
+        err = (run_res.stderr or run_res.stdout).strip()
+        summarized = _summarize_error_text(err)
+        error_class = _classify_failure(
+            summarized,
+            runner=runner_name,
+            returncode=run_res.returncode,
+        )
         if err:
-            print(f"WASM run failed: {err}", file=sys.stderr)
-        return None
-    return end - start
+            print(
+                f"WASM run failed ({runner_name}, {error_class}): {summarized}",
+                file=sys.stderr,
+            )
+        return _SampleResult(
+            elapsed_s=None,
+            returncode=run_res.returncode,
+            error=summarized or None,
+            error_class=error_class,
+        )
+    return _SampleResult(
+        elapsed_s=end - start,
+        returncode=run_res.returncode,
+        error=None,
+        error_class=None,
+    )
 
 
 def collect_samples(
@@ -535,30 +780,67 @@ def collect_samples(
     samples: int,
     warmup: int,
     runner_cmd: list[str],
+    runner_name: str,
     *,
     log: TextIO | None,
-) -> tuple[list[float], bool]:
+) -> tuple[list[float], bool, _SampleResult | None]:
     for _ in range(warmup):
-        if measure_wasm_run(wasm.run_env, runner_cmd, log=log) is None:
-            return [], False
-    runs = [measure_wasm_run(wasm.run_env, runner_cmd, log=log) for _ in range(samples)]
-    valid = [t for t in runs if t is not None]
-    return valid, bool(valid)
+        result = measure_wasm_run(
+            wasm.run_env,
+            runner_cmd,
+            runner_name=runner_name,
+            log=log,
+        )
+        if result.elapsed_s is None:
+            return [], False, result
+    timings: list[float] = []
+    first_failure: _SampleResult | None = None
+    for _ in range(samples):
+        result = measure_wasm_run(
+            wasm.run_env,
+            runner_cmd,
+            runner_name=runner_name,
+            log=log,
+        )
+        if result.elapsed_s is None:
+            if first_failure is None:
+                first_failure = result
+            continue
+        timings.append(result.elapsed_s)
+    return timings, bool(timings), first_failure
 
 
-def _resolve_runner(runner: str, *, tty: bool, log: TextIO | None) -> list[str]:
+def _resolve_runner(
+    runner: str,
+    *,
+    tty: bool,
+    log: TextIO | None,
+    node_max_old_space_mb: int | None,
+) -> list[str]:
     if runner == "node":
-        return ["node", "run_wasm.js"]
+        cmd = ["node"]
+        if node_max_old_space_mb is not None:
+            cmd.append(f"--max-old-space-size={node_max_old_space_mb}")
+        extra_options = os.environ.get("MOLT_WASM_NODE_OPTIONS")
+        if extra_options:
+            cmd.extend(shlex.split(extra_options))
+        cmd.append("run_wasm.js")
+        return cmd
     if runner != "wasmtime":
         raise ValueError(f"Unsupported wasm runner: {runner}")
-    path = shutil.which("molt-wasm-host")
-    if path:
-        return [path]
-    target = Path("target") / "release" / "molt-wasm-host"
+    host_override = os.environ.get("MOLT_WASM_HOST_PATH")
+    if host_override:
+        host_path = Path(host_override).expanduser()
+        if not host_path.exists():
+            raise RuntimeError(f"MOLT_WASM_HOST_PATH does not exist: {host_path}")
+        return [str(host_path)]
+    target = _cargo_target_root() / "release" / "molt-wasm-host"
     if not target.exists():
+        build_env = os.environ.copy()
+        build_env.setdefault("CARGO_TARGET_DIR", str(_cargo_target_root()))
         res = _run_cmd(
             ["cargo", "build", "--release", "--package", "molt-wasm-host"],
-            env=os.environ.copy(),
+            env=build_env,
             capture=not tty,
             tty=tty,
             log=log,
@@ -566,9 +848,12 @@ def _resolve_runner(runner: str, *, tty: bool, log: TextIO | None) -> list[str]:
         if res.returncode != 0:
             err = (res.stderr or res.stdout).strip()
             raise RuntimeError(f"Failed to build molt-wasm-host: {err}")
-    if not target.exists():
-        raise RuntimeError("molt-wasm-host binary not found after build")
-    return [str(target)]
+    if target.exists():
+        return [str(target)]
+    path = shutil.which("molt-wasm-host")
+    if path:
+        return [path]
+    raise RuntimeError("molt-wasm-host binary not found after build")
 
 
 def _node_has_websocket(log: TextIO | None) -> bool:
@@ -612,6 +897,9 @@ def bench_results(
     *,
     require_linked: bool,
     runner_cmd: list[str],
+    runner_name: str,
+    control_runner_cmd: list[str] | None,
+    control_runner_name: str | None,
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
@@ -627,22 +915,44 @@ def bench_results(
         linked_used = False
         ok = False
         wasm_samples: list[float] = []
-        wasm_binary = prepare_wasm_binary(
-            script,
-            require_linked=require_linked,
-            tty=tty,
-            log=log,
-            keep_temp=keep_temp,
-        )
+        failed_sample: _SampleResult | None = None
+        control_sample: _SampleResult | None = None
+        try:
+            wasm_binary = prepare_wasm_binary(
+                script,
+                require_linked=require_linked,
+                tty=tty,
+                log=log,
+                keep_temp=keep_temp,
+            )
+        except RuntimeError as exc:
+            print(f"WASM benchmark setup failed for {script}: {exc}", file=sys.stderr)
+            wasm_binary = None
         if wasm_binary is not None:
             try:
-                wasm_samples, ok = collect_samples(
-                    wasm_binary, samples, warmup, runner_cmd, log=log
+                wasm_samples, ok, failed_sample = collect_samples(
+                    wasm_binary,
+                    samples,
+                    warmup,
+                    runner_cmd,
+                    runner_name,
+                    log=log,
                 )
                 wasm_time = statistics.mean(wasm_samples) if ok else 0.0
                 wasm_size = wasm_binary.size_kb
                 wasm_build = wasm_binary.build_s
                 linked_used = wasm_binary.linked_used
+                if (
+                    not ok
+                    and control_runner_cmd is not None
+                    and control_runner_name is not None
+                ):
+                    control_sample = measure_wasm_run(
+                        wasm_binary.run_env,
+                        control_runner_cmd,
+                        runner_name=control_runner_name,
+                        log=log,
+                    )
             finally:
                 if keep_temp:
                     print(
@@ -661,6 +971,23 @@ def bench_results(
             "molt_wasm_ok": ok,
             "molt_wasm_linked": linked_used,
         }
+        if failed_sample is not None:
+            data[name]["molt_wasm_failure_class"] = failed_sample.error_class
+            data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
+            data[name]["molt_wasm_failure"] = failed_sample.error
+        if control_runner_name is not None and control_sample is not None:
+            data[name]["molt_wasm_control_runner"] = control_runner_name
+            data[name]["molt_wasm_control_ok"] = control_sample.elapsed_s is not None
+            if control_sample.elapsed_s is not None:
+                data[name]["molt_wasm_control_time_s"] = control_sample.elapsed_s
+            else:
+                data[name]["molt_wasm_control_failure_class"] = (
+                    control_sample.error_class
+                )
+                data[name]["molt_wasm_control_failure_returncode"] = (
+                    control_sample.returncode
+                )
+                data[name]["molt_wasm_control_failure"] = control_sample.error
         if super_run and ok:
             data[name]["molt_wasm_stats"] = summarize_samples(wasm_samples)
     return data
@@ -677,10 +1004,37 @@ def main() -> None:
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument(
+        "--bench",
+        action="append",
+        default=None,
+        help=(
+            "Run only selected benchmark(s). Accepts full path, "
+            "tests/benchmarks/<name>.py, or stem (repeatable)."
+        ),
+    )
+    parser.add_argument(
         "--runner",
         choices=["node", "wasmtime"],
         default=os.environ.get("MOLT_WASM_RUNNER", "node"),
         help="Runner to execute wasm benchmarks (default: node).",
+    )
+    parser.add_argument(
+        "--control-runner",
+        choices=["none", "node", "wasmtime"],
+        default=os.environ.get("MOLT_WASM_CONTROL_RUNNER", "none"),
+        help=(
+            "Optional control runner for failed benches. "
+            "Use 'wasmtime' to classify node-specific failures."
+        ),
+    )
+    parser.add_argument(
+        "--node-max-old-space-mb",
+        type=int,
+        default=None,
+        help=(
+            "Pass --max-old-space-size=<MB> to node runner "
+            "(also honors MOLT_WASM_NODE_MAX_OLD_SPACE_MB)."
+        ),
     )
     parser.add_argument(
         "--warmup",
@@ -698,6 +1052,11 @@ def main() -> None:
         "--require-linked",
         action="store_true",
         help="Require linked wasm artifacts; abort if linking is unavailable.",
+    )
+    parser.add_argument(
+        "--allow-unlinked",
+        action="store_true",
+        help=("Allow unlinked wasm artifacts when linking is unavailable."),
     )
     parser.add_argument(
         "--ws",
@@ -726,9 +1085,17 @@ def main() -> None:
         help="Keep per-benchmark wasm temp dirs (also honors MOLT_WASM_KEEP=1).",
     )
     args = parser.parse_args()
-
-    if not args.linked and not args.require_linked:
-        args.require_linked = True
+    env_node_max_old_space_mb = _parse_env_int("MOLT_WASM_NODE_MAX_OLD_SPACE_MB")
+    if args.node_max_old_space_mb is None:
+        args.node_max_old_space_mb = env_node_max_old_space_mb
+    elif args.node_max_old_space_mb <= 0:
+        parser.error("--node-max-old-space-mb must be > 0")
+    if args.control_runner == args.runner:
+        parser.error("--control-runner must differ from --runner (or be 'none')")
+    if args.require_linked and args.allow_unlinked:
+        parser.error("--allow-unlinked cannot be combined with --require-linked")
+    if args.require_linked:
+        args.linked = True
 
     if args.linked or args.require_linked:
         os.environ["MOLT_WASM_LINK"] = "1"
@@ -753,7 +1120,22 @@ def main() -> None:
     if args.keep_artifacts:
         os.environ["MOLT_WASM_KEEP"] = "1"
 
-    runner_cmd = _resolve_runner(args.runner, tty=use_tty, log=log_file)
+    runner_cmd = _resolve_runner(
+        args.runner,
+        tty=use_tty,
+        log=log_file,
+        node_max_old_space_mb=args.node_max_old_space_mb,
+    )
+    control_runner_name: str | None = None
+    control_runner_cmd: list[str] | None = None
+    if args.control_runner != "none":
+        control_runner_name = args.control_runner
+        control_runner_cmd = _resolve_runner(
+            control_runner_name,
+            tty=use_tty,
+            log=log_file,
+            node_max_old_space_mb=args.node_max_old_space_mb,
+        )
     if not build_runtime_wasm(
         reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
     ):
@@ -777,6 +1159,33 @@ def main() -> None:
         )
 
     benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
+    if args.bench:
+        by_path = {bench: bench for bench in benchmarks}
+        by_name = {Path(bench).name: bench for bench in benchmarks}
+        by_stem = {Path(bench).stem: bench for bench in benchmarks}
+        selected: list[str] = []
+        missing: list[str] = []
+        for raw in args.bench:
+            token = raw.strip()
+            candidate = by_path.get(token)
+            if candidate is None:
+                candidate = by_path.get(f"tests/benchmarks/{token}")
+            if candidate is None and not token.endswith(".py"):
+                candidate = by_name.get(f"{token}.py")
+            if candidate is None:
+                candidate = by_name.get(token)
+            if candidate is None and token.endswith(".py"):
+                candidate = by_stem.get(Path(token).stem)
+            if candidate is None:
+                candidate = by_stem.get(token)
+            if candidate is None:
+                missing.append(raw)
+                continue
+            if candidate not in selected:
+                selected.append(candidate)
+        if missing:
+            parser.error(f"Unknown benchmark selection(s): {', '.join(missing)}")
+        benchmarks = selected
     include_ws = args.ws or os.environ.get("MOLT_WASM_BENCH_WS") == "1"
     if include_ws:
         if args.runner == "node" and not _node_has_websocket(log_file):
@@ -802,6 +1211,9 @@ def main() -> None:
             args.super,
             require_linked=args.require_linked,
             runner_cmd=runner_cmd,
+            runner_name=args.runner,
+            control_runner_cmd=control_runner_cmd,
+            control_runner_name=control_runner_name,
             tty=use_tty,
             log=log_file,
             keep_temp=keep_temp,
@@ -822,6 +1234,9 @@ def main() -> None:
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
+        "runner": args.runner,
+        "control_runner": control_runner_name,
+        "node_max_old_space_mb": args.node_max_old_space_mb,
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,

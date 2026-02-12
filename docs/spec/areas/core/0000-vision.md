@@ -32,7 +32,9 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 5. Link with the Molt runtime and verified packages
 
 ## Runtime contracts
-- NaN-boxed object model with RC + incremental cycle detection.
+- NaN-boxed object model with RC; incremental cycle detection remains on the
+  active runtime roadmap and is not treated as complete until the runtime
+  milestones mark it implemented.
 - **Current RT1 contract:** a single GIL serializes runtime mutation and Python-visible execution
   (see `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`).
 - FFI and WASM packages are capability-gated with explicit effects.
@@ -47,3 +49,12 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 - **Runtime-first implementation**: the event loop, I/O poller, and cancellation propagation live in
   Rust so compiled binaries are self-contained; stdlib wrappers stay thin.
 - **Native + WASM parity**: identical semantics across targets, with host I/O gated by capabilities.
+
+## Month 1 Sign-off Readiness
+- Status: Draft ready for alignment review (2026-02-11) per `docs/ROADMAP_90_DAYS.md`.
+- Criteria:
+  1. Goals/pipeline language matches canonical capability state in `docs/spec/STATUS.md`.
+  2. Determinism/parity and capability-boundary language matches active planning in `ROADMAP.md`.
+  3. Runtime contract language remains aligned with `docs/spec/areas/compiler/0100_MOLT_IR.md`.
+  4. Runtime and compiler owners review and acknowledge this spec revision.
+- Sign-off date: pending explicit owner approval (candidate baseline: 2026-02-11).

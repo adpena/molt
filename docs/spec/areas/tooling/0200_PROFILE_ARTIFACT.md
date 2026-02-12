@@ -58,4 +58,4 @@ Top-level:
 ## Minimal workflow
 1) `molt profile -- python -m app ...` → `molt_profile.json`
 2) `molt build --pgo-profile molt_profile.json` → native binary
-3) runtime optionally emits `molt_runtime_feedback.json` to refine future profiles (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): runtime feedback emission).
+3) runtime optionally emits `molt_runtime_feedback.json` to refine future profiles (implemented: guarded by `MOLT_RUNTIME_FEEDBACK`; schema gate via `tools/check_runtime_feedback.py`; current deopt counters include `call_indirect_noncallable`, `invoke_ffi_bridge_capability_denied`, `guard_tag_type_mismatch`, and `guard_dict_shape_layout_mismatch` plus per-reason guard-layout mismatch counters; TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): broaden deopt taxonomy + profile-consumption loop).

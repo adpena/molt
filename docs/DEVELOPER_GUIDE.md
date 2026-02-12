@@ -66,7 +66,7 @@ Key controls:
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents; lock/fingerprint state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`) while daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
 - Keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` for diff runs so Cargo artifacts are reused instead of split across ad-hoc roots.
 
-Build-throughput roadmap lanes are tracked in `docs/ROADMAP.md` under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
+Build-throughput roadmap lanes are tracked in `ROADMAP.md` under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
 
 ## Key Concepts
 
@@ -127,7 +127,7 @@ Use this map when deciding where a change belongs and what else it touches.
    - Paths: `tools/`, `tests/`, `bench/`, `examples/`
    - Examples: `tools/dev.py`, `tools/bench.py`, `tools/bench_wasm.py`, `tools/wasm_link.py`, `tools/wasm_profile.py`, `tests/differential/`, `tests/test_wasm_*.py`
 6. **Specs + Roadmap**: contracts, parity status, scope limits, future work.
-   - Paths: `docs/spec/`, `docs/spec/STATUS.md`, `docs/ROADMAP.md`
+   - Paths: `docs/spec/`, `docs/spec/STATUS.md`, `ROADMAP.md`
    - Examples: `docs/spec/areas/core/0000-vision.md`, `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 
 ### Rules Of Thumb For New Work
@@ -175,7 +175,7 @@ Use this checklist to ensure you touch the right layers and docs.
 2. **Find the spec anchor**:
    - Add or update a spec in `docs/spec/`.
    - Sync capability/limits in `docs/spec/STATUS.md`.
-   - Update `docs/ROADMAP.md` for scope or milestones.
+   - Update `ROADMAP.md` for scope or milestones.
 3. **Wire through the stack**:
    - If new IR or opcode: update lowering rules + runtime hooks.
    - If new runtime behavior: update tests and the parity matrix if needed.
@@ -192,6 +192,8 @@ Use this checklist to ensure you touch the right layers and docs.
 - Keep the architecture order intact while closing parity gaps: primitive -> intrinsic -> builtin/stdlib API.
 - For remaining stdlib coverage, favor moving semantics into runtime intrinsics and keep Python wrappers to argument normalization, error mapping, and capability gating.
 - For optimization, prioritize wins at primitive/intrinsic layers (fewer crossings, less dynamic dispatch, more deterministic behavior); avoid Python-shim micro-optimizations that duplicate runtime logic.
+- Before sign-off, run/verify the minimum gate matrix in `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
+- For release/publish policy checks, use `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`.
 
 ## Getting Started for Developers
 

@@ -10507,6 +10507,10 @@ BASE_IMPORTS = """\
   },
   call_bind_ic: (_siteBits, callBits, builderBits) =>
     baseImports.call_bind(callBits, builderBits),
+  call_indirect_ic: (_siteBits, callBits, builderBits) =>
+    baseImports.call_bind(callBits, builderBits),
+  invoke_ffi_ic: (_siteBits, callBits, builderBits, _requireBridgeCapBits) =>
+    baseImports.call_bind(callBits, builderBits),
   is_callable: (val) => {
     if (getFunction(val) || getBoundMethod(val)) return boxBool(true);
     const attr = lookupAttr(val, '__call__');
