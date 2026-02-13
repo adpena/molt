@@ -61,15 +61,22 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - wasm socket constants payload now exports required CPython-facing names
     (`AF_INET`, `SOCK_STREAM`, `SOL_SOCKET`, etc.) from runtime intrinsic
     `molt_socket_constants`.
+  - linked-wasm asyncio table-ref trap is closed: poll dispatch now uses
+    runtime table-base addressing + legacy-slot normalization, linked artifacts
+    export `molt_set_wasm_table_base`, and scheduler execution no longer
+    recursively acquires `task_queue_lock`.
+  - runtime-heavy wasm regression lane is green for this blocker tranche:
+    `tests/test_wasm_runtime_heavy_regressions.py` now passes on
+    asyncio/zipimport/smtplib targeted cases.
   - runtime-heavy/data/metadata-email/tooling clusters remain intrinsic-partial and are the active burn-down queue.
 - Current snapshot: `intrinsic-backed=0`, `intrinsic-partial=873`,
   `probe-only=0`, `python-only=0`; strict gate keeps modules/submodules
   intrinsic-partial until full CPython 3.12+ parity/TODO burn-down is complete.
 - Current wasm blockers before runtime-heavy promotion:
-  - `_asyncio` wasm lane can panic on misaligned pointer dereference in runtime
-    object-layout path (`zip_set_strict_bits`).
-  - `smtplib` path on wasm now reaches socket creation but still fails server
-    bind/listen with opaque `OSError: <object>` (host/runtime error mapping gap).
+  - thread-dependent stdlib server paths remain capability/host blocked on wasm
+    by design (`NotImplementedError: threads are unavailable in wasm`), so
+    full server parity for these lanes still requires an explicit wasm threading
+    strategy.
   - Node/V8 Zone OOM remains reproducible on some linked runtime-heavy modules
     (`zipfile`/`zipimport` family) even with single-task wasm compilation.
 - Weekly scoreboard (required): track
@@ -491,6 +498,10 @@ Sign-off criteria:
   - Profiles + metadata: `--profile {dev,release}` consistency across backend/runtime, and JSON metadata with toolchain hashes.
   - Config introspection: `molt config` shows merged `molt.toml`/`pyproject.toml` plus resolved build settings.
   - Cross-target ergonomics: cache-aware runtime builds, target flag presets, and capability manifest helpers.
+- Implemented: Cranelift 0.128 backend tuning tranche in `runtime/molt-backend` with profile-safe defaults and explicit knobs:
+  - release default `log2_min_function_alignment=4` (16-byte minimum function alignment),
+  - dev default `regalloc_algorithm=single_pass` for faster local compile loops,
+  - opt-in overrides via `MOLT_BACKEND_REGALLOC_ALGORITHM`, `MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2`, and `MOLT_BACKEND_LIBCALL_CALL_CONV`.
 - Track complex performance work in [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md) before large refactors.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:planned): replace pointer-registry locks with sharded or lock-free lookups once registry load is characterized.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy `.molt/` clean-up path after MOLT_HOME/MOLT_CACHE migration is complete.

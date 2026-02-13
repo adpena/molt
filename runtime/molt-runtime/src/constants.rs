@@ -3,73 +3,34 @@ use std::sync::atomic::AtomicU64;
 // Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
 pub(crate) const BIND_KIND_OPEN: i64 = 1;
 
+pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;
+
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_BASE: u64 = 256;
+static WASM_TABLE_BASE_RUNTIME: AtomicU64 = AtomicU64::new(WASM_TABLE_BASE_FALLBACK);
+
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNC_SLEEP: u64 = WASM_TABLE_BASE + 1;
+pub(crate) fn wasm_table_base() -> u64 {
+    let base = WASM_TABLE_BASE_RUNTIME.load(std::sync::atomic::Ordering::Relaxed);
+    if base > 0 {
+        base
+    } else {
+        WASM_TABLE_BASE_FALLBACK
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ANEXT_DEFAULT_POLL: u64 = WASM_TABLE_BASE + 2;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCGEN_POLL: u64 = WASM_TABLE_BASE + 3;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_PROMISE_POLL: u64 = WASM_TABLE_BASE + 4;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_IO_WAIT: u64 = WASM_TABLE_BASE + 5;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_THREAD_POLL: u64 = WASM_TABLE_BASE + 6;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_PROCESS_POLL: u64 = WASM_TABLE_BASE + 7;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_WS_WAIT: u64 = WASM_TABLE_BASE + 8;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_WAIT_FOR_POLL: u64 = WASM_TABLE_BASE + 9;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_WAIT_POLL: u64 = WASM_TABLE_BASE + 10;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_GATHER_POLL: u64 = WASM_TABLE_BASE + 11;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCKET_READER_READ_POLL: u64 = WASM_TABLE_BASE + 12;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCKET_READER_READLINE_POLL: u64 = WASM_TABLE_BASE + 13;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_STREAM_READER_READ_POLL: u64 = WASM_TABLE_BASE + 14;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_STREAM_READER_READLINE_POLL: u64 = WASM_TABLE_BASE + 15;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_STREAM_SEND_ALL_POLL: u64 = WASM_TABLE_BASE + 16;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_RECV_POLL: u64 = WASM_TABLE_BASE + 17;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_CONNECT_POLL: u64 = WASM_TABLE_BASE + 18;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_ACCEPT_POLL: u64 = WASM_TABLE_BASE + 19;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_RECV_INTO_POLL: u64 = WASM_TABLE_BASE + 20;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_SENDALL_POLL: u64 = WASM_TABLE_BASE + 21;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_RECVFROM_POLL: u64 = WASM_TABLE_BASE + 22;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_RECVFROM_INTO_POLL: u64 = WASM_TABLE_BASE + 23;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SOCK_SENDTO_POLL: u64 = WASM_TABLE_BASE + 24;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_TIMER_HANDLE_POLL: u64 = WASM_TABLE_BASE + 25;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_FD_WATCHER_POLL: u64 = WASM_TABLE_BASE + 26;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_SERVER_ACCEPT_LOOP_POLL: u64 = WASM_TABLE_BASE + 27;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_ASYNCIO_READY_RUNNER_POLL: u64 = WASM_TABLE_BASE + 28;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_CONTEXTLIB_ASYNCGEN_ENTER_POLL: u64 = WASM_TABLE_BASE + 29;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_CONTEXTLIB_ASYNCGEN_EXIT_POLL: u64 = WASM_TABLE_BASE + 30;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_CONTEXTLIB_ASYNC_EXITSTACK_EXIT_POLL: u64 = WASM_TABLE_BASE + 31;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_CONTEXTLIB_ASYNC_EXITSTACK_ENTER_CONTEXT_POLL: u64 =
-    WASM_TABLE_BASE + 32;
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_wasm_table_base(base: u64) {
+    if base > 0 {
+        WASM_TABLE_BASE_RUNTIME.store(base, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) const fn wasm_table_base() -> u64 {
+    WASM_TABLE_BASE_FALLBACK
+}
 
 pub(crate) const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
 pub(crate) const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;
