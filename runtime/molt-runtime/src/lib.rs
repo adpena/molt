@@ -22,13 +22,13 @@ pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // isolate entrypoints. Provide test-only fallbacks so lib-test linking remains
 // reliable while production binaries keep using generated symbols.
 #[cfg(test)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
 #[cfg(test)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
@@ -65,7 +65,7 @@ pub(crate) use crate::concurrency::locks::{
 };
 #[allow(unused_imports)]
 pub(crate) use crate::concurrency::{
-    gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken,
+    GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
@@ -126,8 +126,8 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
-    builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown, builtin_type_bits,
-    class_name_for_error, is_builtin_class_bits, BuiltinClasses,
+    BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
+    builtin_type_bits, class_name_for_error, is_builtin_class_bits,
 };
 pub use crate::builtins::codecs::*;
 pub(crate) use crate::builtins::containers::{
@@ -137,7 +137,7 @@ pub(crate) use crate::builtins::containers::{
     list_method_bits, set_len, set_method_bits, set_order, set_order_ptr, set_table, set_table_ptr,
     tuple_len,
 };
-pub(crate) use crate::builtins::containers_alloc::{dict_pair_from_item, DictSeqError};
+pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_item};
 pub use crate::builtins::containers_alloc::{
     molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
 };
@@ -153,7 +153,9 @@ pub(crate) use crate::builtins::contextlib::{
 };
 pub use crate::builtins::decimal::*;
 pub(crate) use crate::builtins::exceptions::{
-    alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_state,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception,
+    alloc_exception_from_class_bits, clear_exception, clear_exception_state,
     clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
     exception_cause_bits, exception_class_bits, exception_clear_reason_set,
     exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
@@ -176,9 +178,7 @@ pub(crate) use crate::builtins::exceptions::{
     task_exception_depth_take, task_exception_handler_stack_drop,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_drop, task_raise_active, ExceptionSentinel, ACTIVE_EXCEPTION_FALLBACK,
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
-    TASK_RAISE_ACTIVE,
+    task_last_exception_drop, task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::functions::*;
@@ -188,8 +188,8 @@ pub use crate::builtins::hmac::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
-    close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
-    file_handle_is_closed, path_from_bits, DecodeFailure,
+    DecodeFailure, close_payload, file_handle_detached_message, file_handle_enter,
+    file_handle_exit, file_handle_is_closed, path_from_bits,
 };
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
@@ -197,12 +197,12 @@ pub use crate::builtins::math::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
-    bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref, bigint_to_inline,
-    compare_numbers, complex_bits, complex_from_obj_lossy, complex_from_obj_strict,
-    complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
-    index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint,
-    int_bits_from_i128, int_bits_from_i64, int_subclass_value_bits_raw, round_float_ndigits,
-    round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64, ComplexParts,
+    ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
+    bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_lossy,
+    complex_from_obj_strict, complex_ptr_from_bits, complex_ref, float_pair_from_obj,
+    index_bigint_from_obj, index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128,
+    int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw,
+    round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
 pub use crate::builtins::platform::*;
@@ -236,8 +236,8 @@ pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
 };
 pub(crate) use crate::call::function::{
-    call_function_obj0, call_function_obj1, call_function_obj2, call_function_obj3,
-    call_function_obj_vec, refresh_function_task_trampoline_cache,
+    call_function_obj_vec, call_function_obj0, call_function_obj1, call_function_obj2,
+    call_function_obj3, refresh_function_task_trampoline_cache,
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
@@ -247,7 +247,7 @@ pub(crate) use crate::object::accessors::{
 };
 pub use crate::object::buffer2d::*;
 pub use crate::object::builders::*;
-pub(crate) use crate::object::builders::{alloc_dict_with_pairs, PtrDropGuard};
+pub(crate) use crate::object::builders::{PtrDropGuard, alloc_dict_with_pairs};
 #[allow(unused_imports)]
 pub(crate) use crate::object::layout::{
     bound_method_func_bits, bound_method_self_bits, bytearray_data, bytearray_len, bytearray_vec,
@@ -283,7 +283,7 @@ pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
-    class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
+    DecodeTextError, class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
     dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
     dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_items_method, dict_keys_method,
     dict_pop_method, dict_popitem_method, dict_set_in_place, dict_setdefault_method,
@@ -292,7 +292,7 @@ pub(crate) use crate::object::ops::{
     frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits, obj_eq,
     set_add_in_place, set_del_in_place, set_find_entry, set_replace_entries, set_table_capacity,
     tuple_from_isize_slice, tuple_from_iter_bits, type_name, utf8_cache_remove,
-    utf8_codepoint_count_cached, DecodeTextError,
+    utf8_codepoint_count_cached,
 };
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
@@ -310,42 +310,41 @@ pub use crate::object::weakref::{
     molt_weakvaluedict_valuerefs,
 };
 pub(crate) use crate::object::{
-    alloc_object, alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr,
-    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut,
-    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr,
-    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
-    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    Buffer2D, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
+    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF,
+    HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
+    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED,
+    MemoryView, MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState,
+    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PtrSlot, alloc_object, alloc_object_zeroed,
+    alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data, bytes_len,
+    dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
+    dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
+    maybe_ptr_from_bits, memoryview_format_bits, memoryview_itemsize, memoryview_len,
+    memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
     memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_class_bits,
     object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
-    pending_bits_i64, ptr_from_bits, string_bytes, string_len, Buffer2D, DataclassDesc, MemoryView,
-    MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, PtrSlot,
-    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
-    HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
-    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
-    HEADER_FLAG_TRACEBACK_SUPPRESSED, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
+    pending_bits_i64, ptr_from_bits, string_bytes, string_len,
 };
-pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
+pub use crate::object::{MoltHeader, molt_dec_ref, molt_inc_ref};
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
-pub(crate) use crate::state::cache::{intern_static_name, InternedNames, MethodCache};
+pub(crate) use crate::state::cache::{InternedNames, MethodCache, intern_static_name};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
-    molt_profile_enabled, molt_profile_handle_resolve, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_unchecked, recursion_guard_enter,
-    recursion_guard_exit, recursion_limit_get, recursion_limit_set, traceback_suppress_enter,
-    traceback_suppress_exit, traceback_suppressed, CONTEXT_STACK, DEFAULT_RECURSION_LIMIT,
-    FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, REPR_DEPTH, REPR_STACK,
-    TRACEBACK_SUPPRESS,
+    CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
+    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK, TRACEBACK_SUPPRESS, molt_profile_enabled,
+    molt_profile_handle_resolve, molt_profile_struct_field_store, profile_enabled, profile_hit,
+    profile_hit_unchecked, recursion_guard_enter, recursion_guard_exit, recursion_limit_get,
+    recursion_limit_set, traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
 };
 pub(crate) use crate::utils::usize_from_bits;
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "molt_call_indirect0"]
     pub(crate) fn molt_call_indirect0(func_idx: u64) -> i64;
     #[link_name = "molt_call_indirect1"]
@@ -502,7 +501,7 @@ extern "C" {
     pub(crate) fn molt_os_close_host(fd: i64) -> i32;
     #[link_name = "molt_socket_new_host"]
     pub(crate) fn molt_socket_new_host(family: i32, sock_type: i32, proto: i32, fileno: i64)
-        -> i64;
+    -> i64;
     #[link_name = "molt_socket_close_host"]
     pub(crate) fn molt_socket_close_host(handle: i64) -> i32;
     #[link_name = "molt_socket_clone_host"]
@@ -524,10 +523,10 @@ extern "C" {
     pub(crate) fn molt_socket_connect_ex_host(handle: i64) -> i32;
     #[link_name = "molt_socket_recv_host"]
     pub(crate) fn molt_socket_recv_host(handle: i64, buf_ptr: u32, buf_len: u32, flags: i32)
-        -> i32;
+    -> i32;
     #[link_name = "molt_socket_send_host"]
     pub(crate) fn molt_socket_send_host(handle: i64, buf_ptr: u32, buf_len: u32, flags: i32)
-        -> i32;
+    -> i32;
     #[link_name = "molt_socket_sendto_host"]
     pub(crate) fn molt_socket_sendto_host(
         handle: i64,
@@ -631,7 +630,7 @@ extern "C" {
     ) -> i32;
     #[link_name = "molt_socket_gethostname_host"]
     pub(crate) fn molt_socket_gethostname_host(buf_ptr: u32, buf_cap: u32, out_len_ptr: u32)
-        -> i32;
+    -> i32;
     #[link_name = "molt_socket_getservbyname_host"]
     pub(crate) fn molt_socket_getservbyname_host(
         name_ptr: u32,

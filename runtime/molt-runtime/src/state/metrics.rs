@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use crate::{runtime_state, PyToken, HANDLE_RESOLVE_COUNT, STRUCT_FIELD_STORE_COUNT};
+use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT, runtime_state};
 
 static PROFILE_ENABLED_GIL_FREE: OnceLock<bool> = OnceLock::new();
 
@@ -21,15 +21,9 @@ pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_profile_enabled() -> u64 {
-    crate::with_gil_entry!(_py, {
-        if profile_enabled(_py) {
-            1
-        } else {
-            0
-        }
-    })
+    crate::with_gil_entry!(_py, { if profile_enabled(_py) { 1 } else { 0 } })
 }
 
 pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
@@ -44,14 +38,14 @@ pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_profile_struct_field_store() {
     crate::with_gil_entry!(_py, {
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_profile_handle_resolve() {
     crate::with_gil_entry!(_py, {
         profile_hit(_py, &HANDLE_RESOLVE_COUNT);

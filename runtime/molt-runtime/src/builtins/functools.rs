@@ -5,14 +5,14 @@ use molt_obj_model::MoltObject;
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
-    alloc_class_obj, alloc_function_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
-    dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
-    inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, molt_class_set_base,
-    molt_getattr_builtin, molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
-    raise_not_iterable, seq_vec_ref, string_obj_to_owned, to_i64, PyToken, TYPE_ID_DICT,
-    TYPE_ID_TUPLE,
+    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_function_obj, alloc_string,
+    alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
+    dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
+    dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
+    intern_static_name, is_truthy, molt_class_set_base, molt_getattr_builtin, molt_is_callable,
+    molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
+    string_obj_to_owned, to_i64,
 };
 
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -77,7 +77,7 @@ fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_kwd_mark() -> u64 {
     crate::with_gil_entry!(_py, { kwd_mark_bits(_py) })
 }
@@ -146,13 +146,13 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
     let call_bits = builtin_func_bits(
         _py,
         &PARTIAL_CALL_FN,
-        crate::molt_functools_partial_call as usize as u64,
+        crate::molt_functools_partial_call as *const () as usize as u64,
         3,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &PARTIAL_REPR_FN,
-        crate::molt_functools_partial_repr as usize as u64,
+        crate::molt_functools_partial_repr as *const () as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -213,37 +213,37 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let lt_bits = builtin_func_bits(
         _py,
         &CMPKEY_LT_FN,
-        crate::molt_functools_cmpkey_lt as usize as u64,
+        crate::molt_functools_cmpkey_lt as *const () as usize as u64,
         2,
     );
     let le_bits = builtin_func_bits(
         _py,
         &CMPKEY_LE_FN,
-        crate::molt_functools_cmpkey_le as usize as u64,
+        crate::molt_functools_cmpkey_le as *const () as usize as u64,
         2,
     );
     let gt_bits = builtin_func_bits(
         _py,
         &CMPKEY_GT_FN,
-        crate::molt_functools_cmpkey_gt as usize as u64,
+        crate::molt_functools_cmpkey_gt as *const () as usize as u64,
         2,
     );
     let ge_bits = builtin_func_bits(
         _py,
         &CMPKEY_GE_FN,
-        crate::molt_functools_cmpkey_ge as usize as u64,
+        crate::molt_functools_cmpkey_ge as *const () as usize as u64,
         2,
     );
     let eq_bits = builtin_func_bits(
         _py,
         &CMPKEY_EQ_FN,
-        crate::molt_functools_cmpkey_eq as usize as u64,
+        crate::molt_functools_cmpkey_eq as *const () as usize as u64,
         2,
     );
     let ne_bits = builtin_func_bits(
         _py,
         &CMPKEY_NE_FN,
-        crate::molt_functools_cmpkey_ne as usize as u64,
+        crate::molt_functools_cmpkey_ne as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__lt__", lt_bits);
@@ -260,25 +260,25 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let call_bits = builtin_func_bits(
         _py,
         &LRU_CALL_FN,
-        crate::molt_functools_lru_call as usize as u64,
+        crate::molt_functools_lru_call as *const () as usize as u64,
         3,
     );
     let info_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_INFO_FN,
-        crate::molt_functools_lru_cache_info as usize as u64,
+        crate::molt_functools_lru_cache_info as *const () as usize as u64,
         1,
     );
     let clear_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_CLEAR_FN,
-        crate::molt_functools_lru_cache_clear as usize as u64,
+        crate::molt_functools_lru_cache_clear as *const () as usize as u64,
         1,
     );
     let params_bits = builtin_func_bits(
         _py,
         &LRU_CACHE_PARAMS_FN,
-        crate::molt_functools_lru_cache_params as usize as u64,
+        crate::molt_functools_lru_cache_params as *const () as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -341,7 +341,7 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
     let call_bits = builtin_func_bits(
         _py,
         &LRU_FACTORY_CALL_FN,
-        crate::molt_functools_lru_factory_call as usize as u64,
+        crate::molt_functools_lru_factory_call as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__call__", call_bits);
@@ -353,19 +353,19 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
     let iter_bits = builtin_func_bits(
         _py,
         &CACHEINFO_ITER_FN,
-        crate::molt_functools_cacheinfo_iter as usize as u64,
+        crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
         1,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &CACHEINFO_REPR_FN,
-        crate::molt_functools_cacheinfo_repr as usize as u64,
+        crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
         1,
     );
     let getattr_bits = builtin_func_bits(
         _py,
         &CACHEINFO_GETATTR_FN,
-        crate::molt_functools_cacheinfo_getattr as usize as u64,
+        crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__iter__", iter_bits);
@@ -375,116 +375,152 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
 }
 
 unsafe fn partial_func_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 unsafe fn partial_args_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn partial_kwargs_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn partial_set_func_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 unsafe fn partial_set_args_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 unsafe fn partial_set_kwargs_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn cmpkey_obj_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 unsafe fn cmpkey_cmp_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn cmpkey_set_obj_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 unsafe fn cmpkey_set_cmp_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn lru_func_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 unsafe fn lru_maxsize_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn lru_typed_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn lru_cache_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn lru_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>)
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) }
 }
 unsafe fn lru_hits(ptr: *mut u8) -> i64 {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64) }
 }
 unsafe fn lru_misses(ptr: *mut u8) -> i64 {
-    *(ptr.add(6 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(6 * std::mem::size_of::<u64>()) as *const i64) }
 }
 unsafe fn lru_set_func_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 unsafe fn lru_set_maxsize_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 unsafe fn lru_set_typed_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 unsafe fn lru_set_cache_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 unsafe fn lru_set_order_ptr(ptr: *mut u8, order: *mut Vec<u64>) {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = order;
+    unsafe {
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = order;
+    }
 }
 unsafe fn lru_set_hits(ptr: *mut u8, val: i64) {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 unsafe fn lru_set_misses(ptr: *mut u8, val: i64) {
-    *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn lru_factory_maxsize_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 unsafe fn lru_factory_typed_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn lru_factory_set_maxsize_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 unsafe fn lru_factory_set_typed_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn cacheinfo_hits(ptr: *mut u8) -> i64 {
-    *(ptr as *const i64)
+    unsafe { *(ptr as *const i64) }
 }
 unsafe fn cacheinfo_misses(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const i64) }
 }
 unsafe fn cacheinfo_maxsize_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 unsafe fn cacheinfo_currsize(ptr: *mut u8) -> i64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const i64) }
 }
 unsafe fn cacheinfo_set_hits(ptr: *mut u8, val: i64) {
-    *(ptr as *mut i64) = val;
+    unsafe {
+        *(ptr as *mut i64) = val;
+    }
 }
 unsafe fn cacheinfo_set_misses(ptr: *mut u8, val: i64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 unsafe fn cacheinfo_set_maxsize_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 unsafe fn cacheinfo_set_currsize(ptr: *mut u8, val: i64) {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 fn extend_positional_from_call_arg(arg_bits: u64, out: &mut Vec<u64>) {
@@ -500,7 +536,7 @@ fn extend_positional_from_call_arg(arg_bits: u64, out: &mut Vec<u64>) {
     out.push(arg_bits);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_partial(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let callable = is_truthy(_py, obj_from_bits(molt_is_callable(func_bits)));
@@ -532,7 +568,7 @@ pub extern "C" fn molt_functools_partial(func_bits: u64, args_bits: u64, kwargs_
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_partial_call(
     self_bits: u64,
     args_bits: u64,
@@ -605,7 +641,7 @@ pub extern "C" fn molt_functools_partial_call(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_partial_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -639,7 +675,7 @@ pub extern "C" fn molt_functools_partial_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_reduce(
     func_bits: u64,
     iterable_bits: u64,
@@ -688,7 +724,7 @@ pub extern "C" fn molt_functools_reduce(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_update_wrapper(
     wrapper_bits: u64,
     wrapped_bits: u64,
@@ -790,7 +826,7 @@ pub extern "C" fn molt_functools_update_wrapper(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_wraps(
     wrapped_bits: u64,
     assigned_bits: u64,
@@ -802,7 +838,11 @@ pub extern "C" fn molt_functools_wraps(
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr = alloc_function_obj(_py, crate::molt_functools_wraps_call as usize as u64, 1);
+        let func_ptr = alloc_function_obj(
+            _py,
+            crate::molt_functools_wraps_call as *const () as usize as u64,
+            1,
+        );
         if func_ptr.is_null() {
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
@@ -813,7 +853,7 @@ pub extern "C" fn molt_functools_wraps(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_wraps_call(closure_bits: u64, wrapper_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let closure_ptr = obj_from_bits(closure_bits).as_ptr();
@@ -833,7 +873,7 @@ pub extern "C" fn molt_functools_wraps_call(closure_bits: u64, wrapper_bits: u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_bits = cmpkey_class(_py);
@@ -842,8 +882,11 @@ pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr =
-            alloc_function_obj(_py, crate::molt_functools_cmp_key_func as usize as u64, 1);
+        let func_ptr = alloc_function_obj(
+            _py,
+            crate::molt_functools_cmp_key_func as *const () as usize as u64,
+            1,
+        );
         if func_ptr.is_null() {
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
@@ -854,7 +897,7 @@ pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmp_key_func(closure_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let closure_ptr = obj_from_bits(closure_bits).as_ptr();
@@ -910,7 +953,7 @@ fn cmpkey_compare(_py: &PyToken<'_>, self_bits: u64, other_bits: u64) -> Option<
     Some(val)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_lt(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -923,7 +966,7 @@ pub extern "C" fn molt_functools_cmpkey_lt(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_le(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -936,7 +979,7 @@ pub extern "C" fn molt_functools_cmpkey_le(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_gt(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -949,7 +992,7 @@ pub extern "C" fn molt_functools_cmpkey_gt(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_ge(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -962,7 +1005,7 @@ pub extern "C" fn molt_functools_cmpkey_ge(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_eq(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -975,7 +1018,7 @@ pub extern "C" fn molt_functools_cmpkey_eq(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cmpkey_ne(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(val) = cmpkey_compare(_py, self_bits, other_bits) else {
@@ -988,7 +1031,7 @@ pub extern "C" fn molt_functools_cmpkey_ne(self_bits: u64, other_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_ptr = obj_from_bits(cls_bits).as_ptr();
@@ -1096,7 +1139,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
             let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
             let func_ptr = alloc_function_obj(
                 _py,
-                crate::molt_functools_total_ordering_op as usize as u64,
+                crate::molt_functools_total_ordering_op as *const () as usize as u64,
                 2,
             );
             if func_ptr.is_null() {
@@ -1118,7 +1161,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_total_ordering_op(
     closure_bits: u64,
     self_bits: u64,
@@ -1182,7 +1225,7 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_cache(maxsize_bits: u64, typed_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let typed = is_truthy(_py, obj_from_bits(typed_bits));
@@ -1370,7 +1413,7 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1517,7 +1560,7 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_cache_info(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1556,7 +1599,7 @@ pub extern "C" fn molt_functools_lru_cache_info(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cacheinfo_iter(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1575,7 +1618,7 @@ pub extern "C" fn molt_functools_cacheinfo_iter(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cacheinfo_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1598,7 +1641,7 @@ pub extern "C" fn molt_functools_cacheinfo_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_cacheinfo_getattr(self_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1622,7 +1665,7 @@ pub extern "C" fn molt_functools_cacheinfo_getattr(self_bits: u64, name_bits: u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_cache_clear(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1651,7 +1694,7 @@ pub extern "C" fn molt_functools_lru_cache_clear(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_cache_params(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1675,7 +1718,7 @@ pub extern "C" fn molt_functools_lru_cache_params(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_factory_call(self_bits: u64, func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();

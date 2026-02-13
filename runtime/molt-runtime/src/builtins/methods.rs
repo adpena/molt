@@ -1,5 +1,5 @@
-use crate::builtins::containers::tuple_method_bits;
 use crate::PyToken;
+use crate::builtins::containers::tuple_method_bits;
 use std::sync::atomic::AtomicU64;
 
 use crate::*;
@@ -872,7 +872,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_file_io_new),
                     5,
                     FUNC_DEFAULT_IO_RAW,
-                ))
+                ));
             }
             "__init__" => {
                 return Some(builtin_func_bits_with_default(
@@ -881,7 +881,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_file_io_init),
                     5,
                     FUNC_DEFAULT_IO_RAW,
-                ))
+                ));
             }
             _ => {}
         }
@@ -898,7 +898,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_buffered_new),
                     3,
                     FUNC_DEFAULT_NEG_ONE,
-                ))
+                ));
             }
             "__init__" => {
                 return Some(builtin_func_bits_with_default(
@@ -907,7 +907,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_buffered_init),
                     3,
                     FUNC_DEFAULT_NEG_ONE,
-                ))
+                ));
             }
             _ => {}
         }
@@ -921,7 +921,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_text_io_wrapper_new),
                     7,
                     FUNC_DEFAULT_IO_TEXT_WRAPPER,
-                ))
+                ));
             }
             "__init__" => {
                 return Some(builtin_func_bits_with_default(
@@ -930,7 +930,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_text_io_wrapper_init),
                     7,
                     FUNC_DEFAULT_IO_TEXT_WRAPPER,
-                ))
+                ));
             }
             _ => {}
         }
@@ -944,7 +944,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_bytesio_new),
                     2,
                     FUNC_DEFAULT_NONE,
-                ))
+                ));
             }
             "__init__" => {
                 return Some(builtin_func_bits_with_default(
@@ -953,7 +953,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_bytesio_init),
                     2,
                     FUNC_DEFAULT_NONE,
-                ))
+                ));
             }
             _ => {}
         }
@@ -967,7 +967,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_stringio_new),
                     3,
                     FUNC_DEFAULT_NONE2,
-                ))
+                ));
             }
             "__init__" => {
                 return Some(builtin_func_bits_with_default(
@@ -976,7 +976,7 @@ pub(crate) fn builtin_class_method_bits(
                     fn_addr!(molt_stringio_init),
                     3,
                     FUNC_DEFAULT_NONE2,
-                ))
+                ));
             }
             _ => {}
         }

@@ -2,12 +2,12 @@ use molt_obj_model::MoltObject;
 
 use super::methods::is_not_implemented_bits;
 use crate::{
-    alloc_bytearray, alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable0,
-    call_callable1, class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec,
-    dec_ref_bits, dict_get_in_place, dict_order, exception_pending, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state,
-    seq_vec_ref, type_of_bits, TYPE_ID_DICT, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    TYPE_ID_DICT, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs,
+    alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    builtin_classes, call_callable0, call_callable1, class_bases_bits, class_bases_vec,
+    class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, seq_vec_ref, type_of_bits,
 };
 
 fn get_attr_default(
@@ -523,7 +523,7 @@ fn abc_subclasscheck_impl(
     Ok(false)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
     crate::with_gil_entry!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -778,12 +778,12 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_get_cache_token() -> u64 {
     crate::with_gil_entry!(_py, { int_bits_from_i64(_py, abc_counter_get(_py) as i64) })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = abc_init_impl(_py, cls_bits) {
@@ -793,7 +793,7 @@ pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !is_type_object(subclass_bits) {
@@ -824,7 +824,7 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_attr_bits =
@@ -855,7 +855,7 @@ pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match abc_subclasscheck_impl(_py, cls_bits, subclass_bits) {
@@ -865,7 +865,7 @@ pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
@@ -886,7 +886,7 @@ pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
@@ -904,7 +904,7 @@ pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
@@ -928,7 +928,7 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match abc_update_abstractmethods_impl(_py, cls_bits) {
@@ -938,7 +938,7 @@ pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_bootstrap() -> u64 {
     crate::with_gil_entry!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -950,39 +950,47 @@ pub extern "C" fn molt_abc_bootstrap() -> u64 {
         let entries: [(&[u8], u64, u64); 9] = [
             (
                 b"get_cache_token",
-                crate::molt_abc_get_cache_token as usize as u64,
+                crate::molt_abc_get_cache_token as *const () as usize as u64,
                 0,
             ),
-            (b"_abc_init", crate::molt_abc_init as usize as u64, 1),
+            (
+                b"_abc_init",
+                crate::molt_abc_init as *const () as usize as u64,
+                1,
+            ),
             (
                 b"_abc_register",
-                crate::molt_abc_register as usize as u64,
+                crate::molt_abc_register as *const () as usize as u64,
                 2,
             ),
             (
                 b"_abc_instancecheck",
-                crate::molt_abc_instancecheck as usize as u64,
+                crate::molt_abc_instancecheck as *const () as usize as u64,
                 2,
             ),
             (
                 b"_abc_subclasscheck",
-                crate::molt_abc_subclasscheck as usize as u64,
+                crate::molt_abc_subclasscheck as *const () as usize as u64,
                 2,
             ),
-            (b"_get_dump", crate::molt_abc_get_dump as usize as u64, 1),
+            (
+                b"_get_dump",
+                crate::molt_abc_get_dump as *const () as usize as u64,
+                1,
+            ),
             (
                 b"_reset_registry",
-                crate::molt_abc_reset_registry as usize as u64,
+                crate::molt_abc_reset_registry as *const () as usize as u64,
                 1,
             ),
             (
                 b"_reset_caches",
-                crate::molt_abc_reset_caches as usize as u64,
+                crate::molt_abc_reset_caches as *const () as usize as u64,
                 1,
             ),
             (
                 b"update_abstractmethods",
-                crate::molt_abc_update_abstractmethods as usize as u64,
+                crate::molt_abc_update_abstractmethods as *const () as usize as u64,
                 1,
             ),
         ];

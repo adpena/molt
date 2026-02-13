@@ -1,11 +1,11 @@
-use crate::{has_capability, is_trusted, raise_exception, string_obj_to_owned, MoltObject};
+use crate::{MoltObject, has_capability, is_trusted, raise_exception, string_obj_to_owned};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(is_trusted(_py)).bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
@@ -16,7 +16,7 @@ pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {

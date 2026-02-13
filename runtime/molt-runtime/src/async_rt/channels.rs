@@ -1,21 +1,21 @@
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::poll::ws_wait_poll_fn_addr;
-use super::sockets::{require_net_capability, send_data_from_bits, SendData};
+use super::sockets::{SendData, require_net_capability, send_data_from_bits};
 use super::{cancel_tokens, current_token_id, token_id_from_bits};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::{
+    GilReleaseGuard, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, MoltObject, PyToken,
     alloc_bytes, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, exception_pending,
     header_from_obj_ptr, inc_ref_bits, intern_static_name, is_missing_bits, missing_bits,
     molt_getattr_builtin, monotonic_now_secs, obj_from_bits, pending_bits_i64, ptr_from_bits,
     raise_exception, raise_os_error, release_ptr, resolve_obj_ptr, runtime_state,
-    string_obj_to_owned, to_f64, to_i64, usize_from_bits, GilReleaseGuard, MoltObject, PyToken,
-    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE,
+    string_obj_to_owned, to_f64, to_i64, usize_from_bits,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
@@ -42,7 +42,7 @@ use std::os::windows::io::{FromRawSocket, RawSocket};
 #[cfg(not(target_arch = "wasm32"))]
 use tungstenite::stream::MaybeTlsStream;
 #[cfg(not(target_arch = "wasm32"))]
-use tungstenite::{connect, Message, WebSocket};
+use tungstenite::{Message, WebSocket, connect};
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,7 +207,7 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
     crate::with_gil_entry!(_py, {
         let capacity = match to_i64(obj_from_bits(capacity_bits)) {
@@ -217,7 +217,7 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
                     _py,
                     "TypeError",
                     "channel capacity must be an integer",
-                )
+                );
             }
         };
         if capacity < 0 {
@@ -241,100 +241,117 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) -> u64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
+        // SAFETY: caller guarantees `chan_handle` came from `molt_chan_new`.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         if chan_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let chan = Box::from_raw(chan_ptr as *mut MoltChannel);
+        // SAFETY: `chan_ptr` is non-null and uniquely owned on drop.
+        let chan = unsafe { Box::from_raw(chan_ptr as *mut MoltChannel) };
         while let Ok(val) = chan.receiver.try_recv() {
             dec_ref_bits(_py, val as u64);
         }
-        chan_release_ptr(chan_ptr);
+        // SAFETY: ownership is transferred back to the runtime pointer registry.
+        unsafe { chan_release_ptr(chan_ptr) };
         drop(chan);
         MoltObject::none().bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_send(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_try_send_impl(_py, chan, val)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_try_send(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_try_send_impl(_py, chan, val)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_send_blocking(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_send_blocking_impl(_py, chan, val)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_recv(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_try_recv_impl(_py, chan)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_try_recv(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_try_recv_impl(_py, chan)
     })
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_try_recv_impl(_py, chan)
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = chan_ptr_from_handle(chan_handle);
-        let chan = &*(chan_ptr as *mut MoltChannel);
+        // SAFETY: caller guarantees `chan_handle` is valid for this call.
+        let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
+        // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
+        let chan = unsafe { &*(chan_ptr as *mut MoltChannel) };
         chan_recv_blocking_impl(_py, chan)
     })
 }
@@ -361,7 +378,8 @@ unsafe fn stream_reader_pull(
         return Ok(ReaderPull::Eof);
     }
     let pending = pending_bits_i64() as u64;
-    let recv_bits = molt_stream_recv(reader.stream_bits) as u64;
+    // SAFETY: `reader.stream_bits` is created by `molt_stream_reader_new` from a live stream.
+    let recv_bits = unsafe { molt_stream_recv(reader.stream_bits) as u64 };
     if recv_bits == pending {
         return Ok(ReaderPull::Pending);
     }
@@ -394,7 +412,7 @@ fn stream_reader_take(_py: &PyToken<'_>, reader: &mut MoltStreamReader, count: u
     MoltObject::from_ptr(ptr).bits()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream handle from `molt_stream_new`/`molt_stream_clone`.
 pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
@@ -403,7 +421,8 @@ pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
         if stream_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let cloned_bits = molt_stream_clone(stream_bits);
+        // SAFETY: `stream_bits` is validated by caller contract and checked for null above.
+        let cloned_bits = unsafe { molt_stream_clone(stream_bits) };
         if obj_from_bits(cloned_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -416,7 +435,7 @@ pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
 pub unsafe extern "C" fn molt_stream_reader_drop(reader_bits: u64) {
@@ -425,12 +444,14 @@ pub unsafe extern "C" fn molt_stream_reader_drop(reader_bits: u64) {
         if reader_ptr.is_null() {
             return;
         }
-        let reader = Box::from_raw(reader_ptr as *mut MoltStreamReader);
-        molt_stream_drop(reader.stream_bits);
+        // SAFETY: ownership of the boxed reader is transferred for drop.
+        let reader = unsafe { Box::from_raw(reader_ptr as *mut MoltStreamReader) };
+        // SAFETY: stream handle was retained when this reader was created.
+        unsafe { molt_stream_drop(reader.stream_bits) };
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
 pub unsafe extern "C" fn molt_stream_reader_at_eof(reader_bits: u64) -> u64 {
@@ -439,12 +460,13 @@ pub unsafe extern "C" fn molt_stream_reader_at_eof(reader_bits: u64) -> u64 {
         if reader_ptr.is_null() {
             return MoltObject::from_bool(true).bits();
         }
-        let reader = &*(reader_ptr as *mut MoltStreamReader);
+        // SAFETY: caller contract guarantees a valid reader handle.
+        let reader = unsafe { &*(reader_ptr as *mut MoltStreamReader) };
         MoltObject::from_bool(reader.eof && reader.buffer.is_empty()).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
 pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) -> u64 {
@@ -453,7 +475,8 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
         if reader_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let reader = &mut *(reader_ptr as *mut MoltStreamReader);
+        // SAFETY: caller contract guarantees a valid reader handle.
+        let reader = unsafe { &mut *(reader_ptr as *mut MoltStreamReader) };
         let n = to_i64(obj_from_bits(n_bits)).unwrap_or(-1);
         if n == 0 {
             let ptr = alloc_bytes(_py, &[]);
@@ -467,7 +490,8 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
                 if reader.eof {
                     return stream_reader_take(_py, reader, reader.buffer.len());
                 }
-                match stream_reader_pull(_py, reader) {
+                // SAFETY: `reader` owns a retained stream handle.
+                match unsafe { stream_reader_pull(_py, reader) } {
                     Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
                     Ok(ReaderPull::Eof) | Ok(ReaderPull::Data) => {}
                     Err(bits) => return bits,
@@ -485,7 +509,8 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
             return MoltObject::from_ptr(ptr).bits();
         }
         loop {
-            match stream_reader_pull(_py, reader) {
+            // SAFETY: `reader` owns a retained stream handle.
+            match unsafe { stream_reader_pull(_py, reader) } {
                 Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
                 Ok(ReaderPull::Eof) => {
                     if reader.buffer.is_empty() {
@@ -508,7 +533,7 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
 pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
@@ -517,7 +542,8 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
         if reader_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let reader = &mut *(reader_ptr as *mut MoltStreamReader);
+        // SAFETY: caller contract guarantees a valid reader handle.
+        let reader = unsafe { &mut *(reader_ptr as *mut MoltStreamReader) };
         loop {
             if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
                 return stream_reader_take(_py, reader, idx + 1);
@@ -525,7 +551,8 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
             if reader.eof {
                 return stream_reader_take(_py, reader, reader.buffer.len());
             }
-            match stream_reader_pull(_py, reader) {
+            // SAFETY: `reader` owns a retained stream handle.
+            match unsafe { stream_reader_pull(_py, reader) } {
                 Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
                 Ok(ReaderPull::Eof) | Ok(ReaderPull::Data) => {}
                 Err(bits) => return bits,
@@ -534,7 +561,7 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let capacity = usize_from_bits(capacity_bits);
@@ -553,7 +580,7 @@ pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stream_new_with_io_hooks(
     send_hook: usize,
     recv_hook: usize,
@@ -595,7 +622,7 @@ pub extern "C" fn molt_stream_new_with_io_hooks(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stream_new_with_hooks(
     send_hook: usize,
     close_hook: usize,
@@ -604,7 +631,7 @@ pub extern "C" fn molt_stream_new_with_hooks(
     molt_stream_new_with_io_hooks(send_hook, 0, close_hook, hook_ctx)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_clone(stream_bits: u64) -> u64 {
@@ -613,13 +640,14 @@ pub unsafe extern "C" fn molt_stream_clone(stream_bits: u64) -> u64 {
         if stream_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let stream = &*(stream_ptr as *mut MoltStream);
+        // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         stream.refs.fetch_add(1, AtomicOrdering::AcqRel);
         stream_bits
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is valid; `data_ptr` must be readable for `len_bits` bytes.
 pub unsafe extern "C" fn molt_stream_send(
@@ -633,11 +661,13 @@ pub unsafe extern "C" fn molt_stream_send(
         if stream_ptr.is_null() || (data_ptr.is_null() && len != 0) {
             return pending_bits_i64();
         }
-        let stream = &*(stream_ptr as *mut MoltStream);
+        // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         if let Some(hook) = stream.send_hook {
             return hook(stream.hook_ctx, data_ptr, len);
         }
-        let bytes = std::slice::from_raw_parts(data_ptr, len).to_vec();
+        // SAFETY: caller contract guarantees `data_ptr` is readable for `len` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data_ptr, len) }.to_vec();
         match stream.sender.try_send(bytes) {
             Ok(_) => 0,
             Err(_) => pending_bits_i64(),
@@ -645,7 +675,7 @@ pub unsafe extern "C" fn molt_stream_send(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is valid; `data_bits` must be bytes-like.
 pub unsafe extern "C" fn molt_stream_send_obj(stream_bits: u64, data_bits: u64) -> u64 {
@@ -663,11 +693,12 @@ pub unsafe extern "C" fn molt_stream_send_obj(stream_bits: u64, data_bits: u64) 
             }
         };
         let _owned_guard = owned;
-        molt_stream_send(stream_bits, data_ptr, data_len as u64) as u64
+        // SAFETY: pointer/length pair comes from validated bytes-like object.
+        unsafe { molt_stream_send(stream_bits, data_ptr, data_len as u64) as u64 }
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
@@ -676,7 +707,8 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
         if stream_ptr.is_null() {
             return MoltObject::none().bits() as i64;
         }
-        let stream = &*(stream_ptr as *mut MoltStream);
+        // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         if let Some(hook) = stream.recv_hook {
             return hook(stream.hook_ctx);
         }
@@ -716,7 +748,7 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
@@ -725,7 +757,8 @@ pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
         if stream_ptr.is_null() {
             return;
         }
-        let stream = &*(stream_ptr as *mut MoltStream);
+        // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         if let Some(hook) = stream.close_hook {
             hook(stream.hook_ctx);
         }
@@ -733,7 +766,7 @@ pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `out_left` and `out_right` are valid writable pointers.
 pub unsafe extern "C" fn molt_ws_pair(
@@ -770,13 +803,16 @@ pub unsafe extern "C" fn molt_ws_pair(
             close_hook: None,
             hook_ctx: std::ptr::null_mut(),
         });
-        *out_left = bits_from_ptr(Box::into_raw(left) as *mut u8);
-        *out_right = bits_from_ptr(Box::into_raw(right) as *mut u8);
+        // SAFETY: caller contract guarantees writable output pointers.
+        unsafe {
+            *out_left = bits_from_ptr(Box::into_raw(left) as *mut u8);
+            *out_right = bits_from_ptr(Box::into_raw(right) as *mut u8);
+        }
         0
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let mut left = 0u64;
@@ -793,7 +829,7 @@ pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_new_with_hooks(
     send_hook: usize,
     recv_hook: usize,
@@ -958,11 +994,7 @@ fn ws_host_handle(ws: &MoltWebSocket) -> Option<i64> {
         return None;
     }
     let handle = unsafe { *(ws.hook_ctx as *const i64) };
-    if handle <= 0 {
-        None
-    } else {
-        Some(handle)
-    }
+    if handle <= 0 { None } else { Some(handle) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1050,7 +1082,7 @@ fn ws_is_would_block(err: &tungstenite::Error) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn ws_flush_pending_pong(ws: &mut NativeWebSocket) -> Result<(), Box<tungstenite::Error>> {
     if let Some(payload) = ws.pending_pong.take() {
-        match ws.socket.send(Message::Pong(payload.clone())) {
+        match ws.socket.send(Message::Pong(payload.clone().into())) {
             Ok(_) => Ok(()),
             Err(err) => {
                 if ws_is_would_block(&err) {
@@ -1085,7 +1117,7 @@ extern "C" fn ws_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len: usize)
         guard.closed = true;
         return MoltObject::none().bits() as i64;
     }
-    match guard.socket.send(Message::Binary(payload.to_vec())) {
+    match guard.socket.send(Message::Binary(payload.to_vec().into())) {
         Ok(_) => 0,
         Err(err) if ws_is_would_block(&err) => pending_bits_i64(),
         Err(_) => {
@@ -1131,7 +1163,7 @@ extern "C" fn ws_recv_native_hook(ctx: *mut u8) -> i64 {
             Ok(Message::Ping(payload)) => match guard.socket.send(Message::Pong(payload.clone())) {
                 Ok(_) => continue,
                 Err(err) if ws_is_would_block(&err) => {
-                    guard.pending_pong = Some(payload);
+                    guard.pending_pong = Some(payload.to_vec());
                     return pending_bits_i64();
                 }
                 Err(_) => {
@@ -1263,9 +1295,9 @@ fn tls_wrap_endpoint_native(mut endpoint: NativeTlsEndpoint) -> *mut u8 {
         closed: false,
     }))) as *mut u8;
     let stream_ptr = molt_stream_new_with_io_hooks(
-        tls_stream_send_native_hook as usize,
-        tls_stream_recv_native_hook as usize,
-        tls_stream_close_native_hook as usize,
+        tls_stream_send_native_hook as *const () as usize,
+        tls_stream_recv_native_hook as *const () as usize,
+        tls_stream_close_native_hook as *const () as usize,
         ctx_ptr,
     );
     if stream_ptr.is_null() {
@@ -1679,9 +1711,9 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
         poll_stream_state: WsPollStreamState::Unregistered,
     }))) as *mut u8;
     let ws_ptr = molt_ws_new_with_hooks(
-        ws_send_native_hook as usize,
-        ws_recv_native_hook as usize,
-        ws_close_native_hook as usize,
+        ws_send_native_hook as *const () as usize,
+        ws_recv_native_hook as *const () as usize,
+        ws_close_native_hook as *const () as usize,
         ctx_ptr,
     );
     if ws_ptr.is_null() {
@@ -1757,21 +1789,21 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
     crate::with_gil_entry!(_py, {
         WS_CONNECT_HOOK.store(ptr, AtomicOrdering::Release);
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
     crate::with_gil_entry!(_py, {
         DB_QUERY_HOOK.store(ptr, AtomicOrdering::Release);
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
     crate::with_gil_entry!(_py, {
         DB_EXEC_HOOK.store(ptr, AtomicOrdering::Release);
@@ -1815,7 +1847,7 @@ pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     host_bits: u64,
     port_bits: u64,
@@ -1864,7 +1896,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_client_connect_new(
     _host_bits: u64,
     _port_bits: u64,
@@ -1880,7 +1912,7 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     fd_bits: u64,
     server_hostname_bits: u64,
@@ -1923,7 +1955,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
     _fd_bits: u64,
     _server_hostname_bits: u64,
@@ -1938,7 +1970,7 @@ pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if require_net_capability::<u64>(_py, &["net", "net.listen", "net.bind", "net"]).is_err() {
@@ -1966,7 +1998,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
                     _py,
                     "RuntimeError",
                     "server ssl context is missing certfile",
-                )
+                );
             }
             Err(bits) => return bits,
         };
@@ -1977,7 +2009,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
                     _py,
                     "RuntimeError",
                     "server ssl context is missing keyfile",
-                )
+                );
             }
             Err(bits) => return bits,
         };
@@ -2004,7 +2036,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         raise_exception::<u64>(
@@ -2016,7 +2048,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     fd_bits: u64,
     certfile_bits: u64,
@@ -2053,7 +2085,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
     _fd_bits: u64,
     _certfile_bits: u64,
@@ -2069,7 +2101,7 @@ pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
 pub unsafe extern "C" fn molt_ws_connect(
@@ -2094,20 +2126,23 @@ pub unsafe extern "C" fn molt_ws_connect(
             if ws_ptr.is_null() {
                 return 7;
             }
-            *out = bits_from_ptr(ws_ptr);
+            // SAFETY: caller guarantees `out` is writable when non-null.
+            unsafe { *out = bits_from_ptr(ws_ptr) };
             return 0;
         }
-        let hook: WsConnectHook = std::mem::transmute(hook_ptr);
+        // SAFETY: hook pointer was registered as a `WsConnectHook`.
+        let hook: WsConnectHook = unsafe { std::mem::transmute(hook_ptr) };
         let ws_ptr = hook(url_ptr, url_len);
         if ws_ptr.is_null() {
             return 7;
         }
-        *out = bits_from_ptr(ws_ptr);
+        // SAFETY: caller guarantees `out` is writable when non-null.
+        unsafe { *out = bits_from_ptr(ws_ptr) };
         0
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let url = match string_obj_to_owned(obj_from_bits(url_bits)) {
@@ -2148,7 +2183,7 @@ fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
 pub unsafe extern "C" fn molt_ws_connect(
@@ -2197,7 +2232,7 @@ pub unsafe extern "C" fn molt_ws_connect(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
@@ -2239,7 +2274,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
@@ -2288,7 +2323,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid ws-wait awaitable object bits value.
 pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
@@ -2297,22 +2332,29 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
         }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+        // SAFETY: `obj_bits` must reference a live awaitable object.
+        let header = unsafe { header_from_obj_ptr(obj_ptr) };
+        // SAFETY: header pointer came from a live object header.
+        let payload_bytes = unsafe {
+            (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>())
+        };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
             return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
         }
         let payload_ptr = obj_ptr as *mut u64;
-        let ws_bits = *payload_ptr;
-        let events_bits = *payload_ptr.add(1);
+        // SAFETY: payload layout is validated by `payload_len` above.
+        let ws_bits = unsafe { *payload_ptr };
+        // SAFETY: payload has at least two `u64` slots.
+        let events_bits = unsafe { *payload_ptr.add(1) };
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
             return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        // SAFETY: ws bits are expected to point to a live websocket.
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.load(AtomicOrdering::Relaxed) {
             let mask = IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
             return MoltObject::from_int(mask as i64).bits() as i64;
@@ -2321,10 +2363,12 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         if events == 0 {
             return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
         }
-        if (*header).state == 0 {
+        // SAFETY: header points at the awaitable header allocated for this object.
+        if unsafe { (*header).state == 0 } {
             let mut timeout: Option<f64> = None;
             if payload_len >= 3 {
-                let timeout_bits = *payload_ptr.add(2);
+                // SAFETY: payload length check guarantees index 2 exists.
+                let timeout_bits = unsafe { *payload_ptr.add(2) };
                 let timeout_obj = obj_from_bits(timeout_bits);
                 if !timeout_obj.is_none() {
                     if let Some(val) = to_f64(timeout_obj) {
@@ -2352,8 +2396,10 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 let deadline = monotonic_now_secs(_py) + val;
                 let deadline_bits = MoltObject::from_float(deadline).bits();
                 if payload_len >= 3 {
-                    dec_ref_bits(_py, *payload_ptr.add(2));
-                    *payload_ptr.add(2) = deadline_bits;
+                    // SAFETY: payload length check guarantees index 2 exists.
+                    dec_ref_bits(_py, unsafe { *payload_ptr.add(2) });
+                    // SAFETY: payload length check guarantees index 2 exists.
+                    unsafe { *payload_ptr.add(2) = deadline_bits };
                     inc_ref_bits(_py, deadline_bits);
                 }
             }
@@ -2374,7 +2420,8 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             if let Err(err) = register_result {
                 return raise_os_error::<i64>(_py, err, "ws_wait");
             }
-            (*header).state = 1;
+            // SAFETY: header points at mutable state for this awaitable object.
+            unsafe { (*header).state = 1 };
             return pending_bits_i64();
         }
         if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -2382,7 +2429,8 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             return res_bits as i64;
         }
         if payload_len >= 3 {
-            let deadline_obj = obj_from_bits(*payload_ptr.add(2));
+            // SAFETY: payload length check guarantees index 2 exists.
+            let deadline_obj = obj_from_bits(unsafe { *payload_ptr.add(2) });
             if let Some(deadline) = to_f64(deadline_obj) {
                 if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
                     runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
@@ -2395,29 +2443,36 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
         }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+        // SAFETY: `obj_bits` must reference a live awaitable object.
+        let header = unsafe { header_from_obj_ptr(obj_ptr) };
+        // SAFETY: header pointer came from a live object header.
+        let payload_bytes = unsafe {
+            (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>())
+        };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
             return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
         }
         let payload_ptr = obj_ptr as *mut u64;
-        let ws_bits = *payload_ptr;
-        let events_bits = *payload_ptr.add(1);
+        // SAFETY: payload layout is validated by `payload_len` above.
+        let ws_bits = unsafe { *payload_ptr };
+        // SAFETY: payload has at least two `u64` slots.
+        let events_bits = unsafe { *payload_ptr.add(1) };
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
             return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        // SAFETY: ws bits are expected to point to a live websocket.
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.load(AtomicOrdering::Relaxed) {
             let mask = IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
             return MoltObject::from_int(mask as i64).bits() as i64;
@@ -2426,10 +2481,12 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         if events == 0 {
             return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
         }
-        if (*header).state == 0 {
+        // SAFETY: header points at mutable state for this awaitable object.
+        if unsafe { (*header).state == 0 } {
             let mut timeout: Option<f64> = None;
             if payload_len >= 3 {
-                let timeout_bits = *payload_ptr.add(2);
+                // SAFETY: payload length check guarantees index 2 exists.
+                let timeout_bits = unsafe { *payload_ptr.add(2) };
                 let timeout_obj = obj_from_bits(timeout_bits);
                 if !timeout_obj.is_none() {
                     if let Some(val) = to_f64(timeout_obj) {
@@ -2457,8 +2514,10 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 let deadline = monotonic_now_secs(_py) + val;
                 let deadline_bits = MoltObject::from_float(deadline).bits();
                 if payload_len >= 3 {
-                    dec_ref_bits(_py, *payload_ptr.add(2));
-                    *payload_ptr.add(2) = deadline_bits;
+                    // SAFETY: payload length check guarantees index 2 exists.
+                    dec_ref_bits(_py, unsafe { *payload_ptr.add(2) });
+                    // SAFETY: payload length check guarantees index 2 exists.
+                    unsafe { *payload_ptr.add(2) = deadline_bits };
                     inc_ref_bits(_py, deadline_bits);
                 }
             }
@@ -2482,7 +2541,8 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     ),
                 );
             }
-            (*header).state = 1;
+            // SAFETY: header points at mutable state for this awaitable object.
+            unsafe { (*header).state = 1 };
             return pending_bits_i64();
         }
         if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -2490,7 +2550,8 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             return res_bits as i64;
         }
         if payload_len >= 3 {
-            let deadline_obj = obj_from_bits(*payload_ptr.add(2));
+            // SAFETY: payload length check guarantees index 2 exists.
+            let deadline_obj = obj_from_bits(unsafe { *payload_ptr.add(2) });
             if let Some(deadline) = to_f64(deadline_obj) {
                 if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
                     runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
@@ -2502,7 +2563,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
 pub unsafe extern "C" fn molt_db_query(
@@ -2516,7 +2577,7 @@ pub unsafe extern "C" fn molt_db_query(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
 pub unsafe extern "C" fn molt_db_exec(
@@ -2616,7 +2677,7 @@ fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let send_data = match send_data_from_bits(req_bits) {
@@ -2641,7 +2702,7 @@ pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let send_data = match send_data_from_bits(req_bits) {
@@ -2666,7 +2727,7 @@ pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is valid; `data_ptr` must be readable for `len_bits` bytes.
 pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bits: u64) -> i64 {
@@ -2676,14 +2737,16 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
         if ws_ptr.is_null() || (data_ptr.is_null() && len != 0) {
             return pending_bits_i64();
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        // SAFETY: caller contract guarantees `ws_bits` points to a live websocket.
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.send_hook.is_some() && ws.closed.load(AtomicOrdering::Relaxed) {
             return MoltObject::none().bits() as i64;
         }
         if let Some(hook) = ws.send_hook {
             return hook(ws.hook_ctx, data_ptr, len);
         }
-        let bytes = std::slice::from_raw_parts(data_ptr, len).to_vec();
+        // SAFETY: caller contract guarantees `data_ptr` is readable for `len` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data_ptr, len) }.to_vec();
         match ws.sender.try_send(bytes) {
             Ok(_) => 0,
             Err(_) => pending_bits_i64(),
@@ -2691,7 +2754,7 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is valid; `data_bits` must be bytes-like.
 pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
@@ -2709,11 +2772,12 @@ pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
             }
         };
         let _owned_guard = owned;
-        molt_ws_send(ws_bits, data_ptr, data_len as u64) as u64
+        // SAFETY: pointer/length pair comes from validated bytes-like object.
+        unsafe { molt_ws_send(ws_bits, data_ptr, data_len as u64) as u64 }
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
@@ -2722,7 +2786,8 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
         if ws_ptr.is_null() {
             return MoltObject::none().bits() as i64;
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        // SAFETY: caller contract guarantees `ws_bits` points to a live websocket.
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.recv_hook.is_some() && ws.closed.load(AtomicOrdering::Relaxed) {
             return MoltObject::none().bits() as i64;
         }
@@ -2749,7 +2814,7 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
@@ -2758,7 +2823,8 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
         if ws_ptr.is_null() {
             return;
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        // SAFETY: caller contract guarantees `ws_bits` points to a live websocket.
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.swap(true, AtomicOrdering::AcqRel) {
             return;
         }
@@ -2774,7 +2840,7 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `stream_bits` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
@@ -2783,7 +2849,8 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
         if stream_ptr.is_null() {
             return;
         }
-        let stream = &*(stream_ptr as *mut MoltStream);
+        // SAFETY: caller contract guarantees `stream_bits` points to a live stream.
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         if stream.refs.fetch_sub(1, AtomicOrdering::AcqRel) > 1 {
             return;
         }
@@ -2793,11 +2860,12 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
             }
         }
         release_ptr(stream_ptr);
-        drop(Box::from_raw(stream_ptr as *mut MoltStream));
+        // SAFETY: this is the final ref-counted owner.
+        unsafe { drop(Box::from_raw(stream_ptr as *mut MoltStream)) };
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {

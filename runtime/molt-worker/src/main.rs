@@ -1,21 +1,21 @@
 use arrow::array::{
-    make_builder, ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder,
-    Int32Builder, Int64Builder, ListBuilder, NullArray, NullBuilder, StringBuilder, StructBuilder,
+    ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder, Int32Builder,
+    Int64Builder, ListBuilder, NullArray, NullBuilder, StringBuilder, StructBuilder, make_builder,
 };
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use fallible_iterator::FallibleIterator;
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use fallible_iterator_02::FallibleIterator;
 mod diagnostics;
 
 use diagnostics::{
     ComputeRequest, ComputeResponse, HealthResponse, OffloadTableRequest, OffloadTableResponse,
 };
-use postgres_protocol::types::{array_from_sql, range_from_sql, ArrayDimension, Range, RangeBound};
+use postgres_protocol::types::{ArrayDimension, Range, RangeBound, array_from_sql, range_from_sql};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
@@ -35,14 +35,8 @@ use molt_db::{
     AcquireError, AsyncAcquireError, CancelToken, PgPool, PgPoolConfig, Pool, Pooled, SqliteConn,
     SqliteOpenMode,
 };
-use rusqlite::{params_from_iter, types::Value, types::ValueRef, InterruptHandle};
-use sqlparser::ast::{
-    Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent, Query as SqlQuery,
-    Select as SqlSelect, SelectItem as SqlSelectItem, SetExpr as SqlSetExpr,
-    Statement as SqlStatement, TableAlias as SqlTableAlias, TableFactor as SqlTableFactor,
-    TableWithJoins as SqlTableWithJoins, Value as SqlValue,
-    WildcardAdditionalOptions as SqlWildcardAdditionalOptions,
-};
+use rusqlite::{InterruptHandle, params_from_iter, types::Value, types::ValueRef};
+use sqlparser::ast::{Query as SqlQuery, Statement as SqlStatement};
 use sqlparser::dialect::{PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,8 +44,8 @@ use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::mpsc;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep as tokio_sleep;
-use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
 use tokio_postgres::Row as PgRow;
+use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireCodec {
@@ -1371,7 +1365,7 @@ fn validate_query(
     match stmt {
         SqlStatement::Query(query) => {
             let wrapped = wrap_query_limit(*query, max_rows);
-            Ok(wrapped.to_string())
+            Ok(wrapped)
         }
         _ if allow_write => Err(ExecError {
             status: "InvalidInput",
@@ -1429,64 +1423,8 @@ fn validate_exec(
 }
 
 #[allow(dead_code)]
-fn wrap_query_limit(query: SqlQuery, max_rows: u32) -> SqlStatement {
-    let subquery = SqlQuery {
-        body: query.body,
-        order_by: query.order_by,
-        limit: query.limit,
-        limit_by: query.limit_by,
-        offset: query.offset,
-        fetch: query.fetch,
-        locks: query.locks,
-        for_clause: query.for_clause,
-        with: query.with,
-    };
-    let select = SqlSelect {
-        distinct: None,
-        top: None,
-        projection: vec![SqlSelectItem::Wildcard(
-            SqlWildcardAdditionalOptions::default(),
-        )],
-        into: None,
-        from: vec![SqlTableWithJoins {
-            relation: SqlTableFactor::Derived {
-                lateral: false,
-                subquery: Box::new(subquery),
-                alias: Some(SqlTableAlias {
-                    name: SqlIdent::new("_molt_sub"),
-                    columns: Vec::new(),
-                }),
-            },
-            joins: Vec::new(),
-        }],
-        lateral_views: Vec::new(),
-        selection: None,
-        group_by: SqlGroupByExpr::Expressions(Vec::new()),
-        cluster_by: Vec::new(),
-        distribute_by: Vec::new(),
-        sort_by: Vec::new(),
-        having: None,
-        named_window: Vec::new(),
-        qualify: None,
-        window_before_qualify: false,
-        value_table_mode: None,
-        connect_by: None,
-    };
-    let wrapper = SqlQuery {
-        with: None,
-        body: Box::new(SqlSetExpr::Select(Box::new(select))),
-        order_by: Vec::new(),
-        limit: Some(SqlExpr::Value(SqlValue::Number(
-            max_rows.to_string(),
-            false,
-        ))),
-        limit_by: Vec::new(),
-        offset: None,
-        fetch: None,
-        locks: Vec::new(),
-        for_clause: None,
-    };
-    SqlStatement::Query(Box::new(wrapper))
+fn wrap_query_limit(query: SqlQuery, max_rows: u32) -> String {
+    format!("SELECT * FROM ({query}) AS _molt_sub LIMIT {max_rows}")
 }
 
 #[allow(dead_code)]
@@ -1530,7 +1468,7 @@ fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), ExecError> {
                     return Err(ExecError {
                         status: "InvalidInput",
                         message: format!("Unsupported null param type {pg_type}"),
-                    })
+                    });
                 }
             };
             Ok((param, pg_type))
@@ -2083,7 +2021,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (null)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2099,7 +2037,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (bool)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2115,7 +2053,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (int)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2132,7 +2070,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (float)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2148,7 +2086,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (string)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2164,7 +2102,7 @@ fn append_arrow_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC type mismatch (bytes)".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2257,7 +2195,7 @@ fn append_array_struct(
             return Err(ExecError {
                 status: "InternalError",
                 message: "Arrow IPC type mismatch (array)".to_string(),
-            })
+            });
         }
     }
     Ok(())
@@ -2315,7 +2253,7 @@ fn append_range_struct(
             return Err(ExecError {
                 status: "InternalError",
                 message: "Arrow IPC type mismatch (range)".to_string(),
-            })
+            });
         }
     }
     Ok(())
@@ -2398,7 +2336,7 @@ fn append_interval_struct(
             return Err(ExecError {
                 status: "InternalError",
                 message: "Arrow IPC type mismatch (interval)".to_string(),
-            })
+            });
         }
     }
     Ok(())
@@ -2441,7 +2379,7 @@ fn append_list_value(
                     return Err(ExecError {
                         status: "InternalError",
                         message: "Arrow IPC array nested type mismatch".to_string(),
-                    })
+                    });
                 }
             }
         }
@@ -2686,7 +2624,7 @@ fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
             return Err(ExecError {
                 status: "InvalidInput",
                 message: format!("Postgres type '{}' is not an array", ty.name()),
-            })
+            });
         }
     };
     let array = array_from_sql(raw).map_err(|err| ExecError {
@@ -2784,7 +2722,7 @@ fn decode_pg_range_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
             return Err(ExecError {
                 status: "InvalidInput",
                 message: format!("Postgres type '{}' is not a range", ty.name()),
-            })
+            });
         }
     };
     let decoded = decode_pg_range_raw(element_type, raw)?;
@@ -2818,7 +2756,7 @@ fn decode_pg_multirange_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecE
             return Err(ExecError {
                 status: "InvalidInput",
                 message: format!("Postgres type '{}' is not a multirange", ty.name()),
-            })
+            });
         }
     };
     let mut buf = raw;
@@ -3369,7 +3307,7 @@ fn db_exec_sqlite_response(
             return Err(ExecError {
                 status: "InvalidInput",
                 message: "db_exec requires a real SQLite or Postgres connection".to_string(),
-            })
+            });
         }
     };
     let _cancel_guard = ctx
@@ -3387,11 +3325,7 @@ fn db_exec_sqlite_response(
         })?;
     let last_insert_id = if is_insert {
         let rowid = conn.last_insert_rowid();
-        if rowid == 0 {
-            None
-        } else {
-            Some(rowid)
-        }
+        if rowid == 0 { None } else { Some(rowid) }
     } else {
         None
     };
@@ -3419,7 +3353,7 @@ fn db_query_sqlite_response(
             return Err(ExecError {
                 status: "InvalidInput",
                 message: "db_query requires a real SQLite or Postgres connection".to_string(),
-            })
+            });
         }
     };
     let _cancel_guard = ctx
@@ -5232,20 +5166,20 @@ async fn run_async(
 #[cfg(test)]
 mod tests {
     use super::{
+        CancelSet, CompiledEntry, DbArray, DbConn, DbExecResponse, DbInterval, DbNamedParam,
+        DbParam, DbParamValue, DbParams, DbPool, DbQueryRequest, DbQueryResponse, DbRange,
+        DbRangeBound, DbRowValue, ExecContext, ListItemsRequest, ListItemsResponse, Pool,
+        RequestEnvelope, SqliteCancelRegistry, SqliteConn, SqliteOpenMode,
         db_query_arrow_ipc_bytes, decode_pg_raw_value, dispatch_compiled, execute_db_exec_sync,
-        execute_db_query_sync, load_compiled_entries, load_exports, mark_cancelled, CancelSet,
-        CompiledEntry, DbArray, DbConn, DbExecResponse, DbInterval, DbNamedParam, DbParam,
-        DbParamValue, DbParams, DbPool, DbQueryRequest, DbQueryResponse, DbRange, DbRangeBound,
-        DbRowValue, ExecContext, ListItemsRequest, ListItemsResponse, Pool, RequestEnvelope,
-        SqliteCancelRegistry, SqliteConn, SqliteOpenMode,
+        execute_db_query_sync, load_compiled_entries, load_exports, mark_cancelled,
     };
     use arrow::array::{BooleanArray, Int32Array, Int64Array, ListArray, StructArray};
     use arrow::ipc::reader::StreamReader;
     use bytes::BytesMut;
-    use postgres_protocol::types::{
-        array_to_sql, int4_to_sql, range_to_sql, ArrayDimension, RangeBound,
-    };
     use postgres_protocol::IsNull;
+    use postgres_protocol::types::{
+        ArrayDimension, RangeBound, array_to_sql, int4_to_sql, range_to_sql,
+    };
     use rusqlite::Connection;
     use serde_bytes::ByteBuf;
     use std::fs;

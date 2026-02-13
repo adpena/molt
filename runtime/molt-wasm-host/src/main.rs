@@ -1,12 +1,12 @@
-use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose::STANDARD;
+use anyhow::{Context, Result, bail};
 use base64::Engine as Base64Engine;
+use base64::engine::general_purpose::STANDARD;
 use num_format::{Grouping, SystemLocale};
-use rmpv::encode::write_value;
 use rmpv::Value as MsgpackValue;
+use rmpv::encode::write_value;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
@@ -14,18 +14,18 @@ use std::io::{BufReader, Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message};
+use tungstenite::{Message, connect};
 use url::Url;
 use wasmtime::{
     Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Linker, Memory, MemoryType,
     Module, OptLevel, Ref, Store, Table, TableType, Val,
 };
 use wasmtime_wasi::p1::WasiP1Ctx;
-use wasmtime_wasi::{p1, DirPerms, FilePerms, WasiCtxBuilder};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder, p1};
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
@@ -1300,10 +1300,10 @@ fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), i32> {
     loop {
         match entry.socket.read() {
             Ok(Message::Binary(bytes)) => {
-                entry.queue.push_back(bytes);
+                entry.queue.push_back(bytes.to_vec());
             }
             Ok(Message::Text(text)) => {
-                entry.queue.push_back(text.into_bytes());
+                entry.queue.push_back(text.to_string().into_bytes());
             }
             Ok(Message::Ping(payload)) => {
                 let _ = entry.socket.send(Message::Pong(payload));
@@ -2315,7 +2315,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                             data.as_ptr() as *const libc::c_void,
                             data.len(),
                             flags,
-                            addr.as_ptr(),
+                            addr.as_ptr() as *const libc::sockaddr,
                             addr.len(),
                         )
                     }
@@ -2475,7 +2475,11 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
                     return -libc::EFAULT;
                 }
-                let addr = unsafe { SockAddr::new(storage, len) };
+                let mut addr_storage = SockAddrStorage::zeroed();
+                unsafe {
+                    *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
+                }
+                let addr = unsafe { SockAddr::new(addr_storage, len) };
                 let encoded = encode_sockaddr(&addr).unwrap_or_default();
                 if encoded.len() > addr_cap as usize {
                     let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
@@ -2584,7 +2588,11 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
                     return -libc::EFAULT;
                 }
-                let addr = unsafe { SockAddr::new(storage, name_len) };
+                let mut addr_storage = SockAddrStorage::zeroed();
+                unsafe {
+                    *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
+                }
+                let addr = unsafe { SockAddr::new(addr_storage, name_len) };
                 let encoded = encode_sockaddr(&addr).unwrap_or_default();
                 if out_addr_len_ptr != 0 {
                     let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, encoded.len() as u32);
@@ -2990,11 +2998,11 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     cur = ai.ai_next;
                     continue;
                 }
-                let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut storage = SockAddrStorage::zeroed();
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         ai.ai_addr as *const u8,
-                        &mut storage as *mut _ as *mut u8,
+                        storage.view_as::<libc::sockaddr_storage>() as *mut _ as *mut u8,
                         ai.ai_addrlen as usize,
                     );
                 }
@@ -3216,11 +3224,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
     );
     let socket_has_ipv6 = Func::wrap(&mut *store, || -> i32 {
         let listener = std::net::TcpListener::bind("[::1]:0");
-        if listener.is_ok() {
-            1
-        } else {
-            0
-        }
+        if listener.is_ok() { 1 } else { 0 }
     });
 
     linker.define(&mut *store, "env", "molt_socket_new_host", socket_new)?;
@@ -3405,7 +3409,7 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
             if entry.closed {
                 return -libc::EPIPE;
             }
-            match entry.socket.send(Message::Binary(payload)) {
+            match entry.socket.send(Message::Binary(payload.into())) {
                 Ok(_) => 0,
                 Err(tungstenite::Error::Io(err))
                     if err.kind() == std::io::ErrorKind::WouldBlock =>
@@ -3474,11 +3478,7 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
                 return 0;
             }
             let _ = write_u32(&mut caller, &memory, out_len, 0);
-            if closed {
-                0
-            } else {
-                -libc::EWOULDBLOCK
-            }
+            if closed { 0 } else { -libc::EWOULDBLOCK }
         },
     );
     let ws_poll = Func::wrap(

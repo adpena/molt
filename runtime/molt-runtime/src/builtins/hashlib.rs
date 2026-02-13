@@ -607,7 +607,7 @@ pub(crate) fn build_hash_handle(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_new(name_bits: u64, data_bits: u64, options_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -630,7 +630,7 @@ pub extern "C" fn molt_hash_new(name_bits: u64, data_bits: u64, options_bits: u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -647,7 +647,7 @@ pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -659,7 +659,7 @@ pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -703,14 +703,14 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
                     _py,
                     "TypeError",
                     "digest() missing required argument 'length' (pos 1)",
-                )
+                );
             }
             Err(HashError::XofLengthNegative) => {
                 return raise_exception::<u64>(
                     _py,
                     "SystemError",
                     "Negative size passed to PyBytes_FromStringAndSize",
-                )
+                );
             }
         };
         let ptr = alloc_bytes(_py, &out);
@@ -721,7 +721,7 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -802,7 +802,7 @@ fn pbkdf2_dklen(_py: &PyToken<'_>, bits: u64) -> Result<usize, u64> {
     Ok(value as usize)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_pbkdf2_hmac(
     name_bits: u64,
     password_bits: u64,
@@ -870,7 +870,7 @@ pub extern "C" fn molt_pbkdf2_hmac(
                     _py,
                     "ValueError",
                     "[digital envelope routines] unsupported",
-                )
+                );
             }
         }
         let ptr = alloc_bytes(_py, &out);
@@ -893,7 +893,7 @@ fn scrypt_int_required(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<u64, 
     Ok(value as u64)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_scrypt(
     password_bits: u64,
     salt_bits: u64,
@@ -974,7 +974,7 @@ pub extern "C" fn molt_scrypt(
                     _py,
                     "ValueError",
                     "Invalid parameter combination for n, r, p, maxmem.",
-                )
+                );
             }
         };
         if maxmem > 0 {

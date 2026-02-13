@@ -1,9 +1,9 @@
-use crate::intrinsics::generated::{resolve_symbol, INTRINSICS};
+use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
-    alloc_dict_with_pairs, alloc_function_obj, alloc_string, builtin_classes, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, function_set_trampoline_ptr, inc_ref_bits,
-    module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id, MoltObject, PyToken,
-    TYPE_ID_DICT, TYPE_ID_MODULE,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, alloc_dict_with_pairs, alloc_function_obj,
+    alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
+    function_set_trampoline_ptr, inc_ref_bits, module_dict_bits, obj_from_bits,
+    object_set_class_bits, object_type_id,
 };
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
@@ -132,7 +132,11 @@ fn alias_name(name: &str) -> Option<String> {
     if rest.is_empty() {
         return None;
     }
-    Some(format!("_molt_{rest}"))
+    // Avoid `format!` here to keep wasm startup free of fmt call_indirect traffic.
+    let mut alias = String::with_capacity(6 + rest.len());
+    alias.push_str("_molt_");
+    alias.push_str(rest);
+    Some(alias)
 }
 
 fn build_intrinsic_func(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {

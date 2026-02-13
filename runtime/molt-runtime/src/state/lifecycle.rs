@@ -1,26 +1,26 @@
+use crate::PyToken;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::clear_attr_site_name_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::utf8_cache::{
-    clear_utf8_count_tls, Utf8CacheStore, Utf8CountCacheStore, UTF8_CACHE_MAX_ENTRIES,
-    UTF8_COUNT_CACHE_SHARDS,
+    UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
+    clear_utf8_count_tls,
 };
-use crate::PyToken;
 use crate::{
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
+    CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilReleaseGuard, MoltObject,
+    NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
+    RECURSION_LIMIT, TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
     alloc_string, builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
     clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_get_in_place,
     exception_pending, inc_ref_bits, intern_static_name, module_dict_bits, molt_file_flush,
     molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
-    GilReleaseGuard, MoltObject, ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK,
-    CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK,
-    FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
-    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
-    TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
 };
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use super::{cache::clear_atomic_slots, cache::clear_method_cache, RuntimeState};
+use super::{RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache};
 
 thread_local! {
     static TLS_GUARD: ThreadLocalGuard = ThreadLocalGuard::new();

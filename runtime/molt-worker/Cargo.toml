@@ -1,23 +1,26 @@
 [package]
 name = "molt-worker"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-arrow = "51"
+arrow = "57"
 base64 = "0.22"
-chrono = "=0.4.34"
+chrono = "=0.4.43"
 crossbeam-channel = "0.5"
-fallible-iterator = "0.2"
+# Temporary upstream split: tokio-postgres/postgres-protocol are still on
+# fallible-iterator 0.2 while rusqlite is on 0.3.
+# Keep 0.2 isolated to the postgres decoding boundary.
+fallible-iterator-02 = { package = "fallible-iterator", version = "0.2" }
 molt-db = { path = "../molt-db", features = ["sqlite", "async", "postgres"] }
 postgres-protocol = "0.6"
 rmp-serde = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1"
-sqlparser = "0.46"
-tokio = { version = "1.37", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+sqlparser = "0.61"
+tokio = { version = "1.49", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 uuid = "1"
 

@@ -231,6 +231,40 @@ def _normalize_output(text: str, normalize: set[str]) -> str:
     return text
 
 
+_EXCEPTION_SIGNATURE_RE = re.compile(
+    r"^(?P<etype>[A-Za-z_][A-Za-z0-9_.]*)(?:: (?P<message>.*))?$"
+)
+
+
+def _extract_exception_signature(stderr: str) -> tuple[str, str] | None:
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    for line in reversed(lines):
+        match = _EXCEPTION_SIGNATURE_RE.match(line)
+        if match is None:
+            continue
+        etype = match.group("etype")
+        message = match.group("message") or ""
+        return etype, message
+    return None
+
+
+def _stderr_matches(cpython_stderr: str, molt_stderr: str, mode: str) -> bool:
+    normalized = mode.strip().lower()
+    if normalized in {"", "ignore"}:
+        return True
+    if normalized in {"match", "exact"}:
+        return cpython_stderr == molt_stderr
+    if normalized in {"traceback", "exception", "exception_signature"}:
+        cpython_sig = _extract_exception_signature(cpython_stderr)
+        molt_sig = _extract_exception_signature(molt_stderr)
+        if cpython_sig is None or molt_sig is None:
+            return cpython_stderr == molt_stderr
+        # Frame/path formatting may differ across engines (especially wasm),
+        # but exception type/message must remain exact.
+        return cpython_sig == molt_sig
+    return cpython_stderr == molt_stderr
+
+
 def _truthy_flag(values: list[str]) -> bool:
     for value in values:
         if value.strip().lower() in {"1", "true", "yes", "on"}:
@@ -2723,7 +2757,6 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
     if molt_out is not None:
         molt_out = _normalize_output(molt_out, normalize)
     molt_err = _normalize_output(molt_err, normalize)
-    stderr_match = stderr_mode in {"match", "exact"}
 
     if molt_out is None:
         if _is_timeout_error(molt_err) and _diff_retry_isolated_default():
@@ -2745,9 +2778,7 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
                 cp_err = _normalize_output(cp_err, normalize)
                 molt_out = _normalize_output(molt_out, normalize)
                 molt_err = _normalize_output(molt_err, normalize)
-                stderr_ok = True
-                if stderr_match:
-                    stderr_ok = cp_err == molt_err
+                stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
                 if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
                     print(f"[PASS] {file_path}")
                     return _finalize_status("pass")
@@ -2771,9 +2802,7 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
         print(molt_err)
         return _finalize_status("fail")
 
-    stderr_ok = True
-    if stderr_match:
-        stderr_ok = cp_err == molt_err
+    stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
 
     if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
         print(f"[PASS] {file_path}")

@@ -48,6 +48,19 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 - Implemented: Node wasm execution lanes now enforce deterministic flags (`--no-warnings`, `--no-wasm-tier-up`, `--no-wasm-dynamic-tiering`, `--wasm-num-compilation-tasks=1`) across parity + benchmark runners.
 - Active blockers (P0): runtime-heavy wasm server lanes that require `threading` remain unsupported (plus secondary wasm exception-reporting artifacts after thread errors), and Node/V8 Zone OOM can still reproduce in unrestricted/manual Node runs on some linked runtime-heavy modules.
 
+## Toolchain Port Tranche Update (2026-02-13)
+- Implemented: latest-major backend/toolchain port for `runtime/molt-backend` (`cranelift 0.128.x`, `wasm-encoder 0.245.1`, `wasmparser 0.245.1`) with native+wasm compile/test gates green for touched lanes.
+- Implemented: `runtime/molt-worker` parser/decode port to `sqlparser 0.61.x` with maintained SQL limit-wrapper behavior and green worker test suite.
+- Implemented: `run_wasm.js` linked-mode runtime wiring now lazily loads runtime sidecar assets, so linked artifacts execute without requiring `MOLT_RUNTIME_WASM` presence.
+- Implemented: linked runner regression test `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked`.
+- Implemented: `tools/bench_wasm.py` linked compile wiring now injects reloc-runtime table-base (`MOLT_WASM_TABLE_BASE`) during linked-mode bench builds, eliminating linked `null function or function signature mismatch` traps observed on `output_linked.wasm`.
+- Implemented: `run_wasm.js` now calls optional `molt_table_init` before `molt_main` for linked/direct execution paths that export passive table initializers.
+- Implemented: linked table/signature regressions added in `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_bench_sum_has_no_table_signature_trap` and `tests/test_bench_wasm_node_resolver.py::test_prepare_wasm_binary_sets_linked_table_base`.
+- Implemented: Rust 2024 unsafe hardening in `runtime/molt-runtime/src/async_rt/channels.rs` to remove `unsafe_op_in_unsafe_fn` warnings in that module.
+- Implemented: explicit `fallible-iterator-02` alias boundary in `runtime/molt-worker` so `0.2` usage is isolated to postgres decode surfaces while `0.3` remains on rusqlite paths.
+- Upstream-constrained exception: dependency graph still contains `fallible-iterator 0.2 + 0.3` because `tokio-postgres`/`postgres-protocol` require `0.2` while `rusqlite` requires `0.3`.
+- TODO(toolchain, owner:runtime, milestone:TL2, priority:P1, status:partial): remove the temporary dual `fallible-iterator` graph when postgres ecosystem crates support `0.3+`; until then, keep 0.2 usage isolated to postgres-boundary code paths and document the constraint in status/review notes.
+
 ---
 
 ## ⚡ Build Throughput Program (TL2)
@@ -154,8 +167,8 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - Implemented: wasm host ABI plumbs `recvmsg` `msg_flags` end-to-end for `socket.recvmsg`/`socket.recvmsg_into` (no longer hardcoded to `0` in wasm runtime paths).
 - Implemented: logging core (`Logger`/`Handler`/`Formatter`/`LogRecord` + `basicConfig`) now has intrinsic-backed percent-style formatting (`molt_logging_percent_style_format`) with differential regression coverage (`tests/differential/stdlib/logging_percent_style_intrinsic.py`); `logging.config`/`logging.handlers` remain pending.
 - Implemented: `zipfile` CRC32 computation now lowers through runtime intrinsic `molt_zipfile_crc32`, which removed Python table-generation hot code and unblocked `zipimport_basic` native differential compilation.
-- Implemented: `pickle` now accepts protocols `0` and `1` for core roundtrip semantics (including bytes/bytearray paths) while broader higher-protocol opcode and memo-cycle parity remains queued.
-- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): async-heavy wasm parity is still blocked by Node/V8 wasm compilation OOM on `asyncio` differential lanes; keep this as a blocker before promoting runtime-heavy cluster completion.
+- Implemented: `pickle` now routes protocols `0..5` through intrinsic-backed core dumps/loads (`molt_pickle_dumps_core`, `molt_pickle_loads_core`), including protocol `2+` memo opcodes, LONG/EXT decoding, reducer/build paths, persistent hooks, protocol-5 `PickleBuffer` out-of-band lanes (`NEXT_BUFFER`/`READONLY_BUFFER` + `loads(..., buffers=...)`), reducer 6-tuple `state_setter` lowering, and VM `POP`/`POP_MARK` opcode handling; targeted pickle differential tranche is green (`10/10`, including `pickle_reduce_state_setter.py` and `pickle_main_function_global_resolution.py`).
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): capability-enabled runtime-heavy wasm tranche (`/Volumes/APDataStore/Molt/wasm_runtime_heavy_tranche_20260213c/summary.json`) is still blocked (`1/5` pass): `asyncio__asyncio_running_loop_intrinsic.py` event-loop-policy parity mismatch, `asyncio_task_basic.py` table-ref trap in linked wasm runtime, `zipimport_basic.py` zipimport module-lookup parity gap, and `smtplib_basic.py` thread-unavailable wasm limitation. Keep this as a blocker before promoting runtime-heavy cluster completion.
 - TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned): decorator whitelist + compile-time lowering for `@lru_cache`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement `make_dataclass` once dynamic class construction is allowed.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance from non-dataclass bases without breaking layout guarantees.

@@ -341,6 +341,15 @@ stdlib:
   glob:
     tests:
       - tests/differential/stdlib/glob_basic.py
+      - tests/differential/stdlib/glob_intrinsic_runtime.py
+      - tests/differential/stdlib/glob_options_edges.py
+      - tests/differential/stdlib/glob_complex_patterns_realworld.py
+      - tests/differential/stdlib/glob_dirfd_capability_error.py
+      - tests/differential/stdlib/glob_bytes_paths.py
+      - tests/differential/stdlib/glob_api_surface_312plus.py
+      - tests/differential/stdlib/glob_non_utf8_bytes.py
+      - tests/differential/stdlib/glob_dirfd_edge_cases.py
+      - tests/differential/stdlib/glob_wasm_host_split.py
   http:
     tests:
       - tests/differential/stdlib/http_upgrade_headers_httpclient.py
@@ -376,6 +385,12 @@ stdlib:
   pickle:
     tests:
       - tests/differential/stdlib/pickle_basic.py
+      - tests/differential/stdlib/pickle_alias_cycle_identity.py
+      - tests/differential/stdlib/pickle_cpython_opcode_literals.py
+      - tests/differential/stdlib/pickle_persistent_hooks.py
+      - tests/differential/stdlib/pickle_protocol1_basic.py
+      - tests/differential/stdlib/pickle_protocols_2_5_roundtrip.py
+      - tests/differential/stdlib/pickle_reduce_copyreg_extension.py
   pprint:
     tests:
       - tests/differential/stdlib/pprint_basic.py
@@ -871,6 +886,7 @@ stdlib:
   os:
     tests:
       - tests/differential/stdlib/os_environ_basic.py
+      - tests/differential/stdlib/os_fsencode_basic.py
       - tests/differential/stdlib/os_path_basic.py
       - tests/differential/stdlib/os_path_expandvars_normpath.py
       - tests/differential/stdlib/os_path_isabs_intrinsic.py

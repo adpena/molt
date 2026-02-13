@@ -1,5 +1,5 @@
-use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
 use crate::DecodeFailure as OpsDecodeFailure;
+use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
 use crate::*;
 
 const ENCODINGS_ALIASES: &[(&str, &str)] = &[
@@ -191,7 +191,7 @@ fn decode_error_range(label: &str, start: usize, end: usize, message: &str) -> S
     format!("'{label}' codec can't decode bytes in position {start}-{end}: {message}")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_encodings_aliases_map() -> u64 {
     crate::with_gil_entry!(_py, {
         let mut pairs = Vec::with_capacity(ENCODINGS_ALIASES.len() * 2);
@@ -215,7 +215,7 @@ pub extern "C" fn molt_encodings_aliases_map() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "decode", "encoding") {
@@ -298,7 +298,7 @@ pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "encode", "encoding") {
@@ -374,7 +374,7 @@ pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let encoding = match lookup_arg_to_str(_py, encoding_bits) {

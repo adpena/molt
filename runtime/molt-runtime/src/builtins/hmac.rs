@@ -1,4 +1,4 @@
-use crate::builtins::hashlib::{build_hash_handle, HashHandle};
+use crate::builtins::hashlib::{HashHandle, build_hash_handle};
 use crate::*;
 
 #[derive(Clone)]
@@ -117,7 +117,7 @@ fn build_hmac_handle(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hmac_new(
     key_bits: u64,
     msg_bits: u64,
@@ -138,7 +138,7 @@ pub extern "C" fn molt_hmac_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -155,7 +155,7 @@ pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hmac_copy(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -167,7 +167,7 @@ pub extern "C" fn molt_hmac_copy(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -191,7 +191,7 @@ pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_hmac_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -204,7 +204,7 @@ pub extern "C" fn molt_hmac_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let a_obj = obj_from_bits(a_bits);

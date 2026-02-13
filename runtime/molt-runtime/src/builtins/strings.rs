@@ -3,9 +3,9 @@ use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 
 use crate::{
-    alloc_bytes, alloc_list_with_capacity, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits,
-    object_type_id, seq_vec, string_bytes, usize_from_bits, utf8_codepoint_count_cached,
-    MAX_SMALL_LIST, TYPE_ID_STRING,
+    MAX_SMALL_LIST, TYPE_ID_STRING, alloc_bytes, alloc_list_with_capacity, alloc_string,
+    dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, seq_vec, string_bytes,
+    usize_from_bits, utf8_codepoint_count_cached,
 };
 
 pub(crate) fn bytes_find_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
@@ -421,8 +421,10 @@ pub(crate) fn replace_string_impl(
 }
 
 unsafe fn list_push_owned(list_ptr: *mut u8, val_bits: u64) {
-    let elems = seq_vec(list_ptr);
-    elems.push(val_bits);
+    unsafe {
+        let elems = seq_vec(list_ptr);
+        elems.push(val_bits);
+    }
 }
 
 fn alloc_list_empty_with_capacity(_py: &PyToken<'_>, capacity: usize) -> *mut u8 {
@@ -1522,55 +1524,59 @@ fn is_wtf8(bytes: &[u8]) -> bool {
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_string_from_bytes(
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        if ptr.is_null() && len != 0 {
-            return 1;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        if !is_wtf8(slice) {
-            return 1;
-        }
-        let obj_ptr = alloc_string(_py, slice);
-        if obj_ptr.is_null() {
-            return 2;
-        }
-        *out = MoltObject::from_ptr(obj_ptr).bits();
-        0
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if out.is_null() {
+                return 2;
+            }
+            if ptr.is_null() && len != 0 {
+                return 1;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            if !is_wtf8(slice) {
+                return 1;
+            }
+            let obj_ptr = alloc_string(_py, slice);
+            if obj_ptr.is_null() {
+                return 2;
+            }
+            *out = MoltObject::from_ptr(obj_ptr).bits();
+            0
+        })
+    }
 }
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_from_bytes(
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        if ptr.is_null() && len != 0 {
-            return 1;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let obj_ptr = alloc_bytes(_py, slice);
-        if obj_ptr.is_null() {
-            return 2;
-        }
-        *out = MoltObject::from_ptr(obj_ptr).bits();
-        0
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if out.is_null() {
+                return 2;
+            }
+            if ptr.is_null() && len != 0 {
+                return 1;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let obj_ptr = alloc_bytes(_py, slice);
+            if obj_ptr.is_null() {
+                return 2;
+            }
+            *out = MoltObject::from_ptr(obj_ptr).bits();
+            0
+        })
+    }
 }

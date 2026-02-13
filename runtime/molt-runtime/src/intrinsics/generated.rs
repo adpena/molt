@@ -2283,6 +2283,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_os_fsencode",
+        symbol: "molt_os_fsencode",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_getcwd",
         symbol: "molt_getcwd",
         arity: 0,
@@ -2598,9 +2603,19 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_glob_escape",
+        symbol: "molt_glob_escape",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_glob_translate",
+        symbol: "molt_glob_translate",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_glob",
         symbol: "molt_glob",
-        arity: 1,
+        arity: 5,
     },
     IntrinsicSpec {
         name: "molt_io_class",
@@ -4138,6 +4153,26 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_pickle_dumps_protocol01",
+        symbol: "molt_pickle_dumps_protocol01",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_pickle_loads_protocol01",
+        symbol: "molt_pickle_loads_protocol01",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_pickle_dumps_core",
+        symbol: "molt_pickle_dumps_core",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_pickle_loads_core",
+        symbol: "molt_pickle_loads_core",
+        arity: 7,
+    },
+    IntrinsicSpec {
         name: "molt_copyreg_constructor",
         symbol: "molt_copyreg_constructor",
         arity: 1,
@@ -4565,6 +4600,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_sys_stderr",
         symbol: "molt_sys_stderr",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_getfilesystemencodeerrors",
+        symbol: "molt_sys_getfilesystemencodeerrors",
         arity: 0,
     },
     IntrinsicSpec {
@@ -5766,6 +5806,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_os_urandom" => Some(crate::molt_os_urandom as *const () as usize as u64),
         "molt_os_name" => Some(crate::molt_os_name as *const () as usize as u64),
+        "molt_os_fsencode" => Some(crate::molt_os_fsencode as *const () as usize as u64),
         "molt_getcwd" => Some(crate::molt_getcwd as *const () as usize as u64),
         "molt_getpid" => Some(crate::molt_getpid as *const () as usize as u64),
         "molt_signal_raise" => Some(crate::molt_signal_raise as *const () as usize as u64),
@@ -5837,6 +5878,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_match" => Some(crate::molt_path_match as *const () as usize as u64),
         "molt_path_glob" => Some(crate::molt_path_glob as *const () as usize as u64),
         "molt_glob_has_magic" => Some(crate::molt_glob_has_magic as *const () as usize as u64),
+        "molt_glob_escape" => Some(crate::molt_glob_escape as *const () as usize as u64),
+        "molt_glob_translate" => Some(crate::molt_glob_translate as *const () as usize as u64),
         "molt_glob" => Some(crate::molt_glob as *const () as usize as u64),
         "molt_io_class" => Some(crate::molt_io_class as *const () as usize as u64),
         "molt_file_open" => Some(crate::molt_file_open as *const () as usize as u64),
@@ -6421,6 +6464,18 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pickle_encode_protocol0" => {
             Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64)
         }
+        "molt_pickle_dumps_protocol01" => {
+            Some(crate::molt_pickle_dumps_protocol01 as *const () as usize as u64)
+        }
+        "molt_pickle_loads_protocol01" => {
+            Some(crate::molt_pickle_loads_protocol01 as *const () as usize as u64)
+        }
+        "molt_pickle_dumps_core" => {
+            Some(crate::molt_pickle_dumps_core as *const () as usize as u64)
+        }
+        "molt_pickle_loads_core" => {
+            Some(crate::molt_pickle_loads_core as *const () as usize as u64)
+        }
         "molt_copyreg_constructor" => {
             Some(crate::molt_copyreg_constructor as *const () as usize as u64)
         }
@@ -6609,6 +6664,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_sys_stdin" => Some(crate::molt_sys_stdin as *const () as usize as u64),
         "molt_sys_stdout" => Some(crate::molt_sys_stdout as *const () as usize as u64),
         "molt_sys_stderr" => Some(crate::molt_sys_stderr as *const () as usize as u64),
+        "molt_sys_getfilesystemencodeerrors" => {
+            Some(crate::molt_sys_getfilesystemencodeerrors as *const () as usize as u64)
+        }
         "molt_trace_enter_slot" => Some(crate::molt_trace_enter_slot as *const () as usize as u64),
         "molt_trace_exit" => Some(crate::molt_trace_exit as *const () as usize as u64),
         "molt_trace_set_line" => Some(crate::molt_trace_set_line as *const () as usize as u64),

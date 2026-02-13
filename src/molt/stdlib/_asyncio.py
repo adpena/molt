@@ -44,9 +44,9 @@ def get_event_loop():
 
     policy = _MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET()
     if policy is None:
-        import asyncio as _asyncio
-
-        policy = _asyncio.get_event_loop_policy()
+        raise RuntimeError(
+            "_asyncio event loop policy is unset; initialize policy via asyncio.set_event_loop_policy(...) before calling _asyncio.get_event_loop()"
+        )
     return policy.get_event_loop()
 
 

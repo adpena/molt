@@ -6,17 +6,19 @@ use std::io::Cursor;
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        let s = {
-            let slice = std::slice::from_raw_parts(ptr, len);
-            std::str::from_utf8(slice).unwrap()
-        };
-        let v: serde_json::Value = serde_json::from_str(s).unwrap();
-        v.as_i64().unwrap_or(0)
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            let s = {
+                let slice = std::slice::from_raw_parts(ptr, len);
+                std::str::from_utf8(slice).unwrap()
+            };
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            v.as_i64().unwrap_or(0)
+        })
+    }
 }
 
 fn value_to_object(
@@ -390,108 +392,116 @@ unsafe fn parse_json_scalar(
     len: usize,
     arena: &mut TempArena,
 ) -> Result<MoltObject, i32> {
-    let slice = std::slice::from_raw_parts(ptr, len);
-    let s = std::str::from_utf8(slice).map_err(|_| 1)?;
-    let v: serde_json::Value = serde_json::from_str(s).map_err(|_| 1)?;
-    value_to_object(_py, v, arena)
+    unsafe {
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let s = std::str::from_utf8(slice).map_err(|_| 1)?;
+        let v: serde_json::Value = serde_json::from_str(s).map_err(|_| 1)?;
+        value_to_object(_py, v, arena)
+    }
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_json_parse_scalar(
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        let obj = PARSE_ARENA.with(|arena| {
-            let mut arena = arena.borrow_mut();
-            let result = parse_json_scalar(_py, ptr, len, &mut arena);
-            arena.reset();
-            result
-        });
-        let obj = match obj {
-            Ok(val) => val,
-            Err(code) => return code,
-        };
-        *out = obj.bits();
-        0
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if out.is_null() {
+                return 2;
+            }
+            let obj = PARSE_ARENA.with(|arena| {
+                let mut arena = arena.borrow_mut();
+                let result = parse_json_scalar(_py, ptr, len, &mut arena);
+                arena.reset();
+                result
+            });
+            let obj = match obj {
+                Ok(val) => val,
+                Err(code) => return code,
+            };
+            *out = obj.bits();
+            0
+        })
+    }
 }
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let mut cursor = Cursor::new(slice);
-        let v = match rmpv::decode::read_value(&mut cursor) {
-            Ok(val) => val,
-            Err(_) => return 1,
-        };
-        let obj = PARSE_ARENA.with(|arena| {
-            let mut arena = arena.borrow_mut();
-            let result = msgpack_value_to_object(_py, v, &mut arena);
-            arena.reset();
-            result
-        });
-        let obj = match obj {
-            Ok(val) => val,
-            Err(code) => return code,
-        };
-        *out = obj.bits();
-        0
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if out.is_null() {
+                return 2;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let mut cursor = Cursor::new(slice);
+            let v = match rmpv::decode::read_value(&mut cursor) {
+                Ok(val) => val,
+                Err(_) => return 1,
+            };
+            let obj = PARSE_ARENA.with(|arena| {
+                let mut arena = arena.borrow_mut();
+                let result = msgpack_value_to_object(_py, v, &mut arena);
+                arena.reset();
+                result
+            });
+            let obj = match obj {
+                Ok(val) => val,
+                Err(code) => return code,
+            };
+            *out = obj.bits();
+            0
+        })
+    }
 }
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cbor_parse_scalar(
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
-            Ok(val) => val,
-            Err(_) => return 1,
-        };
-        let obj = PARSE_ARENA.with(|arena| {
-            let mut arena = arena.borrow_mut();
-            let result = cbor_value_to_object(_py, v, &mut arena);
-            arena.reset();
-            result
-        });
-        let obj = match obj {
-            Ok(val) => val,
-            Err(code) => return code,
-        };
-        *out = obj.bits();
-        0
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if out.is_null() {
+                return 2;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
+                Ok(val) => val,
+                Err(_) => return 1,
+            };
+            let obj = PARSE_ARENA.with(|arena| {
+                let mut arena = arena.borrow_mut();
+                let result = cbor_value_to_object(_py, v, &mut arena);
+                arena.reset();
+                result
+            });
+            let obj = match obj {
+                Ok(val) => val,
+                Err(code) => return code,
+            };
+            *out = obj.bits();
+            0
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);
@@ -519,7 +529,7 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);
@@ -556,7 +566,7 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);

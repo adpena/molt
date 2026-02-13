@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use tokio::time::{sleep, Instant};
+use tokio::time::{Instant, sleep};
 
 struct AsyncPoolState<T> {
     idle: Vec<T>,
@@ -130,7 +130,7 @@ impl<T> AsyncPool<T> {
                         return Ok(AsyncPooled {
                             pool: Arc::clone(self),
                             value: Some(item),
-                        })
+                        });
                     }
                     Err(err) => {
                         self.in_flight.fetch_sub(1, Ordering::SeqCst);

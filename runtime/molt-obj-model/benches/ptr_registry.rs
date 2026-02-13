@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use molt_obj_model::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
 
 fn bench_register_resolve_release(c: &mut Criterion) {

@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    attr_name_bits_from_bytes, bits_from_ptr, call_callable0, call_callable1, dec_ref_bits,
-    exception_pending, inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin,
+    GilReleaseGuard, attr_name_bits_from_bytes, bits_from_ptr, call_callable0, call_callable1,
+    dec_ref_bits, exception_pending, inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin,
     molt_is_callable, monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception,
-    release_ptr, to_f64, GilReleaseGuard,
+    release_ptr, to_f64,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1111,7 +1111,7 @@ fn parse_queue_timeout(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let lock = Arc::new(MoltLock::new());
@@ -1121,7 +1121,7 @@ pub unsafe extern "C" fn molt_lock_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -1149,7 +1149,7 @@ pub unsafe extern "C" fn molt_lock_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
@@ -1163,7 +1163,7 @@ pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
@@ -1174,21 +1174,23 @@ pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltLock);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltLock);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let lock = Arc::new(MoltRLock::new());
@@ -1198,7 +1200,7 @@ pub unsafe extern "C" fn molt_rlock_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -1226,7 +1228,7 @@ pub unsafe extern "C" fn molt_rlock_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -1240,7 +1242,7 @@ pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -1251,7 +1253,7 @@ pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -1262,7 +1264,7 @@ pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -1276,7 +1278,7 @@ pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -1294,21 +1296,23 @@ pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltRLock);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltRLock);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let condition = Arc::new(MoltCondition::new());
@@ -1318,7 +1322,7 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
@@ -1337,101 +1341,103 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_wait_for(
     condition_bits: u64,
     predicate_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !is_truthy(_py, obj_from_bits(molt_is_callable(predicate_bits))) {
-            return raise_exception::<_>(_py, "TypeError", "predicate must be callable");
-        }
-        let timeout = if obj_from_bits(timeout_bits).is_none() {
-            None
-        } else {
-            let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
-            };
-            Some(value)
-        };
-        let Some(wait_name_bits) = attr_name_bits_from_bytes(_py, b"wait") else {
-            return MoltObject::none().bits();
-        };
-        let missing = missing_bits(_py);
-        let wait_bits = molt_getattr_builtin(condition_bits, wait_name_bits, missing);
-        dec_ref_bits(_py, wait_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if wait_bits == missing {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "condition wait method is unavailable",
-            );
-        }
-        if !is_truthy(_py, obj_from_bits(molt_is_callable(wait_bits))) {
-            if obj_from_bits(wait_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, wait_bits);
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(predicate_bits))) {
+                return raise_exception::<_>(_py, "TypeError", "predicate must be callable");
             }
-            return raise_exception::<_>(_py, "TypeError", "condition.wait must be callable");
-        }
-        let mut waittime = timeout;
-        let mut deadline: Option<f64> = None;
-        loop {
-            let predicate_out = call_callable0(_py, predicate_bits);
-            if exception_pending(_py) {
-                if obj_from_bits(wait_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let ok = is_truthy(_py, obj_from_bits(predicate_out));
-            if obj_from_bits(predicate_out).as_ptr().is_some() {
-                dec_ref_bits(_py, predicate_out);
-            }
-            if ok {
-                if obj_from_bits(wait_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_bits);
-                }
-                return MoltObject::from_bool(true).bits();
-            }
-            if let Some(current_wait) = waittime {
-                if let Some(endtime) = deadline {
-                    let remaining = endtime - monotonic_now_secs(_py);
-                    waittime = Some(remaining);
-                    if remaining <= 0.0 {
-                        if obj_from_bits(wait_bits).as_ptr().is_some() {
-                            dec_ref_bits(_py, wait_bits);
-                        }
-                        return MoltObject::from_bool(false).bits();
-                    }
-                } else {
-                    deadline = Some(monotonic_now_secs(_py) + current_wait);
-                }
-            }
-            let wait_arg = if let Some(current_wait) = waittime {
-                MoltObject::from_float(current_wait).bits()
+            let timeout = if obj_from_bits(timeout_bits).is_none() {
+                None
             } else {
-                MoltObject::none().bits()
+                let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
+                    return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+                };
+                Some(value)
             };
-            let wait_out = call_callable1(_py, wait_bits, wait_arg);
+            let Some(wait_name_bits) = attr_name_bits_from_bytes(_py, b"wait") else {
+                return MoltObject::none().bits();
+            };
+            let missing = missing_bits(_py);
+            let wait_bits = molt_getattr_builtin(condition_bits, wait_name_bits, missing);
+            dec_ref_bits(_py, wait_name_bits);
             if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if wait_bits == missing {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "condition wait method is unavailable",
+                );
+            }
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(wait_bits))) {
                 if obj_from_bits(wait_bits).as_ptr().is_some() {
                     dec_ref_bits(_py, wait_bits);
                 }
-                return MoltObject::none().bits();
+                return raise_exception::<_>(_py, "TypeError", "condition.wait must be callable");
             }
-            if obj_from_bits(wait_out).as_ptr().is_some() {
-                dec_ref_bits(_py, wait_out);
+            let mut waittime = timeout;
+            let mut deadline: Option<f64> = None;
+            loop {
+                let predicate_out = call_callable0(_py, predicate_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let ok = is_truthy(_py, obj_from_bits(predicate_out));
+                if obj_from_bits(predicate_out).as_ptr().is_some() {
+                    dec_ref_bits(_py, predicate_out);
+                }
+                if ok {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::from_bool(true).bits();
+                }
+                if let Some(current_wait) = waittime {
+                    if let Some(endtime) = deadline {
+                        let remaining = endtime - monotonic_now_secs(_py);
+                        waittime = Some(remaining);
+                        if remaining <= 0.0 {
+                            if obj_from_bits(wait_bits).as_ptr().is_some() {
+                                dec_ref_bits(_py, wait_bits);
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
+                    } else {
+                        deadline = Some(monotonic_now_secs(_py) + current_wait);
+                    }
+                }
+                let wait_arg = if let Some(current_wait) = waittime {
+                    MoltObject::from_float(current_wait).bits()
+                } else {
+                    MoltObject::none().bits()
+                };
+                let wait_out = call_callable1(_py, wait_bits, wait_arg);
+                if exception_pending(_py) {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if obj_from_bits(wait_out).as_ptr().is_some() {
+                    dec_ref_bits(_py, wait_out);
+                }
             }
-        }
-    })
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
@@ -1449,21 +1455,23 @@ pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltCondition);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltCondition);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let event = Arc::new(MoltEvent::new());
@@ -1473,7 +1481,7 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -1485,7 +1493,7 @@ pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -1497,7 +1505,7 @@ pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -1508,7 +1516,7 @@ pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -1527,21 +1535,23 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltEvent);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltEvent);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = crate::to_i64(obj_from_bits(value_bits)) else {
@@ -1562,7 +1572,7 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -1586,7 +1596,7 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
@@ -1606,21 +1616,23 @@ pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u6
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltSemaphore);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltSemaphore);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(parties) = crate::to_i64(obj_from_bits(parties_bits)) else {
@@ -1644,7 +1656,7 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1666,7 +1678,7 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1678,7 +1690,7 @@ pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1690,7 +1702,7 @@ pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1701,7 +1713,7 @@ pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1713,7 +1725,7 @@ pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -1725,21 +1737,23 @@ pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Arc::from_raw(ptr as *const MoltBarrier);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Arc::from_raw(ptr as *const MoltBarrier);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let local = Arc::new(MoltLocal::new());
@@ -1749,7 +1763,7 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(local) = local_from_bits(handle_bits) else {
@@ -1769,26 +1783,28 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let local = Arc::from_raw(ptr as *const MoltLocal);
-        let mut guard = local.state.lock().unwrap();
-        for bits in guard.values().copied() {
-            dec_ref_bits(_py, bits);
-        }
-        guard.clear();
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let local = Arc::from_raw(ptr as *const MoltLocal);
+            let mut guard = local.state.lock().unwrap();
+            for bits in guard.values().copied() {
+                dec_ref_bits(_py, bits);
+            }
+            guard.clear();
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -1801,7 +1817,7 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -1814,7 +1830,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -1827,7 +1843,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -1838,7 +1854,7 @@ pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -1849,7 +1865,7 @@ pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -1860,7 +1876,7 @@ pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_put(
     handle_bits: u64,
     item_bits: u64,
@@ -1899,7 +1915,7 @@ pub unsafe extern "C" fn molt_queue_put(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_get(
     handle_bits: u64,
     blocking_bits: u64,
@@ -1930,7 +1946,7 @@ pub unsafe extern "C" fn molt_queue_get(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -1941,7 +1957,7 @@ pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -1956,18 +1972,20 @@ pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let queue = Arc::from_raw(ptr as *const MoltQueue);
-        queue.drop_items(_py);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let queue = Arc::from_raw(ptr as *const MoltQueue);
+            queue.drop_items(_py);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2636,7 +2654,7 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let lock = Rc::new(MoltLock::new());
@@ -2646,7 +2664,7 @@ pub unsafe extern "C" fn molt_lock_new() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -2673,7 +2691,7 @@ pub unsafe extern "C" fn molt_lock_acquire(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
@@ -2687,7 +2705,7 @@ pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
@@ -2698,7 +2716,7 @@ pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -2712,7 +2730,7 @@ pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let lock = Rc::new(MoltRLock::new());
@@ -2722,7 +2740,7 @@ pub unsafe extern "C" fn molt_rlock_new() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -2749,7 +2767,7 @@ pub unsafe extern "C" fn molt_rlock_acquire(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -2763,7 +2781,7 @@ pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -2774,7 +2792,7 @@ pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -2785,7 +2803,7 @@ pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -2799,7 +2817,7 @@ pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
@@ -2817,7 +2835,7 @@ pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -2831,7 +2849,7 @@ pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let condition = Rc::new(MoltCondition::new());
@@ -2841,7 +2859,7 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
@@ -2868,7 +2886,7 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_wait_for(
     condition_bits: u64,
     predicate_bits: u64,
@@ -2962,7 +2980,7 @@ pub unsafe extern "C" fn molt_condition_wait_for(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
@@ -2979,7 +2997,7 @@ pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -2993,7 +3011,7 @@ pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let event = Rc::new(MoltEvent::new());
@@ -3003,7 +3021,7 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -3015,7 +3033,7 @@ pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -3027,7 +3045,7 @@ pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -3038,7 +3056,7 @@ pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
@@ -3064,7 +3082,7 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -3078,7 +3096,7 @@ pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = crate::to_i64(obj_from_bits(value_bits)) else {
@@ -3099,7 +3117,7 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_acquire(
     handle_bits: u64,
     blocking_bits: u64,
@@ -3136,7 +3154,7 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
@@ -3156,7 +3174,7 @@ pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u6
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -3170,7 +3188,7 @@ pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(parties) = crate::to_i64(obj_from_bits(parties_bits)) else {
@@ -3194,7 +3212,7 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3239,7 +3257,7 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3255,7 +3273,7 @@ pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3273,7 +3291,7 @@ pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3284,7 +3302,7 @@ pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3295,7 +3313,7 @@ pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
@@ -3306,7 +3324,7 @@ pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -3320,7 +3338,7 @@ pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let local = Rc::new(MoltLocal::new());
@@ -3330,7 +3348,7 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(local) = local_from_bits(handle_bits) else {
@@ -3349,7 +3367,7 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -3367,7 +3385,7 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -3380,7 +3398,7 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -3393,7 +3411,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
@@ -3406,7 +3424,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -3417,7 +3435,7 @@ pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -3428,7 +3446,7 @@ pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -3439,7 +3457,7 @@ pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_put(
     handle_bits: u64,
     item_bits: u64,
@@ -3471,7 +3489,7 @@ pub unsafe extern "C" fn molt_queue_put(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_get(
     handle_bits: u64,
     blocking_bits: u64,
@@ -3498,7 +3516,7 @@ pub unsafe extern "C" fn molt_queue_get(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -3509,7 +3527,7 @@ pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -3521,7 +3539,7 @@ pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);

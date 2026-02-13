@@ -7,20 +7,20 @@ use std::time::Instant;
 
 use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
-use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
-use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::IoPoller;
 use crate::ProcessTaskState;
+use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
+use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
-    default_cancel_tokens, AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret,
-    InternedNames, MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue,
-    OBJECT_POOL_BUCKETS,
+    AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
+    MethodCache, MoltObject, MoltScheduler, OBJECT_POOL_BUCKETS, PtrSlot, PyToken, SleepQueue,
+    default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{sleep_worker, ThreadPool, ThreadTaskState};
+use crate::{ThreadPool, ThreadTaskState, sleep_worker};
 
 #[cfg(target_arch = "wasm32")]
-extern "C" {
+unsafe extern "C" {
     fn __wasm_call_ctors();
 }
 
@@ -52,14 +52,16 @@ fn debug_sigtrap_backtrace_enabled() -> bool {
 
 #[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn debug_sigtrap_handler(sig: i32) {
-    let msg = b"molt debug: SIGTRAP backtrace\n";
-    let _ = libc::write(2, msg.as_ptr() as *const _, msg.len());
-    let mut addrs = [std::ptr::null_mut(); 128];
-    let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
-    if count > 0 {
-        libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
+    unsafe {
+        let msg = b"molt debug: SIGTRAP backtrace\n";
+        let _ = libc::write(2, msg.as_ptr() as *const _, msg.len());
+        let mut addrs = [std::ptr::null_mut(); 128];
+        let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
+        if count > 0 {
+            libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
+        }
+        libc::_exit(128 + sig);
     }
-    libc::_exit(128 + sig);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,7 +70,7 @@ fn ensure_debug_sigtrap_handler() {
         && !DEBUG_SIGTRAP_INSTALLED.swap(true, AtomicOrdering::Relaxed)
     {
         unsafe {
-            libc::signal(libc::SIGTRAP, debug_sigtrap_handler as usize);
+            libc::signal(libc::SIGTRAP, debug_sigtrap_handler as *const () as usize);
         }
     }
 }
@@ -349,11 +351,7 @@ pub(crate) fn runtime_state_lock() -> &'static Mutex<()> {
 #[allow(dead_code)]
 fn runtime_state_ptr() -> Option<*mut RuntimeState> {
     let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
@@ -383,7 +381,7 @@ pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
@@ -407,7 +405,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     1
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_ensure_gil() {
     touch_tls_guard();
     if gil_held() {
@@ -416,7 +414,7 @@ pub extern "C" fn molt_runtime_ensure_gil() {
     hold_runtime_gil(GilGuard::new());
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_shutdown() -> u64 {
     let _guard = runtime_state_lock().lock().unwrap();
     let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
