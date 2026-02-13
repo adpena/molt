@@ -934,6 +934,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         "--export=molt_main",
         "--export=molt_memory",
         "--export=molt_table",
+        "--export-if-defined=molt_set_wasm_table_base",
         "-o",
         str(linked),
         str(rewritten_path),
@@ -972,13 +973,17 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 return 1
             if updated is not None:
                 linked.write_bytes(updated)
-        try:
-            updated = _append_table_ref_elements(linked.read_bytes())
-        except ValueError as exc:
-            print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
-            return 1
-        if updated is not None:
-            linked.write_bytes(updated)
+        append_table_refs = os.environ.get(
+            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if append_table_refs:
+            try:
+                updated = _append_table_ref_elements(linked.read_bytes())
+            except ValueError as exc:
+                print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                linked.write_bytes(updated)
         try:
             updated = _ensure_table_export(linked.read_bytes())
         except ValueError as exc:
