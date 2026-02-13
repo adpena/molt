@@ -27,19 +27,20 @@ pub(crate) fn spawned_task_count() -> usize {
 
 #[allow(unused_imports)]
 pub(crate) use cancellation::{
-    cancel_tokens, clear_task_token, current_token_id, default_cancel_tokens, ensure_task_token,
-    raise_cancelled_with_message, register_task_token, release_token, retain_token,
-    set_current_token, task_cancel_message_clear, task_cancel_message_set, task_cancel_pending,
-    task_has_token, task_set_cancel_pending, task_take_cancel_pending, token_id_from_bits,
-    token_is_cancelled, wake_tasks_for_cancelled_tokens, CancelTokenEntry, CURRENT_TOKEN,
-    NEXT_CANCEL_TOKEN_ID,
+    CURRENT_TOKEN, CancelTokenEntry, NEXT_CANCEL_TOKEN_ID, cancel_tokens, clear_task_token,
+    current_token_id, default_cancel_tokens, ensure_task_token, raise_cancelled_with_message,
+    register_task_token, release_token, retain_token, set_current_token, task_cancel_message_clear,
+    task_cancel_message_set, task_cancel_pending, task_has_token, task_set_cancel_pending,
+    task_take_cancel_pending, token_id_from_bits, token_is_cancelled,
+    wake_tasks_for_cancelled_tokens,
 };
 
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
-    async_trace_enabled, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters, await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr,
-    fn_ptr_code_get, fn_ptr_code_set, instant_from_monotonic_secs, molt_asyncio_child_watcher_add,
+    AsyncHangProbe, CURRENT_TASK, MoltScheduler, MoltTask, SleepQueue, async_trace_enabled,
+    asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
+    await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
+    fn_ptr_code_set, instant_from_monotonic_secs, molt_asyncio_child_watcher_add,
     molt_asyncio_child_watcher_clear, molt_asyncio_child_watcher_pop,
     molt_asyncio_child_watcher_remove, molt_asyncio_event_loop_get,
     molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
@@ -56,8 +57,7 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_values, molt_block_on, molt_spawn, monotonic_now_nanos,
     monotonic_now_secs, record_async_poll, task_exception_depths, task_exception_handler_stacks,
     task_exception_stacks, task_last_exceptions, task_mark_done, task_waiting_on,
-    task_waiting_on_future, wake_task_ptr, AsyncHangProbe, MoltScheduler, MoltTask, SleepQueue,
-    CURRENT_TASK,
+    task_waiting_on_future, wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

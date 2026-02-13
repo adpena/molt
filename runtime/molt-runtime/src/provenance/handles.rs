@@ -1,10 +1,10 @@
 //! Handle-resolution entrypoints that bridge NaN-boxed object handles to
 //! runtime pointers. This is the ABI surface for resolve paths.
 
-use crate::{object::accessors::resolve_obj_ptr, profile_hit_unchecked, HANDLE_RESOLVE_COUNT};
+use crate::{HANDLE_RESOLVE_COUNT, object::accessors::resolve_obj_ptr, profile_hit_unchecked};
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_resolve(bits: u64) -> *mut u8 {
     // GIL-exempt by contract: resolve path must stay read-only and rely on the
     // pointer registry's sharded read locks for safety.
@@ -13,7 +13,7 @@ pub extern "C" fn molt_handle_resolve(bits: u64) -> *mut u8 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
     // GIL-exempt by contract: resolve path must stay read-only and rely on the
     // pointer registry's sharded read locks for safety.
@@ -25,7 +25,7 @@ pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
 mod tests {
     use super::molt_handle_resolve;
     use crate::{
-        alloc_object_zeroed_with_pool, object::dec_ref_ptr, MoltHeader, MoltObject, TYPE_ID_OBJECT,
+        MoltHeader, MoltObject, TYPE_ID_OBJECT, alloc_object_zeroed_with_pool, object::dec_ref_ptr,
     };
 
     #[test]

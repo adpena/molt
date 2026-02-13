@@ -1,17 +1,17 @@
 use crate::PyToken;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use crate::{
-    alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits, exception_type_bits_from_name,
-    header_from_obj_ptr, obj_from_bits, raise_exception, record_exception, runtime_state,
-    seq_vec_ref, string_obj_to_owned, task_exception_baseline_drop, task_exception_depth_drop,
-    task_exception_handler_stack_drop, task_exception_stack_drop, task_last_exception_drop,
-    type_name, ExceptionSentinel, MoltHeader, MoltObject, PtrSlot, HEADER_FLAG_BLOCK_ON,
-    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN, TYPE_ID_TUPLE,
+    ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
+    MoltHeader, MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple,
+    dec_ref_bits, exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits,
+    raise_exception, record_exception, runtime_state, seq_vec_ref, string_obj_to_owned,
+    task_exception_baseline_drop, task_exception_depth_drop, task_exception_handler_stack_drop,
+    task_exception_stack_drop, task_last_exception_drop, type_name,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr};
@@ -362,7 +362,7 @@ pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {
 
 /// # Safety
 /// `parent_bits` must be either `None` or an integer token id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         cancel_tokens(_py);
@@ -409,7 +409,7 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match token_id_from_bits(token_bits) {
@@ -423,7 +423,7 @@ pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match token_id_from_bits(token_bits) {
@@ -437,7 +437,7 @@ pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match token_id_from_bits(token_bits) {
@@ -456,7 +456,7 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match token_id_from_bits(token_bits) {
@@ -469,7 +469,7 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 
 
 /// # Safety
 /// `token_bits` must be an integer token id or `None`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match token_id_from_bits(token_bits) {
@@ -484,7 +484,7 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
 
 /// # Safety
 /// Requires the cancel token tables to be initialized by the runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
     crate::with_gil_entry!(_py, {
         cancel_tokens(_py);
@@ -494,7 +494,7 @@ pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
 
 /// # Safety
 /// Requires the cancel token tables to be initialized by the runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancelled() -> u64 {
     crate::with_gil_entry!(_py, {
         cancel_tokens(_py);
@@ -504,7 +504,7 @@ pub unsafe extern "C" fn molt_cancelled() -> u64 {
 
 /// # Safety
 /// Requires the cancel token tables to be initialized by the runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_current() -> u64 {
     crate::with_gil_entry!(_py, {
         cancel_tokens(_py);

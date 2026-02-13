@@ -1,14 +1,15 @@
+use crate::PyToken;
 use crate::builtins::callable::molt_is_callable;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_from_obj, int_bits_from_bigint};
 use crate::object::ops::{format_obj, type_name};
-use crate::PyToken;
 use crate::{
-    alloc_list, alloc_tuple, attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc,
-    bigint_ptr_from_bits, bigint_ref, bigint_to_inline, call_callable0, class_name_for_error,
-    dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_pending, inc_ref_bits,
-    intern_static_name, is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul,
-    molt_sorted_builtin, obj_from_bits, object_type_id, raise_exception, raise_not_iterable,
-    runtime_state, seq_vec_ref, to_i64, type_of_bits, MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_list, alloc_tuple,
+    attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits,
+    bigint_ref, bigint_to_inline, call_callable0, class_name_for_error, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, exception_pending, inc_ref_bits, intern_static_name,
+    is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul, molt_sorted_builtin,
+    obj_from_bits, object_type_id, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
+    to_i64, type_of_bits,
 };
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -714,21 +715,23 @@ unsafe fn sum_f64_simd_x86_sse2(values: &[f64]) -> f64 {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn sum_f64_simd_aarch64(values: &[f64]) -> f64 {
-    use std::arch::aarch64::*;
-    let mut i = 0usize;
-    let mut acc = vdupq_n_f64(0.0);
-    while i + 2 <= values.len() {
-        let v = vld1q_f64(values.as_ptr().add(i));
-        acc = vaddq_f64(acc, v);
-        i += 2;
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut acc = vdupq_n_f64(0.0);
+        while i + 2 <= values.len() {
+            let v = vld1q_f64(values.as_ptr().add(i));
+            acc = vaddq_f64(acc, v);
+            i += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        vst1q_f64(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes[0] + lanes[1];
+        for &v in &values[i..] {
+            sum += v;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 2];
-    vst1q_f64(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes[0] + lanes[1];
-    for &v in &values[i..] {
-        sum += v;
-    }
-    sum
 }
 
 fn sum_f64_simd(values: &[f64]) -> f64 {
@@ -799,24 +802,26 @@ unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
-    use std::arch::aarch64::*;
-    let mean_v = vdupq_n_f64(mean);
-    let mut i = 0usize;
-    let mut acc = vdupq_n_f64(0.0);
-    while i + 2 <= values.len() {
-        let v = vld1q_f64(values.as_ptr().add(i));
-        let d = vsubq_f64(v, mean_v);
-        acc = vaddq_f64(acc, vmulq_f64(d, d));
-        i += 2;
+    unsafe {
+        use std::arch::aarch64::*;
+        let mean_v = vdupq_n_f64(mean);
+        let mut i = 0usize;
+        let mut acc = vdupq_n_f64(0.0);
+        while i + 2 <= values.len() {
+            let v = vld1q_f64(values.as_ptr().add(i));
+            let d = vsubq_f64(v, mean_v);
+            acc = vaddq_f64(acc, vmulq_f64(d, d));
+            i += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        vst1q_f64(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes[0] + lanes[1];
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 2];
-    vst1q_f64(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes[0] + lanes[1];
-    for &v in &values[i..] {
-        let d = v - mean;
-        sum += d * d;
-    }
-    sum
 }
 
 fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
@@ -885,7 +890,7 @@ fn normalize_slice_step1_bounds(
     Some((start, end))
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -943,7 +948,7 @@ pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1001,7 +1006,7 @@ pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1052,7 +1057,7 @@ pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1077,7 +1082,7 @@ pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1103,7 +1108,7 @@ pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1129,7 +1134,7 @@ pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(x_val) = coerce_real(_py, x_bits) else {
@@ -1154,7 +1159,7 @@ pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1175,7 +1180,7 @@ pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1196,7 +1201,7 @@ pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1217,7 +1222,7 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1238,7 +1243,7 @@ pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1259,7 +1264,7 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1272,7 +1277,7 @@ pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(y_val) = coerce_real(_py, y_bits) else {
@@ -1291,7 +1296,7 @@ pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1311,7 +1316,7 @@ pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1331,7 +1336,7 @@ pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1344,7 +1349,7 @@ pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1357,7 +1362,7 @@ pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1378,7 +1383,7 @@ pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1397,7 +1402,7 @@ pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1430,7 +1435,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1443,7 +1448,7 @@ pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1456,7 +1461,7 @@ pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -1480,7 +1485,7 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "isfinite") else {
@@ -1493,7 +1498,7 @@ pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "isinf") else {
@@ -1506,7 +1511,7 @@ pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "isnan") else {
@@ -1519,7 +1524,7 @@ pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "fabs") else {
@@ -1532,7 +1537,7 @@ pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(x_val) = coerce_real_named(_py, x_bits, "copysign") else {
@@ -1551,7 +1556,7 @@ pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "sqrt") else {
@@ -1576,7 +1581,7 @@ pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
@@ -1627,7 +1632,7 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
@@ -1678,7 +1683,7 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
@@ -1729,7 +1734,7 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(x_val) = coerce_real_named(_py, x_bits, "fmod") else {
@@ -1760,7 +1765,7 @@ pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "modf") else {
@@ -1790,7 +1795,7 @@ pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "frexp") else {
@@ -1811,7 +1816,7 @@ pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "ldexp") else {
@@ -1844,7 +1849,7 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(rel_val) = coerce_real_named(_py, rel_bits, "isclose") else {
@@ -1889,7 +1894,7 @@ pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_obj = molt_iter(iter_bits);
@@ -1937,7 +1942,7 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_obj = molt_iter(iter_bits);
@@ -2010,7 +2015,7 @@ pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
@@ -2048,7 +2053,7 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
@@ -2086,7 +2091,7 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_factorial(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let msg = format!(
@@ -2122,7 +2127,7 @@ pub extern "C" fn molt_math_factorial(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let n_msg = format!(
@@ -2174,7 +2179,7 @@ pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let n_msg = format!(
@@ -2227,7 +2232,7 @@ pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "degrees") else {
@@ -2241,7 +2246,7 @@ pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real_named(_py, val_bits, "radians") else {
@@ -2255,7 +2260,7 @@ pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
@@ -2285,7 +2290,7 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(p_vals) = collect_real_vec(_py, p_bits) else {
@@ -2309,7 +2314,7 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let msg = format!(
@@ -2330,7 +2335,7 @@ pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(x_val) = coerce_real(_py, x_bits) else {
@@ -2355,7 +2360,7 @@ pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = coerce_real(_py, val_bits) else {
@@ -2375,7 +2380,7 @@ pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(x_val) = coerce_real(_py, x_bits) else {
@@ -2940,7 +2945,7 @@ fn materialize_statistics_slice(
     Some(sliced_bits)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(mean) = statistics_mean_value(_py, data_bits) else {
@@ -2950,7 +2955,7 @@ pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(stdev) = statistics_stdev_value(_py, data_bits, xbar_bits) else {
@@ -2960,7 +2965,7 @@ pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_variance(data_bits: u64, xbar_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(variance) =
@@ -2972,7 +2977,7 @@ pub extern "C" fn molt_statistics_variance(data_bits: u64, xbar_bits: u64) -> u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_pvariance(data_bits: u64, mu_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pvariance")
@@ -2983,7 +2988,7 @@ pub extern "C" fn molt_statistics_pvariance(data_bits: u64, mu_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_pstdev(data_bits: u64, mu_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pstdev")
@@ -2994,7 +2999,7 @@ pub extern "C" fn molt_statistics_pstdev(data_bits: u64, mu_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(values) = collect_real_vec(_py, data_bits) else {
@@ -3011,7 +3016,7 @@ pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median") else {
@@ -3028,7 +3033,7 @@ pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
@@ -3071,7 +3076,7 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
@@ -3114,7 +3119,7 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median_grouped") else {
@@ -3146,7 +3151,7 @@ pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_mode(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(bits) = statistics_mode_value(_py, data_bits) else {
@@ -3156,7 +3161,7 @@ pub extern "C" fn molt_statistics_mode(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_multimode(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(bits) = statistics_multimode_value(_py, data_bits) else {
@@ -3166,7 +3171,7 @@ pub extern "C" fn molt_statistics_multimode(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_quantiles(
     data_bits: u64,
     n_bits: u64,
@@ -3180,7 +3185,7 @@ pub extern "C" fn molt_statistics_quantiles(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = statistics_harmonic_mean_value(_py, data_bits) else {
@@ -3190,7 +3195,7 @@ pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_geometric_mean(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = statistics_geometric_mean_value(_py, data_bits) else {
@@ -3200,7 +3205,7 @@ pub extern "C" fn molt_statistics_geometric_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_covariance(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = statistics_covariance_value(_py, x_bits, y_bits) else {
@@ -3210,7 +3215,7 @@ pub extern "C" fn molt_statistics_covariance(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_correlation(x_bits: u64, y_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(value) = statistics_correlation_value(_py, x_bits, y_bits) else {
@@ -3220,7 +3225,7 @@ pub extern "C" fn molt_statistics_correlation(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_linear_regression(
     x_bits: u64,
     y_bits: u64,
@@ -3246,7 +3251,7 @@ pub extern "C" fn molt_statistics_linear_regression(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_mean_slice(
     data_bits: u64,
     start_bits: u64,
@@ -3316,7 +3321,7 @@ pub extern "C" fn molt_statistics_mean_slice(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_stdev_slice(
     data_bits: u64,
     start_bits: u64,

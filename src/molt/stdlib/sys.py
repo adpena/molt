@@ -69,6 +69,7 @@ __all__ = [
     "_getframe",
     "getdefaultencoding",
     "getfilesystemencoding",
+    "getfilesystemencodeerrors",
     "asyncgen_hooks",
     "get_asyncgen_hooks",
     "set_asyncgen_hooks",
@@ -105,6 +106,9 @@ _MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform", global
 _MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
 _MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
 _MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals()))
+_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _as_callable(
+    _require_intrinsic("molt_sys_getfilesystemencodeerrors", globals())
+)
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _as_callable(
     _require_intrinsic("molt_sys_bootstrap_payload", globals())
 )
@@ -279,6 +283,9 @@ __stdout__ = stdout
 __stderr__ = stderr
 _default_encoding = "utf-8"
 _fs_encoding = "utf-8"
+_fs_encode_errors = _MOLT_SYS_GETFILESYSTEMENCODEERRORS()
+if not isinstance(_fs_encode_errors, str):
+    raise RuntimeError("molt_sys_getfilesystemencodeerrors returned invalid value")
 
 
 class asyncgen_hooks(tuple):
@@ -326,6 +333,10 @@ def getdefaultencoding() -> str:
 
 def getfilesystemencoding() -> str:
     return _fs_encoding
+
+
+def getfilesystemencodeerrors() -> str:
+    return _fs_encode_errors
 
 
 def get_asyncgen_hooks() -> object:

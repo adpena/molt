@@ -2,13 +2,15 @@ use crate::object::HEADER_FLAG_COROUTINE;
 use crate::*;
 
 pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u64>> {
-    let mro_bits = class_mro_bits(class_ptr);
-    let mro_obj = obj_from_bits(mro_bits);
-    let mro_ptr = mro_obj.as_ptr()?;
-    if object_type_id(mro_ptr) != TYPE_ID_TUPLE {
-        return None;
+    unsafe {
+        let mro_bits = class_mro_bits(class_ptr);
+        let mro_obj = obj_from_bits(mro_bits);
+        let mro_ptr = mro_obj.as_ptr()?;
+        if object_type_id(mro_ptr) != TYPE_ID_TUPLE {
+            return None;
+        }
+        Some(seq_vec_ref(mro_ptr))
     }
-    Some(seq_vec_ref(mro_ptr))
 }
 
 pub(crate) fn class_mro_vec(class_bits: u64) -> Vec<u64> {

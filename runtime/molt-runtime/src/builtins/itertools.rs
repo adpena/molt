@@ -4,12 +4,12 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
-    alloc_class_obj, alloc_function_obj, alloc_list, alloc_object, alloc_string, alloc_tuple,
-    builtin_classes, class_dict_bits, dec_ref_bits, dict_set_in_place, exception_pending,
-    inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, molt_add, molt_class_set_base,
-    molt_eq, molt_iter, molt_iter_next, obj_from_bits, object_class_bits, object_set_class_bits,
-    object_type_id, raise_exception, raise_not_iterable, seq_vec_ref, PyToken, TYPE_ID_DICT,
-    TYPE_ID_LIST, TYPE_ID_TUPLE,
+    PyToken, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_class_obj, alloc_function_obj,
+    alloc_list, alloc_object, alloc_string, alloc_tuple, builtin_classes, class_dict_bits,
+    dec_ref_bits, dict_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
+    intern_static_name, is_truthy, molt_add, molt_class_set_base, molt_eq, molt_iter,
+    molt_iter_next, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
+    raise_exception, raise_not_iterable, seq_vec_ref,
 };
 
 static ITER_SELF_FN: AtomicU64 = AtomicU64::new(0);
@@ -71,7 +71,7 @@ fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_kwd_mark() -> u64 {
     crate::with_gil_entry!(_py, { kwd_mark_bits(_py) })
 }
@@ -80,7 +80,7 @@ fn iter_self_bits(_py: &PyToken<'_>) -> u64 {
     builtin_func_bits(
         _py,
         &ITER_SELF_FN,
-        crate::molt_itertools_iter_self as usize as u64,
+        crate::molt_itertools_iter_self as *const () as usize as u64,
         1,
     )
 }
@@ -142,7 +142,7 @@ fn itertools_class(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_iter_self(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, self_bits);
@@ -151,259 +151,323 @@ pub extern "C" fn molt_itertools_iter_self(self_bits: u64) -> u64 {
 }
 
 unsafe fn chain_iterables_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn chain_current_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn chain_set_iterables_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn chain_set_current_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn islice_iter_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn islice_stop(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn islice_step(ptr: *mut u8) -> i64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn islice_idx(ptr: *mut u8) -> i64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn islice_next_idx(ptr: *mut u8) -> i64 {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn islice_has_stop(ptr: *mut u8) -> i64 {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn islice_set_iter_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn islice_set_stop(ptr: *mut u8, val: i64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn islice_set_step(ptr: *mut u8, val: i64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn islice_set_idx(ptr: *mut u8, val: i64) {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn islice_set_next_idx(ptr: *mut u8, val: i64) {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn islice_set_has_stop(ptr: *mut u8, val: i64) {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn repeat_obj_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn repeat_times(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn repeat_set_obj_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn repeat_set_times(ptr: *mut u8, val: i64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn count_current_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn count_step_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn count_set_current_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn count_set_step_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn cycle_saved_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn cycle_index(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn cycle_set_saved_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn cycle_set_index(ptr: *mut u8, val: i64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn accumulate_iter_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn accumulate_func_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn accumulate_total_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn accumulate_initial_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn accumulate_started(ptr: *mut u8) -> i64 {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn accumulate_set_iter_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn accumulate_set_func_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn accumulate_set_total_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn accumulate_set_initial_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn accumulate_set_started(ptr: *mut u8, val: i64) {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn pairwise_iter_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn pairwise_prev_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn pairwise_started(ptr: *mut u8) -> i64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn pairwise_set_iter_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn pairwise_set_prev_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn pairwise_set_started(ptr: *mut u8, val: i64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn groupby_iter_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn groupby_keyfunc_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn groupby_tgt_key_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn groupby_curr_key_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn groupby_curr_val_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn groupby_done(ptr: *mut u8) -> i64 {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64)
+    unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64) }
 }
 
 unsafe fn groupby_set_iter_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_set_keyfunc_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_set_tgt_key_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_set_curr_key_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_set_curr_val_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_set_done(ptr: *mut u8, val: i64) {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut i64) = val;
+    }
 }
 
 unsafe fn groupby_iter_parent_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn groupby_iter_target_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn groupby_iter_set_parent_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn groupby_iter_set_target_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn tee_data_ptr(ptr: *mut u8) -> *mut TeeData {
-    *(ptr as *mut *mut TeeData)
+    unsafe { *(ptr as *mut *mut TeeData) }
 }
 
 unsafe fn tee_index(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *const i64)
+    unsafe { *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *const i64) }
 }
 
 unsafe fn tee_set_data_ptr(ptr: *mut u8, data: *mut TeeData) {
-    *(ptr as *mut *mut TeeData) = data;
+    unsafe {
+        *(ptr as *mut *mut TeeData) = data;
+    }
 }
 
 unsafe fn tee_set_index(ptr: *mut u8, val: i64) {
-    *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *mut i64) = val;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *mut i64) = val;
+    }
 }
 
 struct TeeData {
@@ -420,7 +484,7 @@ fn chain_class(_py: &PyToken<'_>) -> u64 {
         "chain",
         24,
         &CHAIN_NEXT_FN,
-        crate::molt_itertools_chain_next as usize as u64,
+        crate::molt_itertools_chain_next as *const () as usize as u64,
     )
 }
 
@@ -431,7 +495,7 @@ fn islice_class(_py: &PyToken<'_>) -> u64 {
         "islice",
         56,
         &ISLICE_NEXT_FN,
-        crate::molt_itertools_islice_next as usize as u64,
+        crate::molt_itertools_islice_next as *const () as usize as u64,
     )
 }
 
@@ -442,7 +506,7 @@ fn repeat_class(_py: &PyToken<'_>) -> u64 {
         "repeat",
         24,
         &REPEAT_NEXT_FN,
-        crate::molt_itertools_repeat_next as usize as u64,
+        crate::molt_itertools_repeat_next as *const () as usize as u64,
     )
 }
 
@@ -453,7 +517,7 @@ fn count_class(_py: &PyToken<'_>) -> u64 {
         "count",
         24,
         &COUNT_NEXT_FN,
-        crate::molt_itertools_count_next as usize as u64,
+        crate::molt_itertools_count_next as *const () as usize as u64,
     )
 }
 
@@ -464,7 +528,7 @@ fn cycle_class(_py: &PyToken<'_>) -> u64 {
         "cycle",
         24,
         &CYCLE_NEXT_FN,
-        crate::molt_itertools_cycle_next as usize as u64,
+        crate::molt_itertools_cycle_next as *const () as usize as u64,
     )
 }
 
@@ -475,7 +539,7 @@ fn accumulate_class(_py: &PyToken<'_>) -> u64 {
         "accumulate",
         48,
         &ACCUMULATE_NEXT_FN,
-        crate::molt_itertools_accumulate_next as usize as u64,
+        crate::molt_itertools_accumulate_next as *const () as usize as u64,
     )
 }
 
@@ -486,7 +550,7 @@ fn pairwise_class(_py: &PyToken<'_>) -> u64 {
         "pairwise",
         32,
         &PAIRWISE_NEXT_FN,
-        crate::molt_itertools_pairwise_next as usize as u64,
+        crate::molt_itertools_pairwise_next as *const () as usize as u64,
     )
 }
 
@@ -497,7 +561,7 @@ fn groupby_class(_py: &PyToken<'_>) -> u64 {
         "groupby",
         56,
         &GROUPBY_NEXT_FN,
-        crate::molt_itertools_groupby_next as usize as u64,
+        crate::molt_itertools_groupby_next as *const () as usize as u64,
     )
 }
 
@@ -508,7 +572,7 @@ fn groupby_iter_class(_py: &PyToken<'_>) -> u64 {
         "groupby_iterator",
         24,
         &GROUPBY_ITER_NEXT_FN,
-        crate::molt_itertools_groupby_iter_next as usize as u64,
+        crate::molt_itertools_groupby_iter_next as *const () as usize as u64,
     )
 }
 
@@ -519,7 +583,7 @@ fn tee_iter_class(_py: &PyToken<'_>) -> u64 {
         "tee",
         24,
         &TEE_NEXT_FN,
-        crate::molt_itertools_tee_next as usize as u64,
+        crate::molt_itertools_tee_next as *const () as usize as u64,
     )
 }
 
@@ -544,7 +608,7 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_chain(iterables_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_bits = molt_iter(iterables_bits);
@@ -569,12 +633,12 @@ pub extern "C" fn molt_itertools_chain(iterables_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_chain_from_iterable(iterables_bits: u64) -> u64 {
     molt_itertools_chain(iterables_bits)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -612,7 +676,7 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_islice(
     iterable_bits: u64,
     start_bits: u64,
@@ -740,7 +804,7 @@ pub extern "C" fn molt_itertools_islice(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -777,7 +841,7 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let times = if obj_from_bits(times_bits).is_none() {
@@ -787,11 +851,7 @@ pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if val < 0 {
-                0
-            } else {
-                val
-            }
+            if val < 0 { 0 } else { val }
         };
         let class_bits = repeat_class(_py);
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
@@ -811,7 +871,7 @@ pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -828,7 +888,7 @@ pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_count(start_bits: u64, step_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_bits = count_class(_py);
@@ -850,7 +910,7 @@ pub extern "C" fn molt_itertools_count(start_bits: u64, step_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -869,7 +929,7 @@ pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_bits = molt_iter(iterable_bits);
@@ -917,7 +977,7 @@ pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -943,7 +1003,7 @@ pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_accumulate(
     iterable_bits: u64,
     func_bits: u64,
@@ -983,7 +1043,7 @@ pub extern "C" fn molt_itertools_accumulate(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1031,7 +1091,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_pairwise(iterable_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_bits = molt_iter(iterable_bits);
@@ -1058,7 +1118,7 @@ pub extern "C" fn molt_itertools_pairwise(iterable_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1093,7 +1153,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let repeat = index_i64_from_obj(_py, repeat_bits, "repeat argument must be an integer");
@@ -1225,7 +1285,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(pool_bits) = (unsafe { crate::tuple_from_iter_bits(_py, iterable_bits) }) else {
@@ -1335,7 +1395,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(pool_bits) = (unsafe { crate::tuple_from_iter_bits(_py, iterable_bits) }) else {
@@ -1436,7 +1496,7 @@ pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby(iterable_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_bits = molt_iter(iterable_bits);
@@ -1510,7 +1570,7 @@ fn groupby_advance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     true
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1578,7 +1638,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -1609,7 +1669,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let n = index_i64_from_obj(_py, n_bits, "n must be an integer");
@@ -1684,7 +1744,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();

@@ -26,14 +26,25 @@ use crate::builtins::{
 };
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
-    asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
-    asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop,
-    asyncio_gather_poll_fn_addr, asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr,
-    asyncio_ready_runner_task_drop, asyncio_server_accept_loop_poll_fn_addr,
-    asyncio_server_accept_loop_task_drop, asyncio_sock_accept_poll_fn_addr,
-    asyncio_sock_accept_task_drop, asyncio_sock_connect_poll_fn_addr,
-    asyncio_sock_connect_task_drop, asyncio_sock_recv_into_poll_fn_addr,
-    asyncio_sock_recv_into_task_drop, asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
+    ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
+    ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET,
+    GEN_SEND_OFFSET, GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER, TYPE_ID_CALLARGS,
+    TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
+    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
+    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
+    TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
+    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT,
+    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer,
+    asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
+    asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr,
+    asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
+    asyncio_server_accept_loop_poll_fn_addr, asyncio_server_accept_loop_task_drop,
+    asyncio_sock_accept_poll_fn_addr, asyncio_sock_accept_task_drop,
+    asyncio_sock_connect_poll_fn_addr, asyncio_sock_connect_task_drop,
+    asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_into_task_drop,
+    asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_into_task_drop,
     asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_recvfrom_task_drop,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendall_task_drop,
@@ -67,18 +78,6 @@ use crate::{
     seq_vec_ptr, set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
     staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits,
     utf8_cache_remove, weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits,
-    PyToken, ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT,
-    ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR,
-    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS,
-    TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW,
-    TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
-    TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION,
-    TYPE_ID_ZIP,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -556,7 +555,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
 }
 
 pub(crate) unsafe fn header_from_obj_ptr(ptr: *mut u8) -> *mut MoltHeader {
-    ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader
+    unsafe { ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader }
 }
 
 fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
@@ -572,96 +571,112 @@ fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
 }
 
 pub(crate) unsafe fn object_type_id(ptr: *mut u8) -> u32 {
-    (*header_from_obj_ptr(ptr)).type_id
+    unsafe { (*header_from_obj_ptr(ptr)).type_id }
 }
 
 pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
-    (*header_from_obj_ptr(ptr)).size - std::mem::size_of::<MoltHeader>()
+    unsafe { (*header_from_obj_ptr(ptr)).size - std::mem::size_of::<MoltHeader>() }
 }
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
-    let payload = object_payload_size(ptr);
-    if payload < std::mem::size_of::<u64>() {
-        return std::ptr::null_mut();
+    unsafe {
+        let payload = object_payload_size(ptr);
+        if payload < std::mem::size_of::<u64>() {
+            return std::ptr::null_mut();
+        }
+        ptr.add(payload - std::mem::size_of::<u64>()) as *mut u64
     }
-    ptr.add(payload - std::mem::size_of::<u64>()) as *mut u64
 }
 
 pub(crate) unsafe fn instance_dict_bits(ptr: *mut u8) -> u64 {
-    let slot = instance_dict_bits_ptr(ptr);
-    if slot.is_null() {
-        return 0;
+    unsafe {
+        let slot = instance_dict_bits_ptr(ptr);
+        if slot.is_null() {
+            return 0;
+        }
+        *slot
     }
-    *slot
 }
 
 pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    crate::gil_assert();
-    let slot = instance_dict_bits_ptr(ptr);
-    if slot.is_null() {
-        return;
+    unsafe {
+        crate::gil_assert();
+        let slot = instance_dict_bits_ptr(ptr);
+        if slot.is_null() {
+            return;
+        }
+        *slot = bits;
     }
-    *slot = bits;
 }
 
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
-    let bits = (*header_from_obj_ptr(ptr)).state as u64;
-    if bits == 0 {
-        return 0;
+    unsafe {
+        let bits = (*header_from_obj_ptr(ptr)).state as u64;
+        if bits == 0 {
+            return 0;
+        }
+        // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
+        // Treat it as a class only when it points to an actual type object.
+        let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
+            return 0;
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return 0;
+        }
+        bits
     }
-    // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
-    // Treat it as a class only when it points to an actual type object.
-    let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
-        return 0;
-    };
-    if object_type_id(class_ptr) != TYPE_ID_TYPE {
-        return 0;
-    }
-    bits
 }
 
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    crate::gil_assert();
-    (*header_from_obj_ptr(ptr)).state = bits as i64;
+    unsafe {
+        crate::gil_assert();
+        (*header_from_obj_ptr(ptr)).state = bits as i64;
+    }
 }
 
 pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
-    crate::gil_assert();
-    (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_HAS_PTRS;
+    unsafe {
+        crate::gil_assert();
+        (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_HAS_PTRS;
+    }
 }
 
 pub(crate) unsafe fn string_len(ptr: *mut u8) -> usize {
-    *(ptr as *const usize)
+    unsafe { *(ptr as *const usize) }
 }
 
 pub(crate) unsafe fn string_bytes(ptr: *mut u8) -> *const u8 {
-    ptr.add(std::mem::size_of::<usize>())
+    unsafe { ptr.add(std::mem::size_of::<usize>()) }
 }
 
 pub(crate) unsafe fn bytes_len(ptr: *mut u8) -> usize {
-    if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
-        return bytearray_len(ptr);
+    unsafe {
+        if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
+            return bytearray_len(ptr);
+        }
+        string_len(ptr)
     }
-    string_len(ptr)
 }
 
 pub(crate) unsafe fn intarray_len(ptr: *mut u8) -> usize {
-    *(ptr as *const usize)
+    unsafe { *(ptr as *const usize) }
 }
 
 pub(crate) unsafe fn intarray_data(ptr: *mut u8) -> *const i64 {
-    ptr.add(std::mem::size_of::<usize>()) as *const i64
+    unsafe { ptr.add(std::mem::size_of::<usize>()) as *const i64 }
 }
 
 pub(crate) unsafe fn intarray_slice(ptr: *mut u8) -> &'static [i64] {
-    std::slice::from_raw_parts(intarray_data(ptr), intarray_len(ptr))
+    unsafe { std::slice::from_raw_parts(intarray_data(ptr), intarray_len(ptr)) }
 }
 
 pub(crate) unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
-    if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
-        return bytearray_data(ptr);
+    unsafe {
+        if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
+            return bytearray_data(ptr);
+        }
+        string_bytes(ptr)
     }
-    string_bytes(ptr)
 }
 
 pub(crate) unsafe fn memoryview_ptr(ptr: *mut u8) -> *mut MemoryView {
@@ -669,97 +684,105 @@ pub(crate) unsafe fn memoryview_ptr(ptr: *mut u8) -> *mut MemoryView {
 }
 
 pub(crate) unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
-    (*memoryview_ptr(ptr)).owner_bits
+    unsafe { (*memoryview_ptr(ptr)).owner_bits }
 }
 
 pub(crate) unsafe fn memoryview_offset(ptr: *mut u8) -> isize {
-    (*memoryview_ptr(ptr)).offset
+    unsafe { (*memoryview_ptr(ptr)).offset }
 }
 
 pub(crate) unsafe fn memoryview_len(ptr: *mut u8) -> usize {
-    (*memoryview_ptr(ptr)).len
+    unsafe { (*memoryview_ptr(ptr)).len }
 }
 
 pub(crate) unsafe fn memoryview_itemsize(ptr: *mut u8) -> usize {
-    (*memoryview_ptr(ptr)).itemsize
+    unsafe { (*memoryview_ptr(ptr)).itemsize }
 }
 
 pub(crate) unsafe fn memoryview_stride(ptr: *mut u8) -> isize {
-    (*memoryview_ptr(ptr)).stride
+    unsafe { (*memoryview_ptr(ptr)).stride }
 }
 
 pub(crate) unsafe fn memoryview_readonly(ptr: *mut u8) -> bool {
-    (*memoryview_ptr(ptr)).readonly != 0
+    unsafe { (*memoryview_ptr(ptr)).readonly != 0 }
 }
 
 pub(crate) unsafe fn memoryview_ndim(ptr: *mut u8) -> usize {
-    (*memoryview_ptr(ptr)).ndim as usize
+    unsafe { (*memoryview_ptr(ptr)).ndim as usize }
 }
 
 pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {
-    (*memoryview_ptr(ptr)).format_bits
+    unsafe { (*memoryview_ptr(ptr)).format_bits }
 }
 
 pub(crate) unsafe fn memoryview_shape_ptr(ptr: *mut u8) -> *mut Vec<isize> {
-    (*memoryview_ptr(ptr)).shape_ptr
+    unsafe { (*memoryview_ptr(ptr)).shape_ptr }
 }
 
 pub(crate) unsafe fn memoryview_strides_ptr(ptr: *mut u8) -> *mut Vec<isize> {
-    (*memoryview_ptr(ptr)).strides_ptr
+    unsafe { (*memoryview_ptr(ptr)).strides_ptr }
 }
 
 pub(crate) unsafe fn memoryview_shape(ptr: *mut u8) -> Option<&'static [isize]> {
-    let shape_ptr = memoryview_shape_ptr(ptr);
-    if shape_ptr.is_null() {
-        return None;
+    unsafe {
+        let shape_ptr = memoryview_shape_ptr(ptr);
+        if shape_ptr.is_null() {
+            return None;
+        }
+        Some(&*shape_ptr)
     }
-    Some(&*shape_ptr)
 }
 
 pub(crate) unsafe fn memoryview_strides(ptr: *mut u8) -> Option<&'static [isize]> {
-    let strides_ptr = memoryview_strides_ptr(ptr);
-    if strides_ptr.is_null() {
-        return None;
+    unsafe {
+        let strides_ptr = memoryview_strides_ptr(ptr);
+        if strides_ptr.is_null() {
+            return None;
+        }
+        Some(&*strides_ptr)
     }
-    Some(&*strides_ptr)
 }
 
 pub(crate) unsafe fn dataclass_desc_ptr(ptr: *mut u8) -> *mut DataclassDesc {
-    *(ptr as *const *mut DataclassDesc)
+    unsafe { *(ptr as *const *mut DataclassDesc) }
 }
 
 pub(crate) unsafe fn dataclass_fields_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *const *mut Vec<u64>)
+    unsafe { *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *const *mut Vec<u64>) }
 }
 
 pub(crate) unsafe fn dataclass_fields_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    &*dataclass_fields_ptr(ptr)
+    unsafe { &*dataclass_fields_ptr(ptr) }
 }
 
 pub(crate) unsafe fn dataclass_fields_mut(ptr: *mut u8) -> &'static mut Vec<u64> {
-    &mut *dataclass_fields_ptr(ptr)
+    unsafe { &mut *dataclass_fields_ptr(ptr) }
 }
 
 pub(crate) unsafe fn dataclass_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
-    ptr.add(std::mem::size_of::<*mut DataclassDesc>() + std::mem::size_of::<*mut Vec<u64>>())
-        as *mut u64
+    unsafe {
+        ptr.add(std::mem::size_of::<*mut DataclassDesc>() + std::mem::size_of::<*mut Vec<u64>>())
+            as *mut u64
+    }
 }
 
 pub(crate) unsafe fn dataclass_dict_bits(ptr: *mut u8) -> u64 {
-    *dataclass_dict_bits_ptr(ptr)
+    unsafe { *dataclass_dict_bits_ptr(ptr) }
 }
 
 pub(crate) unsafe fn dataclass_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    crate::gil_assert();
-    *dataclass_dict_bits_ptr(ptr) = bits;
+    unsafe {
+        crate::gil_assert();
+        *dataclass_dict_bits_ptr(ptr) = bits;
+    }
 }
 
 pub(crate) unsafe fn buffer2d_ptr(ptr: *mut u8) -> *mut Buffer2D {
-    *(ptr as *const *mut Buffer2D)
+    unsafe { *(ptr as *const *mut Buffer2D) }
 }
 
 pub(crate) unsafe fn file_handle_ptr(ptr: *mut u8) -> *mut MoltFileHandle {
-    *(ptr as *const *mut MoltFileHandle)
+    unsafe { *(ptr as *const *mut MoltFileHandle) }
 }
 
 pub(crate) fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
@@ -770,8 +793,8 @@ pub(crate) fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        alloc_object_zeroed_with_pool, dec_ref_ptr, object_pool, object_pool_index,
-        object_pool_take, MoltHeader, OBJECT_POOL_TLS, TYPE_ID_OBJECT, TYPE_ID_TUPLE,
+        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_object_zeroed_with_pool,
+        dec_ref_ptr, object_pool, object_pool_index, object_pool_take,
     };
     use crate::PyToken;
     use std::alloc::Layout;
@@ -846,38 +869,46 @@ pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
 
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
-    crate::with_gil_entry!(_py, {
-        inc_ref_ptr(_py, ptr);
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            inc_ref_ptr(_py, ptr);
+        })
+    }
 }
 
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
-    crate::with_gil_entry!(_py, {
-        dec_ref_ptr(_py, ptr);
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            dec_ref_ptr(_py, ptr);
+        })
+    }
 }
 
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
 pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
-    crate::gil_assert();
-    if ptr.is_null() {
-        return;
-    }
-    let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    let new_count = (*header_ptr)
-        .ref_count
-        .fetch_add(1, AtomicOrdering::Relaxed)
-        + 1;
-    if debug_rc_object() {
-        let header = &*header_ptr;
-        if header.type_id == TYPE_ID_OBJECT && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0 {
-            eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
+    unsafe {
+        crate::gil_assert();
+        if ptr.is_null() {
+            return;
+        }
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        let new_count = (*header_ptr)
+            .ref_count
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            + 1;
+        if debug_rc_object() {
+            let header = &*header_ptr;
+            if header.type_id == TYPE_ID_OBJECT
+                && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
+            {
+                eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
+            }
         }
     }
 }
@@ -885,550 +916,553 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
-    crate::gil_assert();
-    if ptr.is_null() {
-        return;
-    }
-    let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    let header = &mut *header_ptr;
-    if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
-        return;
-    }
-    let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-    if debug_rc_object()
-        && header.type_id == TYPE_ID_OBJECT
-        && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
-    {
-        eprintln!(
-            "molt rc dec ptr=0x{:x} count={}",
-            ptr as usize,
-            prev.saturating_sub(1)
-        );
-    }
-    if prev == 1 {
-        std::sync::atomic::fence(AtomicOrdering::Acquire);
-        if debug_dec_ref_zero() {
+    unsafe {
+        crate::gil_assert();
+        if ptr.is_null() {
+            return;
+        }
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        let header = &mut *header_ptr;
+        if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
+            return;
+        }
+        let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        if debug_rc_object()
+            && header.type_id == TYPE_ID_OBJECT
+            && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
+        {
             eprintln!(
-                "molt dec_ref_zero ptr=0x{:x} type_id={}",
-                ptr as usize, header.type_id
+                "molt rc dec ptr=0x{:x} count={}",
+                ptr as usize,
+                prev.saturating_sub(1)
             );
         }
-        weakref_clear_for_ptr(py, ptr);
-        match header.type_id {
-            TYPE_ID_STRING => {
-                utf8_cache_remove(py, ptr as usize);
+        if prev == 1 {
+            std::sync::atomic::fence(AtomicOrdering::Acquire);
+            if debug_dec_ref_zero() {
+                eprintln!(
+                    "molt dec_ref_zero ptr=0x{:x} type_id={}",
+                    ptr as usize, header.type_id
+                );
             }
-            TYPE_ID_LIST => {
-                let vec_ptr = seq_vec_ptr(ptr);
-                if !vec_ptr.is_null() {
-                    let vec = Box::from_raw(vec_ptr);
-                    for bits in vec.iter() {
-                        dec_ref_bits(py, *bits);
-                    }
+            weakref_clear_for_ptr(py, ptr);
+            match header.type_id {
+                TYPE_ID_STRING => {
+                    utf8_cache_remove(py, ptr as usize);
                 }
-            }
-            TYPE_ID_LIST_BUILDER => {
-                let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                if !vec_ptr.is_null() {
-                    drop(Box::from_raw(vec_ptr));
-                }
-            }
-            TYPE_ID_BYTEARRAY => {
-                let vec_ptr = bytearray_vec_ptr(ptr);
-                if !vec_ptr.is_null() {
-                    drop(Box::from_raw(vec_ptr));
-                }
-            }
-            TYPE_ID_TUPLE => {
-                let vec_ptr = seq_vec_ptr(ptr);
-                if !vec_ptr.is_null() {
-                    let vec = Box::from_raw(vec_ptr);
-                    for bits in vec.iter() {
-                        dec_ref_bits(py, *bits);
-                    }
-                }
-            }
-            TYPE_ID_DICT => {
-                let order_ptr = dict_order_ptr(ptr);
-                let table_ptr = dict_table_ptr(ptr);
-                if !order_ptr.is_null() {
-                    let order = Box::from_raw(order_ptr);
-                    for bits in order.iter() {
-                        dec_ref_bits(py, *bits);
-                    }
-                }
-                if !table_ptr.is_null() {
-                    drop(Box::from_raw(table_ptr));
-                }
-            }
-            TYPE_ID_DICT_BUILDER => {
-                let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                if !vec_ptr.is_null() {
-                    drop(Box::from_raw(vec_ptr));
-                }
-            }
-            TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                let order_ptr = set_order_ptr(ptr);
-                let table_ptr = set_table_ptr(ptr);
-                if !order_ptr.is_null() {
-                    let order = Box::from_raw(order_ptr);
-                    for bits in order.iter() {
-                        dec_ref_bits(py, *bits);
-                    }
-                }
-                if !table_ptr.is_null() {
-                    drop(Box::from_raw(table_ptr));
-                }
-            }
-            TYPE_ID_SET_BUILDER => {
-                let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                if !vec_ptr.is_null() {
-                    drop(Box::from_raw(vec_ptr));
-                }
-            }
-            TYPE_ID_CALLARGS => {
-                let args_ptr = callargs_ptr(ptr);
-                if !args_ptr.is_null() {
-                    drop(Box::from_raw(args_ptr));
-                }
-            }
-            TYPE_ID_MEMORYVIEW => {
-                let owner_bits = memoryview_owner_bits(ptr);
-                if owner_bits != 0 && !obj_from_bits(owner_bits).is_none() {
-                    dec_ref_bits(py, owner_bits);
-                }
-            }
-            TYPE_ID_RANGE => {
-                let start_bits = range_start_bits(ptr);
-                let stop_bits = range_stop_bits(ptr);
-                let step_bits = range_step_bits(ptr);
-                if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
-                    dec_ref_bits(py, start_bits);
-                }
-                if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
-                    dec_ref_bits(py, stop_bits);
-                }
-                if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
-                    dec_ref_bits(py, step_bits);
-                }
-            }
-            TYPE_ID_SLICE => {
-                let start_bits = slice_start_bits(ptr);
-                let stop_bits = slice_stop_bits(ptr);
-                let step_bits = slice_step_bits(ptr);
-                if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
-                    dec_ref_bits(py, start_bits);
-                }
-                if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
-                    dec_ref_bits(py, stop_bits);
-                }
-                if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
-                    dec_ref_bits(py, step_bits);
-                }
-            }
-            TYPE_ID_DATACLASS => {
-                let desc_ptr = dataclass_desc_ptr(ptr);
-                let fields_ptr = dataclass_fields_ptr(ptr);
-                if !fields_ptr.is_null() {
-                    let fields = Box::from_raw(fields_ptr);
-                    for &val_bits in fields.iter() {
-                        if val_bits != 0 && !obj_from_bits(val_bits).is_none() {
-                            dec_ref_bits(py, val_bits);
+                TYPE_ID_LIST => {
+                    let vec_ptr = seq_vec_ptr(ptr);
+                    if !vec_ptr.is_null() {
+                        let vec = Box::from_raw(vec_ptr);
+                        for bits in vec.iter() {
+                            dec_ref_bits(py, *bits);
                         }
                     }
                 }
-                let dict_bits = dataclass_dict_bits(ptr);
-                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                    dec_ref_bits(py, dict_bits);
-                }
-                if !desc_ptr.is_null() {
-                    let class_bits = (*desc_ptr).class_bits;
-                    if class_bits != 0 && !obj_from_bits(class_bits).is_none() {
-                        dec_ref_bits(py, class_bits);
-                    }
-                    drop(Box::from_raw(desc_ptr));
-                }
-            }
-            TYPE_ID_CODE => {
-                let filename_bits = code_filename_bits(ptr);
-                let name_bits = code_name_bits(ptr);
-                let linetable_bits = code_linetable_bits(ptr);
-                let varnames_bits = code_varnames_bits(ptr);
-                if filename_bits != 0 && !obj_from_bits(filename_bits).is_none() {
-                    dec_ref_bits(py, filename_bits);
-                }
-                if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
-                    dec_ref_bits(py, name_bits);
-                }
-                if linetable_bits != 0 && !obj_from_bits(linetable_bits).is_none() {
-                    dec_ref_bits(py, linetable_bits);
-                }
-                if varnames_bits != 0 && !obj_from_bits(varnames_bits).is_none() {
-                    dec_ref_bits(py, varnames_bits);
-                }
-            }
-            TYPE_ID_FUNCTION => {
-                let dict_bits = function_dict_bits(ptr);
-                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                    dec_ref_bits(py, dict_bits);
-                }
-                let annotations_bits = function_annotations_bits(ptr);
-                if annotations_bits != 0 && !obj_from_bits(annotations_bits).is_none() {
-                    dec_ref_bits(py, annotations_bits);
-                }
-                let annotate_bits = function_annotate_bits(ptr);
-                if annotate_bits != 0 && !obj_from_bits(annotate_bits).is_none() {
-                    dec_ref_bits(py, annotate_bits);
-                }
-                let code_bits = function_code_bits(ptr);
-                if code_bits != 0 && !obj_from_bits(code_bits).is_none() {
-                    dec_ref_bits(py, code_bits);
-                }
-                let closure_bits = function_closure_bits(ptr);
-                if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
-                    dec_ref_bits(py, closure_bits);
-                }
-            }
-            TYPE_ID_BOUND_METHOD => {
-                let func_bits = bound_method_func_bits(ptr);
-                let self_bits = bound_method_self_bits(ptr);
-                if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                    dec_ref_bits(py, func_bits);
-                }
-                if self_bits != 0 && !obj_from_bits(self_bits).is_none() {
-                    dec_ref_bits(py, self_bits);
-                }
-            }
-            TYPE_ID_PROPERTY => {
-                let get_bits = property_get_bits(ptr);
-                let set_bits = property_set_bits(ptr);
-                let del_bits = property_del_bits(ptr);
-                if get_bits != 0 && !obj_from_bits(get_bits).is_none() {
-                    dec_ref_bits(py, get_bits);
-                }
-                if set_bits != 0 && !obj_from_bits(set_bits).is_none() {
-                    dec_ref_bits(py, set_bits);
-                }
-                if del_bits != 0 && !obj_from_bits(del_bits).is_none() {
-                    dec_ref_bits(py, del_bits);
-                }
-            }
-            TYPE_ID_CLASSMETHOD => {
-                let func_bits = classmethod_func_bits(ptr);
-                if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                    dec_ref_bits(py, func_bits);
-                }
-            }
-            TYPE_ID_STATICMETHOD => {
-                let func_bits = staticmethod_func_bits(ptr);
-                if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                    dec_ref_bits(py, func_bits);
-                }
-            }
-            TYPE_ID_GENERIC_ALIAS => {
-                let origin_bits = generic_alias_origin_bits(ptr);
-                let args_bits = generic_alias_args_bits(ptr);
-                if origin_bits != 0 && !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(py, origin_bits);
-                }
-                if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-                    dec_ref_bits(py, args_bits);
-                }
-            }
-            TYPE_ID_UNION => {
-                let args_bits = union_type_args_bits(ptr);
-                if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-                    dec_ref_bits(py, args_bits);
-                }
-            }
-            TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
-                let dict_bits = dict_view_dict_bits(ptr);
-                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                    dec_ref_bits(py, dict_bits);
-                }
-            }
-            TYPE_ID_EXCEPTION => {
-                let exc_kind_bits = exception_kind_bits(ptr);
-                if exc_kind_bits != 0 && !obj_from_bits(exc_kind_bits).is_none() {
-                    dec_ref_bits(py, exc_kind_bits);
-                }
-                let exc_msg_bits = exception_msg_bits(ptr);
-                if exc_msg_bits != 0 && !obj_from_bits(exc_msg_bits).is_none() {
-                    dec_ref_bits(py, exc_msg_bits);
-                }
-                let exc_type_bits = exception_class_bits(ptr);
-                if exc_type_bits != 0 && !obj_from_bits(exc_type_bits).is_none() {
-                    dec_ref_bits(py, exc_type_bits);
-                }
-                let exc_args_bits = exception_args_bits(ptr);
-                if exc_args_bits != 0 && !obj_from_bits(exc_args_bits).is_none() {
-                    dec_ref_bits(py, exc_args_bits);
-                }
-                let exc_cause_bits = exception_cause_bits(ptr);
-                if exc_cause_bits != 0 && !obj_from_bits(exc_cause_bits).is_none() {
-                    dec_ref_bits(py, exc_cause_bits);
-                }
-                let exc_ctx_bits = exception_context_bits(ptr);
-                if exc_ctx_bits != 0 && !obj_from_bits(exc_ctx_bits).is_none() {
-                    dec_ref_bits(py, exc_ctx_bits);
-                }
-                let exc_trace_bits = exception_trace_bits(ptr);
-                if exc_trace_bits != 0 && !obj_from_bits(exc_trace_bits).is_none() {
-                    dec_ref_bits(py, exc_trace_bits);
-                }
-                let exc_suppress_bits = exception_suppress_bits(ptr);
-                if exc_suppress_bits != 0 && !obj_from_bits(exc_suppress_bits).is_none() {
-                    dec_ref_bits(py, exc_suppress_bits);
-                }
-                let exc_val_bits = exception_value_bits(ptr);
-                if exc_val_bits != 0 && !obj_from_bits(exc_val_bits).is_none() {
-                    dec_ref_bits(py, exc_val_bits);
-                }
-            }
-            TYPE_ID_CONTEXT_MANAGER => {
-                let payload_bits = context_payload_bits(ptr);
-                if payload_bits != 0 && !obj_from_bits(payload_bits).is_none() {
-                    dec_ref_bits(py, payload_bits);
-                }
-            }
-            TYPE_ID_MODULE => {
-                let dict_bits = module_dict_bits(ptr);
-                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                    dec_ref_bits(py, dict_bits);
-                }
-                let name_bits = module_name_bits(ptr);
-                if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
-                    dec_ref_bits(py, name_bits);
-                }
-            }
-            TYPE_ID_ENUMERATE => {
-                let target_bits = enumerate_target_bits(ptr);
-                if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                    dec_ref_bits(py, target_bits);
-                }
-                let idx_bits = enumerate_index_bits(ptr);
-                if idx_bits != 0 && !obj_from_bits(idx_bits).is_none() {
-                    dec_ref_bits(py, idx_bits);
-                }
-            }
-            TYPE_ID_FILTER => {
-                let func_bits = filter_func_bits(ptr);
-                let iter_bits = filter_iter_bits(ptr);
-                if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                    dec_ref_bits(py, func_bits);
-                }
-                if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-                    dec_ref_bits(py, iter_bits);
-                }
-            }
-            TYPE_ID_MAP => {
-                let func_bits = map_func_bits(ptr);
-                let iters_ptr = map_iters_ptr(ptr);
-                if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                    dec_ref_bits(py, func_bits);
-                }
-                if !iters_ptr.is_null() {
-                    let iters = Box::from_raw(iters_ptr);
-                    for bits in iters.iter() {
-                        dec_ref_bits(py, *bits);
+                TYPE_ID_LIST_BUILDER => {
+                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
                     }
                 }
-            }
-            TYPE_ID_ITER => {
-                let target_bits = iter_target_bits(ptr);
-                if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                    dec_ref_bits(py, target_bits);
-                }
-            }
-            TYPE_ID_REVERSED => {
-                let target_bits = reversed_target_bits(ptr);
-                if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                    dec_ref_bits(py, target_bits);
-                }
-            }
-            TYPE_ID_ZIP => {
-                let iters_ptr = zip_iters_ptr(ptr);
-                if !iters_ptr.is_null() {
-                    let iters = Box::from_raw(iters_ptr);
-                    for bits in iters.iter() {
-                        dec_ref_bits(py, *bits);
+                TYPE_ID_BYTEARRAY => {
+                    let vec_ptr = bytearray_vec_ptr(ptr);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
                     }
                 }
-                let strict_bits = zip_strict_bits(ptr);
-                if strict_bits != 0 && !obj_from_bits(strict_bits).is_none() {
-                    dec_ref_bits(py, strict_bits);
-                }
-            }
-            TYPE_ID_GENERATOR => {
-                let send_bits = *(ptr.add(GEN_SEND_OFFSET) as *const u64);
-                let throw_bits = *(ptr.add(GEN_THROW_OFFSET) as *const u64);
-                let closed_bits = *(ptr.add(GEN_CLOSED_OFFSET) as *const u64);
-                let depth_bits = *(ptr.add(GEN_EXC_DEPTH_OFFSET) as *const u64);
-                dec_ref_bits(py, send_bits);
-                dec_ref_bits(py, throw_bits);
-                dec_ref_bits(py, closed_bits);
-                dec_ref_bits(py, depth_bits);
-                generator_exception_stack_drop(py, ptr);
-                generator_context_stack_drop(py, ptr);
-            }
-            TYPE_ID_ASYNC_GENERATOR => {
-                let pending_bits = asyncgen_pending_bits(ptr);
-                let running_bits = asyncgen_running_bits(ptr);
-                let gen_bits = asyncgen_gen_bits(ptr);
-                asyncgen_call_finalizer(py, ptr);
-                if pending_bits != 0 && !obj_from_bits(pending_bits).is_none() {
-                    dec_ref_bits(py, pending_bits);
-                }
-                if running_bits != 0 && !obj_from_bits(running_bits).is_none() {
-                    dec_ref_bits(py, running_bits);
-                }
-                if gen_bits != 0 && !obj_from_bits(gen_bits).is_none() {
-                    dec_ref_bits(py, gen_bits);
-                }
-                asyncgen_registry_remove(py, ptr);
-            }
-            TYPE_ID_BUFFER2D => {
-                let buffer_ptr = buffer2d_ptr(ptr);
-                if !buffer_ptr.is_null() {
-                    drop(Box::from_raw(buffer_ptr));
-                }
-            }
-            TYPE_ID_FILE_HANDLE => {
-                let handle_ptr = file_handle_ptr(ptr);
-                if !handle_ptr.is_null() {
-                    let handle = &mut *handle_ptr;
-                    flush_file_handle_on_drop(py, handle);
-                    if handle.name_bits != 0 && !obj_from_bits(handle.name_bits).is_none() {
-                        dec_ref_bits(py, handle.name_bits);
-                    }
-                    if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
-                        dec_ref_bits(py, handle.buffer_bits);
-                    }
-                    if handle.mem_bits != 0 && !obj_from_bits(handle.mem_bits).is_none() {
-                        dec_ref_bits(py, handle.mem_bits);
-                    }
-                    drop(Box::from_raw(handle_ptr));
-                }
-            }
-            TYPE_ID_CALL_ITER => {
-                let sentinel_bits = call_iter_sentinel_bits(ptr);
-                let callable_bits = call_iter_callable_bits(ptr);
-                if sentinel_bits != 0 && !obj_from_bits(sentinel_bits).is_none() {
-                    dec_ref_bits(py, sentinel_bits);
-                }
-                if callable_bits != 0 && !obj_from_bits(callable_bits).is_none() {
-                    dec_ref_bits(py, callable_bits);
-                }
-            }
-            TYPE_ID_OBJECT => {
-                let poll_fn = header.poll_fn;
-                if poll_fn == asyncio_wait_for_poll_fn_addr() {
-                    asyncio_wait_for_task_drop(py, ptr);
-                } else if poll_fn == asyncio_wait_poll_fn_addr() {
-                    asyncio_wait_task_drop(py, ptr);
-                } else if poll_fn == asyncio_gather_poll_fn_addr() {
-                    asyncio_gather_task_drop(py, ptr);
-                } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
-                    asyncio_timer_handle_task_drop(py, ptr);
-                } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
-                    asyncio_fd_watcher_task_drop(py, ptr);
-                } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
-                    asyncio_server_accept_loop_task_drop(py, ptr);
-                } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
-                    asyncio_ready_runner_task_drop(py, ptr);
-                } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
-                    contextlib_asyncgen_enter_task_drop(py, ptr);
-                } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
-                    contextlib_asyncgen_exit_task_drop(py, ptr);
-                } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
-                    contextlib_async_exitstack_exit_task_drop(py, ptr);
-                } else if poll_fn == contextlib_async_exitstack_enter_context_poll_fn_addr() {
-                    contextlib_async_exitstack_enter_context_task_drop(py, ptr);
-                } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
-                    asyncio_socket_reader_read_task_drop(py, ptr);
-                } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
-                    asyncio_socket_reader_readline_task_drop(py, ptr);
-                } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
-                    asyncio_stream_reader_read_task_drop(py, ptr);
-                } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
-                    asyncio_stream_reader_readline_task_drop(py, ptr);
-                } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
-                    asyncio_stream_send_all_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
-                    asyncio_sock_recv_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
-                    asyncio_sock_connect_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
-                    asyncio_sock_accept_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
-                    asyncio_sock_recv_into_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
-                    asyncio_sock_sendall_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
-                    asyncio_sock_recvfrom_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
-                    asyncio_sock_recvfrom_into_task_drop(py, ptr);
-                } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
-                    asyncio_sock_sendto_task_drop(py, ptr);
-                } else if poll_fn == thread_poll_fn_addr() {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    thread_task_drop(py, ptr);
-                } else if poll_fn == process_poll_fn_addr() {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    process_task_drop(py, ptr);
-                } else if poll_fn == io_wait_poll_fn_addr() {
-                    io_wait_release_socket(py, ptr);
-                } else if poll_fn == ws_wait_poll_fn_addr() {
-                    ws_wait_release(py, ptr);
-                }
-                if poll_fn != 0 {
-                    task_cancel_message_clear(py, ptr);
-                }
-                let class_bits = unsafe { object_class_bits(ptr) };
-                let builtins = builtin_classes_if_initialized(py);
-                if let Some(builtins) = builtins {
-                    if class_bits != 0 && issubclass_bits(class_bits, builtins.dict) {
-                        let payload = unsafe { object_payload_size(ptr) };
-                        let slot = PtrSlot(ptr);
-                        let mut storage = runtime_state(py).dict_subclass_storage.lock().unwrap();
-                        if let Some(bits) = storage.remove(&slot) {
-                            if bits != 0 && !obj_from_bits(bits).is_none() {
-                                dec_ref_bits(py, bits);
-                            }
+                TYPE_ID_TUPLE => {
+                    let vec_ptr = seq_vec_ptr(ptr);
+                    if !vec_ptr.is_null() {
+                        let vec = Box::from_raw(vec_ptr);
+                        for bits in vec.iter() {
+                            dec_ref_bits(py, *bits);
                         }
-                        drop(storage);
-                        if payload >= 2 * std::mem::size_of::<u64>() {
-                            let storage_ptr = unsafe {
-                                ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64
-                            };
-                            let storage_bits = unsafe { *storage_ptr };
-                            if storage_bits != 0 && !obj_from_bits(storage_bits).is_none() {
-                                dec_ref_bits(py, storage_bits);
+                    }
+                }
+                TYPE_ID_DICT => {
+                    let order_ptr = dict_order_ptr(ptr);
+                    let table_ptr = dict_table_ptr(ptr);
+                    if !order_ptr.is_null() {
+                        let order = Box::from_raw(order_ptr);
+                        for bits in order.iter() {
+                            dec_ref_bits(py, *bits);
+                        }
+                    }
+                    if !table_ptr.is_null() {
+                        drop(Box::from_raw(table_ptr));
+                    }
+                }
+                TYPE_ID_DICT_BUILDER => {
+                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
+                    }
+                }
+                TYPE_ID_SET | TYPE_ID_FROZENSET => {
+                    let order_ptr = set_order_ptr(ptr);
+                    let table_ptr = set_table_ptr(ptr);
+                    if !order_ptr.is_null() {
+                        let order = Box::from_raw(order_ptr);
+                        for bits in order.iter() {
+                            dec_ref_bits(py, *bits);
+                        }
+                    }
+                    if !table_ptr.is_null() {
+                        drop(Box::from_raw(table_ptr));
+                    }
+                }
+                TYPE_ID_SET_BUILDER => {
+                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
+                    }
+                }
+                TYPE_ID_CALLARGS => {
+                    let args_ptr = callargs_ptr(ptr);
+                    if !args_ptr.is_null() {
+                        drop(Box::from_raw(args_ptr));
+                    }
+                }
+                TYPE_ID_MEMORYVIEW => {
+                    let owner_bits = memoryview_owner_bits(ptr);
+                    if owner_bits != 0 && !obj_from_bits(owner_bits).is_none() {
+                        dec_ref_bits(py, owner_bits);
+                    }
+                }
+                TYPE_ID_RANGE => {
+                    let start_bits = range_start_bits(ptr);
+                    let stop_bits = range_stop_bits(ptr);
+                    let step_bits = range_step_bits(ptr);
+                    if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
+                        dec_ref_bits(py, start_bits);
+                    }
+                    if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
+                        dec_ref_bits(py, stop_bits);
+                    }
+                    if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
+                        dec_ref_bits(py, step_bits);
+                    }
+                }
+                TYPE_ID_SLICE => {
+                    let start_bits = slice_start_bits(ptr);
+                    let stop_bits = slice_stop_bits(ptr);
+                    let step_bits = slice_step_bits(ptr);
+                    if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
+                        dec_ref_bits(py, start_bits);
+                    }
+                    if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
+                        dec_ref_bits(py, stop_bits);
+                    }
+                    if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
+                        dec_ref_bits(py, step_bits);
+                    }
+                }
+                TYPE_ID_DATACLASS => {
+                    let desc_ptr = dataclass_desc_ptr(ptr);
+                    let fields_ptr = dataclass_fields_ptr(ptr);
+                    if !fields_ptr.is_null() {
+                        let fields = Box::from_raw(fields_ptr);
+                        for &val_bits in fields.iter() {
+                            if val_bits != 0 && !obj_from_bits(val_bits).is_none() {
+                                dec_ref_bits(py, val_bits);
                             }
                         }
                     }
+                    let dict_bits = dataclass_dict_bits(ptr);
+                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                        dec_ref_bits(py, dict_bits);
+                    }
+                    if !desc_ptr.is_null() {
+                        let class_bits = (*desc_ptr).class_bits;
+                        if class_bits != 0 && !obj_from_bits(class_bits).is_none() {
+                            dec_ref_bits(py, class_bits);
+                        }
+                        drop(Box::from_raw(desc_ptr));
+                    }
                 }
-                let _ = operator_drop_instance(py, ptr)
-                    || itertools_drop_instance(py, ptr)
-                    || functools_drop_instance(py, ptr)
-                    || types_drop_instance(py, ptr);
+                TYPE_ID_CODE => {
+                    let filename_bits = code_filename_bits(ptr);
+                    let name_bits = code_name_bits(ptr);
+                    let linetable_bits = code_linetable_bits(ptr);
+                    let varnames_bits = code_varnames_bits(ptr);
+                    if filename_bits != 0 && !obj_from_bits(filename_bits).is_none() {
+                        dec_ref_bits(py, filename_bits);
+                    }
+                    if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
+                        dec_ref_bits(py, name_bits);
+                    }
+                    if linetable_bits != 0 && !obj_from_bits(linetable_bits).is_none() {
+                        dec_ref_bits(py, linetable_bits);
+                    }
+                    if varnames_bits != 0 && !obj_from_bits(varnames_bits).is_none() {
+                        dec_ref_bits(py, varnames_bits);
+                    }
+                }
+                TYPE_ID_FUNCTION => {
+                    let dict_bits = function_dict_bits(ptr);
+                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                        dec_ref_bits(py, dict_bits);
+                    }
+                    let annotations_bits = function_annotations_bits(ptr);
+                    if annotations_bits != 0 && !obj_from_bits(annotations_bits).is_none() {
+                        dec_ref_bits(py, annotations_bits);
+                    }
+                    let annotate_bits = function_annotate_bits(ptr);
+                    if annotate_bits != 0 && !obj_from_bits(annotate_bits).is_none() {
+                        dec_ref_bits(py, annotate_bits);
+                    }
+                    let code_bits = function_code_bits(ptr);
+                    if code_bits != 0 && !obj_from_bits(code_bits).is_none() {
+                        dec_ref_bits(py, code_bits);
+                    }
+                    let closure_bits = function_closure_bits(ptr);
+                    if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
+                        dec_ref_bits(py, closure_bits);
+                    }
+                }
+                TYPE_ID_BOUND_METHOD => {
+                    let func_bits = bound_method_func_bits(ptr);
+                    let self_bits = bound_method_self_bits(ptr);
+                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
+                        dec_ref_bits(py, func_bits);
+                    }
+                    if self_bits != 0 && !obj_from_bits(self_bits).is_none() {
+                        dec_ref_bits(py, self_bits);
+                    }
+                }
+                TYPE_ID_PROPERTY => {
+                    let get_bits = property_get_bits(ptr);
+                    let set_bits = property_set_bits(ptr);
+                    let del_bits = property_del_bits(ptr);
+                    if get_bits != 0 && !obj_from_bits(get_bits).is_none() {
+                        dec_ref_bits(py, get_bits);
+                    }
+                    if set_bits != 0 && !obj_from_bits(set_bits).is_none() {
+                        dec_ref_bits(py, set_bits);
+                    }
+                    if del_bits != 0 && !obj_from_bits(del_bits).is_none() {
+                        dec_ref_bits(py, del_bits);
+                    }
+                }
+                TYPE_ID_CLASSMETHOD => {
+                    let func_bits = classmethod_func_bits(ptr);
+                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
+                        dec_ref_bits(py, func_bits);
+                    }
+                }
+                TYPE_ID_STATICMETHOD => {
+                    let func_bits = staticmethod_func_bits(ptr);
+                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
+                        dec_ref_bits(py, func_bits);
+                    }
+                }
+                TYPE_ID_GENERIC_ALIAS => {
+                    let origin_bits = generic_alias_origin_bits(ptr);
+                    let args_bits = generic_alias_args_bits(ptr);
+                    if origin_bits != 0 && !obj_from_bits(origin_bits).is_none() {
+                        dec_ref_bits(py, origin_bits);
+                    }
+                    if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
+                        dec_ref_bits(py, args_bits);
+                    }
+                }
+                TYPE_ID_UNION => {
+                    let args_bits = union_type_args_bits(ptr);
+                    if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
+                        dec_ref_bits(py, args_bits);
+                    }
+                }
+                TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
+                    let dict_bits = dict_view_dict_bits(ptr);
+                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                        dec_ref_bits(py, dict_bits);
+                    }
+                }
+                TYPE_ID_EXCEPTION => {
+                    let exc_kind_bits = exception_kind_bits(ptr);
+                    if exc_kind_bits != 0 && !obj_from_bits(exc_kind_bits).is_none() {
+                        dec_ref_bits(py, exc_kind_bits);
+                    }
+                    let exc_msg_bits = exception_msg_bits(ptr);
+                    if exc_msg_bits != 0 && !obj_from_bits(exc_msg_bits).is_none() {
+                        dec_ref_bits(py, exc_msg_bits);
+                    }
+                    let exc_type_bits = exception_class_bits(ptr);
+                    if exc_type_bits != 0 && !obj_from_bits(exc_type_bits).is_none() {
+                        dec_ref_bits(py, exc_type_bits);
+                    }
+                    let exc_args_bits = exception_args_bits(ptr);
+                    if exc_args_bits != 0 && !obj_from_bits(exc_args_bits).is_none() {
+                        dec_ref_bits(py, exc_args_bits);
+                    }
+                    let exc_cause_bits = exception_cause_bits(ptr);
+                    if exc_cause_bits != 0 && !obj_from_bits(exc_cause_bits).is_none() {
+                        dec_ref_bits(py, exc_cause_bits);
+                    }
+                    let exc_ctx_bits = exception_context_bits(ptr);
+                    if exc_ctx_bits != 0 && !obj_from_bits(exc_ctx_bits).is_none() {
+                        dec_ref_bits(py, exc_ctx_bits);
+                    }
+                    let exc_trace_bits = exception_trace_bits(ptr);
+                    if exc_trace_bits != 0 && !obj_from_bits(exc_trace_bits).is_none() {
+                        dec_ref_bits(py, exc_trace_bits);
+                    }
+                    let exc_suppress_bits = exception_suppress_bits(ptr);
+                    if exc_suppress_bits != 0 && !obj_from_bits(exc_suppress_bits).is_none() {
+                        dec_ref_bits(py, exc_suppress_bits);
+                    }
+                    let exc_val_bits = exception_value_bits(ptr);
+                    if exc_val_bits != 0 && !obj_from_bits(exc_val_bits).is_none() {
+                        dec_ref_bits(py, exc_val_bits);
+                    }
+                }
+                TYPE_ID_CONTEXT_MANAGER => {
+                    let payload_bits = context_payload_bits(ptr);
+                    if payload_bits != 0 && !obj_from_bits(payload_bits).is_none() {
+                        dec_ref_bits(py, payload_bits);
+                    }
+                }
+                TYPE_ID_MODULE => {
+                    let dict_bits = module_dict_bits(ptr);
+                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                        dec_ref_bits(py, dict_bits);
+                    }
+                    let name_bits = module_name_bits(ptr);
+                    if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
+                        dec_ref_bits(py, name_bits);
+                    }
+                }
+                TYPE_ID_ENUMERATE => {
+                    let target_bits = enumerate_target_bits(ptr);
+                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
+                        dec_ref_bits(py, target_bits);
+                    }
+                    let idx_bits = enumerate_index_bits(ptr);
+                    if idx_bits != 0 && !obj_from_bits(idx_bits).is_none() {
+                        dec_ref_bits(py, idx_bits);
+                    }
+                }
+                TYPE_ID_FILTER => {
+                    let func_bits = filter_func_bits(ptr);
+                    let iter_bits = filter_iter_bits(ptr);
+                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
+                        dec_ref_bits(py, func_bits);
+                    }
+                    if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
+                        dec_ref_bits(py, iter_bits);
+                    }
+                }
+                TYPE_ID_MAP => {
+                    let func_bits = map_func_bits(ptr);
+                    let iters_ptr = map_iters_ptr(ptr);
+                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
+                        dec_ref_bits(py, func_bits);
+                    }
+                    if !iters_ptr.is_null() {
+                        let iters = Box::from_raw(iters_ptr);
+                        for bits in iters.iter() {
+                            dec_ref_bits(py, *bits);
+                        }
+                    }
+                }
+                TYPE_ID_ITER => {
+                    let target_bits = iter_target_bits(ptr);
+                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
+                        dec_ref_bits(py, target_bits);
+                    }
+                }
+                TYPE_ID_REVERSED => {
+                    let target_bits = reversed_target_bits(ptr);
+                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
+                        dec_ref_bits(py, target_bits);
+                    }
+                }
+                TYPE_ID_ZIP => {
+                    let iters_ptr = zip_iters_ptr(ptr);
+                    if !iters_ptr.is_null() {
+                        let iters = Box::from_raw(iters_ptr);
+                        for bits in iters.iter() {
+                            dec_ref_bits(py, *bits);
+                        }
+                    }
+                    let strict_bits = zip_strict_bits(ptr);
+                    if strict_bits != 0 && !obj_from_bits(strict_bits).is_none() {
+                        dec_ref_bits(py, strict_bits);
+                    }
+                }
+                TYPE_ID_GENERATOR => {
+                    let send_bits = *(ptr.add(GEN_SEND_OFFSET) as *const u64);
+                    let throw_bits = *(ptr.add(GEN_THROW_OFFSET) as *const u64);
+                    let closed_bits = *(ptr.add(GEN_CLOSED_OFFSET) as *const u64);
+                    let depth_bits = *(ptr.add(GEN_EXC_DEPTH_OFFSET) as *const u64);
+                    dec_ref_bits(py, send_bits);
+                    dec_ref_bits(py, throw_bits);
+                    dec_ref_bits(py, closed_bits);
+                    dec_ref_bits(py, depth_bits);
+                    generator_exception_stack_drop(py, ptr);
+                    generator_context_stack_drop(py, ptr);
+                }
+                TYPE_ID_ASYNC_GENERATOR => {
+                    let pending_bits = asyncgen_pending_bits(ptr);
+                    let running_bits = asyncgen_running_bits(ptr);
+                    let gen_bits = asyncgen_gen_bits(ptr);
+                    asyncgen_call_finalizer(py, ptr);
+                    if pending_bits != 0 && !obj_from_bits(pending_bits).is_none() {
+                        dec_ref_bits(py, pending_bits);
+                    }
+                    if running_bits != 0 && !obj_from_bits(running_bits).is_none() {
+                        dec_ref_bits(py, running_bits);
+                    }
+                    if gen_bits != 0 && !obj_from_bits(gen_bits).is_none() {
+                        dec_ref_bits(py, gen_bits);
+                    }
+                    asyncgen_registry_remove(py, ptr);
+                }
+                TYPE_ID_BUFFER2D => {
+                    let buffer_ptr = buffer2d_ptr(ptr);
+                    if !buffer_ptr.is_null() {
+                        drop(Box::from_raw(buffer_ptr));
+                    }
+                }
+                TYPE_ID_FILE_HANDLE => {
+                    let handle_ptr = file_handle_ptr(ptr);
+                    if !handle_ptr.is_null() {
+                        let handle = &mut *handle_ptr;
+                        flush_file_handle_on_drop(py, handle);
+                        if handle.name_bits != 0 && !obj_from_bits(handle.name_bits).is_none() {
+                            dec_ref_bits(py, handle.name_bits);
+                        }
+                        if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
+                            dec_ref_bits(py, handle.buffer_bits);
+                        }
+                        if handle.mem_bits != 0 && !obj_from_bits(handle.mem_bits).is_none() {
+                            dec_ref_bits(py, handle.mem_bits);
+                        }
+                        drop(Box::from_raw(handle_ptr));
+                    }
+                }
+                TYPE_ID_CALL_ITER => {
+                    let sentinel_bits = call_iter_sentinel_bits(ptr);
+                    let callable_bits = call_iter_callable_bits(ptr);
+                    if sentinel_bits != 0 && !obj_from_bits(sentinel_bits).is_none() {
+                        dec_ref_bits(py, sentinel_bits);
+                    }
+                    if callable_bits != 0 && !obj_from_bits(callable_bits).is_none() {
+                        dec_ref_bits(py, callable_bits);
+                    }
+                }
+                TYPE_ID_OBJECT => {
+                    let poll_fn = header.poll_fn;
+                    if poll_fn == asyncio_wait_for_poll_fn_addr() {
+                        asyncio_wait_for_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_wait_poll_fn_addr() {
+                        asyncio_wait_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_gather_poll_fn_addr() {
+                        asyncio_gather_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
+                        asyncio_timer_handle_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
+                        asyncio_fd_watcher_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
+                        asyncio_server_accept_loop_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
+                        asyncio_ready_runner_task_drop(py, ptr);
+                    } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
+                        contextlib_asyncgen_enter_task_drop(py, ptr);
+                    } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
+                        contextlib_asyncgen_exit_task_drop(py, ptr);
+                    } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
+                        contextlib_async_exitstack_exit_task_drop(py, ptr);
+                    } else if poll_fn == contextlib_async_exitstack_enter_context_poll_fn_addr() {
+                        contextlib_async_exitstack_enter_context_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
+                        asyncio_socket_reader_read_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
+                        asyncio_socket_reader_readline_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
+                        asyncio_stream_reader_read_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
+                        asyncio_stream_reader_readline_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
+                        asyncio_stream_send_all_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
+                        asyncio_sock_recv_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
+                        asyncio_sock_connect_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
+                        asyncio_sock_accept_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
+                        asyncio_sock_recv_into_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
+                        asyncio_sock_sendall_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
+                        asyncio_sock_recvfrom_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
+                        asyncio_sock_recvfrom_into_task_drop(py, ptr);
+                    } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
+                        asyncio_sock_sendto_task_drop(py, ptr);
+                    } else if poll_fn == thread_poll_fn_addr() {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        thread_task_drop(py, ptr);
+                    } else if poll_fn == process_poll_fn_addr() {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        process_task_drop(py, ptr);
+                    } else if poll_fn == io_wait_poll_fn_addr() {
+                        io_wait_release_socket(py, ptr);
+                    } else if poll_fn == ws_wait_poll_fn_addr() {
+                        ws_wait_release(py, ptr);
+                    }
+                    if poll_fn != 0 {
+                        task_cancel_message_clear(py, ptr);
+                    }
+                    let class_bits = unsafe { object_class_bits(ptr) };
+                    let builtins = builtin_classes_if_initialized(py);
+                    if let Some(builtins) = builtins {
+                        if class_bits != 0 && issubclass_bits(class_bits, builtins.dict) {
+                            let payload = unsafe { object_payload_size(ptr) };
+                            let slot = PtrSlot(ptr);
+                            let mut storage =
+                                runtime_state(py).dict_subclass_storage.lock().unwrap();
+                            if let Some(bits) = storage.remove(&slot) {
+                                if bits != 0 && !obj_from_bits(bits).is_none() {
+                                    dec_ref_bits(py, bits);
+                                }
+                            }
+                            drop(storage);
+                            if payload >= 2 * std::mem::size_of::<u64>() {
+                                let storage_ptr = unsafe {
+                                    ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64
+                                };
+                                let storage_bits = unsafe { *storage_ptr };
+                                if storage_bits != 0 && !obj_from_bits(storage_bits).is_none() {
+                                    dec_ref_bits(py, storage_bits);
+                                }
+                            }
+                        }
+                    }
+                    let _ = operator_drop_instance(py, ptr)
+                        || itertools_drop_instance(py, ptr)
+                        || functools_drop_instance(py, ptr)
+                        || types_drop_instance(py, ptr);
+                }
+                TYPE_ID_BIGINT => {
+                    std::ptr::drop_in_place(ptr as *mut BigInt);
+                }
+                _ => {}
             }
-            TYPE_ID_BIGINT => {
-                std::ptr::drop_in_place(ptr as *mut BigInt);
+            release_ptr(ptr);
+            let total_size = header.size;
+            let should_pool = header.type_id == TYPE_ID_OBJECT
+                && object_pool_put(py, total_size, header_ptr as *mut u8);
+            if should_pool {
+                return;
             }
-            _ => {}
+            if total_size == 0 {
+                return;
+            }
+            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            std::alloc::dealloc(header_ptr as *mut u8, layout);
         }
-        release_ptr(ptr);
-        let total_size = header.size;
-        let should_pool = header.type_id == TYPE_ID_OBJECT
-            && object_pool_put(py, total_size, header_ptr as *mut u8);
-        if should_pool {
-            return;
-        }
-        if total_size == 0 {
-            return;
-        }
-        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-        std::alloc::dealloc(header_ptr as *mut u8, layout);
     }
 }

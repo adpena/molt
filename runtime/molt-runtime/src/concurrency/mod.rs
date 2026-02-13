@@ -5,7 +5,7 @@ pub(crate) mod locks;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-pub(crate) use gil::{gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken};
+pub(crate) use gil::{GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil};
 #[allow(unused_imports)]
 pub(crate) use isolates::*;
 #[allow(unused_imports)]

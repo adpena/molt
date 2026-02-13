@@ -1,9 +1,9 @@
 use crate::{
-    alloc_object, buffer2d_ptr, obj_from_bits, object_type_id, raise_exception, to_i64, Buffer2D,
-    MoltHeader, MoltObject, TYPE_ID_BUFFER2D,
+    Buffer2D, MoltHeader, MoltObject, TYPE_ID_BUFFER2D, alloc_object, buffer2d_ptr, obj_from_bits,
+    object_type_id, raise_exception, to_i64,
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let rows = match to_i64(obj_from_bits(rows_bits)) {
@@ -37,7 +37,7 @@ pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let row = match to_i64(obj_from_bits(row_bits)) {
@@ -70,7 +70,7 @@ pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_set(
     obj_bits: u64,
     row_bits: u64,
@@ -113,7 +113,7 @@ pub extern "C" fn molt_buffer2d_set(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let a = obj_from_bits(a_bits);

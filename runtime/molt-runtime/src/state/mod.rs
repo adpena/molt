@@ -18,7 +18,7 @@ pub(crate) use recursion::{
     recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
 };
 pub(crate) use runtime_state::{
-    clear_thread_runtime_state, set_thread_runtime_state, RuntimeState,
+    RuntimeState, clear_thread_runtime_state, set_thread_runtime_state,
 };
 pub(crate) use tls::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,

@@ -2,13 +2,14 @@ use crate::state::runtime_state::{
     WeakKeyDictEntry, WeakRefEntry, WeakSetEntry, WeakValueDictEntry,
 };
 use crate::{
-    alloc_list, alloc_tuple, call_callable0, call_callable1, clear_exception, dec_ref_bits,
-    dict_order, exception_pending, header_from_obj_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
-    module_dict_bits, obj_from_bits, object_type_id, resolve_ptr, TYPE_ID_DICT, TYPE_ID_MODULE,
+    MoltObject, PtrSlot, PyToken, molt_eq, molt_is_callable, raise_exception, runtime_state,
+    type_name,
 };
 use crate::{
-    molt_eq, molt_is_callable, raise_exception, runtime_state, type_name, MoltObject, PtrSlot,
-    PyToken,
+    TYPE_ID_DICT, TYPE_ID_MODULE, alloc_list, alloc_tuple, call_callable0, call_callable1,
+    clear_exception, dec_ref_bits, dict_order, exception_pending, header_from_obj_ptr,
+    inc_ref_bits, int_bits_from_i64, is_truthy, module_dict_bits, obj_from_bits, object_type_id,
+    resolve_ptr,
 };
 use std::ptr;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -372,7 +373,7 @@ fn weakset_find_index(
     Ok(None)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
@@ -387,7 +388,7 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
@@ -401,7 +402,7 @@ pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_count(target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
@@ -412,7 +413,7 @@ pub extern "C" fn molt_weakref_count(target_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_register(
     weak_bits: u64,
     target_bits: u64,
@@ -460,7 +461,7 @@ pub extern "C" fn molt_weakref_register(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
@@ -517,7 +518,7 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
@@ -542,7 +543,7 @@ pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_drop(weak_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
@@ -557,7 +558,7 @@ pub extern "C" fn molt_weakref_drop(weak_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_collect() -> u64 {
     crate::with_gil_entry!(_py, {
         weakref_collect_for_gc(_py);
@@ -565,7 +566,7 @@ pub extern "C" fn molt_weakref_collect() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_finalize_track(finalizer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(finalizer_bits).is_none() {
@@ -592,7 +593,7 @@ pub extern "C" fn molt_weakref_finalize_track(finalizer_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let mut guard = runtime_state(_py).weakref_finalizers.lock().unwrap();
@@ -609,7 +610,7 @@ pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_set(
     dict_bits: u64,
     key_bits: u64,
@@ -652,7 +653,7 @@ pub extern "C" fn molt_weakkeydict_set(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_get(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -679,7 +680,7 @@ pub extern "C" fn molt_weakkeydict_get(dict_bits: u64, key_bits: u64, key_hash_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_del(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -706,7 +707,7 @@ pub extern "C" fn molt_weakkeydict_del(dict_bits: u64, key_bits: u64, key_hash_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_contains(
     dict_bits: u64,
     key_bits: u64,
@@ -732,7 +733,7 @@ pub extern "C" fn molt_weakkeydict_contains(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_len(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -761,7 +762,7 @@ pub extern "C" fn molt_weakkeydict_len(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_items(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -798,7 +799,7 @@ pub extern "C" fn molt_weakkeydict_items(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_keyrefs(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -831,7 +832,7 @@ pub extern "C" fn molt_weakkeydict_keyrefs(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_popitem(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -867,7 +868,7 @@ pub extern "C" fn molt_weakkeydict_popitem(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_clear(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakkeydict_slots(_py);
@@ -886,7 +887,7 @@ pub extern "C" fn molt_weakkeydict_clear(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_set(
     dict_bits: u64,
     key_bits: u64,
@@ -930,7 +931,7 @@ pub extern "C" fn molt_weakvaluedict_set(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_get(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -964,7 +965,7 @@ pub extern "C" fn molt_weakvaluedict_get(dict_bits: u64, key_bits: u64, key_hash
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_del(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -991,7 +992,7 @@ pub extern "C" fn molt_weakvaluedict_del(dict_bits: u64, key_bits: u64, key_hash
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_contains(
     dict_bits: u64,
     key_bits: u64,
@@ -1017,7 +1018,7 @@ pub extern "C" fn molt_weakvaluedict_contains(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_len(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -1046,7 +1047,7 @@ pub extern "C" fn molt_weakvaluedict_len(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_items(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -1083,7 +1084,7 @@ pub extern "C" fn molt_weakvaluedict_items(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_valuerefs(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -1116,7 +1117,7 @@ pub extern "C" fn molt_weakvaluedict_valuerefs(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_popitem(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -1151,7 +1152,7 @@ pub extern "C" fn molt_weakvaluedict_popitem(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_clear(dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakvaluedict_slots(_py);
@@ -1170,7 +1171,7 @@ pub extern "C" fn molt_weakvaluedict_clear(dict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_add(
     set_bits: u64,
     item_bits: u64,
@@ -1203,7 +1204,7 @@ pub extern "C" fn molt_weakset_add(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_discard(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1228,7 +1229,7 @@ pub extern "C" fn molt_weakset_discard(set_bits: u64, item_bits: u64, item_hash_
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_remove(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1254,7 +1255,7 @@ pub extern "C" fn molt_weakset_remove(set_bits: u64, item_bits: u64, item_hash_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_pop(set_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1286,7 +1287,7 @@ pub extern "C" fn molt_weakset_pop(set_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_contains(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1308,7 +1309,7 @@ pub extern "C" fn molt_weakset_contains(set_bits: u64, item_bits: u64, item_hash
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_len(set_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1337,7 +1338,7 @@ pub extern "C" fn molt_weakset_len(set_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_items(set_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);
@@ -1370,7 +1371,7 @@ pub extern "C" fn molt_weakset_items(set_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_clear(set_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         prune_weakset_slots(_py);

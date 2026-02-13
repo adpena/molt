@@ -1,14 +1,14 @@
 use molt_obj_model::MoltObject;
 
-use crate::{
-    alloc_list, alloc_tuple, attr_name_bits_from_bytes, bits_from_ptr, call_callable0,
-    dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, molt_iter,
-    molt_iter_next, monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
-    seq_vec_ref, to_f64, to_i64, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_TUPLE,
-};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{raise_os_error, GilReleaseGuard};
+use crate::{GilReleaseGuard, raise_os_error};
+use crate::{
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_TUPLE, alloc_list, alloc_tuple,
+    attr_name_bits_from_bytes, bits_from_ptr, call_callable0, dec_ref_bits, exception_pending,
+    inc_ref_bits, int_bits_from_i64, is_truthy, maybe_ptr_from_bits, missing_bits,
+    molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next, monotonic_now_secs,
+    obj_from_bits, ptr_from_bits, raise_exception, release_ptr, seq_vec_ref, to_f64, to_i64,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
@@ -371,7 +371,7 @@ fn release_bits(_py: &crate::PyToken<'_>, bits: &[u64]) {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
@@ -394,7 +394,7 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_fileno(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let selector = match selector_state(_py, handle_bits) {
@@ -405,7 +405,7 @@ pub extern "C" fn molt_select_selector_fileno(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_register(
     handle_bits: u64,
     fileobj_bits: u64,
@@ -438,7 +438,7 @@ pub extern "C" fn molt_select_selector_register(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
@@ -458,7 +458,7 @@ pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_modify(
     handle_bits: u64,
     fd_bits: u64,
@@ -485,7 +485,7 @@ pub extern "C" fn molt_select_selector_modify(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let selector = match selector_state(_py, handle_bits) {
@@ -603,7 +603,7 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
@@ -622,7 +622,7 @@ pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
@@ -642,7 +642,7 @@ pub extern "C" fn molt_select_selector_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_select(
     rlist_bits: u64,
     wlist_bits: u64,

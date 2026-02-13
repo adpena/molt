@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use digest::Digest;
-use getrandom::getrandom;
+use getrandom::fill as getrandom_fill;
 use md5::Md5;
 use sha1::Sha1;
 
@@ -34,7 +34,7 @@ pub(crate) const SOCK_CLOEXEC_FLAG: i32 = 0;
 
 // --- errno/socket/env helpers ---
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let msg = format_obj_str(_py, obj_from_bits(msg_bits));
@@ -93,7 +93,7 @@ fn uuid_v1_state() -> &'static Mutex<(Option<u16>, u64)> {
 
 fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
     let mut out = [0u8; N];
-    getrandom(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
+    getrandom_fill(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
     Ok(out)
 }
 
@@ -3067,11 +3067,7 @@ fn importlib_reader_files_root_path(
     let out = match path_from_bits(_py, value_bits) {
         Ok(path) => {
             let text = path.to_string_lossy().into_owned();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
+            if text.is_empty() { None } else { Some(text) }
         }
         Err(_) => {
             if exception_pending(_py) {
@@ -3991,7 +3987,7 @@ fn iterable_count_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Res
     Ok(count)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4003,7 +3999,7 @@ pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4016,7 +4012,7 @@ pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4029,7 +4025,7 @@ pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4044,7 +4040,7 @@ pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4056,7 +4052,7 @@ pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4074,7 +4070,7 @@ pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
@@ -4173,7 +4169,7 @@ pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_source_loader_payload(
     module_name_bits: u64,
     path_bits: u64,
@@ -4197,7 +4193,7 @@ pub extern "C" fn molt_importlib_source_loader_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_extension_loader_payload(
     module_name_bits: u64,
     path_bits: u64,
@@ -4221,7 +4217,7 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_sourceless_loader_payload(
     module_name_bits: u64,
     path_bits: u64,
@@ -4245,7 +4241,7 @@ pub extern "C" fn molt_importlib_sourceless_loader_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_source_exec_payload(
     module_name_bits: u64,
     path_bits: u64,
@@ -4328,7 +4324,7 @@ pub extern "C" fn molt_importlib_source_exec_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_zip_source_exec_payload(
     module_name_bits: u64,
     archive_path_bits: u64,
@@ -4431,7 +4427,7 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_exec_extension(
     namespace_bits: u64,
     module_name_bits: u64,
@@ -4511,7 +4507,7 @@ pub extern "C" fn molt_importlib_exec_extension(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_exec_sourceless(
     namespace_bits: u64,
     module_name_bits: u64,
@@ -4591,7 +4587,7 @@ pub extern "C" fn molt_importlib_exec_sourceless(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
@@ -4609,7 +4605,7 @@ pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_is_package(module_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match importlib_module_spec_is_package_bits(_py, module_bits) {
@@ -4619,7 +4615,7 @@ pub extern "C" fn molt_importlib_module_spec_is_package(module_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match traceback_exception_suppress_context_bits(_py, value_bits) {
@@ -4629,7 +4625,7 @@ pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -4652,7 +4648,7 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
@@ -4814,14 +4810,14 @@ fn importlib_find_in_path_payload(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, false)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_in_path_package_context(
     fullname_bits: u64,
     search_paths_bits: u64,
@@ -4831,7 +4827,7 @@ pub extern "C" fn molt_importlib_find_in_path_package_context(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_spec_payload(
     fullname_bits: u64,
     search_paths_bits: u64,
@@ -5061,7 +5057,7 @@ pub extern "C" fn molt_importlib_find_spec_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_bootstrap_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -5169,7 +5165,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_state_payload() -> u64 {
     crate::with_gil_entry!(_py, {
         match importlib_runtime_state_payload_bits(_py) {
@@ -5179,7 +5175,7 @@ pub extern "C" fn molt_importlib_runtime_state_payload() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_search_paths(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -5202,7 +5198,7 @@ pub extern "C" fn molt_importlib_search_paths(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_namespace_paths(
     package_bits: u64,
     search_paths_bits: u64,
@@ -5233,7 +5229,7 @@ pub extern "C" fn molt_importlib_namespace_paths(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -5297,7 +5293,7 @@ pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_package_payload(
     package_bits: u64,
     search_paths_bits: u64,
@@ -5371,7 +5367,7 @@ pub extern "C" fn molt_importlib_resources_package_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_as_file_enter(
     traversable_bits: u64,
     traversable_type_bits: u64,
@@ -5399,7 +5395,7 @@ pub extern "C" fn molt_importlib_resources_as_file_enter(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_as_file_exit(
     _exc_type_bits: u64,
     _exc_bits: u64,
@@ -5408,7 +5404,7 @@ pub extern "C" fn molt_importlib_resources_as_file_exit(
     crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_module_name(
     module_bits: u64,
     fallback_bits: u64,
@@ -5426,7 +5422,7 @@ pub extern "C" fn molt_importlib_resources_module_name(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_loader_reader(
     module_bits: u64,
     module_name_bits: u64,
@@ -5444,7 +5440,7 @@ pub extern "C" fn molt_importlib_resources_loader_reader(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_files_traversable(reader_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match importlib_reader_files_traversable_bits(_py, reader_bits) {
@@ -5455,7 +5451,7 @@ pub extern "C" fn molt_importlib_resources_reader_files_traversable(reader_bits:
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_roots(reader_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let roots = match importlib_resources_reader_roots_impl(_py, reader_bits) {
@@ -5469,7 +5465,7 @@ pub extern "C" fn molt_importlib_resources_reader_roots(reader_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_contents(reader_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let entries = match importlib_resources_reader_contents_impl(_py, reader_bits) {
@@ -5483,7 +5479,7 @@ pub extern "C" fn molt_importlib_resources_reader_contents(reader_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_resource_path(
     reader_bits: u64,
     name_bits: u64,
@@ -5507,7 +5503,7 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_is_resource(
     reader_bits: u64,
     name_bits: u64,
@@ -5524,7 +5520,7 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes(
     reader_bits: u64,
     name_bits: u64,
@@ -5548,7 +5544,7 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_child_names(
     reader_bits: u64,
     parts_bits: u64,
@@ -5569,7 +5565,7 @@ pub extern "C" fn molt_importlib_resources_reader_child_names(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_exists(reader_bits: u64, parts_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let parts = match string_sequence_arg_from_bits(_py, parts_bits, "parts") {
@@ -5583,7 +5579,7 @@ pub extern "C" fn molt_importlib_resources_reader_exists(reader_bits: u64, parts
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_is_dir(reader_bits: u64, parts_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let parts = match string_sequence_arg_from_bits(_py, parts_bits, "parts") {
@@ -5597,7 +5593,7 @@ pub extern "C" fn molt_importlib_resources_reader_is_dir(reader_bits: u64, parts
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_dist_paths(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -5623,7 +5619,7 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_entry_points_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -5649,7 +5645,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -5690,7 +5686,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
@@ -5704,7 +5700,7 @@ pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -5830,7 +5826,7 @@ pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
@@ -5886,7 +5882,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_runpy_resolve_path(path_bits: u64, module_file_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -5940,7 +5936,7 @@ pub extern "C" fn molt_runpy_resolve_path(path_bits: u64, module_file_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_getnode() -> u64 {
     crate::with_gil_entry!(_py, {
         match uuid_node() {
@@ -5950,7 +5946,7 @@ pub extern "C" fn molt_uuid_getnode() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
     crate::with_gil_entry!(_py, {
         let payload = match uuid_v4_bytes() {
@@ -5966,7 +5962,7 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "time.wall") && !has_capability(_py, "time") {
@@ -6017,7 +6013,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
@@ -6045,7 +6041,7 @@ pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
@@ -6073,7 +6069,7 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_name() -> u64 {
     crate::with_gil_entry!(_py, {
         init_atomic_bits(_py, &OS_NAME_CACHE, || {
@@ -6087,7 +6083,7 @@ pub extern "C" fn molt_os_name() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_platform() -> u64 {
     crate::with_gil_entry!(_py, {
         init_atomic_bits(_py, &SYS_PLATFORM_CACHE, || {
@@ -6101,7 +6097,7 @@ pub extern "C" fn molt_sys_platform() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(locale_bits).is_none() {
@@ -6130,7 +6126,7 @@ pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_getpreferredencoding(_do_setlocale_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let current = locale_state()
@@ -6144,7 +6140,7 @@ pub extern "C" fn molt_locale_getpreferredencoding(_do_setlocale_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let current = locale_state()
@@ -6180,7 +6176,7 @@ pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_gettext_gettext(message_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, message_bits);
@@ -6188,7 +6184,7 @@ pub extern "C" fn molt_gettext_gettext(message_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let one = MoltObject::from_int(1);
@@ -6363,7 +6359,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_errno_constants() -> u64 {
     crate::with_gil_entry!(_py, {
         init_atomic_bits(_py, &ERRNO_CONSTANTS_CACHE, || {
@@ -6419,7 +6415,7 @@ pub extern "C" fn molt_errno_constants() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_constants() -> u64 {
     crate::with_gil_entry!(_py, {
         init_atomic_bits(_py, &SOCKET_CONSTANTS_CACHE, || {
@@ -6457,7 +6453,7 @@ pub extern "C" fn molt_socket_constants() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6492,7 +6488,7 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6513,7 +6509,7 @@ pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6530,7 +6526,7 @@ pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_len() -> u64 {
     crate::with_gil_entry!(_py, {
         let len = {
@@ -6543,7 +6539,7 @@ pub extern "C" fn molt_env_len() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6560,7 +6556,7 @@ pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_snapshot() -> u64 {
     crate::with_gil_entry!(_py, {
         let env_pairs: Vec<(String, String)> = {
@@ -6608,7 +6604,7 @@ pub extern "C" fn molt_env_snapshot() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_popitem() -> u64 {
     crate::with_gil_entry!(_py, {
         let (key, value) = {
@@ -6647,7 +6643,7 @@ pub extern "C" fn molt_env_popitem() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_clear() -> u64 {
     crate::with_gil_entry!(_py, {
         {
@@ -6660,7 +6656,7 @@ pub extern "C" fn molt_env_clear() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6681,7 +6677,7 @@ pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -6858,10 +6854,12 @@ mod tests {
             || {
                 let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
                 assert_eq!(state.virtual_env_raw, venv_root_text);
-                assert!(state
-                    .venv_site_packages_entries
-                    .iter()
-                    .any(|entry| entry == &site_packages_text));
+                assert!(
+                    state
+                        .venv_site_packages_entries
+                        .iter()
+                        .any(|entry| entry == &site_packages_text)
+                );
                 assert!(state.path.iter().any(|entry| entry == &site_packages_text));
             },
         );
@@ -7105,11 +7103,13 @@ mod tests {
         let module = importlib_find_in_path("bcmod", &search_paths, false).expect("module spec");
         assert_eq!(module.loader_kind, "bytecode");
         assert_eq!(module.cached, None);
-        assert!(module
-            .origin
-            .as_deref()
-            .unwrap_or("")
-            .ends_with("bcmod.pyc"));
+        assert!(
+            module
+                .origin
+                .as_deref()
+                .unwrap_or("")
+                .ends_with("bcmod.pyc")
+        );
 
         let package = importlib_find_in_path("bcpkg", &search_paths, false).expect("package spec");
         assert_eq!(package.loader_kind, "bytecode");
@@ -7137,7 +7137,7 @@ mod tests {
         let archive = tmp.join("mods.zip");
         let file = std::fs::File::create(&archive).expect("create zip file");
         let mut writer = zip::ZipWriter::new(file);
-        let options =
+        let options: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer
             .start_file("zipmod.py", options)
@@ -7159,11 +7159,13 @@ mod tests {
         assert_eq!(module.loader_kind, "zip_source");
         assert_eq!(module.zip_archive, Some(archive_text.clone()));
         assert_eq!(module.zip_inner_path, Some("zipmod.py".to_string()));
-        assert!(module
-            .origin
-            .as_deref()
-            .unwrap_or("")
-            .ends_with("mods.zip/zipmod.py"));
+        assert!(
+            module
+                .origin
+                .as_deref()
+                .unwrap_or("")
+                .ends_with("mods.zip/zipmod.py")
+        );
 
         let package = importlib_find_in_path("zpkg", &search_paths, false).expect("package spec");
         assert_eq!(package.loader_kind, "zip_source");
@@ -7193,7 +7195,7 @@ mod tests {
         let archive = tmp.join("mods.zip");
         let file = std::fs::File::create(&archive).expect("create zip file");
         let mut writer = zip::ZipWriter::new(file);
-        let options =
+        let options: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer
             .start_file("zipmod.py", options)
@@ -7241,9 +7243,11 @@ mod tests {
                 assert!(resolved.iter().any(|entry| {
                     entry.ends_with("/molt/stdlib") || entry.ends_with("\\molt\\stdlib")
                 }));
-                assert!(resolved
-                    .iter()
-                    .any(|entry| entry == &expected_stdlib_root()));
+                assert!(
+                    resolved
+                        .iter()
+                        .any(|entry| entry == &expected_stdlib_root())
+                );
             },
         );
     }
@@ -7293,7 +7297,7 @@ mod tests {
         let archive = tmp.join("mods.zip");
         let file = std::fs::File::create(&archive).expect("create zip file");
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer
             .start_file("nszip/pkg/mod.py", options)
             .expect("start namespace file");
@@ -7390,7 +7394,7 @@ mod tests {
         let archive = tmp.join("resources.zip");
         let file = std::fs::File::create(&archive).expect("create zip file");
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer
             .start_file("pkg/__init__.py", options)
             .expect("start __init__.py");
@@ -7413,14 +7417,18 @@ mod tests {
         assert!(!package_payload.is_file);
         assert!(package_payload.has_init_py);
         assert!(package_payload.is_archive_member);
-        assert!(package_payload
-            .entries
-            .iter()
-            .any(|entry| entry == "__init__.py"));
-        assert!(package_payload
-            .entries
-            .iter()
-            .any(|entry| entry == "data.txt"));
+        assert!(
+            package_payload
+                .entries
+                .iter()
+                .any(|entry| entry == "__init__.py")
+        );
+        assert!(
+            package_payload
+                .entries
+                .iter()
+                .any(|entry| entry == "data.txt")
+        );
 
         let file_payload = importlib_resources_path_payload(&format!("{package_root}/data.txt"));
         assert!(file_payload.exists);
@@ -7435,14 +7443,18 @@ mod tests {
             Some(bootstrap_module_file()),
         );
         assert!(package_meta.has_regular_package);
-        assert!(package_meta
-            .roots
-            .iter()
-            .any(|entry| entry == &package_root));
-        assert!(package_meta
-            .init_file
-            .as_deref()
-            .is_some_and(|entry| entry.ends_with("resources.zip/pkg/__init__.py")));
+        assert!(
+            package_meta
+                .roots
+                .iter()
+                .any(|entry| entry == &package_root)
+        );
+        assert!(
+            package_meta
+                .init_file
+                .as_deref()
+                .is_some_and(|entry| entry.ends_with("resources.zip/pkg/__init__.py"))
+        );
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
     }
@@ -7462,7 +7474,7 @@ mod tests {
         let archive = tmp.join("resources.whl");
         let file = std::fs::File::create(&archive).expect("create whl file");
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer
             .start_file("pkg/data.txt", options)
             .expect("start data.txt");
@@ -7508,23 +7520,29 @@ mod tests {
         let payload = importlib_metadata_payload(&dist.to_string_lossy());
         assert_eq!(payload.name, "demo-pkg");
         assert_eq!(payload.version, "1.2.3");
-        assert!(payload
-            .metadata
-            .iter()
-            .any(|(key, value)| key == "Name" && value == "demo-pkg"));
+        assert!(
+            payload
+                .metadata
+                .iter()
+                .any(|(key, value)| key == "Name" && value == "demo-pkg")
+        );
         assert!(payload.entry_points.iter().any(|(name, value, group)| {
             name == "demo" && value == "demo_pkg:main" && group == "console_scripts"
         }));
         assert_eq!(payload.requires_python.as_deref(), Some(">=3.12"));
         assert_eq!(payload.requires_dist.len(), 2);
-        assert!(payload
-            .requires_dist
-            .iter()
-            .any(|value| value == "dep-one>=1"));
-        assert!(payload
-            .requires_dist
-            .iter()
-            .any(|value| value == "dep-two; extra == \"dev\""));
+        assert!(
+            payload
+                .requires_dist
+                .iter()
+                .any(|value| value == "dep-one>=1")
+        );
+        assert!(
+            payload
+                .requires_dist
+                .iter()
+                .any(|value| value == "dep-two; extra == \"dev\"")
+        );
         assert!(payload.provides_extra.iter().any(|value| value == "dev"));
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -7551,19 +7569,25 @@ mod tests {
                     &vec!["src".to_string()],
                     Some(bootstrap_module_file()),
                 );
-                assert!(payload
-                    .resolved_search_paths
-                    .iter()
-                    .any(|entry| entry == "src"));
-                assert!(payload
-                    .resolved_search_paths
-                    .iter()
-                    .any(|entry| entry == &expected_stdlib_root()));
+                assert!(
+                    payload
+                        .resolved_search_paths
+                        .iter()
+                        .any(|entry| entry == "src")
+                );
+                assert!(
+                    payload
+                        .resolved_search_paths
+                        .iter()
+                        .any(|entry| entry == &expected_stdlib_root())
+                );
                 assert_eq!(payload.pythonpath_entries, vec!["alpha".to_string()]);
-                assert!(payload
-                    .module_roots_entries
-                    .iter()
-                    .any(|entry| entry == "vendor"));
+                assert!(
+                    payload
+                        .module_roots_entries
+                        .iter()
+                        .any(|entry| entry == "vendor")
+                );
                 assert!(payload.venv_site_packages_entries.is_empty());
                 assert!(payload.include_cwd);
                 assert_eq!(payload.pwd, "/tmp/bootstrap_pwd");
@@ -7637,9 +7661,11 @@ mod tests {
             None,
         );
         assert_eq!(group_filtered.len(), 2);
-        assert!(group_filtered
-            .iter()
-            .all(|(_, _, group)| group == "console_scripts"));
+        assert!(
+            group_filtered
+                .iter()
+                .all(|(_, _, group)| group == "console_scripts")
+        );
         let name_filtered = importlib_metadata_entry_points_select_payload(
             &search_paths,
             Some(bootstrap_module_file()),
@@ -7666,7 +7692,7 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
-extern "C" {
+unsafe extern "C" {
     fn environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;
     fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
 }

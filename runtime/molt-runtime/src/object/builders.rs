@@ -5,7 +5,7 @@ pub extern "C" fn molt_header_size() -> u64 {
     crate::with_gil_entry!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let size = usize_from_bits(size_bits);
@@ -23,62 +23,64 @@ unsafe fn alloc_dataclass_for_class_ptr(
     class_ptr: *mut u8,
     class_bits: u64,
 ) -> Option<u64> {
-    let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
-    let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
-    dec_ref_bits(_py, field_names_name);
-    let field_names_bits = field_names_bits?;
-    let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
-        return Some(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "dataclass field names must be a list/tuple of str",
-        ));
-    };
-    let field_count = match object_type_id(field_names_ptr) {
-        TYPE_ID_TUPLE => tuple_len(field_names_ptr),
-        TYPE_ID_LIST => list_len(field_names_ptr),
-        _ => {
+    unsafe {
+        let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
+        let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
+        dec_ref_bits(_py, field_names_name);
+        let field_names_bits = field_names_bits?;
+        let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
             return Some(raise_exception::<_>(
                 _py,
                 "TypeError",
                 "dataclass field names must be a list/tuple of str",
-            ))
-        }
-    };
-    let missing = missing_bits(_py);
-    let mut values = Vec::with_capacity(field_count);
-    values.resize(field_count, missing);
-    let values_ptr = alloc_tuple(_py, &values);
-    if values_ptr.is_null() {
-        return Some(MoltObject::none().bits());
-    }
-    let values_bits = MoltObject::from_ptr(values_ptr).bits();
-    let flags_bits =
-        if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
-            let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                .unwrap_or_else(|| MoltObject::from_int(0).bits());
-            dec_ref_bits(_py, flags_name);
-            bits
-        } else {
-            MoltObject::from_int(0).bits()
+            ));
         };
-    let name_bits = class_name_bits(class_ptr);
-    let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
-    dec_ref_bits(_py, values_bits);
-    if exception_pending(_py) {
-        return Some(MoltObject::none().bits());
+        let field_count = match object_type_id(field_names_ptr) {
+            TYPE_ID_TUPLE => tuple_len(field_names_ptr),
+            TYPE_ID_LIST => list_len(field_names_ptr),
+            _ => {
+                return Some(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "dataclass field names must be a list/tuple of str",
+                ));
+            }
+        };
+        let missing = missing_bits(_py);
+        let mut values = Vec::with_capacity(field_count);
+        values.resize(field_count, missing);
+        let values_ptr = alloc_tuple(_py, &values);
+        if values_ptr.is_null() {
+            return Some(MoltObject::none().bits());
+        }
+        let values_bits = MoltObject::from_ptr(values_ptr).bits();
+        let flags_bits =
+            if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
+                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                    .unwrap_or_else(|| MoltObject::from_int(0).bits());
+                dec_ref_bits(_py, flags_name);
+                bits
+            } else {
+                MoltObject::from_int(0).bits()
+            };
+        let name_bits = class_name_bits(class_ptr);
+        let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
+        dec_ref_bits(_py, values_bits);
+        if exception_pending(_py) {
+            return Some(MoltObject::none().bits());
+        }
+        let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+            return Some(inst_bits);
+        };
+        let _ = dataclass_set_class_raw(_py, inst_ptr, class_bits);
+        if exception_pending(_py) {
+            return Some(MoltObject::none().bits());
+        }
+        Some(inst_bits)
     }
-    let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
-        return Some(inst_bits);
-    };
-    let _ = dataclass_set_class_raw(_py, inst_ptr, class_bits);
-    if exception_pending(_py) {
-        return Some(MoltObject::none().bits());
-    }
-    Some(inst_bits)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if class_bits != 0 {
@@ -111,7 +113,7 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if class_bits != 0 {
@@ -144,7 +146,7 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if class_bits != 0 {
@@ -235,7 +237,7 @@ pub(crate) fn alloc_set_with_entries(_py: &PyToken<'_>, entries: &[u64]) -> *mut
     alloc_set_like_with_entries(_py, entries, TYPE_ID_SET)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let debug = matches!(
@@ -258,11 +260,7 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
             let capacity_obj = MoltObject::from_bits(capacity_bits);
             let capacity_hint = if capacity_obj.is_int() {
                 let val = capacity_obj.as_int_unchecked();
-                if val > 0 {
-                    val as usize
-                } else {
-                    0
-                }
+                if val > 0 { val as usize } else { 0 }
             } else if capacity_obj.is_float() {
                 usize_from_bits(capacity_bits)
             } else {
@@ -313,120 +311,128 @@ impl Drop for PtrDropGuard {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return;
-        }
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return;
-        }
-        let vec = &mut *vec_ptr;
-        vec.push(val);
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return;
+            }
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return;
+            }
+            let vec = &mut *vec_ptr;
+            vec.push(val);
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let _guard = PtrDropGuard::new(builder_ptr);
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
-        // Reconstruct Box to drop it later, but we need the data
-        let vec = Box::from_raw(vec_ptr);
-        let slice = vec.as_slice();
-        let capacity = vec.capacity().max(MAX_SMALL_LIST);
-        let list_ptr = alloc_list_with_capacity(_py, slice, capacity);
+            // Reconstruct Box to drop it later, but we need the data
+            let vec = Box::from_raw(vec_ptr);
+            let slice = vec.as_slice();
+            let capacity = vec.capacity().max(MAX_SMALL_LIST);
+            let list_ptr = alloc_list_with_capacity(_py, slice, capacity);
 
-        // Builder object will be cleaned up by GC/Ref counting eventually,
-        // but the Vec heap allocation is owned by the Box we just reconstructed.
-        // So dropping 'vec' here frees the temporary buffer. Correct.
+            // Builder object will be cleaned up by GC/Ref counting eventually,
+            // but the Vec heap allocation is owned by the Box we just reconstructed.
+            // So dropping 'vec' here frees the temporary buffer. Correct.
 
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
-    })
+            if list_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(list_ptr).bits()
+            }
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder with owned refs.
 pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let _guard = PtrDropGuard::new(builder_ptr);
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-
-        let vec = Box::from_raw(vec_ptr);
-        let slice = vec.as_slice();
-        let capacity = vec.capacity().max(MAX_SMALL_LIST);
-        let list_ptr = alloc_list_with_capacity_owned(_py, slice, capacity);
-
-        if list_ptr.is_null() {
-            for &elem in slice {
-                dec_ref_bits(_py, elem);
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
             }
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
-    })
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+
+            let vec = Box::from_raw(vec_ptr);
+            let slice = vec.as_slice();
+            let capacity = vec.capacity().max(MAX_SMALL_LIST);
+            let list_ptr = alloc_list_with_capacity_owned(_py, slice, capacity);
+
+            if list_ptr.is_null() {
+                for &elem in slice {
+                    dec_ref_bits(_py, elem);
+                }
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(list_ptr).bits()
+            }
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a tuple builder.
 pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let _guard = PtrDropGuard::new(builder_ptr);
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
-        let vec = Box::from_raw(vec_ptr);
-        let slice = vec.as_slice();
-        let capacity = vec.capacity().max(MAX_SMALL_LIST);
-        let tuple_ptr = alloc_tuple_with_capacity(_py, slice, capacity);
+            let vec = Box::from_raw(vec_ptr);
+            let slice = vec.as_slice();
+            let capacity = vec.capacity().max(MAX_SMALL_LIST);
+            let tuple_ptr = alloc_tuple_with_capacity(_py, slice, capacity);
 
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
@@ -444,50 +450,54 @@ pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, val: u64) {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return;
-        }
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return;
-        }
-        let vec = &mut *vec_ptr;
-        vec.push(key);
-        vec.push(val);
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return;
+            }
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return;
+            }
+            let vec = &mut *vec_ptr;
+            vec.push(key);
+            vec.push(val);
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let _guard = PtrDropGuard::new(builder_ptr);
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-        let vec = Box::from_raw(vec_ptr);
-        let ptr = alloc_dict_with_pairs(_py, vec.as_slice());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+            let vec = Box::from_raw(vec_ptr);
+            let ptr = alloc_dict_with_pairs(_py, vec.as_slice());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
@@ -505,46 +515,50 @@ pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a set builder.
 pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return;
-        }
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return;
-        }
-        let vec = &mut *vec_ptr;
-        vec.push(key);
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return;
+            }
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return;
+            }
+            let vec = &mut *vec_ptr;
+            vec.push(key);
+        })
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a set builder.
 pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let builder_ptr = ptr_from_bits(builder_bits);
-        if builder_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let _guard = PtrDropGuard::new(builder_ptr);
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-        if vec_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-        let vec = Box::from_raw(vec_ptr);
-        let ptr = alloc_set_with_entries(_py, vec.as_slice());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+            let vec = Box::from_raw(vec_ptr);
+            let ptr = alloc_set_with_entries(_py, vec.as_slice());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        })
+    }
 }
 
 // --- Allocation helpers ---

@@ -168,3 +168,37 @@ def test_rss_display_status_matches_absolute_and_repo_relative_paths() -> None:
         {"tests/differential/stdlib/zipimport_basic.py": "pass"},
     )
     assert resolved == "pass"
+
+
+def test_stderr_traceback_mode_tolerates_frame_path_differences() -> None:
+    module = _load_diff_module()
+    cp_err = (
+        "Traceback (most recent call last):\n"
+        '  File "/cpython/path/test.py", line 10, in <module>\n'
+        "RuntimeError: boom\n"
+    )
+    molt_err = (
+        "Traceback (most recent call last):\n"
+        '  File "/molt/path/test.py", line 99, in <module>\n'
+        '  File "/molt/path/stdlib/_asyncio.py", line 50, in get_event_loop\n'
+        "RuntimeError: boom\n"
+    )
+    assert module._stderr_matches(cp_err, molt_err, "traceback")
+
+
+def test_stderr_traceback_mode_requires_exact_exception_message() -> None:
+    module = _load_diff_module()
+    cp_err = "Traceback (most recent call last):\nRuntimeError: boom\n"
+    molt_err = "Traceback (most recent call last):\nRuntimeError: boom2\n"
+    assert not module._stderr_matches(cp_err, molt_err, "traceback")
+
+
+def test_stderr_exact_mode_keeps_full_string_match() -> None:
+    module = _load_diff_module()
+    cp_err = "Traceback (most recent call last):\nRuntimeError: boom\n"
+    molt_err = (
+        "Traceback (most recent call last):\n"
+        '  File "/molt/path/test.py", line 99, in <module>\n'
+        "RuntimeError: boom\n"
+    )
+    assert not module._stderr_matches(cp_err, molt_err, "exact")

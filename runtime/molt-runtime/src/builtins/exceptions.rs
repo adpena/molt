@@ -9,13 +9,16 @@ fn debug_oom() -> bool {
     *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
 }
 
+use crate::PyToken;
 use crate::builtins::frames::FrameEntry;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-use crate::PyToken;
 use crate::{
-    alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool, alloc_list,
-    alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
+    FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, MoltHeader, PtrSlot, RuntimeState,
+    TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE,
+    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool,
+    alloc_list, alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
     call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
     class_name_for_error, code_filename_bits, code_firstlineno, code_linetable_bits,
@@ -29,10 +32,7 @@ use crate::{
     object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state,
     seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned, task_exception_depths,
     task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
-    token_is_cancelled, traceback_suppressed, type_name, type_of_bits, MoltHeader, PtrSlot,
-    RuntimeState, FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, TRACEBACK_BUILD_COUNT,
-    TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    token_is_cancelled, traceback_suppressed, type_name, type_of_bits,
 };
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -156,7 +156,7 @@ fn exception_clear_reason_take() -> Option<&'static str> {
 
 pub(crate) mod internals {
     use super::{AtomicU64, HashMap, Mutex};
-    use crate::{runtime_state, PyToken};
+    use crate::{PyToken, runtime_state};
 
     pub(crate) fn module_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
         &runtime_state(_py).module_cache
@@ -180,10 +180,10 @@ pub(crate) mod internals {
 }
 
 use internals::{
-    exception_type_cache, module_cache, CHARACTERS_WRITTEN_ATTR_NAME, ERRNO_ATTR_NAME,
-    EXC_GROUP_EXCEPTIONS_NAME, EXC_GROUP_MESSAGE_NAME, FILENAME_ATTR_NAME, STRERROR_ATTR_NAME,
-    UNICODE_ENCODING_ATTR_NAME, UNICODE_END_ATTR_NAME, UNICODE_OBJECT_ATTR_NAME,
-    UNICODE_REASON_ATTR_NAME, UNICODE_START_ATTR_NAME,
+    CHARACTERS_WRITTEN_ATTR_NAME, ERRNO_ATTR_NAME, EXC_GROUP_EXCEPTIONS_NAME,
+    EXC_GROUP_MESSAGE_NAME, FILENAME_ATTR_NAME, STRERROR_ATTR_NAME, UNICODE_ENCODING_ATTR_NAME,
+    UNICODE_END_ATTR_NAME, UNICODE_OBJECT_ATTR_NAME, UNICODE_REASON_ATTR_NAME,
+    UNICODE_START_ATTR_NAME, exception_type_cache, module_cache,
 };
 
 pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
@@ -538,43 +538,43 @@ pub(crate) fn alloc_exception_obj(
 }
 
 pub(crate) unsafe fn exception_kind_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 pub(crate) unsafe fn exception_msg_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_cause_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_context_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_suppress_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_trace_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_value_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_class_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_args_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
@@ -1303,10 +1303,12 @@ unsafe fn dict_get_in_place_fast_str(
     dict_ptr: *mut u8,
     key_bits: u64,
 ) -> Option<u64> {
-    let order = dict_order(dict_ptr);
-    let table = dict_table(dict_ptr);
-    let found = dict_find_entry_fast(_py, order, table, key_bits);
-    found.map(|idx| order[idx * 2 + 1])
+    unsafe {
+        let order = dict_order(dict_ptr);
+        let table = dict_table(dict_ptr);
+        let found = dict_find_entry_fast(_py, order, table, key_bits);
+        found.map(|idx| order[idx * 2 + 1])
+    }
 }
 
 pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u64 {
@@ -1754,12 +1756,14 @@ unsafe fn exception_group_set_slot_bits(
     slot_idx: usize,
     bits: u64,
 ) {
-    let slot = ptr.add(slot_idx * std::mem::size_of::<u64>()) as *mut u64;
-    let old_bits = *slot;
-    if old_bits != bits {
-        dec_ref_bits(_py, old_bits);
-        inc_ref_bits(_py, bits);
-        *slot = bits;
+    unsafe {
+        let slot = ptr.add(slot_idx * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, bits);
+            *slot = bits;
+        }
     }
 }
 
@@ -1771,18 +1775,20 @@ unsafe fn exception_group_copy_metadata(
     copy_trace: bool,
     suppress: bool,
 ) {
-    if copy_context {
-        let cause_bits = exception_cause_bits(src_ptr);
-        let context_bits = exception_context_bits(src_ptr);
-        exception_group_set_slot_bits(_py, dest_ptr, 2, cause_bits);
-        exception_group_set_slot_bits(_py, dest_ptr, 3, context_bits);
+    unsafe {
+        if copy_context {
+            let cause_bits = exception_cause_bits(src_ptr);
+            let context_bits = exception_context_bits(src_ptr);
+            exception_group_set_slot_bits(_py, dest_ptr, 2, cause_bits);
+            exception_group_set_slot_bits(_py, dest_ptr, 3, context_bits);
+        }
+        if copy_trace {
+            let trace_bits = exception_trace_bits(src_ptr);
+            exception_group_set_slot_bits(_py, dest_ptr, 5, trace_bits);
+        }
+        let suppress_bits = MoltObject::from_bool(suppress).bits();
+        exception_group_set_slot_bits(_py, dest_ptr, 4, suppress_bits);
     }
-    if copy_trace {
-        let trace_bits = exception_trace_bits(src_ptr);
-        exception_group_set_slot_bits(_py, dest_ptr, 5, trace_bits);
-    }
-    let suppress_bits = MoltObject::from_bool(suppress).bits();
-    exception_group_set_slot_bits(_py, dest_ptr, 4, suppress_bits);
 }
 
 enum ExceptionGroupMatcher {
@@ -2202,18 +2208,20 @@ pub(crate) unsafe fn exception_store_args_and_message(
     args_bits: u64,
     msg_bits: u64,
 ) {
-    crate::gil_assert();
-    let args_slot = ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
-    let old_args = *args_slot;
-    if old_args != args_bits {
-        dec_ref_bits(_py, old_args);
-        *args_slot = args_bits;
-    }
-    let msg_slot = ptr.add(std::mem::size_of::<u64>()) as *mut u64;
-    let old_msg = *msg_slot;
-    if old_msg != msg_bits {
-        dec_ref_bits(_py, old_msg);
-        *msg_slot = msg_bits;
+    unsafe {
+        crate::gil_assert();
+        let args_slot = ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_args = *args_slot;
+        if old_args != args_bits {
+            dec_ref_bits(_py, old_args);
+            *args_slot = args_bits;
+        }
+        let msg_slot = ptr.add(std::mem::size_of::<u64>()) as *mut u64;
+        let old_msg = *msg_slot;
+        if old_msg != msg_bits {
+            dec_ref_bits(_py, old_msg);
+            *msg_slot = msg_bits;
+        }
     }
 }
 
@@ -2222,32 +2230,34 @@ pub(crate) unsafe fn exception_set_stop_iteration_value(
     ptr: *mut u8,
     args_bits: u64,
 ) {
-    crate::gil_assert();
-    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr))).unwrap_or_default();
-    if kind != "StopIteration" {
-        return;
-    }
-    let mut value_bits = MoltObject::none().bits();
-    let args_obj = obj_from_bits(args_bits);
-    if let Some(args_ptr) = args_obj.as_ptr() {
-        let type_id = object_type_id(args_ptr);
-        if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-            let elems = seq_vec_ref(args_ptr);
-            if let Some(first) = elems.first() {
-                value_bits = *first;
+    unsafe {
+        crate::gil_assert();
+        let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr))).unwrap_or_default();
+        if kind != "StopIteration" {
+            return;
+        }
+        let mut value_bits = MoltObject::none().bits();
+        let args_obj = obj_from_bits(args_bits);
+        if let Some(args_ptr) = args_obj.as_ptr() {
+            let type_id = object_type_id(args_ptr);
+            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(args_ptr);
+                if let Some(first) = elems.first() {
+                    value_bits = *first;
+                }
+            } else if !args_obj.is_none() {
+                value_bits = args_bits;
             }
         } else if !args_obj.is_none() {
             value_bits = args_bits;
         }
-    } else if !args_obj.is_none() {
-        value_bits = args_bits;
-    }
-    let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-    let old_bits = *slot;
-    if old_bits != value_bits {
-        dec_ref_bits(_py, old_bits);
-        inc_ref_bits(_py, value_bits);
-        *slot = value_bits;
+        let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != value_bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, value_bits);
+            *slot = value_bits;
+        }
     }
 }
 
@@ -2256,32 +2266,34 @@ pub(crate) unsafe fn exception_set_system_exit_code(
     ptr: *mut u8,
     args_bits: u64,
 ) {
-    crate::gil_assert();
-    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr))).unwrap_or_default();
-    if kind != "SystemExit" {
-        return;
-    }
-    let mut code_bits = MoltObject::none().bits();
-    let args_obj = obj_from_bits(args_bits);
-    if let Some(args_ptr) = args_obj.as_ptr() {
-        let type_id = object_type_id(args_ptr);
-        if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-            let elems = seq_vec_ref(args_ptr);
-            if elems.len() == 1 {
-                code_bits = elems[0];
-            } else if elems.len() > 1 {
-                code_bits = args_bits;
-            }
+    unsafe {
+        crate::gil_assert();
+        let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr))).unwrap_or_default();
+        if kind != "SystemExit" {
+            return;
         }
-    } else if !args_obj.is_none() {
-        code_bits = args_bits;
-    }
-    let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-    let old_bits = *slot;
-    if old_bits != code_bits {
-        dec_ref_bits(_py, old_bits);
-        inc_ref_bits(_py, code_bits);
-        *slot = code_bits;
+        let mut code_bits = MoltObject::none().bits();
+        let args_obj = obj_from_bits(args_bits);
+        if let Some(args_ptr) = args_obj.as_ptr() {
+            let type_id = object_type_id(args_ptr);
+            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(args_ptr);
+                if elems.len() == 1 {
+                    code_bits = elems[0];
+                } else if elems.len() > 1 {
+                    code_bits = args_bits;
+                }
+            }
+        } else if !args_obj.is_none() {
+            code_bits = args_bits;
+        }
+        let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != code_bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, code_bits);
+            *slot = code_bits;
+        }
     }
 }
 
@@ -2348,26 +2360,28 @@ fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
 }
 
 pub(crate) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
-    let mut errno_val = None;
-    let mut strerror_bits = MoltObject::none().bits();
-    let mut filename_bits = MoltObject::none().bits();
-    let args_obj = obj_from_bits(args_bits);
-    if let Some(args_ptr) = args_obj.as_ptr() {
-        let type_id = object_type_id(args_ptr);
-        if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-            let elems = seq_vec_ref(args_ptr);
-            if let Some(first) = elems.first() {
-                errno_val = to_i64(obj_from_bits(*first));
-            }
-            if let Some(second) = elems.get(1) {
-                strerror_bits = *second;
-            }
-            if let Some(third) = elems.get(2) {
-                filename_bits = *third;
+    unsafe {
+        let mut errno_val = None;
+        let mut strerror_bits = MoltObject::none().bits();
+        let mut filename_bits = MoltObject::none().bits();
+        let args_obj = obj_from_bits(args_bits);
+        if let Some(args_ptr) = args_obj.as_ptr() {
+            let type_id = object_type_id(args_ptr);
+            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(args_ptr);
+                if let Some(first) = elems.first() {
+                    errno_val = to_i64(obj_from_bits(*first));
+                }
+                if let Some(second) = elems.get(1) {
+                    strerror_bits = *second;
+                }
+                if let Some(third) = elems.get(2) {
+                    filename_bits = *third;
+                }
             }
         }
+        (errno_val, strerror_bits, filename_bits)
     }
-    (errno_val, strerror_bits, filename_bits)
 }
 
 pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
@@ -3204,90 +3218,97 @@ unsafe fn alloc_empty_dict_field(_py: &PyToken<'_>) -> Option<FrameField> {
 }
 
 unsafe fn frame_line_from_entry(entry: FrameEntry) -> Option<i64> {
-    if entry.code_bits == 0 {
-        return None;
+    unsafe {
+        if entry.code_bits == 0 {
+            return None;
+        }
+        let code_ptr = obj_from_bits(entry.code_bits).as_ptr()?;
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            return None;
+        }
+        let mut line = entry.line;
+        if line <= 0 {
+            line = code_firstlineno(code_ptr);
+        }
+        Some(line)
     }
-    let code_ptr = obj_from_bits(entry.code_bits).as_ptr()?;
-    if object_type_id(code_ptr) != TYPE_ID_CODE {
-        return None;
-    }
-    let mut line = entry.line;
-    if line <= 0 {
-        line = code_firstlineno(code_ptr);
-    }
-    Some(line)
 }
 
 unsafe fn code_is_module(code_bits: u64) -> bool {
-    let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-        return false;
-    };
-    if object_type_id(code_ptr) != TYPE_ID_CODE {
-        return false;
+    unsafe {
+        let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+            return false;
+        };
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            return false;
+        }
+        let name_bits = code_name_bits(code_ptr);
+        string_obj_to_owned(obj_from_bits(name_bits)).is_some_and(|name| name == "<module>")
     }
-    let name_bits = code_name_bits(code_ptr);
-    string_obj_to_owned(obj_from_bits(name_bits)).is_some_and(|name| name == "<module>")
 }
 
 unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Option<FrameField> {
-    let mut filename: Option<String> = None;
-    if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
-        if object_type_id(code_ptr) == TYPE_ID_CODE {
-            let filename_bits = code_filename_bits(code_ptr);
-            filename = string_obj_to_owned(obj_from_bits(filename_bits));
-        }
-    }
-    let (module_bits, main_bits) = {
-        let cache = runtime_state(_py).module_cache.lock().unwrap();
-        (
-            cache.values().copied().collect::<Vec<u64>>(),
-            cache.get("__main__").copied(),
-        )
-    };
-    if let Some(filename) = filename {
-        let file_name_bits = intern_static_name(_py, &FILE_NAME, b"__file__");
-        for module_bits in &module_bits {
-            let Some(module_ptr) = obj_from_bits(*module_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                continue;
-            }
-            let dict_bits = module_dict_bits(module_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                continue;
-            }
-            let Some(file_bits) = dict_get_in_place(_py, dict_ptr, file_name_bits) else {
-                continue;
-            };
-            if string_obj_to_owned(obj_from_bits(file_bits)).is_some_and(|value| value == filename)
-            {
-                return Some(FrameField {
-                    bits: dict_bits,
-                    owned: false,
-                });
+    unsafe {
+        let mut filename: Option<String> = None;
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+            if object_type_id(code_ptr) == TYPE_ID_CODE {
+                let filename_bits = code_filename_bits(code_ptr);
+                filename = string_obj_to_owned(obj_from_bits(filename_bits));
             }
         }
-    }
-    if let Some(main_bits) = main_bits {
-        if let Some(module_ptr) = obj_from_bits(main_bits).as_ptr() {
-            if object_type_id(module_ptr) == TYPE_ID_MODULE {
+        let (module_bits, main_bits) = {
+            let cache = runtime_state(_py).module_cache.lock().unwrap();
+            (
+                cache.values().copied().collect::<Vec<u64>>(),
+                cache.get("__main__").copied(),
+            )
+        };
+        if let Some(filename) = filename {
+            let file_name_bits = intern_static_name(_py, &FILE_NAME, b"__file__");
+            for module_bits in &module_bits {
+                let Some(module_ptr) = obj_from_bits(*module_bits).as_ptr() else {
+                    continue;
+                };
+                if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                    continue;
+                }
                 let dict_bits = module_dict_bits(module_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        return Some(FrameField {
-                            bits: dict_bits,
-                            owned: false,
-                        });
+                let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                    continue;
+                };
+                if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                    continue;
+                }
+                let Some(file_bits) = dict_get_in_place(_py, dict_ptr, file_name_bits) else {
+                    continue;
+                };
+                if string_obj_to_owned(obj_from_bits(file_bits))
+                    .is_some_and(|value| value == filename)
+                {
+                    return Some(FrameField {
+                        bits: dict_bits,
+                        owned: false,
+                    });
+                }
+            }
+        }
+        if let Some(main_bits) = main_bits {
+            if let Some(module_ptr) = obj_from_bits(main_bits).as_ptr() {
+                if object_type_id(module_ptr) == TYPE_ID_MODULE {
+                    let dict_bits = module_dict_bits(module_ptr);
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                            return Some(FrameField {
+                                bits: dict_bits,
+                                owned: false,
+                            });
+                        }
                     }
                 }
             }
         }
+        alloc_empty_dict_field(_py)
     }
-    alloc_empty_dict_field(_py)
 }
 
 unsafe fn frame_locals_field_for_code(
@@ -3295,13 +3316,15 @@ unsafe fn frame_locals_field_for_code(
     code_bits: u64,
     globals: FrameField,
 ) -> Option<FrameField> {
-    if code_is_module(code_bits) {
-        return Some(FrameField {
-            bits: globals.bits,
-            owned: false,
-        });
+    unsafe {
+        if code_is_module(code_bits) {
+            return Some(FrameField {
+                bits: globals.bits,
+                owned: false,
+            });
+        }
+        alloc_empty_dict_field(_py)
     }
-    alloc_empty_dict_field(_py)
 }
 
 unsafe fn alloc_frame_obj(
@@ -3310,58 +3333,61 @@ unsafe fn alloc_frame_obj(
     line: i64,
     back_bits: u64,
 ) -> Option<u64> {
-    let builtins = builtin_classes(_py);
-    let class_obj = obj_from_bits(builtins.frame);
-    let class_ptr = class_obj.as_ptr()?;
-    if object_type_id(class_ptr) != TYPE_ID_TYPE {
-        return None;
+    unsafe {
+        let builtins = builtin_classes(_py);
+        let class_obj = obj_from_bits(builtins.frame);
+        let class_ptr = class_obj.as_ptr()?;
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let frame_bits = alloc_instance_for_class_no_pool(_py, class_ptr);
+        let frame_ptr = obj_from_bits(frame_bits).as_ptr()?;
+        let f_code_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+        let f_lineno_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
+        let f_lasti_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.f_lasti_name, b"f_lasti");
+        let f_back_bits = intern_static_name(_py, &F_BACK_NAME, b"f_back");
+        let f_globals_bits = intern_static_name(_py, &F_GLOBALS_NAME, b"f_globals");
+        let f_locals_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.f_locals_name, b"f_locals");
+        let globals = frame_globals_field_for_code(_py, code_bits)?;
+        let locals = frame_locals_field_for_code(_py, code_bits, globals)?;
+        let line_bits = MoltObject::from_int(line).bits();
+        let lasti_bits = MoltObject::from_int(-1).bits();
+        let dict_ptr = alloc_dict_with_pairs(
+            _py,
+            &[
+                f_code_bits,
+                code_bits,
+                f_lineno_bits,
+                line_bits,
+                f_lasti_bits,
+                lasti_bits,
+                f_back_bits,
+                back_bits,
+                f_globals_bits,
+                globals.bits,
+                f_locals_bits,
+                locals.bits,
+            ],
+        );
+        if globals.owned {
+            dec_ref_bits(_py, globals.bits);
+        }
+        if locals.owned && locals.bits != globals.bits {
+            dec_ref_bits(_py, locals.bits);
+        }
+        if dict_ptr.is_null() {
+            dec_ref_bits(_py, frame_bits);
+            return None;
+        }
+        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        instance_set_dict_bits(_py, frame_ptr, dict_bits);
+        object_mark_has_ptrs(_py, frame_ptr);
+        Some(frame_bits)
     }
-    let frame_bits = alloc_instance_for_class_no_pool(_py, class_ptr);
-    let frame_ptr = obj_from_bits(frame_bits).as_ptr()?;
-    let f_code_bits = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
-    let f_lineno_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
-    let f_lasti_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.f_lasti_name, b"f_lasti");
-    let f_back_bits = intern_static_name(_py, &F_BACK_NAME, b"f_back");
-    let f_globals_bits = intern_static_name(_py, &F_GLOBALS_NAME, b"f_globals");
-    let f_locals_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.f_locals_name, b"f_locals");
-    let globals = frame_globals_field_for_code(_py, code_bits)?;
-    let locals = frame_locals_field_for_code(_py, code_bits, globals)?;
-    let line_bits = MoltObject::from_int(line).bits();
-    let lasti_bits = MoltObject::from_int(-1).bits();
-    let dict_ptr = alloc_dict_with_pairs(
-        _py,
-        &[
-            f_code_bits,
-            code_bits,
-            f_lineno_bits,
-            line_bits,
-            f_lasti_bits,
-            lasti_bits,
-            f_back_bits,
-            back_bits,
-            f_globals_bits,
-            globals.bits,
-            f_locals_bits,
-            locals.bits,
-        ],
-    );
-    if globals.owned {
-        dec_ref_bits(_py, globals.bits);
-    }
-    if locals.owned && locals.bits != globals.bits {
-        dec_ref_bits(_py, locals.bits);
-    }
-    if dict_ptr.is_null() {
-        dec_ref_bits(_py, frame_bits);
-        return None;
-    }
-    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    instance_set_dict_bits(_py, frame_ptr, dict_bits);
-    object_mark_has_ptrs(_py, frame_ptr);
-    Some(frame_bits)
 }
 
 unsafe fn alloc_traceback_obj(
@@ -3370,136 +3396,140 @@ unsafe fn alloc_traceback_obj(
     line: i64,
     next_bits: u64,
 ) -> Option<u64> {
-    fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> i64 {
-        let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
-            return -1;
-        };
-        unsafe {
-            let dict_bits = instance_dict_bits(frame_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+    unsafe {
+        fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> i64 {
+            let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
                 return -1;
             };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return -1;
-            }
-            let f_code_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
-            let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) else {
-                return -1;
-            };
-            let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-                return -1;
-            };
-            if object_type_id(code_ptr) != TYPE_ID_CODE {
-                return -1;
-            }
-            let linetable_bits = code_linetable_bits(code_ptr);
-            let Some(linetable_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
-                return -1;
-            };
-            if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
-                return -1;
-            }
-            let mut best: Option<(usize, i64)> = None;
-            for (idx, entry_bits) in seq_vec_ref(linetable_ptr).iter().copied().enumerate() {
-                let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
-                    continue;
+            unsafe {
+                let dict_bits = instance_dict_bits(frame_ptr);
+                let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                    return -1;
                 };
-                if object_type_id(entry_ptr) != TYPE_ID_TUPLE {
-                    continue;
+                if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                    return -1;
                 }
-                let parts = seq_vec_ref(entry_ptr);
-                if parts.len() < 4 {
-                    continue;
-                }
-                let Some(start_line) = to_i64(obj_from_bits(parts[0])) else {
-                    continue;
+                let f_code_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+                let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) else {
+                    return -1;
                 };
-                if start_line != line {
-                    continue;
-                }
-                let start_col = to_i64(obj_from_bits(parts[2])).unwrap_or(-1);
-                let end_col = to_i64(obj_from_bits(parts[3])).unwrap_or(start_col);
-                let span = if start_col >= 0 && end_col >= start_col {
-                    end_col - start_col
-                } else {
-                    -1
+                let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+                    return -1;
                 };
-                match best {
-                    Some((_, best_span)) if span <= best_span => {}
-                    _ => best = Some((idx, span)),
+                if object_type_id(code_ptr) != TYPE_ID_CODE {
+                    return -1;
                 }
+                let linetable_bits = code_linetable_bits(code_ptr);
+                let Some(linetable_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
+                    return -1;
+                };
+                if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
+                    return -1;
+                }
+                let mut best: Option<(usize, i64)> = None;
+                for (idx, entry_bits) in seq_vec_ref(linetable_ptr).iter().copied().enumerate() {
+                    let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
+                        continue;
+                    };
+                    if object_type_id(entry_ptr) != TYPE_ID_TUPLE {
+                        continue;
+                    }
+                    let parts = seq_vec_ref(entry_ptr);
+                    if parts.len() < 4 {
+                        continue;
+                    }
+                    let Some(start_line) = to_i64(obj_from_bits(parts[0])) else {
+                        continue;
+                    };
+                    if start_line != line {
+                        continue;
+                    }
+                    let start_col = to_i64(obj_from_bits(parts[2])).unwrap_or(-1);
+                    let end_col = to_i64(obj_from_bits(parts[3])).unwrap_or(start_col);
+                    let span = if start_col >= 0 && end_col >= start_col {
+                        end_col - start_col
+                    } else {
+                        -1
+                    };
+                    match best {
+                        Some((_, best_span)) if span <= best_span => {}
+                        _ => best = Some((idx, span)),
+                    }
+                }
+                if let Some((idx, _)) = best {
+                    return (idx as i64) * 2;
+                }
+                -1
             }
-            if let Some((idx, _)) = best {
-                return (idx as i64) * 2;
-            }
-            -1
         }
-    }
 
-    let builtins = builtin_classes(_py);
-    let class_obj = obj_from_bits(builtins.traceback);
-    let class_ptr = class_obj.as_ptr()?;
-    if object_type_id(class_ptr) != TYPE_ID_TYPE {
-        return None;
+        let builtins = builtin_classes(_py);
+        let class_obj = obj_from_bits(builtins.traceback);
+        let class_ptr = class_obj.as_ptr()?;
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let tb_bits = alloc_instance_for_class_no_pool(_py, class_ptr);
+        let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
+        let tb_frame_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
+        let tb_lineno_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.tb_lineno_name,
+            b"tb_lineno",
+        );
+        let tb_next_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
+        let tb_lasti_bits = intern_static_name(_py, &TB_LASTI_NAME, b"tb_lasti");
+        let line_bits = MoltObject::from_int(line).bits();
+        let lasti_bits = MoltObject::from_int(compute_tb_lasti(_py, frame_bits, line)).bits();
+        let dict_ptr = alloc_dict_with_pairs(
+            _py,
+            &[
+                tb_frame_bits,
+                frame_bits,
+                tb_lineno_bits,
+                line_bits,
+                tb_next_bits,
+                next_bits,
+                tb_lasti_bits,
+                lasti_bits,
+            ],
+        );
+        if dict_ptr.is_null() {
+            dec_ref_bits(_py, tb_bits);
+            return None;
+        }
+        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        instance_set_dict_bits(_py, tb_ptr, dict_bits);
+        object_mark_has_ptrs(_py, tb_ptr);
+        Some(tb_bits)
     }
-    let tb_bits = alloc_instance_for_class_no_pool(_py, class_ptr);
-    let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
-    let tb_frame_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
-    let tb_lineno_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.tb_lineno_name,
-        b"tb_lineno",
-    );
-    let tb_next_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
-    let tb_lasti_bits = intern_static_name(_py, &TB_LASTI_NAME, b"tb_lasti");
-    let line_bits = MoltObject::from_int(line).bits();
-    let lasti_bits = MoltObject::from_int(compute_tb_lasti(_py, frame_bits, line)).bits();
-    let dict_ptr = alloc_dict_with_pairs(
-        _py,
-        &[
-            tb_frame_bits,
-            frame_bits,
-            tb_lineno_bits,
-            line_bits,
-            tb_next_bits,
-            next_bits,
-            tb_lasti_bits,
-            lasti_bits,
-        ],
-    );
-    if dict_ptr.is_null() {
-        dec_ref_bits(_py, tb_bits);
-        return None;
-    }
-    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    instance_set_dict_bits(_py, tb_ptr, dict_bits);
-    object_mark_has_ptrs(_py, tb_ptr);
-    Some(tb_bits)
 }
 
 unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option<Vec<(u64, i64)>> {
-    let mut out: Vec<(u64, i64)> = Vec::with_capacity(entries.len());
-    let mut back_bits = MoltObject::none().bits();
-    for entry in entries {
-        let Some(line) = frame_line_from_entry(*entry) else {
-            continue;
-        };
-        let frame_bits = match alloc_frame_obj(_py, entry.code_bits, line, back_bits) {
-            Some(bits) => bits,
-            None => {
-                for (bits, _) in out {
-                    dec_ref_bits(_py, bits);
+    unsafe {
+        let mut out: Vec<(u64, i64)> = Vec::with_capacity(entries.len());
+        let mut back_bits = MoltObject::none().bits();
+        for entry in entries {
+            let Some(line) = frame_line_from_entry(*entry) else {
+                continue;
+            };
+            let frame_bits = match alloc_frame_obj(_py, entry.code_bits, line, back_bits) {
+                Some(bits) => bits,
+                None => {
+                    for (bits, _) in out {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return None;
                 }
-                return None;
-            }
-        };
-        back_bits = frame_bits;
-        out.push((frame_bits, line));
+            };
+            back_bits = frame_bits;
+            out.push((frame_bits, line));
+        }
+        Some(out)
     }
-    Some(out)
 }
 
 pub(crate) fn frame_stack_trace_bits(
@@ -3574,7 +3604,7 @@ pub(crate) fn frame_stack_trace_bits(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let depth_val = obj_from_bits(depth_bits);
@@ -3614,7 +3644,7 @@ pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let kind_obj = obj_from_bits(kind_bits);
@@ -3658,7 +3688,7 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
@@ -3687,7 +3717,7 @@ pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new_bound(class_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let out = molt_exception_new_from_class(class_bits, args_bits);
@@ -3698,7 +3728,7 @@ pub extern "C" fn molt_exception_new_bound(class_bits: u64, args_bits: u64) -> u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -3912,7 +3942,7 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -4003,7 +4033,7 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -4047,7 +4077,7 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -4096,7 +4126,7 @@ pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -4145,7 +4175,7 @@ pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_obj = obj_from_bits(self_bits);
@@ -4190,7 +4220,7 @@ pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none_bits = MoltObject::none().bits();
@@ -4282,7 +4312,7 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let list_obj = obj_from_bits(list_bits);
@@ -4384,7 +4414,7 @@ mod tests {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4402,7 +4432,7 @@ pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_class(kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let kind_obj = obj_from_bits(kind_bits);
@@ -4420,7 +4450,7 @@ pub extern "C" fn molt_exception_class(kind_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4438,7 +4468,7 @@ pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4488,7 +4518,7 @@ pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_value(exc_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4510,7 +4540,7 @@ pub extern "C" fn molt_exception_set_value(exc_bits: u64, value_bits: u64) -> u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_context_set(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4529,7 +4559,7 @@ pub extern "C" fn molt_exception_context_set(exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
@@ -4553,7 +4583,7 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
     crate::with_gil_entry!(_py, {
         let debug_flow = debug_exception_flow();
@@ -4597,7 +4627,7 @@ pub extern "C" fn molt_exception_last() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_active() -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(bits) = exception_context_active_bits() {
@@ -4608,7 +4638,7 @@ pub extern "C" fn molt_exception_active() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_clear() -> u64 {
     crate::with_gil_entry!(_py, {
         let debug_clear = debug_exception_clear();
@@ -4680,18 +4710,12 @@ pub extern "C" fn molt_exception_clear() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending() -> u64 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) {
-            1
-        } else {
-            0
-        }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {
     let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
         return 0;
@@ -4716,7 +4740,7 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_enter() -> u64 {
     crate::with_gil_entry!(_py, {
         let prev = exception_stack_baseline_get();
@@ -4726,7 +4750,7 @@ pub extern "C" fn molt_exception_stack_enter() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let prev = match to_i64(obj_from_bits(prev_bits)) {
@@ -4736,7 +4760,7 @@ pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
                     _py,
                     "TypeError",
                     "exception baseline must be a non-negative int",
-                )
+                );
             }
         };
         exception_stack_baseline_set(prev);
@@ -4744,14 +4768,14 @@ pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_depth() -> u64 {
     crate::with_gil_entry!(_py, {
         int_bits_from_i64(_py, exception_stack_depth() as i64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let depth = match to_i64(obj_from_bits(depth_bits)) {
@@ -4761,7 +4785,7 @@ pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
                     _py,
                     "TypeError",
                     "exception depth must be a non-negative int",
-                )
+                );
             }
         };
         exception_stack_set_depth(_py, depth);
@@ -4769,7 +4793,7 @@ pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_push() -> u64 {
     crate::with_gil_entry!(_py, {
         exception_stack_push();
@@ -4777,7 +4801,7 @@ pub extern "C" fn molt_exception_push() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pop() -> u64 {
     crate::with_gil_entry!(_py, {
         exception_stack_pop(_py);
@@ -4785,7 +4809,7 @@ pub extern "C" fn molt_exception_pop() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_clear() -> u64 {
     crate::with_gil_entry!(_py, {
         exception_stack_set_depth(_py, 0);
@@ -4793,7 +4817,7 @@ pub extern "C" fn molt_exception_stack_clear() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let exc_obj = obj_from_bits(exc_bits);

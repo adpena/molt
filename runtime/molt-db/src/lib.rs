@@ -20,7 +20,7 @@ pub use async_pool::{AsyncAcquireError, AsyncPool, AsyncPooled, CancelToken};
 mod sqlite;
 
 #[cfg(feature = "sqlite")]
-pub use sqlite::{sqlite_pool, SqliteConn, SqliteOpenMode};
+pub use sqlite::{SqliteConn, SqliteOpenMode, sqlite_pool};
 
 #[cfg(feature = "postgres")]
 mod postgres;

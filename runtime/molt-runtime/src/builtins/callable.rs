@@ -1,14 +1,14 @@
 use molt_obj_model::MoltObject;
 
 use crate::{
-    class_attr_lookup_raw_mro, dataclass_desc_ptr, dataclass_dict_bits, dict_get_in_place,
-    function_attr_bits, function_closure_bits, function_dict_bits, instance_dict_bits,
-    intern_static_name, is_truthy, maybe_ptr_from_bits, obj_from_bits, object_class_bits,
-    object_type_id, raise_exception, runtime_state, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS,
-    TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
+    TYPE_ID_TYPE, class_attr_lookup_raw_mro, dataclass_desc_ptr, dataclass_dict_bits,
+    dict_get_in_place, function_attr_bits, function_closure_bits, function_dict_bits,
+    instance_dict_bits, intern_static_name, is_truthy, maybe_ptr_from_bits, obj_from_bits,
+    object_class_bits, object_type_id, raise_exception, runtime_state,
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let is_bound = maybe_ptr_from_bits(obj_bits)
@@ -17,7 +17,7 @@ pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let trace_mode = std::env::var("MOLT_TRACE_IS_FUNCTION").ok();
@@ -36,7 +36,7 @@ pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(func_bits);
@@ -60,7 +60,7 @@ pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(func_bits);
@@ -84,7 +84,7 @@ pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let is_callable = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
@@ -172,7 +172,7 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_function_default_kind(func_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(func_bits);
@@ -192,7 +192,7 @@ pub extern "C" fn molt_function_default_kind(func_bits: u64) -> i64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(func_bits);
@@ -208,7 +208,7 @@ pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
     crate::with_gil_entry!(_py, {
         let msg = format!("call arity mismatch (expected {expected}, got {got})");

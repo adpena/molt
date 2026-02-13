@@ -1,9 +1,9 @@
 use crate::{
+    CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
     alloc_object, attr_lookup_ptr_allow_missing, call_callable0, call_callable3, close_payload,
     dec_ref_bits, exception_pending, exception_trace_bits, file_handle_enter, file_handle_exit,
     inc_ref_bits, intern_static_name, obj_from_bits, object_type_id, raise_exception,
-    runtime_state, to_i64, type_of_bits, MoltHeader, MoltObject, PyToken, CONTEXT_STACK,
-    TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
+    runtime_state, to_i64, type_of_bits,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -73,15 +73,15 @@ pub(crate) fn generator_context_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {
-    *(ptr as *const *const ())
+    unsafe { *(ptr as *const *const ()) }
 }
 
 unsafe fn context_exit_fn(ptr: *mut u8) -> *const () {
-    *(ptr.add(std::mem::size_of::<*const ()>()) as *const *const ())
+    unsafe { *(ptr.add(std::mem::size_of::<*const ()>()) as *const *const ()) }
 }
 
 pub(crate) unsafe fn context_payload_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<*const ()>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<*const ()>()) as *const u64) }
 }
 
 fn alloc_context_manager(
@@ -176,44 +176,46 @@ fn context_stack_pop(_py: &PyToken<'_>, expected_bits: u64) {
 }
 
 unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64) {
-    crate::gil_assert();
-    let ctx_obj = obj_from_bits(ctx_bits);
-    let Some(ptr) = ctx_obj.as_ptr() else {
-        return;
-    };
-    let type_id = object_type_id(ptr);
-    if type_id == TYPE_ID_CONTEXT_MANAGER {
-        let exit_fn_addr = context_exit_fn(ptr);
-        if exit_fn_addr.is_null() {
+    unsafe {
+        crate::gil_assert();
+        let ctx_obj = obj_from_bits(ctx_bits);
+        let Some(ptr) = ctx_obj.as_ptr() else {
+            return;
+        };
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_CONTEXT_MANAGER {
+            let exit_fn_addr = context_exit_fn(ptr);
+            if exit_fn_addr.is_null() {
+                return;
+            }
+            let exit_fn =
+                std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
+            exit_fn(context_payload_bits(ptr), exc_bits);
             return;
         }
-        let exit_fn =
-            std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
-        exit_fn(context_payload_bits(ptr), exc_bits);
-        return;
+        if type_id == TYPE_ID_FILE_HANDLE {
+            file_handle_exit(_py, ptr, exc_bits);
+            return;
+        }
+        let exit_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
+        let Some(exit_bits) = attr_lookup_ptr_allow_missing(_py, ptr, exit_name_bits) else {
+            return;
+        };
+        let none_bits = MoltObject::none().bits();
+        let exc_obj = obj_from_bits(exc_bits);
+        let (exc_type_bits, exc_val_bits, tb_bits) = if exc_obj.is_none() {
+            (none_bits, none_bits, none_bits)
+        } else {
+            let tb_bits = exc_obj
+                .as_ptr()
+                .map(|ptr| exception_trace_bits(ptr))
+                .unwrap_or(none_bits);
+            (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
+        };
+        let _ = call_callable3(_py, exit_bits, exc_type_bits, exc_val_bits, tb_bits);
+        dec_ref_bits(_py, exit_bits);
     }
-    if type_id == TYPE_ID_FILE_HANDLE {
-        file_handle_exit(_py, ptr, exc_bits);
-        return;
-    }
-    let exit_name_bits =
-        intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
-    let Some(exit_bits) = attr_lookup_ptr_allow_missing(_py, ptr, exit_name_bits) else {
-        return;
-    };
-    let none_bits = MoltObject::none().bits();
-    let exc_obj = obj_from_bits(exc_bits);
-    let (exc_type_bits, exc_val_bits, tb_bits) = if exc_obj.is_none() {
-        (none_bits, none_bits, none_bits)
-    } else {
-        let tb_bits = exc_obj
-            .as_ptr()
-            .map(|ptr| exception_trace_bits(ptr))
-            .unwrap_or(none_bits);
-        (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
-    };
-    let _ = call_callable3(_py, exit_bits, exc_type_bits, exc_val_bits, tb_bits);
-    dec_ref_bits(_py, exit_bits);
 }
 
 fn context_stack_depth() -> usize {
@@ -252,7 +254,7 @@ pub(crate) fn context_stack_unwind(_py: &PyToken<'_>, exc_bits: u64) {
     context_stack_unwind_to(_py, 0, exc_bits);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_new(
     enter_fn: *const (),
     exit_fn: *const (),
@@ -275,7 +277,7 @@ pub extern "C" fn molt_context_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
@@ -338,7 +340,7 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
@@ -403,7 +405,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         context_stack_unwind(_py, exc_bits);
@@ -411,14 +413,14 @@ pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_depth() -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_int(context_stack_depth() as i64).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let depth = match to_i64(obj_from_bits(depth_bits)) {
@@ -428,7 +430,7 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
                     _py,
                     "TypeError",
                     "context depth must be a non-negative int",
-                )
+                );
             }
         };
         context_stack_unwind_to(_py, depth, exc_bits);
@@ -436,7 +438,7 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let enter_fn = context_null_enter as *const ();
@@ -450,7 +452,7 @@ pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
     // Keep legacy lowering wired to contextlib semantics.
     crate::molt_contextlib_closing(payload_bits)

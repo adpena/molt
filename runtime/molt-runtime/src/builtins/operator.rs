@@ -4,12 +4,12 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
-    alloc_class_obj, alloc_function_obj, alloc_string, alloc_tuple, builtin_classes,
-    class_dict_bits, dec_ref_bits, dict_set_in_place, exception_pending, inc_ref_bits,
-    init_atomic_bits, intern_static_name, molt_add, molt_class_set_base, molt_eq,
-    molt_getattr_builtin, molt_index, molt_mul, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    type_name, PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_class_obj, alloc_function_obj,
+    alloc_string, alloc_tuple, builtin_classes, class_dict_bits, dec_ref_bits, dict_set_in_place,
+    exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, molt_add,
+    molt_class_set_base, molt_eq, molt_getattr_builtin, molt_index, molt_mul, obj_from_bits,
+    object_class_bits, object_set_class_bits, object_type_id, raise_exception, seq_vec_ref,
+    string_obj_to_owned, type_name,
 };
 
 static ITEMGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
@@ -96,43 +96,53 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
 }
 
 unsafe fn itemgetter_items_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn itemgetter_set_items_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn attrgetter_attrs_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn attrgetter_set_attrs_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn methodcaller_name_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn methodcaller_args_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn methodcaller_kwargs_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 unsafe fn methodcaller_set_name_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 unsafe fn methodcaller_set_args_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 unsafe fn methodcaller_set_kwargs_bits(ptr: *mut u8, bits: u64) {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    unsafe {
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
 }
 
 fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
@@ -142,7 +152,7 @@ fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         "itemgetter",
         16,
         &ITEMGETTER_CALL,
-        crate::molt_operator_itemgetter_call as usize as u64,
+        crate::molt_operator_itemgetter_call as *const () as usize as u64,
     )
 }
 
@@ -153,7 +163,7 @@ fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         "attrgetter",
         16,
         &ATTRGETTER_CALL,
-        crate::molt_operator_attrgetter_call as usize as u64,
+        crate::molt_operator_attrgetter_call as *const () as usize as u64,
     )
 }
 
@@ -164,11 +174,11 @@ fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         "methodcaller",
         32,
         &METHODCALLER_CALL,
-        crate::molt_operator_methodcaller_call as usize as u64,
+        crate::molt_operator_methodcaller_call as *const () as usize as u64,
     )
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let err = format!(
@@ -182,7 +192,7 @@ pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let items_obj = obj_from_bits(items_bits);
@@ -227,7 +237,7 @@ pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let attrs_obj = obj_from_bits(attrs_bits);
@@ -288,7 +298,7 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_methodcaller(
     name_bits: u64,
     args_bits: u64,
@@ -327,7 +337,7 @@ pub extern "C" fn molt_operator_methodcaller(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -408,7 +418,7 @@ fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -454,7 +464,7 @@ pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -555,17 +565,17 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 }
 
 // Re-export basic arithmetic intrinsics for operator module.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_add(a: u64, b: u64) -> u64 {
     molt_add(a, b)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_mul(a: u64, b: u64) -> u64 {
     molt_mul(a, b)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_eq(a: u64, b: u64) -> u64 {
     molt_eq(a, b)
 }

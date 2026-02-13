@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::{runtime_state_for_gil, GIL_DEPTH};
+use crate::{GIL_DEPTH, runtime_state_for_gil};
 
 static PREINIT_GIL: Mutex<()> = Mutex::new(());
 
@@ -267,11 +267,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{gil_held, GilGuard};
+    use super::{GilGuard, gil_held};
     use crate::GIL_DEPTH;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
     use std::time::{Duration, Instant};
 

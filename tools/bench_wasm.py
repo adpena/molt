@@ -97,6 +97,7 @@ _LINK_DISABLED = False
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
 _NODE_BIN_CACHE: str | None = None
 _MIN_NODE_MAJOR = 18
+_RUNTIME_SOURCE_MTIME: float | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,119 @@ def _cargo_target_root() -> Path:
     if external_root is not None:
         return external_root / "target"
     return Path("target")
+
+
+def _runtime_source_mtime() -> float:
+    global _RUNTIME_SOURCE_MTIME
+    if _RUNTIME_SOURCE_MTIME is not None:
+        return _RUNTIME_SOURCE_MTIME
+    repo = _repo_root()
+    runtime_root = repo / "runtime" / "molt-runtime"
+    candidates: list[Path] = [
+        repo / "Cargo.lock",
+        runtime_root / "Cargo.toml",
+    ]
+    candidates.extend(runtime_root.glob("src/**/*.rs"))
+    latest = 0.0
+    for candidate in candidates:
+        try:
+            stat = candidate.stat()
+        except OSError:
+            continue
+        if stat.st_mtime > latest:
+            latest = stat.st_mtime
+    _RUNTIME_SOURCE_MTIME = latest
+    return latest
+
+
+def _runtime_artifact_stale(path: Path) -> bool:
+    try:
+        artifact_mtime = path.stat().st_mtime
+    except OSError:
+        return True
+    return _runtime_source_mtime() > artifact_mtime
+
+
+def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading varuint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return result, offset
+        shift += 7
+        if shift > 35:
+            raise ValueError("varuint too large")
+
+
+def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_wasm_varuint(data, offset)
+    end = offset + length
+    if end > len(data):
+        raise ValueError("Unexpected EOF while reading string")
+    return data[offset:end].decode("utf-8"), end
+
+
+def _read_wasm_table_min(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 2:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                module, cursor = _read_wasm_string(payload, cursor)
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    minimum, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    if module == "env" and name == "__indirect_function_table":
+                        return minimum
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                else:
+                    raise ValueError("Unknown import kind")
+    except ValueError:
+        return None
+    return None
 
 
 def _parse_node_major(version_text: str) -> int | None:
@@ -232,10 +346,9 @@ def resolve_node_binary() -> str:
 
 def _enable_line_buffering() -> None:
     for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(line_buffering=True)
-        except AttributeError:
-            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(line_buffering=True)
 
 
 def _log_write(log: TextIO | None, text: str) -> None:
@@ -1001,6 +1114,14 @@ def prepare_wasm_binary(
     else:
         env.pop("MOLT_WASM_LINK", None)
 
+    if want_linked and "MOLT_WASM_TABLE_BASE" not in env:
+        table_probe = (
+            RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
+        )
+        table_base = _read_wasm_table_min(table_probe)
+        if table_base is not None:
+            env["MOLT_WASM_TABLE_BASE"] = str(table_base)
+
     build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1033,7 +1154,12 @@ def prepare_wasm_binary(
         env.pop("MOLT_WASM_LINK", None)
         env["MOLT_WASM_PREFER_LINKED"] = "0"
         build_s = _build_wasm_output(
-            python_cmd, env, output_path, script, tty=tty, log=log
+            python_cmd,
+            env,
+            output_path,
+            script,
+            tty=tty,
+            log=log,
         )
         if build_s is None:
             if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1045,7 +1171,11 @@ def prepare_wasm_binary(
         if stale_linked.exists():
             stale_linked.unlink()
 
-    wasm_path = linked if linked_used else output_path
+    if linked_used:
+        assert linked is not None
+        wasm_path = linked
+    else:
+        wasm_path = output_path
     wasm_size = wasm_path.stat().st_size / 1024
     run_env = env.copy()
     # Runtime executions should not inherit host-Python import environment knobs.
@@ -1481,7 +1611,15 @@ def main() -> None:
             node_max_old_space_mb=args.node_max_old_space_mb,
         )
     runtime_policy = _runtime_rebuild_policy()
-    need_shared_runtime = runtime_policy == "always" or not _is_valid_wasm(RUNTIME_WASM)
+    shared_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM)
+    shared_runtime_stale = (
+        runtime_policy == "auto"
+        and not shared_runtime_invalid
+        and _runtime_artifact_stale(RUNTIME_WASM)
+    )
+    need_shared_runtime = (
+        runtime_policy == "always" or shared_runtime_invalid or shared_runtime_stale
+    )
     if need_shared_runtime:
         if runtime_policy == "never":
             print(
@@ -1491,6 +1629,11 @@ def main() -> None:
             if log_file is not None:
                 log_file.close()
             sys.exit(1)
+        if shared_runtime_stale:
+            msg = f"Runtime sources changed; rebuilding runtime wasm: {RUNTIME_WASM}"
+            print(msg, file=sys.stderr)
+            if log_file is not None:
+                _log_write(log_file, f"# {msg}\n")
         if not build_runtime_wasm(
             reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
         ):
@@ -1501,8 +1644,14 @@ def main() -> None:
         _log_write(log_file, f"# reusing cached runtime wasm {RUNTIME_WASM}\n")
 
     if _want_linked():
-        need_reloc_runtime = runtime_policy == "always" or not _is_valid_wasm(
-            RUNTIME_WASM_RELOC
+        reloc_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM_RELOC)
+        reloc_runtime_stale = (
+            runtime_policy == "auto"
+            and not reloc_runtime_invalid
+            and _runtime_artifact_stale(RUNTIME_WASM_RELOC)
+        )
+        need_reloc_runtime = (
+            runtime_policy == "always" or reloc_runtime_invalid or reloc_runtime_stale
         )
         if need_reloc_runtime:
             if runtime_policy == "never":
@@ -1515,7 +1664,15 @@ def main() -> None:
                     if log_file is not None:
                         log_file.close()
                     sys.exit(1)
-            elif not build_runtime_wasm(
+            if reloc_runtime_stale:
+                msg = (
+                    "Runtime sources changed; rebuilding reloc runtime wasm: "
+                    f"{RUNTIME_WASM_RELOC}"
+                )
+                print(msg, file=sys.stderr)
+                if log_file is not None:
+                    _log_write(log_file, f"# {msg}\n")
+            if not build_runtime_wasm(
                 reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
             ):
                 if args.require_linked:

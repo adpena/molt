@@ -1,19 +1,19 @@
 [package]
 name = "molt-backend"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-cranelift = "0.116"
-cranelift-codegen = { version = "0.116", features = ["arm64", "x86"] }
-cranelift-module = "0.116"
-cranelift-object = "0.116"
-cranelift-native = "0.116"
+cranelift = "0.128"
+cranelift-codegen = { version = "0.128", features = ["arm64", "x86"] }
+cranelift-module = "0.128"
+cranelift-object = "0.128"
+cranelift-native = "0.128"
 target-lexicon = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_path_to_error = "0.1"
 molt-obj-model = { path = "../molt-obj-model" }
-wasm-encoder = "0.32.0"
-wasmparser = "0.243.0"
+wasm-encoder = "0.245.1"
+wasmparser = "0.245.1"

@@ -275,9 +275,19 @@ impl PgPool {
 
 fn build_tls_connector(config: &PgPoolConfig) -> Result<MakeRustlsConnect, String> {
     let mut roots = RootCertStore::empty();
-    let certs = rustls_native_certs::load_native_certs()
-        .map_err(|err| format!("failed to load native certs: {err}"))?;
-    for cert in certs {
+    let certs = rustls_native_certs::load_native_certs();
+    if certs.certs.is_empty() && !certs.errors.is_empty() {
+        return Err(format!(
+            "failed to load native certs: {}",
+            certs
+                .errors
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    for cert in certs.certs {
         roots.add(cert).map_err(|err| err.to_string())?;
     }
     if let Some(path) = config.ssl_root_cert.as_ref() {

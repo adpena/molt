@@ -4,31 +4,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use molt_obj_model::MoltObject;
 
 use crate::{
-    alloc_class_obj, alloc_classmethod_obj, alloc_dict_with_pairs, alloc_function_obj,
-    alloc_generic_alias, alloc_instance_for_class, alloc_list, alloc_property_obj,
-    alloc_staticmethod_obj, alloc_string, alloc_super_obj, alloc_tuple, apply_class_slots_layout,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, builtin_classes, builtin_type_bits,
-    call_callable0, call_callable1, call_callable2, class_bases_bits, class_bases_vec,
-    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
-    class_mro_vec, class_name_for_error, class_set_bases_bits, class_set_layout_version_bits,
-    class_set_mro_bits, class_set_qualname_bits, clear_exception, dataclass_set_class_raw,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    dict_update_apply, dict_update_set_in_place, exception_pending, header_from_obj_ptr,
-    inc_ref_bits, init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits,
-    is_truthy, isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits,
-    missing_bits, molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw,
-    molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
-    molt_getattr_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
-    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, property_del_bits,
-    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
-    seq_vec_ref, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
-    PyToken, HEADER_FLAG_SKIP_CLASS_DECREF, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS,
+    HEADER_FLAG_SKIP_CLASS_DECREF, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS,
     TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_PROPERTY,
-    TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    alloc_classmethod_obj, alloc_dict_with_pairs, alloc_function_obj, alloc_generic_alias,
+    alloc_instance_for_class, alloc_list, alloc_property_obj, alloc_staticmethod_obj, alloc_string,
+    alloc_super_obj, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr_allow_missing,
+    attr_name_bits_from_bytes, builtin_classes, builtin_type_bits, call_callable0, call_callable1,
+    call_callable2, class_bases_bits, class_bases_vec, class_bump_layout_version, class_dict_bits,
+    class_layout_version_bits, class_mro_bits, class_mro_vec, class_name_for_error,
+    class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits,
+    class_set_qualname_bits, clear_exception, dataclass_set_class_raw, dec_ref_bits,
+    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
+    dict_update_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits, is_truthy,
+    isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits, missing_bits,
+    molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
+    molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin, molt_index,
+    molt_iter, molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj,
+    molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_from_bits,
+    object_class_bits, object_set_class_bits, object_type_id, property_del_bits, property_get_bits,
+    property_set_bits, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
+    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -48,7 +48,7 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let tag = match to_i64(obj_from_bits(tag_bits)) {
@@ -63,7 +63,7 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let bits = type_of_bits(_py, val_bits);
@@ -72,7 +72,7 @@ pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_new(
     cls_bits: u64,
     name_bits: u64,
@@ -130,7 +130,7 @@ pub extern "C" fn molt_type_new(
                             _py,
                             "TypeError",
                             "bases must be a tuple of types",
-                        )
+                        );
                     }
                 }
             }
@@ -315,7 +315,7 @@ pub extern "C" fn molt_type_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_init(
     _cls_bits: u64,
     _name_bits: u64,
@@ -331,7 +331,7 @@ pub extern "C" fn molt_type_init(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
@@ -352,7 +352,7 @@ pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_instancecheck(cls_bits: u64, inst_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let inst_type = type_of_bits(_py, inst_bits);
@@ -360,21 +360,21 @@ pub extern "C" fn molt_type_instancecheck(cls_bits: u64, inst_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_bool(issubclass_bits(sub_bits, cls_bits)).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_bool(isinstance_runtime(_py, val_bits, class_bits)).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(sub_bits);
@@ -401,7 +401,7 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let obj_bits = molt_alloc(std::mem::size_of::<u64>() as u64);
@@ -416,7 +416,7 @@ pub extern "C" fn molt_object_new() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
@@ -439,7 +439,7 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
@@ -541,7 +541,7 @@ fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
     Some(out)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
@@ -593,7 +593,7 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                             _py,
                             "TypeError",
                             "base must be a type object or tuple of types",
-                        )
+                        );
                     }
                 }
             }
@@ -684,7 +684,7 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
@@ -730,7 +730,7 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
@@ -746,7 +746,7 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
@@ -767,7 +767,7 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let type_obj = obj_from_bits(type_bits);
@@ -813,7 +813,7 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_classmethod_new(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_classmethod_obj(_py, func_bits);
@@ -825,7 +825,7 @@ pub extern "C" fn molt_classmethod_new(func_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
@@ -861,7 +861,7 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -900,7 +900,7 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_staticmethod_new(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_staticmethod_obj(_py, func_bits);
@@ -912,7 +912,7 @@ pub extern "C" fn molt_staticmethod_new(func_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_property_obj(_py, get_bits, set_bits, del_bits);
@@ -924,7 +924,7 @@ pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_property_getter(prop_bits: u64, get_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let prop_obj = obj_from_bits(prop_bits);
@@ -947,7 +947,7 @@ pub extern "C" fn molt_property_getter(prop_bits: u64, get_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_property_setter(prop_bits: u64, set_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let prop_obj = obj_from_bits(prop_bits);
@@ -970,7 +970,7 @@ pub extern "C" fn molt_property_setter(prop_bits: u64, set_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_property_deleter(prop_bits: u64, del_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let prop_obj = obj_from_bits(prop_bits);
@@ -993,7 +993,7 @@ pub extern "C" fn molt_property_deleter(prop_bits: u64, del_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_init(
     self_bits: u64,
     args_bits: u64,
@@ -1130,7 +1130,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_get(
     self_bits: u64,
     args_bits: u64,
@@ -1238,7 +1238,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_set(
     self_bits: u64,
     instance_bits: u64,
@@ -1266,7 +1266,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_set(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_delete(self_bits: u64, instance_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none = MoltObject::none().bits();
@@ -1307,7 +1307,7 @@ fn dynamic_class_attr_clone(
     )
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none = MoltObject::none().bits();
@@ -1416,7 +1416,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none = MoltObject::none().bits();
@@ -1496,7 +1496,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none = MoltObject::none().bits();
@@ -1579,39 +1579,41 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
 /// # Safety
 /// `obj_ptr` must point to a valid Molt object header that can be mutated, and
 /// `class_bits` must be either zero or a valid Molt type object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if obj_ptr.is_null() {
-            return raise_exception::<_>(_py, "AttributeError", "object has no class");
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        if (*header).poll_fn != 0 {
-            return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
-        }
-        if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {
-            return dataclass_set_class_raw(_py, obj_ptr, class_bits);
-        }
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
-            };
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            if obj_ptr.is_null() {
+                return raise_exception::<_>(_py, "AttributeError", "object has no class");
             }
-        }
-        let skip_class_ref = ((*header).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0;
-        let old_bits = object_class_bits(obj_ptr);
-        if old_bits != 0 && !skip_class_ref {
-            dec_ref_bits(_py, old_bits);
-        }
-        object_set_class_bits(_py, obj_ptr, class_bits);
-        if class_bits != 0 && !skip_class_ref {
-            inc_ref_bits(_py, class_bits);
-        }
-        MoltObject::none().bits()
-    })
+            let header = header_from_obj_ptr(obj_ptr);
+            if (*header).poll_fn != 0 {
+                return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
+            }
+            if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {
+                return dataclass_set_class_raw(_py, obj_ptr, class_bits);
+            }
+            if class_bits != 0 {
+                let class_obj = obj_from_bits(class_bits);
+                let Some(class_ptr) = class_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                };
+                if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                }
+            }
+            let skip_class_ref = ((*header).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0;
+            let old_bits = object_class_bits(obj_ptr);
+            if old_bits != 0 && !skip_class_ref {
+                dec_ref_bits(_py, old_bits);
+            }
+            object_set_class_bits(_py, obj_ptr, class_bits);
+            if class_bits != 0 && !skip_class_ref {
+                inc_ref_bits(_py, class_bits);
+            }
+            MoltObject::none().bits()
+        })
+    }
 }
 
 fn collect_classinfo_issubclass(_py: &PyToken<'_>, class_bits: u64, out: &mut Vec<u64>) {
@@ -1816,11 +1818,13 @@ fn mark_vararg_method(_py: &PyToken<'_>, func_bits: u64, include_self: bool) {
 }
 
 unsafe fn mappingproxy_mapping_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 unsafe fn mappingproxy_set_mapping_bits(ptr: *mut u8, bits: u64) {
-    *(ptr as *mut u64) = bits;
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
 }
 
 fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
@@ -1828,79 +1832,79 @@ fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
     let new_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_NEW_FN,
-        crate::molt_types_mappingproxy_new as usize as u64,
+        crate::molt_types_mappingproxy_new as *const () as usize as u64,
         2,
     );
     let init_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_INIT_FN,
-        crate::molt_types_mappingproxy_init as usize as u64,
+        crate::molt_types_mappingproxy_init as *const () as usize as u64,
         2,
     );
     let getitem_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_GETITEM_FN,
-        crate::molt_types_mappingproxy_getitem as usize as u64,
+        crate::molt_types_mappingproxy_getitem as *const () as usize as u64,
         2,
     );
     let iter_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_ITER_FN,
-        crate::molt_types_mappingproxy_iter as usize as u64,
+        crate::molt_types_mappingproxy_iter as *const () as usize as u64,
         1,
     );
     let len_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_LEN_FN,
-        crate::molt_types_mappingproxy_len as usize as u64,
+        crate::molt_types_mappingproxy_len as *const () as usize as u64,
         1,
     );
     let contains_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_CONTAINS_FN,
-        crate::molt_types_mappingproxy_contains as usize as u64,
+        crate::molt_types_mappingproxy_contains as *const () as usize as u64,
         2,
     );
     let get_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_GET_FN,
-        crate::molt_types_mappingproxy_get as usize as u64,
+        crate::molt_types_mappingproxy_get as *const () as usize as u64,
         3,
     );
     let keys_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_KEYS_FN,
-        crate::molt_types_mappingproxy_keys as usize as u64,
+        crate::molt_types_mappingproxy_keys as *const () as usize as u64,
         1,
     );
     let items_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_ITEMS_FN,
-        crate::molt_types_mappingproxy_items as usize as u64,
+        crate::molt_types_mappingproxy_items as *const () as usize as u64,
         1,
     );
     let values_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_VALUES_FN,
-        crate::molt_types_mappingproxy_values as usize as u64,
+        crate::molt_types_mappingproxy_values as *const () as usize as u64,
         1,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_REPR_FN,
-        crate::molt_types_mappingproxy_repr as usize as u64,
+        crate::molt_types_mappingproxy_repr as *const () as usize as u64,
         1,
     );
     let setitem_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_SETITEM_FN,
-        crate::molt_types_mappingproxy_setitem as usize as u64,
+        crate::molt_types_mappingproxy_setitem as *const () as usize as u64,
         3,
     );
     let delitem_bits = builtin_func_bits(
         _py,
         &MAPPINGPROXY_DELITEM_FN,
-        crate::molt_types_mappingproxy_delitem as usize as u64,
+        crate::molt_types_mappingproxy_delitem as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__new__", new_bits);
@@ -1929,13 +1933,13 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
     let new_bits = builtin_func_bits(
         _py,
         &METHOD_NEW_FN,
-        crate::molt_types_method_new as usize as u64,
+        crate::molt_types_method_new as *const () as usize as u64,
         3,
     );
     let init_bits = builtin_func_bits(
         _py,
         &METHOD_INIT_FN,
-        crate::molt_types_method_init as usize as u64,
+        crate::molt_types_method_init as *const () as usize as u64,
         3,
     );
     set_class_method(_py, class_bits, "__new__", new_bits);
@@ -1948,19 +1952,19 @@ fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
     let init_bits = builtin_func_bits(
         _py,
         &SIMPLENAMESPACE_INIT_FN,
-        crate::molt_types_simplenamespace_init as usize as u64,
+        crate::molt_types_simplenamespace_init as *const () as usize as u64,
         3,
     );
     let repr_bits = builtin_func_bits(
         _py,
         &SIMPLENAMESPACE_REPR_FN,
-        crate::molt_types_simplenamespace_repr as usize as u64,
+        crate::molt_types_simplenamespace_repr as *const () as usize as u64,
         1,
     );
     let eq_bits = builtin_func_bits(
         _py,
         &SIMPLENAMESPACE_EQ_FN,
-        crate::molt_types_simplenamespace_eq as usize as u64,
+        crate::molt_types_simplenamespace_eq as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__init__", init_bits);
@@ -1975,7 +1979,7 @@ fn capsule_class(_py: &PyToken<'_>) -> u64 {
     let new_bits = builtin_func_bits(
         _py,
         &CAPSULE_NEW_FN,
-        crate::molt_types_capsule_new as usize as u64,
+        crate::molt_types_capsule_new as *const () as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__new__", new_bits);
@@ -1987,7 +1991,7 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
     let new_bits = builtin_func_bits(
         _py,
         &CELL_NEW_FN,
-        crate::molt_types_cell_new as usize as u64,
+        crate::molt_types_cell_new as *const () as usize as u64,
         1,
     );
     set_class_method(_py, class_bits, "__new__", new_bits);
@@ -2015,7 +2019,7 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(self_bits).is_none() {
@@ -2026,12 +2030,12 @@ pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bit
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_method_init(_self_bits: u64, _func_bits: u64, _self_arg: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(mapping_bits).is_none() {
@@ -2063,12 +2067,12 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_init(_self_bits: u64, _mapping_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_getitem(self_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2077,7 +2081,7 @@ pub extern "C" fn molt_types_mappingproxy_getitem(self_bits: u64, key_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_iter(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2090,7 +2094,7 @@ pub extern "C" fn molt_types_mappingproxy_iter(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_len(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2099,7 +2103,7 @@ pub extern "C" fn molt_types_mappingproxy_len(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_contains(self_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2108,7 +2112,7 @@ pub extern "C" fn molt_types_mappingproxy_contains(self_bits: u64, key_bits: u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_get(
     self_bits: u64,
     args_bits: u64,
@@ -2198,22 +2202,22 @@ fn mappingproxy_call_noargs(_py: &PyToken<'_>, self_bits: u64, name: &str) -> u6
     res_bits
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_keys(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { mappingproxy_call_noargs(_py, self_bits, "keys") })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_items(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { mappingproxy_call_noargs(_py, self_bits, "items") })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_values(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { mappingproxy_call_noargs(_py, self_bits, "values") })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2231,7 +2235,7 @@ pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_setitem(
     _self_bits: u64,
     _key_bits: u64,
@@ -2246,7 +2250,7 @@ pub extern "C" fn molt_types_mappingproxy_setitem(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         raise_exception::<_>(
@@ -2257,14 +2261,14 @@ pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         raise_exception::<_>(_py, "TypeError", "cannot create 'capsule' instances")
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_cell_new(_cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         raise_exception::<_>(_py, "TypeError", "cannot create 'cell' instances")
@@ -2398,7 +2402,7 @@ fn alloc_release_tuple_bits(_py: &PyToken<'_>, rel: FutureRelease) -> Option<u64
     Some(MoltObject::from_ptr(tuple_ptr).bits())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_keyword_lists() -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(kwlist_bits) = alloc_str_list_bits(_py, HARD_KEYWORDS) else {
@@ -2434,21 +2438,21 @@ fn keyword_contains(value_bits: u64, keywords: &[&str]) -> bool {
     keywords.contains(&value.as_str())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_keyword_iskeyword(value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_bool(keyword_contains(value_bits, HARD_KEYWORDS)).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_keyword_issoftkeyword(value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         MoltObject::from_bool(keyword_contains(value_bits, SOFT_KEYWORDS)).bits()
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_future_features() -> u64 {
     crate::with_gil_entry!(_py, {
         let mut rows: Vec<u64> = Vec::with_capacity(FUTURE_FEATURES.len());
@@ -2513,12 +2517,12 @@ pub extern "C" fn molt_future_features() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stdlib_probe() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_simplenamespace_init(
     self_bits: u64,
     args_bits: u64,
@@ -2593,7 +2597,7 @@ pub extern "C" fn molt_types_simplenamespace_init(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2638,7 +2642,7 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_simplenamespace_eq(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
@@ -2690,7 +2694,7 @@ pub extern "C" fn molt_types_simplenamespace_eq(self_bits: u64, other_bits: u64)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__molt_is_coroutine__") else {
@@ -2891,7 +2895,7 @@ fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Opti
 }
 
 #[allow(clippy::too_many_arguments)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_make_dataclass(
     cls_name_bits: u64,
     fields_bits: u64,
@@ -3743,7 +3747,7 @@ fn dataclasses_astuple_inner(
     dataclasses_deepcopy(_py, value_bits)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_bits = dataclasses_class_bits(_py, obj_bits);
@@ -3785,7 +3789,7 @@ pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let missing = missing_bits(_py);
@@ -3810,7 +3814,7 @@ pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_asdict(
     obj_bits: u64,
     dict_factory_bits: u64,
@@ -3829,7 +3833,7 @@ pub extern "C" fn molt_dataclasses_asdict(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_astuple(
     obj_bits: u64,
     tuple_factory_bits: u64,
@@ -3848,7 +3852,7 @@ pub extern "C" fn molt_dataclasses_astuple(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_replace(
     obj_bits: u64,
     changes_bits: u64,
@@ -4285,7 +4289,7 @@ fn prepare_class_impl(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(cls_ptr) = obj_from_bits(cls_bits).as_ptr() else {
@@ -4324,7 +4328,7 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(positional) = call_vararg_args(_py, "prepare_class", args_bits) else {
@@ -4431,7 +4435,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(positional) = call_vararg_args(_py, "resolve_bases", args_bits) else {
@@ -4482,7 +4486,7 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(positional) = call_vararg_args(_py, "new_class", args_bits) else {
@@ -4705,43 +4709,43 @@ fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let init_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_INIT_FN,
-        crate::molt_types_dynamic_class_attr_init as usize as u64,
+        crate::molt_types_dynamic_class_attr_init as *const () as usize as u64,
         3,
     );
     let get_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_GET_FN,
-        crate::molt_types_dynamic_class_attr_get as usize as u64,
+        crate::molt_types_dynamic_class_attr_get as *const () as usize as u64,
         3,
     );
     let set_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_SET_FN,
-        crate::molt_types_dynamic_class_attr_set as usize as u64,
+        crate::molt_types_dynamic_class_attr_set as *const () as usize as u64,
         3,
     );
     let delete_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_DELETE_FN,
-        crate::molt_types_dynamic_class_attr_delete as usize as u64,
+        crate::molt_types_dynamic_class_attr_delete as *const () as usize as u64,
         2,
     );
     let getter_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_GETTER_FN,
-        crate::molt_types_dynamic_class_attr_getter as usize as u64,
+        crate::molt_types_dynamic_class_attr_getter as *const () as usize as u64,
         2,
     );
     let setter_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_SETTER_FN,
-        crate::molt_types_dynamic_class_attr_setter as usize as u64,
+        crate::molt_types_dynamic_class_attr_setter as *const () as usize as u64,
         2,
     );
     let deleter_bits = builtin_func_bits(
         _py,
         &DYNAMICCLASSATTRIBUTE_DELETER_FN,
-        crate::molt_types_dynamic_class_attr_deleter as usize as u64,
+        crate::molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
         2,
     );
     set_class_method(_py, class_bits, "__init__", init_bits);
@@ -4756,7 +4760,7 @@ fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     class_bits
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_bootstrap() -> u64 {
     crate::with_gil_entry!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -4772,7 +4776,11 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let dynamic_class_attr_bits = dynamic_class_attribute_class(_py);
 
         let method_type_bits = {
-            let func_ptr = alloc_function_obj(_py, crate::molt_types_coroutine as usize as u64, 1);
+            let func_ptr = alloc_function_obj(
+                _py,
+                crate::molt_types_coroutine as *const () as usize as u64,
+                1,
+            );
             if func_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -4810,23 +4818,32 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let member_descriptor_bits =
             type_from_class_attr(_py, builtins.function, "__globals__").unwrap_or(builtins.object);
 
-        let coroutine_func_ptr =
-            alloc_function_obj(_py, crate::molt_types_coroutine as usize as u64, 1);
+        let coroutine_func_ptr = alloc_function_obj(
+            _py,
+            crate::molt_types_coroutine as *const () as usize as u64,
+            1,
+        );
         if coroutine_func_ptr.is_null() {
             return MoltObject::none().bits();
         }
         let coroutine_bits = MoltObject::from_ptr(coroutine_func_ptr).bits();
 
-        let get_original_bases_ptr =
-            alloc_function_obj(_py, crate::molt_types_get_original_bases as usize as u64, 1);
+        let get_original_bases_ptr = alloc_function_obj(
+            _py,
+            crate::molt_types_get_original_bases as *const () as usize as u64,
+            1,
+        );
         if get_original_bases_ptr.is_null() {
             dec_ref_bits(_py, coroutine_bits);
             return MoltObject::none().bits();
         }
         let get_original_bases_bits = MoltObject::from_ptr(get_original_bases_ptr).bits();
 
-        let prepare_ptr =
-            alloc_function_obj(_py, crate::molt_types_prepare_class as usize as u64, 2);
+        let prepare_ptr = alloc_function_obj(
+            _py,
+            crate::molt_types_prepare_class as *const () as usize as u64,
+            2,
+        );
         if prepare_ptr.is_null() {
             dec_ref_bits(_py, coroutine_bits);
             dec_ref_bits(_py, get_original_bases_bits);
@@ -4835,8 +4852,11 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let prepare_bits = MoltObject::from_ptr(prepare_ptr).bits();
         mark_vararg_method(_py, prepare_bits, false);
 
-        let resolve_ptr =
-            alloc_function_obj(_py, crate::molt_types_resolve_bases as usize as u64, 2);
+        let resolve_ptr = alloc_function_obj(
+            _py,
+            crate::molt_types_resolve_bases as *const () as usize as u64,
+            2,
+        );
         if resolve_ptr.is_null() {
             dec_ref_bits(_py, coroutine_bits);
             dec_ref_bits(_py, get_original_bases_bits);
@@ -4846,7 +4866,11 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let resolve_bits = MoltObject::from_ptr(resolve_ptr).bits();
         mark_vararg_method(_py, resolve_bits, false);
 
-        let new_ptr = alloc_function_obj(_py, crate::molt_types_new_class as usize as u64, 2);
+        let new_ptr = alloc_function_obj(
+            _py,
+            crate::molt_types_new_class as *const () as usize as u64,
+            2,
+        );
         if new_ptr.is_null() {
             dec_ref_bits(_py, coroutine_bits);
             dec_ref_bits(_py, get_original_bases_bits);

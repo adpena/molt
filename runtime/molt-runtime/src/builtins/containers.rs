@@ -5,26 +5,26 @@ macro_rules! fn_addr {
 }
 
 use crate::{
-    alloc_tuple, builtin_func_bits, builtin_func_bits_with_default, dec_ref_bits,
-    dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method, dict_items_method,
-    dict_keys_method, dict_pop_method, dict_popitem_method, dict_setdefault_method,
-    dict_update_method, dict_values_method, exception_pending, molt_contains, molt_delitem_method,
-    molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,
-    molt_frozenset_isdisjoint, molt_frozenset_issubset, molt_frozenset_issuperset,
-    molt_frozenset_symmetric_difference, molt_frozenset_union_multi, molt_getitem_method,
-    molt_inplace_add, molt_inplace_mul, molt_iter, molt_len, molt_list_add_method,
-    molt_list_append, molt_list_clear, molt_list_copy, molt_list_count, molt_list_extend,
-    molt_list_index_range, molt_list_init_method, molt_list_insert, molt_list_mul_method,
-    molt_list_pop, molt_list_remove, molt_list_reverse, molt_list_sort, molt_reversed_builtin,
-    molt_set_add, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_discard, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
+    FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_FROZENSET, TYPE_ID_SET, alloc_tuple, builtin_func_bits, builtin_func_bits_with_default,
+    dec_ref_bits, dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method,
+    dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method,
+    dict_setdefault_method, dict_update_method, dict_values_method, exception_pending,
+    molt_contains, molt_delitem_method, molt_frozenset_copy_method,
+    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
+    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
+    molt_frozenset_union_multi, molt_getitem_method, molt_inplace_add, molt_inplace_mul, molt_iter,
+    molt_len, molt_list_add_method, molt_list_append, molt_list_clear, molt_list_copy,
+    molt_list_count, molt_list_extend, molt_list_index_range, molt_list_init_method,
+    molt_list_insert, molt_list_mul_method, molt_list_pop, molt_list_remove, molt_list_reverse,
+    molt_list_sort, molt_reversed_builtin, molt_set_add, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_discard,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
     molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
     molt_set_update_multi, molt_setitem_method, molt_tuple_new_bound, obj_from_bits,
-    object_type_id, runtime_state, seq_vec_ref, set_add_in_place, MoltObject, PyToken,
-    FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE,
-    TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_SET,
+    object_type_id, runtime_state, seq_vec_ref, set_add_in_place,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
@@ -525,87 +525,99 @@ pub(crate) fn tuple_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 }
 
 pub(crate) unsafe fn list_len(ptr: *mut u8) -> usize {
-    seq_vec_ref(ptr).len()
+    unsafe { seq_vec_ref(ptr).len() }
 }
 
 pub(crate) unsafe fn tuple_len(ptr: *mut u8) -> usize {
-    seq_vec_ref(ptr).len()
+    unsafe { seq_vec_ref(ptr).len() }
 }
 
 pub(crate) unsafe fn dict_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    *(ptr as *mut *mut Vec<u64>)
+    unsafe { *(ptr as *mut *mut Vec<u64>) }
 }
 
 pub(crate) unsafe fn dict_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
-    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>)
+    unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
 }
 
 pub(crate) unsafe fn dict_order(ptr: *mut u8) -> &'static mut Vec<u64> {
-    let vec_ptr = dict_order_ptr(ptr);
-    &mut *vec_ptr
+    unsafe {
+        let vec_ptr = dict_order_ptr(ptr);
+        &mut *vec_ptr
+    }
 }
 
 pub(crate) unsafe fn dict_table(ptr: *mut u8) -> &'static mut Vec<usize> {
-    let vec_ptr = dict_table_ptr(ptr);
-    &mut *vec_ptr
+    unsafe {
+        let vec_ptr = dict_table_ptr(ptr);
+        &mut *vec_ptr
+    }
 }
 
 pub(crate) unsafe fn dict_len(ptr: *mut u8) -> usize {
-    dict_order(ptr).len() / 2
+    unsafe { dict_order(ptr).len() / 2 }
 }
 
 pub(crate) unsafe fn set_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    *(ptr as *mut *mut Vec<u64>)
+    unsafe { *(ptr as *mut *mut Vec<u64>) }
 }
 
 pub(crate) unsafe fn set_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
-    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>)
+    unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
 }
 
 pub(crate) unsafe fn set_order(ptr: *mut u8) -> &'static mut Vec<u64> {
-    let vec_ptr = set_order_ptr(ptr);
-    &mut *vec_ptr
+    unsafe {
+        let vec_ptr = set_order_ptr(ptr);
+        &mut *vec_ptr
+    }
 }
 
 pub(crate) unsafe fn set_table(ptr: *mut u8) -> &'static mut Vec<usize> {
-    let vec_ptr = set_table_ptr(ptr);
-    &mut *vec_ptr
+    unsafe {
+        let vec_ptr = set_table_ptr(ptr);
+        &mut *vec_ptr
+    }
 }
 
 pub(crate) unsafe fn set_len(ptr: *mut u8) -> usize {
-    set_order(ptr).len()
+    unsafe { set_order(ptr).len() }
 }
 
 pub(crate) unsafe fn dict_view_dict_bits(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+    unsafe { *(ptr as *const u64) }
 }
 
 pub(crate) unsafe fn dict_view_len(ptr: *mut u8) -> usize {
-    let dict_bits = dict_view_dict_bits(ptr);
-    let dict_obj = obj_from_bits(dict_bits);
-    if let Some(dict_ptr) = dict_obj.as_ptr() {
-        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-            return dict_len(dict_ptr);
+    unsafe {
+        let dict_bits = dict_view_dict_bits(ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        if let Some(dict_ptr) = dict_obj.as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                return dict_len(dict_ptr);
+            }
         }
+        0
     }
-    0
 }
 
 pub(crate) unsafe fn dict_view_entry(ptr: *mut u8, idx: usize) -> Option<(u64, u64)> {
-    let dict_bits = dict_view_dict_bits(ptr);
-    let dict_obj = obj_from_bits(dict_bits);
-    if let Some(dict_ptr) = dict_obj.as_ptr() {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
+    unsafe {
+        let dict_bits = dict_view_dict_bits(ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        if let Some(dict_ptr) = dict_obj.as_ptr() {
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return None;
+            }
+            let order = dict_order(dict_ptr);
+            let entry = idx * 2;
+            if entry + 1 >= order.len() {
+                return None;
+            }
+            return Some((order[entry], order[entry + 1]));
         }
-        let order = dict_order(dict_ptr);
-        let entry = idx * 2;
-        if entry + 1 >= order.len() {
-            return None;
-        }
-        return Some((order[entry], order[entry + 1]));
+        None
     }
-    None
 }
 
 pub(crate) unsafe fn dict_view_as_set_bits(
@@ -613,33 +625,35 @@ pub(crate) unsafe fn dict_view_as_set_bits(
     view_ptr: *mut u8,
     view_type: u32,
 ) -> Option<u64> {
-    if !is_set_view_type(view_type) {
-        return None;
-    }
-    let len = dict_view_len(view_ptr);
-    let set_bits = molt_set_new(len as u64);
-    let set_ptr = obj_from_bits(set_bits).as_ptr()?;
-    for idx in 0..len {
-        if let Some((key_bits, val_bits)) = dict_view_entry(view_ptr, idx) {
-            let (entry_bits, needs_drop) = if view_type == TYPE_ID_DICT_ITEMS_VIEW {
-                let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
-                if tuple_ptr.is_null() {
+    unsafe {
+        if !is_set_view_type(view_type) {
+            return None;
+        }
+        let len = dict_view_len(view_ptr);
+        let set_bits = molt_set_new(len as u64);
+        let set_ptr = obj_from_bits(set_bits).as_ptr()?;
+        for idx in 0..len {
+            if let Some((key_bits, val_bits)) = dict_view_entry(view_ptr, idx) {
+                let (entry_bits, needs_drop) = if view_type == TYPE_ID_DICT_ITEMS_VIEW {
+                    let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
+                    if tuple_ptr.is_null() {
+                        dec_ref_bits(_py, set_bits);
+                        return None;
+                    }
+                    (MoltObject::from_ptr(tuple_ptr).bits(), true)
+                } else {
+                    (key_bits, false)
+                };
+                set_add_in_place(_py, set_ptr, entry_bits);
+                if needs_drop {
+                    dec_ref_bits(_py, entry_bits);
+                }
+                if exception_pending(_py) {
                     dec_ref_bits(_py, set_bits);
                     return None;
                 }
-                (MoltObject::from_ptr(tuple_ptr).bits(), true)
-            } else {
-                (key_bits, false)
-            };
-            set_add_in_place(_py, set_ptr, entry_bits);
-            if needs_drop {
-                dec_ref_bits(_py, entry_bits);
-            }
-            if exception_pending(_py) {
-                dec_ref_bits(_py, set_bits);
-                return None;
             }
         }
+        Some(set_bits)
     }
-    Some(set_bits)
 }

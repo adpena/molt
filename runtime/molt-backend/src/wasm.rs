@@ -1,6 +1,7 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::iter::ExactSizeIterator;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
     ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
@@ -57,6 +58,27 @@ struct CompileFuncContext<'a> {
     table_base: u32,
     import_ids: &'a HashMap<String, u32>,
     reloc_enabled: bool,
+}
+
+trait TypeSectionExt {
+    fn function<P, R>(&mut self, params: P, results: R)
+    where
+        P: IntoIterator<Item = ValType>,
+        P::IntoIter: ExactSizeIterator,
+        R: IntoIterator<Item = ValType>,
+        R::IntoIter: ExactSizeIterator;
+}
+
+impl TypeSectionExt for TypeSection {
+    fn function<P, R>(&mut self, params: P, results: R)
+    where
+        P: IntoIterator<Item = ValType>,
+        P::IntoIter: ExactSizeIterator,
+        R: IntoIterator<Item = ValType>,
+        R::IntoIter: ExactSizeIterator,
+    {
+        self.ty().function(params, results);
+    }
 }
 
 fn box_int(val: i64) -> i64 {
@@ -1592,8 +1614,10 @@ impl WasmBackend {
         let table_min = table_base + table_len;
         let table_ty = TableType {
             element_type: RefType::FUNCREF,
-            minimum: table_min,
+            table64: false,
+            minimum: u64::from(table_min),
             maximum: None,
+            shared: false,
         };
         self.imports.import(
             "env",
@@ -2050,7 +2074,7 @@ impl WasmBackend {
                     table: None,
                     offset: &offset,
                 },
-                elements: Elements::Functions(&table_indices),
+                elements: Elements::Functions(Cow::Borrowed(&table_indices)),
             });
             element_section = Some(section);
         }
@@ -2067,6 +2091,7 @@ impl WasmBackend {
             maximum: None,
             memory64: false,
             shared: false,
+            page_size_log2: None,
         };
         self.imports
             .import("env", "memory", EntityType::Memory(memory_ty));
@@ -4634,8 +4659,8 @@ impl WasmBackend {
                     }
                     "asyncgen_new" => {
                         let args = op.args.as_ref().unwrap();
-                        let gen = locals[&args[0]];
-                        func.instruction(&Instruction::LocalGet(gen));
+                        let gen_local = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(gen_local));
                         emit_call(func, reloc_enabled, import_ids["asyncgen_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -4647,9 +4672,9 @@ impl WasmBackend {
                     }
                     "gen_send" => {
                         let args = op.args.as_ref().unwrap();
-                        let gen = locals[&args[0]];
+                        let gen_local = locals[&args[0]];
                         let val = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(gen));
+                        func.instruction(&Instruction::LocalGet(gen_local));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["generator_send"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -4657,9 +4682,9 @@ impl WasmBackend {
                     }
                     "gen_throw" => {
                         let args = op.args.as_ref().unwrap();
-                        let gen = locals[&args[0]];
+                        let gen_local = locals[&args[0]];
                         let val = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(gen));
+                        func.instruction(&Instruction::LocalGet(gen_local));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["generator_throw"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -4667,8 +4692,8 @@ impl WasmBackend {
                     }
                     "gen_close" => {
                         let args = op.args.as_ref().unwrap();
-                        let gen = locals[&args[0]];
-                        func.instruction(&Instruction::LocalGet(gen));
+                        let gen_local = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(gen_local));
                         emit_call(func, reloc_enabled, import_ids["generator_close"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -8992,7 +9017,10 @@ fn emit_call_indirect(func: &mut Function, reloc_enabled: bool, ty: u32, table: 
         encode_u32_leb128_padded(table, &mut bytes);
         func.raw(bytes);
     } else {
-        func.instruction(&Instruction::CallIndirect { ty, table });
+        func.instruction(&Instruction::CallIndirect {
+            type_index: ty,
+            table_index: table,
+        });
     }
 }
 
@@ -9112,7 +9140,7 @@ fn add_reloc_sections(
             }
             Payload::ImportSection(reader) => {
                 section_index += 1;
-                for import in reader.into_iter().flatten() {
+                for import in reader.into_imports().flatten() {
                     match import.ty {
                         TypeRef::Func(_) => {
                             func_imports.push(import.name.to_string());
@@ -9278,9 +9306,16 @@ fn add_reloc_sections(
     for def_idx in 0..defined_func_count {
         let func_index = func_import_count + def_idx;
         let export_name = func_exports.get(&func_index).cloned();
-        let name = export_name
-            .clone()
-            .unwrap_or_else(|| format!("__molt_fn_{func_index}"));
+        // Keep linker symbol names module-scoped so linked output/runtime objects
+        // cannot accidentally alias local function symbols with identical names.
+        // Preserve explicit call_indirect export symbols because wasm_link.py
+        // resolves/aliases those by name for runtime ABI wiring.
+        let name = match export_name.as_deref() {
+            Some("molt_main") | Some("molt_table_init") => export_name.clone().unwrap_or_default(),
+            Some(exported) if exported.starts_with("molt_call_indirect") => exported.to_string(),
+            Some(_) => format!("__molt_output_export_{func_index}"),
+            None => format!("__molt_output_fn_{func_index}"),
+        };
         func_names.push(name);
         let name_ref = func_names.last().unwrap();
         let flags = if export_name.is_some() {
@@ -9301,11 +9336,7 @@ fn add_reloc_sections(
     let mut table_names: Vec<String> = Vec::new();
     for table_idx in 0..table_defined_count {
         let index = table_import_count + table_idx;
-        let name = if index == 0 {
-            "molt_table".to_string()
-        } else {
-            format!("__molt_table_{index}")
-        };
+        let name = format!("__molt_output_table_{index}");
         table_names.push(name);
         let name_ref = table_names.last().unwrap();
         sym_tab.table(0, index, Some(name_ref));
@@ -9314,7 +9345,7 @@ fn add_reloc_sections(
 
     let mut data_names: Vec<String> = Vec::new();
     for (idx, info) in data_segments.iter().enumerate() {
-        let name = format!("__molt_data_{idx}");
+        let name = format!("__molt_output_data_{idx}");
         data_names.push(name);
         let name_ref = data_names.last().unwrap();
         sym_tab.data(

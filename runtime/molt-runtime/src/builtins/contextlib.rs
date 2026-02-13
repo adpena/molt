@@ -1,7 +1,7 @@
 use crate::{
-    attr_name_bits_from_bytes, bits_from_ptr, call_callable0, call_callable1, call_callable3,
-    class_dict_bits, class_mro_ref, clear_exception, clear_exception_state,
-    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_TYPE, attr_name_bits_from_bytes,
+    bits_from_ptr, call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_ref,
+    clear_exception, clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_kind_bits,
     exception_pending, exception_stack_pop, exception_stack_push, exception_trace_bits,
@@ -11,8 +11,7 @@ use crate::{
     molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_inspect_isawaitable,
     molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise, obj_from_bits,
     object_type_id, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
-    resolve_ptr, string_obj_to_owned, type_of_bits, MoltObject, PyToken, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_TYPE,
+    resolve_ptr, string_obj_to_owned, type_of_bits,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -414,7 +413,7 @@ fn contextlib_clear_pending_exception_state(_py: &PyToken<'_>) {
 }
 
 unsafe fn payload_slot(payload_ptr: *mut u64, idx: usize) -> u64 {
-    *payload_ptr.add(idx)
+    unsafe { *payload_ptr.add(idx) }
 }
 
 unsafe fn payload_replace_borrowed(
@@ -423,46 +422,58 @@ unsafe fn payload_replace_borrowed(
     idx: usize,
     bits: u64,
 ) {
-    let slot = payload_ptr.add(idx);
-    let old_bits = *slot;
-    if !obj_from_bits(old_bits).is_none() {
-        dec_ref_bits(_py, old_bits);
-    }
-    *slot = bits;
-    if !obj_from_bits(bits).is_none() {
-        inc_ref_bits(_py, bits);
+    unsafe {
+        let slot = payload_ptr.add(idx);
+        let old_bits = *slot;
+        if !obj_from_bits(old_bits).is_none() {
+            dec_ref_bits(_py, old_bits);
+        }
+        *slot = bits;
+        if !obj_from_bits(bits).is_none() {
+            inc_ref_bits(_py, bits);
+        }
     }
 }
 
 unsafe fn payload_replace_owned(_py: &PyToken<'_>, payload_ptr: *mut u64, idx: usize, bits: u64) {
-    let slot = payload_ptr.add(idx);
-    let old_bits = *slot;
-    if !obj_from_bits(old_bits).is_none() {
-        dec_ref_bits(_py, old_bits);
+    unsafe {
+        let slot = payload_ptr.add(idx);
+        let old_bits = *slot;
+        if !obj_from_bits(old_bits).is_none() {
+            dec_ref_bits(_py, old_bits);
+        }
+        *slot = bits;
     }
-    *slot = bits;
 }
 
 unsafe fn payload_clear(_py: &PyToken<'_>, payload_ptr: *mut u64, idx: usize) {
-    payload_replace_borrowed(_py, payload_ptr, idx, MoltObject::none().bits());
+    unsafe {
+        payload_replace_borrowed(_py, payload_ptr, idx, MoltObject::none().bits());
+    }
 }
 
 unsafe fn payload_set_bool(payload_ptr: *mut u64, idx: usize, value: bool) {
-    *payload_ptr.add(idx) = MoltObject::from_bool(value).bits();
+    unsafe {
+        *payload_ptr.add(idx) = MoltObject::from_bool(value).bits();
+    }
 }
 
 unsafe fn payload_bool(payload_ptr: *mut u64, idx: usize) -> bool {
-    obj_from_bits(*payload_ptr.add(idx))
-        .as_bool()
-        .unwrap_or(false)
+    unsafe {
+        obj_from_bits(*payload_ptr.add(idx))
+            .as_bool()
+            .unwrap_or(false)
+    }
 }
 
 unsafe fn payload_set_i64(payload_ptr: *mut u64, idx: usize, value: i64) {
-    *payload_ptr.add(idx) = MoltObject::from_int(value).bits();
+    unsafe {
+        *payload_ptr.add(idx) = MoltObject::from_int(value).bits();
+    }
 }
 
 unsafe fn payload_i64(payload_ptr: *mut u64, idx: usize) -> i64 {
-    obj_from_bits(*payload_ptr.add(idx)).as_int().unwrap_or(0)
+    unsafe { obj_from_bits(*payload_ptr.add(idx)).as_int().unwrap_or(0) }
 }
 
 fn push_exit_callback(_py: &PyToken<'_>, handle: &mut ExitStackHandle, callback_bits: u64) -> u64 {
@@ -559,44 +570,50 @@ unsafe fn async_exitstack_set_current_exception_owned(
     payload_ptr: *mut u64,
     new_exc_bits: u64,
 ) {
-    let none_bits = MoltObject::none().bits();
-    let new_type_bits = type_of_bits(_py, new_exc_bits);
-    let new_tb_bits = obj_from_bits(new_exc_bits)
-        .as_ptr()
-        .map(|ptr| exception_trace_bits(ptr))
-        .unwrap_or(none_bits);
-    payload_replace_borrowed(
-        _py,
-        payload_ptr,
-        ASYNC_EXITSTACK_SLOT_CUR_TYPE,
-        new_type_bits,
-    );
-    payload_replace_owned(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC, new_exc_bits);
-    payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB, new_tb_bits);
-    payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED, false);
-    payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED, true);
+    unsafe {
+        let none_bits = MoltObject::none().bits();
+        let new_type_bits = type_of_bits(_py, new_exc_bits);
+        let new_tb_bits = obj_from_bits(new_exc_bits)
+            .as_ptr()
+            .map(|ptr| exception_trace_bits(ptr))
+            .unwrap_or(none_bits);
+        payload_replace_borrowed(
+            _py,
+            payload_ptr,
+            ASYNC_EXITSTACK_SLOT_CUR_TYPE,
+            new_type_bits,
+        );
+        payload_replace_owned(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC, new_exc_bits);
+        payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB, new_tb_bits);
+        payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED, false);
+        payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED, true);
+    }
 }
 
 unsafe fn async_exitstack_suppress_current(_py: &PyToken<'_>, payload_ptr: *mut u64) {
-    let none_bits = MoltObject::none().bits();
-    payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE, none_bits);
-    payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC, none_bits);
-    payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB, none_bits);
-    payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED, true);
-    payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED, false);
+    unsafe {
+        let none_bits = MoltObject::none().bits();
+        payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE, none_bits);
+        payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC, none_bits);
+        payload_replace_borrowed(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB, none_bits);
+        payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED, true);
+        payload_set_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED, false);
+    }
 }
 
 unsafe fn async_exitstack_result(payload_ptr: *mut u64) -> bool {
-    let received_exc = payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_RECEIVED_EXC);
-    let suppressed = payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED);
-    let current_type = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
-    if received_exc && obj_from_bits(current_type).is_none() {
-        return true;
+    unsafe {
+        let received_exc = payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_RECEIVED_EXC);
+        let suppressed = payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_SUPPRESSED);
+        let current_type = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
+        if received_exc && obj_from_bits(current_type).is_none() {
+            return true;
+        }
+        if obj_from_bits(current_type).is_none() {
+            return suppressed;
+        }
+        false
     }
-    if obj_from_bits(current_type).is_none() {
-        return suppressed;
-    }
-    false
 }
 
 fn async_result_is_awaitable(_py: &PyToken<'_>, result_bits: u64) -> bool {
@@ -646,14 +663,14 @@ extern "C" fn contextlib_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_closing(payload_bits: u64) -> u64 {
     let enter_fn = contextlib_closing_enter as *const ();
     let exit_fn = contextlib_closing_exit as *const ();
     crate::molt_context_new(enter_fn, exit_fn, payload_bits)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, payload_bits);
@@ -661,12 +678,12 @@ pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_aclosing_exit(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { call_method0(_py, payload_bits, b"aclose") })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_enter(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, self_bits);
@@ -674,7 +691,7 @@ pub extern "C" fn molt_contextlib_abstract_enter(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, self_bits);
@@ -682,7 +699,7 @@ pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match contextlib_check_methods(_py, candidate_bits, &[b"__enter__", b"__exit__"]) {
@@ -693,7 +710,7 @@ pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_async_subclasshook(candidate_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match contextlib_check_methods(_py, candidate_bits, &[b"__aenter__", b"__aexit__"]) {
@@ -704,7 +721,7 @@ pub extern "C" fn molt_contextlib_abstract_async_subclasshook(candidate_bits: u6
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_contextdecorator_call(
     cm_bits: u64,
     func_bits: u64,
@@ -781,7 +798,7 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -809,7 +826,7 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -829,7 +846,7 @@ pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_new(
     func_bits: u64,
     args_bits: u64,
@@ -854,7 +871,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -868,7 +885,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_aenter(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = match asyncgen_cm_from_bits_mut(_py, handle_bits) {
@@ -890,7 +907,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_aenter(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_aexit(
     handle_bits: u64,
     exc_type_bits: u64,
@@ -909,7 +926,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_aexit(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let out = call_next_method(_py, gen_bits);
@@ -926,7 +943,7 @@ pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_generator_exit(
     gen_bits: u64,
     exc_type_bits: u64,
@@ -1022,7 +1039,7 @@ fn contextlib_asyncgen_enter_impl(_py: &PyToken<'_>, agen_bits: u64) -> u64 {
     future_bits
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_enter(agen_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { contextlib_asyncgen_enter_impl(_py, agen_bits) })
 }
@@ -1057,7 +1074,7 @@ fn contextlib_asyncgen_exit_impl(
     future_bits
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_exit(
     agen_bits: u64,
     exc_type_bits: u64,
@@ -1069,7 +1086,7 @@ pub extern "C" fn molt_contextlib_asyncgen_exit(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_suppress_match(exc_type_bits: u64, exceptions_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(exc_type_bits).is_none() {
@@ -1079,7 +1096,7 @@ pub extern "C" fn molt_contextlib_suppress_match(exc_type_bits: u64, exceptions_
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_redirect_enter(
     sys_bits: u64,
     stream_name_bits: u64,
@@ -1110,7 +1127,7 @@ pub extern "C" fn molt_contextlib_redirect_enter(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_redirect_exit(
     sys_bits: u64,
     stream_name_bits: u64,
@@ -1132,7 +1149,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = Box::into_raw(Box::new(ExitStackHandle {
@@ -1142,7 +1159,7 @@ pub extern "C" fn molt_contextlib_exitstack_new() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -1158,7 +1175,7 @@ pub extern "C" fn molt_contextlib_exitstack_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_push(handle_bits: u64, callback_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
@@ -1169,7 +1186,7 @@ pub extern "C" fn molt_contextlib_exitstack_push(handle_bits: u64, callback_bits
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_push_callback(
     handle_bits: u64,
     callback_bits: u64,
@@ -1185,7 +1202,7 @@ pub extern "C" fn molt_contextlib_exitstack_push_callback(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_async_exitstack_push_callback(
     handle_bits: u64,
     callback_bits: u64,
@@ -1201,7 +1218,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_callback(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
     handle_bits: u64,
     exit_bits: u64,
@@ -1253,7 +1270,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let entered_bits = call_method0(_py, cm_bits, b"__enter__");
@@ -1324,7 +1341,7 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_pop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
@@ -1346,7 +1363,7 @@ pub extern "C" fn molt_contextlib_exitstack_pop(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_pop_all(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
@@ -1362,7 +1379,7 @@ pub extern "C" fn molt_contextlib_exitstack_pop_all(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_exit(
     handle_bits: u64,
     exc_type_bits: u64,
@@ -1467,7 +1484,7 @@ pub extern "C" fn molt_contextlib_exitstack_exit(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_async_exitstack_enter_context(
     handle_bits: u64,
     cm_bits: u64,
@@ -1496,7 +1513,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_enter_context(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_async_exitstack_exit(
     handle_bits: u64,
     exc_type_bits: u64,
@@ -1546,25 +1563,62 @@ pub extern "C" fn molt_contextlib_async_exitstack_exit(
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib asyncgen-enter future object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let obj_ptr = ptr_from_bits(obj_bits);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits() as i64;
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
-        if payload_bytes < 2 * std::mem::size_of::<u64>() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async payload");
-        }
-        let payload_ptr = obj_ptr as *mut u64;
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let obj_ptr = ptr_from_bits(obj_bits);
+            if obj_ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            let header = header_from_obj_ptr(obj_ptr);
+            let payload_bytes = (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            if payload_bytes < 2 * std::mem::size_of::<u64>() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async payload",
+                );
+            }
+            let payload_ptr = obj_ptr as *mut u64;
 
-        if (*header).state == 0 {
-            let agen_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AGEN);
-            let await_bits = call_method0(_py, agen_bits, b"__anext__");
+            if (*header).state == 0 {
+                let agen_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AGEN);
+                let await_bits = call_method0(_py, agen_bits, b"__anext__");
+                if exception_pending(_py) {
+                    let raised_bits = molt_exception_last();
+                    clear_exception(_py);
+                    if exception_kind_name(_py, raised_bits).as_deref()
+                        == Some("StopAsyncIteration")
+                    {
+                        dec_ref_bits(_py, raised_bits);
+                        return raise_exception::<i64>(
+                            _py,
+                            "RuntimeError",
+                            "async generator didn't yield",
+                        );
+                    }
+                    return rethrow_with_owned_exception(_py, raised_bits) as i64;
+                }
+                payload_replace_owned(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT, await_bits);
+                (*header).state = 1;
+            }
+
+            let await_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
+            if obj_from_bits(await_bits).is_none() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async state",
+                );
+            }
+            let res = molt_future_poll(await_bits);
+            if res == pending_bits_i64() {
+                return res;
+            }
+            payload_clear(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
             if exception_pending(_py) {
                 let raised_bits = molt_exception_last();
                 clear_exception(_py);
@@ -1578,172 +1632,213 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                 }
                 return rethrow_with_owned_exception(_py, raised_bits) as i64;
             }
-            payload_replace_owned(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT, await_bits);
-            (*header).state = 1;
-        }
-
-        let await_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
-        if obj_from_bits(await_bits).is_none() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state");
-        }
-        let res = molt_future_poll(await_bits);
-        if res == pending_bits_i64() {
-            return res;
-        }
-        payload_clear(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
-        if exception_pending(_py) {
-            let raised_bits = molt_exception_last();
-            clear_exception(_py);
-            if exception_kind_name(_py, raised_bits).as_deref() == Some("StopAsyncIteration") {
-                dec_ref_bits(_py, raised_bits);
-                return raise_exception::<i64>(_py, "RuntimeError", "async generator didn't yield");
-            }
-            return rethrow_with_owned_exception(_py, raised_bits) as i64;
-        }
-        res
-    })
+            res
+        })
+    }
 }
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib asyncgen-exit future object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let obj_ptr = ptr_from_bits(obj_bits);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits() as i64;
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
-        if payload_bytes < 7 * std::mem::size_of::<u64>() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async payload");
-        }
-        let payload_ptr = obj_ptr as *mut u64;
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let obj_ptr = ptr_from_bits(obj_bits);
+            if obj_ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            let header = header_from_obj_ptr(obj_ptr);
+            let payload_bytes = (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            if payload_bytes < 7 * std::mem::size_of::<u64>() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async payload",
+                );
+            }
+            let payload_ptr = obj_ptr as *mut u64;
 
-        if (*header).state == 0 {
-            let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
-            let exc_type_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC_TYPE);
-            let exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC);
-            let tb_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_TB);
+            if (*header).state == 0 {
+                let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
+                let exc_type_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC_TYPE);
+                let exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC);
+                let tb_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_TB);
 
-            if obj_from_bits(exc_type_bits).is_none() {
-                let await_bits = call_method0(_py, agen_bits, b"__anext__");
+                if obj_from_bits(exc_type_bits).is_none() {
+                    let await_bits = call_method0(_py, agen_bits, b"__anext__");
+                    if exception_pending(_py) {
+                        let raised_bits = molt_exception_last();
+                        clear_exception(_py);
+                        return asyncgen_exit_handle_exception(
+                            _py,
+                            ASYNCGEN_EXIT_MODE_ANEXT,
+                            raised_bits,
+                            MoltObject::none().bits(),
+                        );
+                    }
+                    payload_replace_owned(_py, payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT, await_bits);
+                    payload_set_i64(
+                        payload_ptr,
+                        ASYNCGEN_EXIT_SLOT_MODE,
+                        ASYNCGEN_EXIT_MODE_ANEXT,
+                    );
+                    (*header).state = 1;
+                    return pending_bits_i64();
+                }
+
+                let normalized_exc =
+                    match normalize_exit_exception(_py, exc_type_bits, exc_bits, tb_bits) {
+                        Ok(bits) => bits,
+                        Err(bits) => return rethrow_with_owned_exception(_py, bits) as i64,
+                    };
+                payload_replace_owned(
+                    _py,
+                    payload_ptr,
+                    ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC,
+                    normalized_exc,
+                );
+                let await_bits = call_method1(_py, agen_bits, b"athrow", normalized_exc);
                 if exception_pending(_py) {
                     let raised_bits = molt_exception_last();
                     clear_exception(_py);
                     return asyncgen_exit_handle_exception(
                         _py,
-                        ASYNCGEN_EXIT_MODE_ANEXT,
+                        ASYNCGEN_EXIT_MODE_THROW,
                         raised_bits,
-                        MoltObject::none().bits(),
+                        payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC),
                     );
                 }
                 payload_replace_owned(_py, payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT, await_bits);
                 payload_set_i64(
                     payload_ptr,
                     ASYNCGEN_EXIT_SLOT_MODE,
-                    ASYNCGEN_EXIT_MODE_ANEXT,
+                    ASYNCGEN_EXIT_MODE_THROW,
                 );
                 (*header).state = 1;
                 return pending_bits_i64();
             }
 
-            let normalized_exc =
-                match normalize_exit_exception(_py, exc_type_bits, exc_bits, tb_bits) {
-                    Ok(bits) => bits,
-                    Err(bits) => return rethrow_with_owned_exception(_py, bits) as i64,
-                };
-            payload_replace_owned(
-                _py,
-                payload_ptr,
-                ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC,
-                normalized_exc,
-            );
-            let await_bits = call_method1(_py, agen_bits, b"athrow", normalized_exc);
+            let await_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT);
+            if obj_from_bits(await_bits).is_none() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async state",
+                );
+            }
+            let res = molt_future_poll(await_bits);
+            if res == pending_bits_i64() {
+                return res;
+            }
+            payload_clear(_py, payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT);
+
+            let mode = payload_i64(payload_ptr, ASYNCGEN_EXIT_SLOT_MODE);
+            let normalized_exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC);
             if exception_pending(_py) {
                 let raised_bits = molt_exception_last();
                 clear_exception(_py);
-                return asyncgen_exit_handle_exception(
+                return asyncgen_exit_handle_exception(_py, mode, raised_bits, normalized_exc_bits);
+            }
+
+            if !obj_from_bits(res as u64).is_none() {
+                dec_ref_bits(_py, res as u64);
+            }
+            if mode == ASYNCGEN_EXIT_MODE_ANEXT {
+                return raise_exception::<i64>(_py, "RuntimeError", "async generator didn't stop");
+            }
+            if mode == ASYNCGEN_EXIT_MODE_THROW {
+                let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
+                match asyncgen_state_closed(_py, agen_bits) {
+                    Ok(true) => return MoltObject::from_bool(true).bits() as i64,
+                    Ok(false) => {}
+                    Err(bits) => return bits as i64,
+                }
+                return raise_exception::<i64>(
                     _py,
-                    ASYNCGEN_EXIT_MODE_THROW,
-                    raised_bits,
-                    payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC),
+                    "RuntimeError",
+                    "async generator didn't stop after athrow",
                 );
             }
-            payload_replace_owned(_py, payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT, await_bits);
-            payload_set_i64(
-                payload_ptr,
-                ASYNCGEN_EXIT_SLOT_MODE,
-                ASYNCGEN_EXIT_MODE_THROW,
-            );
-            (*header).state = 1;
-            return pending_bits_i64();
-        }
-
-        let await_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT);
-        if obj_from_bits(await_bits).is_none() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state");
-        }
-        let res = molt_future_poll(await_bits);
-        if res == pending_bits_i64() {
-            return res;
-        }
-        payload_clear(_py, payload_ptr, ASYNCGEN_EXIT_SLOT_AWAIT);
-
-        let mode = payload_i64(payload_ptr, ASYNCGEN_EXIT_SLOT_MODE);
-        let normalized_exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC);
-        if exception_pending(_py) {
-            let raised_bits = molt_exception_last();
-            clear_exception(_py);
-            return asyncgen_exit_handle_exception(_py, mode, raised_bits, normalized_exc_bits);
-        }
-
-        if !obj_from_bits(res as u64).is_none() {
-            dec_ref_bits(_py, res as u64);
-        }
-        if mode == ASYNCGEN_EXIT_MODE_ANEXT {
-            return raise_exception::<i64>(_py, "RuntimeError", "async generator didn't stop");
-        }
-        if mode == ASYNCGEN_EXIT_MODE_THROW {
-            let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
-            match asyncgen_state_closed(_py, agen_bits) {
-                Ok(true) => return MoltObject::from_bool(true).bits() as i64,
-                Ok(false) => {}
-                Err(bits) => return bits as i64,
-            }
-            return raise_exception::<i64>(
-                _py,
-                "RuntimeError",
-                "async generator didn't stop after athrow",
-            );
-        }
-        raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state")
-    })
+            raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state")
+        })
+    }
 }
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib async enter-context future object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let obj_ptr = ptr_from_bits(obj_bits);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits() as i64;
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
-        if payload_bytes < 3 * std::mem::size_of::<u64>() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async payload");
-        }
-        let payload_ptr = obj_ptr as *mut u64;
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let obj_ptr = ptr_from_bits(obj_bits);
+            if obj_ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            let header = header_from_obj_ptr(obj_ptr);
+            let payload_bytes = (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            if payload_bytes < 3 * std::mem::size_of::<u64>() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async payload",
+                );
+            }
+            let payload_ptr = obj_ptr as *mut u64;
 
-        if (*header).state == 0 {
+            if (*header).state == 0 {
+                let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
+                let await_bits = call_method0(_py, cm_bits, b"__aenter__");
+                if exception_pending(_py) {
+                    let raised_bits = molt_exception_last();
+                    clear_exception(_py);
+                    if exception_kind_name(_py, raised_bits).as_deref() == Some("AttributeError") {
+                        dec_ref_bits(_py, raised_bits);
+                        return raise_exception::<i64>(
+                            _py,
+                            "TypeError",
+                            "object does not support the asynchronous context manager protocol",
+                        );
+                    }
+                    return rethrow_with_owned_exception(_py, raised_bits) as i64;
+                }
+                payload_replace_owned(
+                    _py,
+                    payload_ptr,
+                    ASYNC_EXITSTACK_ENTER_SLOT_AWAIT,
+                    await_bits,
+                );
+                (*header).state = 1;
+                return pending_bits_i64();
+            }
+
+            let await_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_AWAIT);
+            if obj_from_bits(await_bits).is_none() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async state",
+                );
+            }
+            let res = molt_future_poll(await_bits);
+            if res == pending_bits_i64() {
+                return res;
+            }
+            payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_AWAIT);
+            if exception_pending(_py) {
+                return res;
+            }
+
             let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
-            let await_bits = call_method0(_py, cm_bits, b"__aenter__");
+            let Some(exit_name_bits) = attr_name_bits_from_bytes(_py, b"__aexit__") else {
+                return MoltObject::none().bits() as i64;
+            };
+            let missing = missing_bits(_py);
+            let exit_bits = molt_getattr_builtin(cm_bits, exit_name_bits, missing);
+            dec_ref_bits(_py, exit_name_bits);
             if exception_pending(_py) {
                 let raised_bits = molt_exception_last();
                 clear_exception(_py);
@@ -1757,104 +1852,145 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
                 }
                 return rethrow_with_owned_exception(_py, raised_bits) as i64;
             }
-            payload_replace_owned(
-                _py,
-                payload_ptr,
-                ASYNC_EXITSTACK_ENTER_SLOT_AWAIT,
-                await_bits,
-            );
-            (*header).state = 1;
-            return pending_bits_i64();
-        }
 
-        let await_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_AWAIT);
-        if obj_from_bits(await_bits).is_none() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state");
-        }
-        let res = molt_future_poll(await_bits);
-        if res == pending_bits_i64() {
-            return res;
-        }
-        payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_AWAIT);
-        if exception_pending(_py) {
-            return res;
-        }
-
-        let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
-        let Some(exit_name_bits) = attr_name_bits_from_bytes(_py, b"__aexit__") else {
-            return MoltObject::none().bits() as i64;
-        };
-        let missing = missing_bits(_py);
-        let exit_bits = molt_getattr_builtin(cm_bits, exit_name_bits, missing);
-        dec_ref_bits(_py, exit_name_bits);
-        if exception_pending(_py) {
-            let raised_bits = molt_exception_last();
-            clear_exception(_py);
-            if exception_kind_name(_py, raised_bits).as_deref() == Some("AttributeError") {
-                dec_ref_bits(_py, raised_bits);
-                return raise_exception::<i64>(
-                    _py,
-                    "TypeError",
-                    "object does not support the asynchronous context manager protocol",
-                );
-            }
-            return rethrow_with_owned_exception(_py, raised_bits) as i64;
-        }
-
-        let handle_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_HANDLE);
-        let push_res = {
-            let handle = match exitstack_from_bits_mut(_py, handle_bits) {
-                Ok(handle) => handle,
-                Err(bits) => {
-                    dec_ref_bits(_py, exit_bits);
-                    return bits as i64;
-                }
+            let handle_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_HANDLE);
+            let push_res = {
+                let handle = match exitstack_from_bits_mut(_py, handle_bits) {
+                    Ok(handle) => handle,
+                    Err(bits) => {
+                        dec_ref_bits(_py, exit_bits);
+                        return bits as i64;
+                    }
+                };
+                push_exit_callback(_py, handle, exit_bits)
             };
-            push_exit_callback(_py, handle, exit_bits)
-        };
-        dec_ref_bits(_py, exit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits() as i64;
-        }
-        if !obj_from_bits(push_res).is_none() {
-            dec_ref_bits(_py, push_res);
-        }
-        res
-    })
+            dec_ref_bits(_py, exit_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits() as i64;
+            }
+            if !obj_from_bits(push_res).is_none() {
+                dec_ref_bits(_py, push_res);
+            }
+            res
+        })
+    }
 }
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib async exitstack-exit future object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let obj_ptr = ptr_from_bits(obj_bits);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits() as i64;
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
-        if payload_bytes < 9 * std::mem::size_of::<u64>() {
-            return raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async payload");
-        }
-        let payload_ptr = obj_ptr as *mut u64;
-
-        loop {
-            let active_await_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT);
-            if !obj_from_bits(active_await_bits).is_none() {
-                let active_kind = payload_i64(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_KIND);
-                let res = molt_future_poll(active_await_bits);
-                if res == pending_bits_i64() {
-                    return res;
-                }
-                payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT);
-                payload_set_i64(
-                    payload_ptr,
-                    ASYNC_EXITSTACK_SLOT_ACTIVE_KIND,
-                    ASYNC_EXITSTACK_ACTIVE_NONE,
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let obj_ptr = ptr_from_bits(obj_bits);
+            if obj_ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            let header = header_from_obj_ptr(obj_ptr);
+            let payload_bytes = (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            if payload_bytes < 9 * std::mem::size_of::<u64>() {
+                return raise_exception::<i64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid contextlib async payload",
                 );
+            }
+            let payload_ptr = obj_ptr as *mut u64;
+
+            loop {
+                let active_await_bits =
+                    payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT);
+                if !obj_from_bits(active_await_bits).is_none() {
+                    let active_kind = payload_i64(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_KIND);
+                    let res = molt_future_poll(active_await_bits);
+                    if res == pending_bits_i64() {
+                        return res;
+                    }
+                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT);
+                    payload_set_i64(
+                        payload_ptr,
+                        ASYNC_EXITSTACK_SLOT_ACTIVE_KIND,
+                        ASYNC_EXITSTACK_ACTIVE_NONE,
+                    );
+
+                    if exception_pending(_py) {
+                        let new_exc_bits = molt_exception_last();
+                        clear_exception(_py);
+                        async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits);
+                        continue;
+                    }
+
+                    if active_kind == ASYNC_EXITSTACK_ACTIVE_EXIT {
+                        let callback_suppressed = is_truthy(_py, obj_from_bits(res as u64));
+                        if callback_suppressed {
+                            async_exitstack_suppress_current(_py, payload_ptr);
+                        }
+                    }
+                    if !obj_from_bits(res as u64).is_none() {
+                        dec_ref_bits(_py, res as u64);
+                    }
+                    continue;
+                }
+
+                let handle_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_HANDLE);
+                let callback = {
+                    let handle = match exitstack_from_bits_mut(_py, handle_bits) {
+                        Ok(handle) => handle,
+                        Err(bits) => return bits as i64,
+                    };
+                    handle.callbacks.pop()
+                };
+                let Some(mut callback) = callback else {
+                    let current_exc_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
+                    let current_exc_owned =
+                        payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED);
+                    if current_exc_owned && !obj_from_bits(current_exc_bits).is_none() {
+                        inc_ref_bits(_py, current_exc_bits);
+                        payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
+                        payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
+                        payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
+                        return rethrow_with_owned_exception(_py, current_exc_bits) as i64;
+                    }
+                    let result = async_exitstack_result(payload_ptr);
+                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
+                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
+                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
+                    return MoltObject::from_bool(result).bits() as i64;
+                };
+
+                let callback_kind = callback.kind;
+                let current_type_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
+                let current_exc_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
+                let current_tb_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
+
+                let out = match callback_kind {
+                    ExitStackCallbackKind::Exit => unsafe {
+                        call_callable3(
+                            _py,
+                            callback.callback_bits,
+                            current_type_bits,
+                            current_exc_bits,
+                            current_tb_bits,
+                        )
+                    },
+                    ExitStackCallbackKind::SyncCallback => {
+                        callback.release_refs(_py);
+                        return raise_exception::<i64>(
+                            _py,
+                            "TypeError",
+                            "synchronous callback cannot run in AsyncExitStack",
+                        );
+                    }
+                    ExitStackCallbackKind::AsyncCallback => call_with_star_kwargs(
+                        _py,
+                        callback.callback_bits,
+                        callback.args_bits,
+                        callback.kwargs_bits,
+                    ),
+                };
+                callback.release_refs(_py);
 
                 if exception_pending(_py) {
                     let new_exc_bits = molt_exception_last();
@@ -1863,167 +1999,101 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                     continue;
                 }
 
-                if active_kind == ASYNC_EXITSTACK_ACTIVE_EXIT {
-                    let callback_suppressed = is_truthy(_py, obj_from_bits(res as u64));
+                if async_result_is_awaitable(_py, out) {
+                    payload_replace_owned(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT, out);
+                    let active_kind = if callback_kind == ExitStackCallbackKind::Exit {
+                        ASYNC_EXITSTACK_ACTIVE_EXIT
+                    } else {
+                        ASYNC_EXITSTACK_ACTIVE_CALLBACK
+                    };
+                    payload_set_i64(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_KIND, active_kind);
+                    continue;
+                }
+
+                if callback_kind == ExitStackCallbackKind::Exit {
+                    let callback_suppressed = is_truthy(_py, obj_from_bits(out));
                     if callback_suppressed {
                         async_exitstack_suppress_current(_py, payload_ptr);
                     }
                 }
-                if !obj_from_bits(res as u64).is_none() {
-                    dec_ref_bits(_py, res as u64);
-                }
-                continue;
-            }
-
-            let handle_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_HANDLE);
-            let callback = {
-                let handle = match exitstack_from_bits_mut(_py, handle_bits) {
-                    Ok(handle) => handle,
-                    Err(bits) => return bits as i64,
-                };
-                handle.callbacks.pop()
-            };
-            let Some(mut callback) = callback else {
-                let current_exc_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
-                let current_exc_owned =
-                    payload_bool(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC_OWNED);
-                if current_exc_owned && !obj_from_bits(current_exc_bits).is_none() {
-                    inc_ref_bits(_py, current_exc_bits);
-                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
-                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
-                    payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
-                    return rethrow_with_owned_exception(_py, current_exc_bits) as i64;
-                }
-                let result = async_exitstack_result(payload_ptr);
-                payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
-                payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
-                payload_clear(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
-                return MoltObject::from_bool(result).bits() as i64;
-            };
-
-            let callback_kind = callback.kind;
-            let current_type_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TYPE);
-            let current_exc_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_EXC);
-            let current_tb_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
-
-            let out = match callback_kind {
-                ExitStackCallbackKind::Exit => unsafe {
-                    call_callable3(
-                        _py,
-                        callback.callback_bits,
-                        current_type_bits,
-                        current_exc_bits,
-                        current_tb_bits,
-                    )
-                },
-                ExitStackCallbackKind::SyncCallback => {
-                    callback.release_refs(_py);
-                    return raise_exception::<i64>(
-                        _py,
-                        "TypeError",
-                        "synchronous callback cannot run in AsyncExitStack",
-                    );
-                }
-                ExitStackCallbackKind::AsyncCallback => call_with_star_kwargs(
-                    _py,
-                    callback.callback_bits,
-                    callback.args_bits,
-                    callback.kwargs_bits,
-                ),
-            };
-            callback.release_refs(_py);
-
-            if exception_pending(_py) {
-                let new_exc_bits = molt_exception_last();
-                clear_exception(_py);
-                async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits);
-                continue;
-            }
-
-            if async_result_is_awaitable(_py, out) {
-                payload_replace_owned(_py, payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT, out);
-                let active_kind = if callback_kind == ExitStackCallbackKind::Exit {
-                    ASYNC_EXITSTACK_ACTIVE_EXIT
-                } else {
-                    ASYNC_EXITSTACK_ACTIVE_CALLBACK
-                };
-                payload_set_i64(payload_ptr, ASYNC_EXITSTACK_SLOT_ACTIVE_KIND, active_kind);
-                continue;
-            }
-
-            if callback_kind == ExitStackCallbackKind::Exit {
-                let callback_suppressed = is_truthy(_py, obj_from_bits(out));
-                if callback_suppressed {
-                    async_exitstack_suppress_current(_py, payload_ptr);
+                if !obj_from_bits(out).is_none() {
+                    dec_ref_bits(_py, out);
                 }
             }
-            if !obj_from_bits(out).is_none() {
-                dec_ref_bits(_py, out);
-            }
-        }
-    })
+        })
+    }
 }
 
 unsafe fn contextlib_drop_payload_slots(_py: &PyToken<'_>, future_ptr: *mut u8, slots: &[usize]) {
-    let payload_ptr = future_ptr as *mut u64;
-    for idx in slots {
-        let bits = *payload_ptr.add(*idx);
-        if !obj_from_bits(bits).is_none() {
-            dec_ref_bits(_py, bits);
+    unsafe {
+        let payload_ptr = future_ptr as *mut u64;
+        for idx in slots {
+            let bits = *payload_ptr.add(*idx);
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
+            }
+            *payload_ptr.add(*idx) = MoltObject::none().bits();
         }
-        *payload_ptr.add(*idx) = MoltObject::none().bits();
     }
 }
 
 pub(crate) unsafe fn contextlib_asyncgen_enter_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    contextlib_drop_payload_slots(
-        _py,
-        future_ptr,
-        &[ASYNCGEN_ENTER_SLOT_AGEN, ASYNCGEN_ENTER_SLOT_AWAIT],
-    );
+    unsafe {
+        contextlib_drop_payload_slots(
+            _py,
+            future_ptr,
+            &[ASYNCGEN_ENTER_SLOT_AGEN, ASYNCGEN_ENTER_SLOT_AWAIT],
+        );
+    }
 }
 
 pub(crate) unsafe fn contextlib_asyncgen_exit_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    contextlib_drop_payload_slots(
-        _py,
-        future_ptr,
-        &[
-            ASYNCGEN_EXIT_SLOT_AGEN,
-            ASYNCGEN_EXIT_SLOT_EXC_TYPE,
-            ASYNCGEN_EXIT_SLOT_EXC,
-            ASYNCGEN_EXIT_SLOT_TB,
-            ASYNCGEN_EXIT_SLOT_AWAIT,
-            ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC,
-        ],
-    );
+    unsafe {
+        contextlib_drop_payload_slots(
+            _py,
+            future_ptr,
+            &[
+                ASYNCGEN_EXIT_SLOT_AGEN,
+                ASYNCGEN_EXIT_SLOT_EXC_TYPE,
+                ASYNCGEN_EXIT_SLOT_EXC,
+                ASYNCGEN_EXIT_SLOT_TB,
+                ASYNCGEN_EXIT_SLOT_AWAIT,
+                ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC,
+            ],
+        );
+    }
 }
 
 pub(crate) unsafe fn contextlib_async_exitstack_enter_context_task_drop(
     _py: &PyToken<'_>,
     future_ptr: *mut u8,
 ) {
-    contextlib_drop_payload_slots(
-        _py,
-        future_ptr,
-        &[
-            ASYNC_EXITSTACK_ENTER_SLOT_CM,
-            ASYNC_EXITSTACK_ENTER_SLOT_AWAIT,
-        ],
-    );
+    unsafe {
+        contextlib_drop_payload_slots(
+            _py,
+            future_ptr,
+            &[
+                ASYNC_EXITSTACK_ENTER_SLOT_CM,
+                ASYNC_EXITSTACK_ENTER_SLOT_AWAIT,
+            ],
+        );
+    }
 }
 
 pub(crate) unsafe fn contextlib_async_exitstack_exit_task_drop(
     _py: &PyToken<'_>,
     future_ptr: *mut u8,
 ) {
-    contextlib_drop_payload_slots(
-        _py,
-        future_ptr,
-        &[
-            ASYNC_EXITSTACK_SLOT_CUR_TYPE,
-            ASYNC_EXITSTACK_SLOT_CUR_EXC,
-            ASYNC_EXITSTACK_SLOT_CUR_TB,
-            ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT,
-        ],
-    );
+    unsafe {
+        contextlib_drop_payload_slots(
+            _py,
+            future_ptr,
+            &[
+                ASYNC_EXITSTACK_SLOT_CUR_TYPE,
+                ASYNC_EXITSTACK_SLOT_CUR_EXC,
+                ASYNC_EXITSTACK_SLOT_CUR_TB,
+                ASYNC_EXITSTACK_SLOT_ACTIVE_AWAIT,
+            ],
+        );
+    }
 }

@@ -1,10 +1,10 @@
 use crate::*;
+use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
-use flate2::Compression;
 use std::io::{Read, Write};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(data_bits);
@@ -58,7 +58,7 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(data_bits);

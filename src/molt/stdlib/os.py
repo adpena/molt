@@ -68,6 +68,7 @@ _MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
 _MOLT_OS_GET_INHERITABLE = _require_intrinsic("molt_os_get_inheritable", globals())
 _MOLT_OS_SET_INHERITABLE = _require_intrinsic("molt_os_set_inheritable", globals())
 _MOLT_OS_URANDOM = _require_intrinsic("molt_os_urandom", globals())
+_MOLT_OS_FSENCODE = _require_intrinsic("molt_os_fsencode", globals())
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
@@ -116,6 +117,7 @@ __all__ = [
     "path",
     "PathLike",
     "fspath",
+    "fsencode",
 ]
 
 name = _resolve_os_name()
@@ -377,6 +379,14 @@ def fspath(path: Any) -> str | bytes:
     raise TypeError(
         f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
     )
+
+
+def fsencode(filename: Any) -> bytes:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_FSENCODE, "molt_os_fsencode")
+    value = intrinsic(filename)
+    if not isinstance(value, bytes):
+        raise RuntimeError("os fsencode intrinsic returned invalid value")
+    return value
 
 
 class _Path:

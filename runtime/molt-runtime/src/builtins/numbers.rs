@@ -8,11 +8,11 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 use crate::{
-    alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
+    INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
+    TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
     class_name_for_error, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
     obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
-    runtime_state_for_gil, type_of_bits, MoltHeader, INLINE_INT_MAX_I128, INLINE_INT_MIN_I128,
-    TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_OBJECT,
+    runtime_state_for_gil, type_of_bits,
 };
 
 #[repr(C)]
@@ -106,7 +106,7 @@ pub(crate) fn complex_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 }
 
 pub(crate) unsafe fn complex_ref(ptr: *mut u8) -> &'static ComplexParts {
-    &*(ptr as *const ComplexParts)
+    unsafe { &*(ptr as *const ComplexParts) }
 }
 
 pub(crate) fn complex_bits(_py: &PyToken<'_>, re: f64, im: f64) -> u64 {
@@ -245,7 +245,7 @@ pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
 }
 
 pub(crate) unsafe fn bigint_ref(ptr: *mut u8) -> &'static BigInt {
-    &*(ptr as *const BigInt)
+    unsafe { &*(ptr as *const BigInt) }
 }
 
 pub(crate) fn compare_bigint_float(big: &BigInt, f: f64) -> Option<Ordering> {
@@ -287,11 +287,7 @@ pub(crate) fn bigint_from_f64_trunc(val: f64) -> BigInt {
     } else {
         big >>= (-exp) as usize;
     }
-    if sign < 0 {
-        -big
-    } else {
-        big
-    }
+    if sign < 0 { -big } else { big }
 }
 
 pub(crate) fn round_half_even(val: f64) -> f64 {
@@ -312,11 +308,7 @@ pub(crate) fn round_half_even(val: f64) -> f64 {
         return floor;
     }
     let floor_int = floor as i64;
-    if floor_int & 1 == 0 {
-        floor
-    } else {
-        ceil
-    }
+    if floor_int & 1 == 0 { floor } else { ceil }
 }
 
 pub(crate) fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {

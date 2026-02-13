@@ -5,15 +5,15 @@ use molt_obj_model::MoltObject;
 
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
-    alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    class_break_cycles, class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits,
-    dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits,
-    object_set_class_bits, object_type_id, runtime_state, runtime_state_for_gil,
-    string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION,
-    BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL,
-    TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT,
-    TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE,
-    TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
+    BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE,
+    RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
+    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
+    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
+    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
+    class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
+    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_set_class_bits,
+    object_type_id, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -256,11 +256,7 @@ fn union_type_class_name() -> &'static str {
             Some(minor)
         })
         .unwrap_or(14);
-    if minor >= 14 {
-        "Union"
-    } else {
-        "UnionType"
-    }
+    if minor >= 14 { "Union" } else { "UnionType" }
 }
 
 fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {

@@ -1,14 +1,14 @@
+use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,
 };
-use crate::PyToken;
 use crate::*;
-use getrandom::getrandom;
+use getrandom::fill as getrandom_fill;
 use num_bigint::{BigInt, Sign};
-use num_traits::Zero;
+use num_traits::{ToPrimitive, Zero};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
@@ -187,106 +187,112 @@ unsafe fn memory_backend_vec_from_bits(
     _py: &PyToken<'_>,
     mem_bits: u64,
 ) -> Result<&'static mut Vec<u8>, u64> {
-    if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend missing",
-        ));
+    unsafe {
+        if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend missing",
+            ));
+        }
+        let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend missing",
+            ));
+        };
+        if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend is not bytearray",
+            ));
+        }
+        Ok(bytearray_vec(ptr))
     }
-    let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend missing",
-        ));
-    };
-    if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend is not bytearray",
-        ));
-    }
-    Ok(bytearray_vec(ptr))
 }
 
 unsafe fn memory_backend_vec(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
 ) -> Result<&'static mut Vec<u8>, u64> {
-    memory_backend_vec_from_bits(_py, handle.mem_bits)
+    unsafe { memory_backend_vec_from_bits(_py, handle.mem_bits) }
 }
 
 unsafe fn memory_backend_vec_ref_from_bits(
     _py: &PyToken<'_>,
     mem_bits: u64,
 ) -> Result<&'static Vec<u8>, u64> {
-    if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend missing",
-        ));
+    unsafe {
+        if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend missing",
+            ));
+        }
+        let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend missing",
+            ));
+        };
+        if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "memory backend is not bytearray",
+            ));
+        }
+        Ok(bytearray_vec_ref(ptr))
     }
-    let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend missing",
-        ));
-    };
-    if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "memory backend is not bytearray",
-        ));
-    }
-    Ok(bytearray_vec_ref(ptr))
 }
 
 unsafe fn memory_backend_vec_ref(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
 ) -> Result<&'static Vec<u8>, u64> {
-    memory_backend_vec_ref_from_bits(_py, handle.mem_bits)
+    unsafe { memory_backend_vec_ref_from_bits(_py, handle.mem_bits) }
 }
 
 unsafe fn collect_bytes_like(_py: &PyToken<'_>, bits: u64) -> Result<Vec<u8>, u64> {
-    let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        return Ok(Vec::new());
-    }
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "a bytes-like object is required",
-        ));
-    };
-    match object_type_id(ptr) {
-        TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
-            let len = bytes_len(ptr);
-            let raw = std::slice::from_raw_parts(bytes_data(ptr), len);
-            Ok(raw.to_vec())
+    unsafe {
+        let obj = obj_from_bits(bits);
+        if obj.is_none() {
+            return Ok(Vec::new());
         }
-        TYPE_ID_MEMORYVIEW => {
-            if let Some(out) = memoryview_collect_bytes(ptr) {
-                Ok(out)
-            } else {
-                Err(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "a bytes-like object is required",
-                ))
+        let Some(ptr) = obj.as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "a bytes-like object is required",
+            ));
+        };
+        match object_type_id(ptr) {
+            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                let len = bytes_len(ptr);
+                let raw = std::slice::from_raw_parts(bytes_data(ptr), len);
+                Ok(raw.to_vec())
             }
+            TYPE_ID_MEMORYVIEW => {
+                if let Some(out) = memoryview_collect_bytes(ptr) {
+                    Ok(out)
+                } else {
+                    Err(raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "a bytes-like object is required",
+                    ))
+                }
+            }
+            _ => Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "a bytes-like object is required",
+            )),
         }
-        _ => Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "a bytes-like object is required",
-        )),
     }
 }
 
@@ -296,27 +302,29 @@ unsafe fn backend_read_bytes(
     backend: &mut MoltFileBackend,
     buf: &mut [u8],
 ) -> Result<usize, u64> {
-    match backend {
-        MoltFileBackend::File(file) => match file.read(buf) {
-            Ok(n) => Ok(n),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "read failed")),
-        },
-        MoltFileBackend::Memory(mem) => {
-            let data = memory_backend_vec_ref_from_bits(_py, mem_bits)?;
-            if mem.pos >= data.len() {
-                return Ok(0);
+    unsafe {
+        match backend {
+            MoltFileBackend::File(file) => match file.read(buf) {
+                Ok(n) => Ok(n),
+                Err(_) => Err(raise_exception::<_>(_py, "OSError", "read failed")),
+            },
+            MoltFileBackend::Memory(mem) => {
+                let data = memory_backend_vec_ref_from_bits(_py, mem_bits)?;
+                if mem.pos >= data.len() {
+                    return Ok(0);
+                }
+                let available = data.len().saturating_sub(mem.pos);
+                let n = available.min(buf.len());
+                buf[..n].copy_from_slice(&data[mem.pos..mem.pos + n]);
+                mem.pos = mem.pos.saturating_add(n);
+                Ok(n)
             }
-            let available = data.len().saturating_sub(mem.pos);
-            let n = available.min(buf.len());
-            buf[..n].copy_from_slice(&data[mem.pos..mem.pos + n]);
-            mem.pos = mem.pos.saturating_add(n);
-            Ok(n)
+            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+                _py,
+                "UnsupportedOperation",
+                "binary read on text backend",
+            )),
         }
-        MoltFileBackend::Text(_) => Err(raise_exception::<_>(
-            _py,
-            "UnsupportedOperation",
-            "binary read on text backend",
-        )),
     }
 }
 
@@ -326,29 +334,31 @@ unsafe fn backend_write_bytes(
     backend: &mut MoltFileBackend,
     bytes: &[u8],
 ) -> Result<usize, u64> {
-    match backend {
-        MoltFileBackend::File(file) => match file.write(bytes) {
-            Ok(n) => Ok(n),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "write failed")),
-        },
-        MoltFileBackend::Memory(mem) => {
-            let data = memory_backend_vec_from_bits(_py, mem_bits)?;
-            if mem.pos > data.len() {
-                data.resize(mem.pos, 0);
+    unsafe {
+        match backend {
+            MoltFileBackend::File(file) => match file.write(bytes) {
+                Ok(n) => Ok(n),
+                Err(_) => Err(raise_exception::<_>(_py, "OSError", "write failed")),
+            },
+            MoltFileBackend::Memory(mem) => {
+                let data = memory_backend_vec_from_bits(_py, mem_bits)?;
+                if mem.pos > data.len() {
+                    data.resize(mem.pos, 0);
+                }
+                let end = mem.pos.saturating_add(bytes.len());
+                if end > data.len() {
+                    data.resize(end, 0);
+                }
+                data[mem.pos..end].copy_from_slice(bytes);
+                mem.pos = end;
+                Ok(bytes.len())
             }
-            let end = mem.pos.saturating_add(bytes.len());
-            if end > data.len() {
-                data.resize(end, 0);
-            }
-            data[mem.pos..end].copy_from_slice(bytes);
-            mem.pos = end;
-            Ok(bytes.len())
+            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+                _py,
+                "UnsupportedOperation",
+                "binary write on text backend",
+            )),
         }
-        MoltFileBackend::Text(_) => Err(raise_exception::<_>(
-            _py,
-            "UnsupportedOperation",
-            "binary write on text backend",
-        )),
     }
 }
 
@@ -368,35 +378,37 @@ unsafe fn backend_seek(
     backend: &mut MoltFileBackend,
     from: std::io::SeekFrom,
 ) -> Result<u64, u64> {
-    match backend {
-        MoltFileBackend::File(file) => match file.seek(from) {
-            Ok(pos) => Ok(pos),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "seek failed")),
-        },
-        MoltFileBackend::Memory(mem) => {
-            let pos = match from {
-                std::io::SeekFrom::Start(pos) => pos as i64,
-                std::io::SeekFrom::Current(delta) => mem.pos as i64 + delta,
-                std::io::SeekFrom::End(delta) => {
-                    let len = memory_backend_vec_ref(_py, handle)?.len() as i64;
-                    len + delta
+    unsafe {
+        match backend {
+            MoltFileBackend::File(file) => match file.seek(from) {
+                Ok(pos) => Ok(pos),
+                Err(_) => Err(raise_exception::<_>(_py, "OSError", "seek failed")),
+            },
+            MoltFileBackend::Memory(mem) => {
+                let pos = match from {
+                    std::io::SeekFrom::Start(pos) => pos as i64,
+                    std::io::SeekFrom::Current(delta) => mem.pos as i64 + delta,
+                    std::io::SeekFrom::End(delta) => {
+                        let len = memory_backend_vec_ref(_py, handle)?.len() as i64;
+                        len + delta
+                    }
+                };
+                if pos < 0 {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "negative seek position",
+                    ));
                 }
-            };
-            if pos < 0 {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "negative seek position",
-                ));
+                mem.pos = pos as usize;
+                Ok(mem.pos as u64)
             }
-            mem.pos = pos as usize;
-            Ok(mem.pos as u64)
+            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+                _py,
+                "UnsupportedOperation",
+                "seek on text backend",
+            )),
         }
-        MoltFileBackend::Text(_) => Err(raise_exception::<_>(
-            _py,
-            "UnsupportedOperation",
-            "seek on text backend",
-        )),
     }
 }
 
@@ -421,29 +433,31 @@ unsafe fn backend_truncate(
     backend: &mut MoltFileBackend,
     size: u64,
 ) -> Result<(), u64> {
-    match backend {
-        MoltFileBackend::File(file) => match file.set_len(size) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "truncate failed")),
-        },
-        MoltFileBackend::Memory(mem) => {
-            let data = memory_backend_vec(_py, handle)?;
-            let size_usize = size as usize;
-            if size_usize < data.len() {
-                data.truncate(size_usize);
-            } else if size_usize > data.len() {
-                data.resize(size_usize, 0);
+    unsafe {
+        match backend {
+            MoltFileBackend::File(file) => match file.set_len(size) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(raise_exception::<_>(_py, "OSError", "truncate failed")),
+            },
+            MoltFileBackend::Memory(mem) => {
+                let data = memory_backend_vec(_py, handle)?;
+                let size_usize = size as usize;
+                if size_usize < data.len() {
+                    data.truncate(size_usize);
+                } else if size_usize > data.len() {
+                    data.resize(size_usize, 0);
+                }
+                if mem.pos > data.len() {
+                    mem.pos = data.len();
+                }
+                Ok(())
             }
-            if mem.pos > data.len() {
-                mem.pos = data.len();
-            }
-            Ok(())
+            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+                _py,
+                "UnsupportedOperation",
+                "truncate on text backend",
+            )),
         }
-        MoltFileBackend::Text(_) => Err(raise_exception::<_>(
-            _py,
-            "UnsupportedOperation",
-            "truncate on text backend",
-        )),
     }
 }
 
@@ -514,21 +528,23 @@ unsafe fn flush_write_buffer(
     handle: &mut MoltFileHandle,
     backend: &mut MoltFileBackend,
 ) -> Result<(), u64> {
-    if handle.write_buf.is_empty() {
-        return Ok(());
-    }
-    let bytes = handle.write_buf.clone();
-    handle.write_buf.clear();
-    let mut written = 0usize;
-    while written < bytes.len() {
-        let n = backend_write_bytes(_py, handle.mem_bits, backend, &bytes[written..])?;
-        if n == 0 {
-            return Err(raise_exception::<_>(_py, "OSError", "write failed"));
+    unsafe {
+        if handle.write_buf.is_empty() {
+            return Ok(());
         }
-        written += n;
+        let bytes = handle.write_buf.clone();
+        handle.write_buf.clear();
+        let mut written = 0usize;
+        while written < bytes.len() {
+            let n = backend_write_bytes(_py, handle.mem_bits, backend, &bytes[written..])?;
+            if n == 0 {
+                return Err(raise_exception::<_>(_py, "OSError", "write failed"));
+            }
+            written += n;
+        }
+        backend_flush(_py, backend)?;
+        Ok(())
     }
-    backend_flush(_py, backend)?;
-    Ok(())
 }
 
 unsafe fn buffered_read_bytes(
@@ -537,83 +553,86 @@ unsafe fn buffered_read_bytes(
     backend: &mut MoltFileBackend,
     size: Option<usize>,
 ) -> Result<(Vec<u8>, bool), u64> {
-    if handle.buffer_size == 0 {
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 8192];
-        let mut at_eof = false;
-        match size {
-            Some(0) => return Ok((Vec::new(), false)),
-            Some(mut remaining) => {
-                while remaining > 0 {
-                    let to_read = remaining.min(tmp.len());
-                    let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp[..to_read])?;
+    unsafe {
+        if handle.buffer_size == 0 {
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 8192];
+            let mut at_eof = false;
+            match size {
+                Some(0) => return Ok((Vec::new(), false)),
+                Some(mut remaining) => {
+                    while remaining > 0 {
+                        let to_read = remaining.min(tmp.len());
+                        let n =
+                            backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp[..to_read])?;
+                        if n == 0 {
+                            at_eof = true;
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        remaining -= n;
+                    }
+                }
+                None => loop {
+                    let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp)?;
                     if n == 0 {
                         at_eof = true;
                         break;
                     }
                     buf.extend_from_slice(&tmp[..n]);
-                    remaining -= n;
-                }
+                },
             }
-            None => loop {
-                let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp)?;
-                if n == 0 {
-                    at_eof = true;
-                    break;
+            return Ok((buf, at_eof));
+        }
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut at_eof = false;
+        let mut remaining = size;
+        if let Some(rem) = remaining {
+            if rem == 0 {
+                return Ok((out, false));
+            }
+        }
+        if !handle.write_buf.is_empty() {
+            flush_write_buffer(_py, handle, backend)?;
+        }
+
+        while remaining.map(|r| r > 0).unwrap_or(true) {
+            let avail = unread_bytes(handle);
+            if avail > 0 {
+                let take = remaining.map(|r| r.min(avail)).unwrap_or(avail);
+                let start = handle.read_pos;
+                let end = start + take;
+                out.extend_from_slice(&handle.read_buf[start..end]);
+                handle.read_pos = end;
+                if handle.read_pos >= handle.read_buf.len() {
+                    clear_read_buffer(handle);
                 }
-                buf.extend_from_slice(&tmp[..n]);
-            },
-        }
-        return Ok((buf, at_eof));
-    }
-
-    let mut out: Vec<u8> = Vec::new();
-    let mut at_eof = false;
-    let mut remaining = size;
-    if let Some(rem) = remaining {
-        if rem == 0 {
-            return Ok((out, false));
-        }
-    }
-    if !handle.write_buf.is_empty() {
-        flush_write_buffer(_py, handle, backend)?;
-    }
-
-    while remaining.map(|r| r > 0).unwrap_or(true) {
-        let avail = unread_bytes(handle);
-        if avail > 0 {
-            let take = remaining.map(|r| r.min(avail)).unwrap_or(avail);
-            let start = handle.read_pos;
-            let end = start + take;
-            out.extend_from_slice(&handle.read_buf[start..end]);
-            handle.read_pos = end;
-            if handle.read_pos >= handle.read_buf.len() {
+                if let Some(rem) = remaining {
+                    let new_rem = rem.saturating_sub(take);
+                    remaining = Some(new_rem);
+                    if new_rem == 0 {
+                        break;
+                    }
+                }
+                continue;
+            }
+            let buf_size = handle.buffer_size.max(1) as usize;
+            let mut buf = std::mem::take(&mut handle.read_buf);
+            buf.resize(buf_size, 0);
+            let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+            if n == 0 {
+                at_eof = true;
+                handle.read_buf = buf;
                 clear_read_buffer(handle);
+                break;
             }
-            if let Some(rem) = remaining {
-                let new_rem = rem.saturating_sub(take);
-                remaining = Some(new_rem);
-                if new_rem == 0 {
-                    break;
-                }
-            }
-            continue;
-        }
-        let buf_size = handle.buffer_size.max(1) as usize;
-        let mut buf = std::mem::take(&mut handle.read_buf);
-        buf.resize(buf_size, 0);
-        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
-        if n == 0 {
-            at_eof = true;
+            buf.truncate(n);
             handle.read_buf = buf;
-            clear_read_buffer(handle);
-            break;
+            handle.read_pos = 0;
         }
-        buf.truncate(n);
-        handle.read_buf = buf;
-        handle.read_pos = 0;
+        Ok((out, at_eof))
     }
-    Ok((out, at_eof))
 }
 
 unsafe fn buffered_read_into(
@@ -622,31 +641,33 @@ unsafe fn buffered_read_into(
     backend: &mut MoltFileBackend,
     buf: &mut [u8],
 ) -> Result<usize, u64> {
-    if buf.is_empty() {
-        return Ok(0);
-    }
-    if !handle.write_buf.is_empty() {
-        flush_write_buffer(_py, handle, backend)?;
-    }
-    let mut written = 0usize;
-    let avail = unread_bytes(handle);
-    if avail > 0 {
-        let take = avail.min(buf.len());
-        let start = handle.read_pos;
-        let end = start + take;
-        buf[..take].copy_from_slice(&handle.read_buf[start..end]);
-        handle.read_pos = end;
-        if handle.read_pos >= handle.read_buf.len() {
-            clear_read_buffer(handle);
+    unsafe {
+        if buf.is_empty() {
+            return Ok(0);
         }
-        written += take;
+        if !handle.write_buf.is_empty() {
+            flush_write_buffer(_py, handle, backend)?;
+        }
+        let mut written = 0usize;
+        let avail = unread_bytes(handle);
+        if avail > 0 {
+            let take = avail.min(buf.len());
+            let start = handle.read_pos;
+            let end = start + take;
+            buf[..take].copy_from_slice(&handle.read_buf[start..end]);
+            handle.read_pos = end;
+            if handle.read_pos >= handle.read_buf.len() {
+                clear_read_buffer(handle);
+            }
+            written += take;
+        }
+        if written >= buf.len() {
+            return Ok(written);
+        }
+        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf[written..])?;
+        written += n;
+        Ok(written)
     }
-    if written >= buf.len() {
-        return Ok(written);
-    }
-    let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf[written..])?;
-    written += n;
-    Ok(written)
 }
 
 unsafe fn file_read1_bytes(
@@ -655,38 +676,40 @@ unsafe fn file_read1_bytes(
     backend: &mut MoltFileBackend,
     size: Option<usize>,
 ) -> Result<(Vec<u8>, bool), u64> {
-    if let Some(0) = size {
-        return Ok((Vec::new(), false));
-    }
-    if !handle.write_buf.is_empty() {
-        flush_write_buffer(_py, handle, backend)?;
-    }
-    let avail = unread_bytes(handle);
-    if avail > 0 {
-        let take = size.unwrap_or(avail).min(avail);
-        let start = handle.read_pos;
-        let end = start + take;
-        let out = handle.read_buf[start..end].to_vec();
-        handle.read_pos = end;
-        if handle.read_pos >= handle.read_buf.len() {
-            clear_read_buffer(handle);
+    unsafe {
+        if let Some(0) = size {
+            return Ok((Vec::new(), false));
         }
-        return Ok((out, false));
-    }
-    let read_size = size.unwrap_or({
-        if handle.buffer_size > 0 {
-            handle.buffer_size as usize
-        } else {
-            8192
+        if !handle.write_buf.is_empty() {
+            flush_write_buffer(_py, handle, backend)?;
         }
-    });
-    if read_size == 0 {
-        return Ok((Vec::new(), false));
+        let avail = unread_bytes(handle);
+        if avail > 0 {
+            let take = size.unwrap_or(avail).min(avail);
+            let start = handle.read_pos;
+            let end = start + take;
+            let out = handle.read_buf[start..end].to_vec();
+            handle.read_pos = end;
+            if handle.read_pos >= handle.read_buf.len() {
+                clear_read_buffer(handle);
+            }
+            return Ok((out, false));
+        }
+        let read_size = size.unwrap_or({
+            if handle.buffer_size > 0 {
+                handle.buffer_size as usize
+            } else {
+                8192
+            }
+        });
+        if read_size == 0 {
+            return Ok((Vec::new(), false));
+        }
+        let mut buf = vec![0u8; read_size];
+        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+        buf.truncate(n);
+        Ok((buf, n == 0))
     }
-    let mut buf = vec![0u8; read_size];
-    let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
-    buf.truncate(n);
-    Ok((buf, n == 0))
 }
 
 unsafe fn handle_read_byte(
@@ -694,81 +717,83 @@ unsafe fn handle_read_byte(
     handle: &mut MoltFileHandle,
     backend: &mut MoltFileBackend,
 ) -> Result<Option<u8>, u64> {
-    if let Some(pending) = handle.pending_byte.take() {
-        return Ok(Some(pending));
-    }
-    if !handle.text_pending_bytes.is_empty() {
-        let byte = handle.text_pending_bytes.remove(0);
-        return Ok(Some(byte));
-    }
-    if handle.buffer_size > 0 {
-        if unread_bytes(handle) == 0 {
-            let buf_size = handle.buffer_size.max(1) as usize;
-            let mut buf = std::mem::take(&mut handle.read_buf);
-            buf.resize(buf_size, 0);
-            let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
-            if n == 0 {
+    unsafe {
+        if let Some(pending) = handle.pending_byte.take() {
+            return Ok(Some(pending));
+        }
+        if !handle.text_pending_bytes.is_empty() {
+            let byte = handle.text_pending_bytes.remove(0);
+            return Ok(Some(byte));
+        }
+        if handle.buffer_size > 0 {
+            if unread_bytes(handle) == 0 {
+                let buf_size = handle.buffer_size.max(1) as usize;
+                let mut buf = std::mem::take(&mut handle.read_buf);
+                buf.resize(buf_size, 0);
+                let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+                if n == 0 {
+                    handle.read_buf = buf;
+                    clear_read_buffer(handle);
+                    return Ok(None);
+                }
+                buf.truncate(n);
                 handle.read_buf = buf;
-                clear_read_buffer(handle);
+                handle.read_pos = 0;
+            }
+            if unread_bytes(handle) == 0 {
                 return Ok(None);
             }
-            buf.truncate(n);
-            handle.read_buf = buf;
-            handle.read_pos = 0;
-        }
-        if unread_bytes(handle) == 0 {
-            return Ok(None);
-        }
-        let byte = handle.read_buf[handle.read_pos];
-        handle.read_pos += 1;
-        if handle.read_pos >= handle.read_buf.len() {
-            clear_read_buffer(handle);
-        }
-        Ok(Some(byte))
-    } else {
-        let mut buf = [0u8; 1];
-        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
-        if n == 0 {
-            Ok(None)
+            let byte = handle.read_buf[handle.read_pos];
+            handle.read_pos += 1;
+            if handle.read_pos >= handle.read_buf.len() {
+                clear_read_buffer(handle);
+            }
+            Ok(Some(byte))
         } else {
-            Ok(Some(buf[0]))
+            let mut buf = [0u8; 1];
+            let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+            if n == 0 { Ok(None) } else { Ok(Some(buf[0])) }
         }
     }
 }
 
 pub(crate) unsafe fn file_handle_enter(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
-    let bits = MoltObject::from_ptr(ptr).bits();
-    let handle_ptr = file_handle_ptr(ptr);
-    if !handle_ptr.is_null() {
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+    unsafe {
+        let bits = MoltObject::from_ptr(ptr).bits();
+        let handle_ptr = file_handle_ptr(ptr);
+        if !handle_ptr.is_null() {
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            handle.closed = false;
         }
-        handle.closed = false;
+        inc_ref_bits(_py, bits);
+        bits
     }
-    inc_ref_bits(_py, bits);
-    bits
 }
 
 pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits: u64) -> u64 {
-    let handle_ptr = file_handle_ptr(ptr);
-    if !handle_ptr.is_null() {
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        let backend_state = Arc::clone(&handle.state);
-        {
-            let mut guard = backend_state.backend.lock().unwrap();
-            if let Some(backend) = guard.as_mut() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
+    unsafe {
+        let handle_ptr = file_handle_ptr(ptr);
+        if !handle_ptr.is_null() {
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            let backend_state = Arc::clone(&handle.state);
+            {
+                let mut guard = backend_state.backend.lock().unwrap();
+                if let Some(backend) = guard.as_mut() {
+                    if let Err(bits) = flush_write_buffer(_py, handle, backend) {
+                        return bits;
+                    }
                 }
             }
+            file_handle_close_ptr(ptr);
+            handle.closed = true;
         }
-        file_handle_close_ptr(ptr);
-        handle.closed = true;
+        MoltObject::from_bool(false).bits()
     }
-    MoltObject::from_bool(false).bits()
 }
 
 #[allow(dead_code)]
@@ -1052,11 +1077,7 @@ fn dup_fd(fd: i64) -> Option<i64> {
         return None;
     }
     let duped = unsafe { libc::dup(fd as libc::c_int) };
-    if duped < 0 {
-        None
-    } else {
-        Some(duped as i64)
-    }
+    if duped < 0 { None } else { Some(duped as i64) }
 }
 
 #[cfg(windows)]
@@ -1065,11 +1086,7 @@ fn dup_fd(fd: i64) -> Option<i64> {
         return None;
     }
     let duped = unsafe { libc::_dup(fd as libc::c_int) };
-    if duped < 0 {
-        None
-    } else {
-        Some(duped as i64)
-    }
+    if duped < 0 { None } else { Some(duped as i64) }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1085,6 +1102,12 @@ const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
 
 #[cfg(windows)]
 const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
+
+#[cfg(windows)]
+const FILE_NAME_NORMALIZED: u32 = 0x0000000;
+
+#[cfg(windows)]
+const VOLUME_NAME_DOS: u32 = 0x0000000;
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
@@ -1103,6 +1126,12 @@ extern "system" {
         bInheritHandle: i32,
         dwOptions: u32,
     ) -> i32;
+    fn GetFinalPathNameByHandleW(
+        hFile: *mut std::ffi::c_void,
+        lpszFilePath: *mut u16,
+        cchFilePath: u32,
+        dwFlags: u32,
+    ) -> u32;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 }
 
@@ -1138,12 +1167,33 @@ fn duplicate_handle(handle: *mut std::ffi::c_void) -> Option<*mut std::ffi::c_vo
             0,
             DUPLICATE_SAME_ACCESS,
         );
-        if ok == 0 {
-            None
-        } else {
-            Some(dup)
-        }
+        if ok == 0 { None } else { Some(dup) }
     }
+}
+
+#[cfg(windows)]
+fn windows_path_from_handle(handle: *mut std::ffi::c_void) -> Option<String> {
+    if handle.is_null() || handle as isize == -1 {
+        return None;
+    }
+    let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    let needed = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, flags) };
+    if needed == 0 {
+        return None;
+    }
+    let mut buf: Vec<u16> = vec![0u16; needed as usize + 1];
+    let wrote =
+        unsafe { GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, flags) };
+    if wrote == 0 {
+        return None;
+    }
+    let mut text = String::from_utf16_lossy(&buf[..wrote as usize]);
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        text = format!("\\\\{rest}");
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        text = rest.to_string();
+    }
+    Some(text)
 }
 
 #[cfg(windows)]
@@ -1194,13 +1244,19 @@ fn stdio_isatty(fd: i64) -> bool {
     }
 }
 
-pub(crate) fn path_from_bits(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathFlavor {
+    Str,
+    Bytes,
+}
+
+fn path_from_bits_with_flavor(
     _py: &PyToken<'_>,
     file_bits: u64,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<(std::path::PathBuf, PathFlavor), String> {
     let obj = obj_from_bits(file_bits);
     if let Some(text) = string_obj_to_owned(obj) {
-        return Ok(std::path::PathBuf::from(text));
+        return Ok((std::path::PathBuf::from(text), PathFlavor::Str));
     }
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1212,13 +1268,13 @@ pub(crate) fn path_from_bits(
                 {
                     use std::os::unix::ffi::OsStringExt;
                     let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                    return Ok(std::path::PathBuf::from(path));
+                    return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
                 }
                 #[cfg(windows)]
                 {
                     let path = std::str::from_utf8(bytes)
                         .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                    return Ok(std::path::PathBuf::from(path));
+                    return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
                 }
             }
             let fspath_name_bits =
@@ -1232,7 +1288,7 @@ pub(crate) fn path_from_bits(
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(text) = string_obj_to_owned(res_obj) {
                     dec_ref_bits(_py, res_bits);
-                    return Ok(std::path::PathBuf::from(text));
+                    return Ok((std::path::PathBuf::from(text), PathFlavor::Str));
                 }
                 if let Some(res_ptr) = res_obj.as_ptr() {
                     if object_type_id(res_ptr) == TYPE_ID_BYTES {
@@ -1243,14 +1299,14 @@ pub(crate) fn path_from_bits(
                             use std::os::unix::ffi::OsStringExt;
                             let path = std::ffi::OsString::from_vec(bytes.to_vec());
                             dec_ref_bits(_py, res_bits);
-                            return Ok(std::path::PathBuf::from(path));
+                            return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
                         }
                         #[cfg(windows)]
                         {
                             let path = std::str::from_utf8(bytes)
                                 .map_err(|_| "open path bytes must be utf-8".to_string())?;
                             dec_ref_bits(_py, res_bits);
-                            return Ok(std::path::PathBuf::from(path));
+                            return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
                         }
                     }
                 }
@@ -1269,15 +1325,136 @@ pub(crate) fn path_from_bits(
     ))
 }
 
+fn fspath_bits_with_flavor(_py: &PyToken<'_>, file_bits: u64) -> Result<(u64, PathFlavor), u64> {
+    let obj = obj_from_bits(file_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
+        let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    };
+
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_STRING {
+            inc_ref_bits(_py, file_bits);
+            return Ok((file_bits, PathFlavor::Str));
+        }
+        if type_id == TYPE_ID_BYTES {
+            inc_ref_bits(_py, file_bits);
+            return Ok((file_bits, PathFlavor::Bytes));
+        }
+        let fspath_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.fspath_name, b"__fspath__");
+        if let Some(call_bits) = attr_lookup_ptr(_py, ptr, fspath_name_bits) {
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            let res_obj = obj_from_bits(res_bits);
+            if let Some(res_ptr) = res_obj.as_ptr() {
+                let res_type_id = object_type_id(res_ptr);
+                if res_type_id == TYPE_ID_STRING {
+                    return Ok((res_bits, PathFlavor::Str));
+                }
+                if res_type_id == TYPE_ID_BYTES {
+                    return Ok((res_bits, PathFlavor::Bytes));
+                }
+            }
+            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+            dec_ref_bits(_py, res_bits);
+            let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
+            let msg =
+                format!("expected {obj_type}.__fspath__() to return str or bytes, not {res_type}");
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        }
+    }
+
+    let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
+    let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
+    Err(raise_exception::<_>(_py, "TypeError", &msg))
+}
+
+pub(crate) fn path_from_bits(
+    _py: &PyToken<'_>,
+    file_bits: u64,
+) -> Result<std::path::PathBuf, String> {
+    path_from_bits_with_flavor(_py, file_bits).map(|(path, _flavor)| path)
+}
+
+fn filesystem_encoding() -> &'static str {
+    "utf-8"
+}
+
+fn filesystem_encode_errors() -> &'static str {
+    #[cfg(windows)]
+    {
+        "surrogatepass"
+    }
+    #[cfg(not(windows))]
+    {
+        "surrogateescape"
+    }
+}
+
 fn path_sep_char() -> char {
     std::path::MAIN_SEPARATOR
 }
 
-fn path_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<String, u64> {
-    match path_from_bits(_py, bits) {
-        Ok(path) => Ok(path.to_string_lossy().into_owned()),
+#[cfg(unix)]
+fn bytes_text_from_raw(raw: &[u8]) -> String {
+    raw.iter().map(|byte| char::from(*byte)).collect()
+}
+
+#[cfg(unix)]
+fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
+    for ch in text.chars() {
+        let code = ch as u32;
+        if code > 0xFF {
+            return None;
+        }
+        out.push(code as u8);
+    }
+    Some(out)
+}
+
+#[cfg(not(unix))]
+fn bytes_text_from_raw(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).into_owned()
+}
+
+#[cfg(not(unix))]
+fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
+    Some(text.as_bytes().to_vec())
+}
+
+#[cfg(unix)]
+fn path_text_with_flavor(path: &std::path::Path, flavor: PathFlavor) -> String {
+    if flavor == PathFlavor::Bytes {
+        use std::os::unix::ffi::OsStrExt;
+        return bytes_text_from_raw(path.as_os_str().as_bytes());
+    }
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(not(unix))]
+fn path_text_with_flavor(path: &std::path::Path, _flavor: PathFlavor) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn path_string_with_flavor_from_bits(
+    _py: &PyToken<'_>,
+    bits: u64,
+) -> Result<(String, PathFlavor), u64> {
+    match path_from_bits_with_flavor(_py, bits) {
+        Ok((path, flavor)) => Ok((path_text_with_flavor(path.as_path(), flavor), flavor)),
         Err(msg) => Err(raise_exception::<_>(_py, "TypeError", &msg)),
     }
+}
+
+fn path_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<String, u64> {
+    path_string_with_flavor_from_bits(_py, bits).map(|(path, _flavor)| path)
 }
 
 fn path_str_arg_from_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> {
@@ -1332,6 +1509,36 @@ fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {
     let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
         let ptr = alloc_string(_py, value.as_bytes());
+        if ptr.is_null() {
+            for bits in out_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        out_bits.push(MoltObject::from_ptr(ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, out_bits.as_slice());
+    for bits in out_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+fn alloc_path_list_bits(_py: &PyToken<'_>, values: &[String], bytes_out: bool) -> u64 {
+    let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
+    for value in values {
+        let ptr = if bytes_out {
+            match raw_from_bytes_text(value) {
+                Some(raw) => alloc_bytes(_py, raw.as_slice()),
+                None => alloc_bytes(_py, value.as_bytes()),
+            }
+        } else {
+            alloc_string(_py, value.as_bytes())
+        };
         if ptr.is_null() {
             for bits in out_bits {
                 dec_ref_bits(_py, bits);
@@ -1704,11 +1911,7 @@ fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
         if !hit {
             hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
         }
-        if negate {
-            !hit
-        } else {
-            hit
-        }
+        if negate { !hit } else { hit }
     }
 
     let name_chars: Vec<char> = name.chars().collect();
@@ -1837,6 +2040,934 @@ fn glob_has_magic_text(pathname: &str) -> bool {
         .as_bytes()
         .iter()
         .any(|ch| matches!(*ch, b'*' | b'?' | b'['))
+}
+
+#[derive(Clone, Debug)]
+enum GlobDirFdArg {
+    None,
+    Int(i64),
+    PathLike {
+        path: String,
+        flavor: PathFlavor,
+        type_name: String,
+    },
+    BadType {
+        type_name: String,
+    },
+}
+
+fn glob_dir_fd_type_error_bits(_py: &PyToken<'_>, type_name: &str) -> u64 {
+    let msg = format!("argument should be integer or None, not {type_name}");
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
+
+fn glob_scandir_type_error_bits(_py: &PyToken<'_>, type_name: &str) -> u64 {
+    let msg = format!(
+        "scandir: path should be string, bytes, os.PathLike, integer or None, not {type_name}"
+    );
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
+
+fn glob_dir_fd_arg_from_bits(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<GlobDirFdArg, u64> {
+    if obj_from_bits(dir_fd_bits).is_none() {
+        return Ok(GlobDirFdArg::None);
+    }
+    let type_name = class_name_for_error(type_of_bits(_py, dir_fd_bits));
+    let err = format!("argument should be integer or None, not {type_name}");
+    if let Some(value) = index_bigint_from_obj(_py, dir_fd_bits, &err) {
+        if let Some(fd) = value.to_i64() {
+            return Ok(GlobDirFdArg::Int(fd));
+        }
+        let msg = if value.sign() == Sign::Minus {
+            "fd is less than minimum"
+        } else {
+            "fd is greater than maximum"
+        };
+        return Err(raise_exception::<_>(_py, "OverflowError", msg));
+    }
+    if exception_pending(_py) {
+        clear_exception(_py);
+    }
+    match path_string_with_flavor_from_bits(_py, dir_fd_bits) {
+        Ok((path, flavor)) => {
+            #[cfg(windows)]
+            let path = path.replace('/', "\\");
+            Ok(GlobDirFdArg::PathLike {
+                path,
+                flavor,
+                type_name,
+            })
+        }
+        Err(_) => {
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            Ok(GlobDirFdArg::BadType { type_name })
+        }
+    }
+}
+
+#[cfg(unix)]
+fn glob_text_to_path(text: &str, bytes_mode: bool) -> std::path::PathBuf {
+    if bytes_mode {
+        if let Some(raw) = raw_from_bytes_text(text) {
+            use std::os::unix::ffi::OsStringExt;
+            return std::path::PathBuf::from(std::ffi::OsString::from_vec(raw));
+        }
+    }
+    std::path::PathBuf::from(text)
+}
+
+#[cfg(not(unix))]
+fn glob_text_to_path(text: &str, _bytes_mode: bool) -> std::path::PathBuf {
+    std::path::PathBuf::from(text)
+}
+
+#[cfg(unix)]
+fn glob_dir_entry_name_text(name: &std::ffi::OsStr, bytes_mode: bool) -> String {
+    if bytes_mode {
+        use std::os::unix::ffi::OsStrExt;
+        return bytes_text_from_raw(name.as_bytes());
+    }
+    name.to_string_lossy().into_owned()
+}
+
+#[cfg(not(unix))]
+fn glob_dir_entry_name_text(name: &std::ffi::OsStr, _bytes_mode: bool) -> String {
+    name.to_string_lossy().into_owned()
+}
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
+    if fd < 0 {
+        return None;
+    }
+    // Apple targets do not provide a stable /proc/self/fd lane; use fcntl(F_GETPATH).
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    let rc = unsafe {
+        libc::fcntl(
+            fd as libc::c_int,
+            libc::F_GETPATH,
+            buf.as_mut_ptr() as *mut libc::c_char,
+        )
+    };
+    if rc != -1 {
+        if let Some(nul_idx) = buf.iter().position(|byte| *byte == 0) {
+            if nul_idx > 0 {
+                return Some(bytes_text_from_raw(&buf[..nul_idx]));
+            }
+        }
+    }
+    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
+        if let Ok(path) = std::fs::read_link(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+        if let Ok(path) = std::fs::canonicalize(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
+    if fd < 0 {
+        return None;
+    }
+    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
+        if let Ok(path) = std::fs::read_link(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+        if let Ok(path) = std::fs::canonicalize(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn glob_dir_fd_root_text(fd: i64, _bytes_mode: bool) -> Option<String> {
+    if fd < 0 {
+        return None;
+    }
+    let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+    if handle == -1 {
+        return None;
+    }
+    windows_path_from_handle(handle as *mut std::ffi::c_void)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
+    if fd < 0 {
+        return None;
+    }
+    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
+        if let Ok(path) = std::fs::read_link(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+        if let Ok(path) = std::fs::canonicalize(&candidate) {
+            return Some(path_text_with_flavor(
+                path.as_path(),
+                if bytes_mode {
+                    PathFlavor::Bytes
+                } else {
+                    PathFlavor::Str
+                },
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
+fn glob_dir_fd_root_text(_fd: i64, _bytes_mode: bool) -> Option<String> {
+    None
+}
+
+fn glob_is_hidden_text(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+fn glob_split_path_text(pathname: &str, sep: char) -> (String, String) {
+    let (drive, root, tail) = path_splitroot_text(pathname, sep);
+    if tail.is_empty() {
+        return (format!("{drive}{root}"), String::new());
+    }
+
+    let mut head = String::new();
+    let mut base = tail.clone();
+    if let Some(idx) = tail.rfind(sep) {
+        head = tail[..idx + sep.len_utf8()].to_string();
+        base = tail[idx + sep.len_utf8()..].to_string();
+    }
+
+    if !head.is_empty() {
+        let all_sep = head.chars().all(|ch| ch == sep);
+        if !all_sep {
+            head = head.trim_end_matches(sep).to_string();
+        }
+    }
+
+    let dirname = format!("{drive}{root}{head}");
+    (dirname, base)
+}
+
+fn glob_join_text(base: &str, part: &str, sep: char) -> String {
+    if base.is_empty() {
+        return part.to_string();
+    }
+    if path_isabs_text(part, sep) {
+        return part.to_string();
+    }
+    #[cfg(windows)]
+    {
+        let (part_drive, _part_root, _part_tail) = path_splitroot_text(part, sep);
+        if !part_drive.is_empty() {
+            return part.to_string();
+        }
+    }
+    path_join_text(base.to_string(), part, sep)
+}
+
+fn glob_lexists_text(
+    _py: &PyToken<'_>,
+    path: &str,
+    dir_fd: &GlobDirFdArg,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<bool, u64> {
+    if path.is_empty() {
+        return Ok(false);
+    }
+    let resolved = match dir_fd {
+        GlobDirFdArg::None => path.to_string(),
+        GlobDirFdArg::Int(fd) => {
+            if path_isabs_text(path, sep) {
+                path.to_string()
+            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
+                glob_join_text(&root, path, sep)
+            } else {
+                return Ok(false);
+            }
+        }
+        GlobDirFdArg::PathLike { type_name, .. } | GlobDirFdArg::BadType { type_name } => {
+            return Err(glob_dir_fd_type_error_bits(_py, type_name));
+        }
+    };
+    let resolved_path = glob_text_to_path(&resolved, bytes_mode);
+    Ok(std::fs::symlink_metadata(resolved_path).is_ok())
+}
+
+fn glob_is_dir_text(
+    _py: &PyToken<'_>,
+    path: &str,
+    dir_fd: &GlobDirFdArg,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<bool, u64> {
+    if path.is_empty() {
+        return Ok(false);
+    }
+    let resolved = match dir_fd {
+        GlobDirFdArg::None => path.to_string(),
+        GlobDirFdArg::Int(fd) => {
+            if path_isabs_text(path, sep) {
+                path.to_string()
+            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
+                glob_join_text(&root, path, sep)
+            } else {
+                return Ok(false);
+            }
+        }
+        GlobDirFdArg::PathLike { type_name, .. } | GlobDirFdArg::BadType { type_name } => {
+            return Err(glob_dir_fd_type_error_bits(_py, type_name));
+        }
+    };
+    let resolved_path = glob_text_to_path(&resolved, bytes_mode);
+    Ok(std::fs::metadata(resolved_path)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false))
+}
+
+struct GlobListdirResult {
+    names: Vec<String>,
+    names_are_bytes: bool,
+}
+
+fn glob_listdir_text(
+    _py: &PyToken<'_>,
+    dirname: &str,
+    dir_fd: &GlobDirFdArg,
+    dironly: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<GlobListdirResult, u64> {
+    let target: String;
+    let mut target_bytes_mode = bytes_mode;
+    let arg_is_bytes;
+
+    match dir_fd {
+        GlobDirFdArg::None => {
+            if dirname.is_empty() {
+                target = ".".to_string();
+                arg_is_bytes = bytes_mode;
+            } else {
+                target = dirname.to_string();
+                arg_is_bytes = bytes_mode;
+            }
+        }
+        GlobDirFdArg::Int(fd) => {
+            if dirname.is_empty() {
+                if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
+                    target = root;
+                } else if *fd == -1 {
+                    // CPython's scandir(-1) can expose CWD on some hosts.
+                    target = ".".to_string();
+                } else {
+                    return Ok(GlobListdirResult {
+                        names: Vec::new(),
+                        names_are_bytes: bytes_mode,
+                    });
+                }
+                arg_is_bytes = false;
+            } else if path_isabs_text(dirname, sep) {
+                target = dirname.to_string();
+                arg_is_bytes = bytes_mode;
+            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
+                target = glob_join_text(&root, dirname, sep);
+                arg_is_bytes = bytes_mode;
+            } else {
+                return Ok(GlobListdirResult {
+                    names: Vec::new(),
+                    names_are_bytes: bytes_mode,
+                });
+            }
+        }
+        GlobDirFdArg::PathLike {
+            path,
+            flavor,
+            type_name,
+        } => {
+            if !dirname.is_empty() {
+                return Err(glob_dir_fd_type_error_bits(_py, type_name));
+            }
+            target = path.clone();
+            target_bytes_mode = *flavor == PathFlavor::Bytes;
+            arg_is_bytes = *flavor == PathFlavor::Bytes;
+        }
+        GlobDirFdArg::BadType { type_name } => {
+            if dirname.is_empty() {
+                return Err(glob_scandir_type_error_bits(_py, type_name));
+            }
+            return Err(glob_dir_fd_type_error_bits(_py, type_name));
+        }
+    }
+
+    let names_are_bytes = bytes_mode || arg_is_bytes;
+    let target_path = glob_text_to_path(&target, target_bytes_mode);
+    let mut out: Vec<String> = Vec::new();
+    let iter = match std::fs::read_dir(target_path) {
+        Ok(iter) => iter,
+        Err(_) => {
+            return Ok(GlobListdirResult {
+                names: out,
+                names_are_bytes,
+            });
+        }
+    };
+    for entry_res in iter {
+        let Ok(entry) = entry_res else {
+            continue;
+        };
+        if dironly {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+        }
+        out.push(glob_dir_entry_name_text(
+            entry.file_name().as_os_str(),
+            names_are_bytes,
+        ));
+    }
+    Ok(GlobListdirResult {
+        names: out,
+        names_are_bytes,
+    })
+}
+
+fn glob1_text(
+    _py: &PyToken<'_>,
+    dirname: &str,
+    pattern: &str,
+    dir_fd: &GlobDirFdArg,
+    dironly: bool,
+    include_hidden: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    let listed = glob_listdir_text(_py, dirname, dir_fd, dironly, bytes_mode, sep)?;
+    if listed.names_are_bytes != bytes_mode {
+        let msg = if bytes_mode {
+            "cannot use a bytes pattern on a string-like object"
+        } else {
+            "cannot use a string pattern on a bytes-like object"
+        };
+        return Err(raise_exception::<_>(_py, "TypeError", msg));
+    }
+    let mut names = listed.names;
+    if !(pattern.starts_with('.') || include_hidden) {
+        names.retain(|name| !glob_is_hidden_text(name));
+    }
+    names.retain(|name| path_match_simple_pattern(name, pattern));
+    Ok(names)
+}
+
+fn glob0_text(
+    _py: &PyToken<'_>,
+    dirname: &str,
+    basename: &str,
+    dir_fd: &GlobDirFdArg,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    if !basename.is_empty() {
+        let full = glob_join_text(dirname, basename, sep);
+        if glob_lexists_text(_py, &full, dir_fd, bytes_mode, sep)? {
+            return Ok(vec![basename.to_string()]);
+        }
+        return Ok(Vec::new());
+    }
+    if glob_is_dir_text(_py, dirname, dir_fd, bytes_mode, sep)? {
+        return Ok(vec![String::new()]);
+    }
+    Ok(Vec::new())
+}
+
+fn glob_rlistdir_text(
+    _py: &PyToken<'_>,
+    dirname: &str,
+    dir_fd: &GlobDirFdArg,
+    dironly: bool,
+    include_hidden: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    let mut out: Vec<String> = Vec::new();
+    let listed = glob_listdir_text(_py, dirname, dir_fd, dironly, bytes_mode, sep)?;
+    let names = listed.names;
+    for name in names {
+        if !include_hidden && glob_is_hidden_text(&name) {
+            continue;
+        }
+        out.push(name.clone());
+        let path = if dirname.is_empty() {
+            name.clone()
+        } else {
+            glob_join_text(dirname, &name, sep)
+        };
+        for child in
+            glob_rlistdir_text(_py, &path, dir_fd, dironly, include_hidden, bytes_mode, sep)?
+        {
+            out.push(glob_join_text(&name, &child, sep));
+        }
+    }
+    Ok(out)
+}
+
+fn glob2_text(
+    _py: &PyToken<'_>,
+    dirname: &str,
+    dir_fd: &GlobDirFdArg,
+    dironly: bool,
+    include_hidden: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    let mut out: Vec<String> = Vec::new();
+    if dirname.is_empty() || glob_is_dir_text(_py, dirname, dir_fd, bytes_mode, sep)? {
+        out.push(String::new());
+    }
+    out.extend(glob_rlistdir_text(
+        _py,
+        dirname,
+        dir_fd,
+        dironly,
+        include_hidden,
+        bytes_mode,
+        sep,
+    )?);
+    Ok(out)
+}
+
+fn glob_iglob_text(
+    _py: &PyToken<'_>,
+    pathname: &str,
+    root_dir: Option<&str>,
+    dir_fd: &GlobDirFdArg,
+    recursive: bool,
+    dironly: bool,
+    include_hidden: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    let (dirname, basename) = glob_split_path_text(pathname, sep);
+    if !glob_has_magic_text(pathname) {
+        if !basename.is_empty() {
+            let full = match root_dir {
+                Some(root) => glob_join_text(root, pathname, sep),
+                None => pathname.to_string(),
+            };
+            if glob_lexists_text(_py, &full, dir_fd, bytes_mode, sep)? {
+                return Ok(vec![pathname.to_string()]);
+            }
+        } else {
+            let full_dir = match root_dir {
+                Some(root) => glob_join_text(root, &dirname, sep),
+                None => dirname.clone(),
+            };
+            if glob_is_dir_text(_py, &full_dir, dir_fd, bytes_mode, sep)? {
+                return Ok(vec![pathname.to_string()]);
+            }
+        }
+        return Ok(Vec::new());
+    }
+
+    if dirname.is_empty() {
+        let in_dir = root_dir.unwrap_or("");
+        if recursive && basename == "**" {
+            return glob2_text(
+                _py,
+                in_dir,
+                dir_fd,
+                dironly,
+                include_hidden,
+                bytes_mode,
+                sep,
+            );
+        }
+        return glob1_text(
+            _py,
+            in_dir,
+            &basename,
+            dir_fd,
+            dironly,
+            include_hidden,
+            bytes_mode,
+            sep,
+        );
+    }
+
+    let mut dirs: Vec<String> = Vec::new();
+    if dirname != pathname && glob_has_magic_text(&dirname) {
+        dirs = glob_iglob_text(
+            _py,
+            &dirname,
+            root_dir,
+            dir_fd,
+            recursive,
+            true,
+            include_hidden,
+            bytes_mode,
+            sep,
+        )?;
+    } else {
+        dirs.push(dirname.clone());
+    }
+
+    let basename_has_magic = glob_has_magic_text(&basename);
+    let basename_recursive = recursive && basename == "**";
+    let mut out: Vec<String> = Vec::new();
+    for parent in dirs {
+        let search_dir = match root_dir {
+            Some(root) => glob_join_text(root, &parent, sep),
+            None => parent.clone(),
+        };
+        let names = if basename_has_magic {
+            if basename_recursive {
+                glob2_text(
+                    _py,
+                    &search_dir,
+                    dir_fd,
+                    dironly,
+                    include_hidden,
+                    bytes_mode,
+                    sep,
+                )?
+            } else {
+                glob1_text(
+                    _py,
+                    &search_dir,
+                    &basename,
+                    dir_fd,
+                    dironly,
+                    include_hidden,
+                    bytes_mode,
+                    sep,
+                )?
+            }
+        } else {
+            glob0_text(_py, &search_dir, &basename, dir_fd, bytes_mode, sep)?
+        };
+        for name in names {
+            out.push(glob_join_text(&parent, &name, sep));
+        }
+    }
+    Ok(out)
+}
+
+fn glob_matches_text(
+    _py: &PyToken<'_>,
+    pathname: &str,
+    root_dir: Option<&str>,
+    dir_fd: &GlobDirFdArg,
+    recursive: bool,
+    include_hidden: bool,
+    bytes_mode: bool,
+    sep: char,
+) -> Result<Vec<String>, u64> {
+    let mut out = glob_iglob_text(
+        _py,
+        pathname,
+        root_dir,
+        dir_fd,
+        recursive,
+        false,
+        include_hidden,
+        bytes_mode,
+        sep,
+    )?;
+    if (pathname.is_empty() || (recursive && pathname.starts_with("**")))
+        && out.first().is_some_and(String::is_empty)
+    {
+        out.remove(0);
+    }
+    Ok(out)
+}
+
+fn glob_escape_text(pathname: &str, sep: char) -> String {
+    let (drive, root, tail) = path_splitroot_text(pathname, sep);
+    let mut out = String::new();
+    out.push_str(&drive);
+    out.push_str(&root);
+    for ch in tail.chars() {
+        if matches!(ch, '*' | '?' | '[') {
+            out.push('[');
+            out.push(ch);
+            out.push(']');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn glob_regex_escape_char(out: &mut String, ch: char) {
+    if matches!(
+        ch,
+        '.' | '^' | '$' | '+' | '{' | '}' | '(' | ')' | '|' | '\\' | '[' | ']'
+    ) {
+        out.push('\\');
+    }
+    out.push(ch);
+}
+
+fn glob_regex_escape_text(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        glob_regex_escape_char(&mut out, ch);
+    }
+    out
+}
+
+fn glob_split_on_seps(pat: &str, seps: &[char]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in pat.chars() {
+        if seps.contains(&ch) {
+            out.push(cur);
+            cur = String::new();
+        } else {
+            cur.push(ch);
+        }
+    }
+    out.push(cur);
+    out
+}
+
+fn glob_translate_parse_char_class(
+    pat: &[char],
+    mut idx: usize,
+) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+    if idx >= pat.len() || pat[idx] != '[' {
+        return None;
+    }
+    idx += 1;
+    if idx >= pat.len() {
+        return None;
+    }
+
+    let mut negate = false;
+    if pat[idx] == '!' {
+        negate = true;
+        idx += 1;
+    }
+    if idx >= pat.len() {
+        return None;
+    }
+
+    let mut singles: Vec<char> = Vec::new();
+    let mut ranges: Vec<(char, char)> = Vec::new();
+
+    if pat[idx] == ']' {
+        singles.push(']');
+        idx += 1;
+    }
+    while idx < pat.len() && pat[idx] != ']' {
+        if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
+            let start = pat[idx];
+            let end = pat[idx + 2];
+            if start <= end {
+                ranges.push((start, end));
+            }
+            idx += 3;
+            continue;
+        }
+        singles.push(pat[idx]);
+        idx += 1;
+    }
+    if idx >= pat.len() || pat[idx] != ']' {
+        return None;
+    }
+    Some((singles, ranges, negate, idx + 1))
+}
+
+fn glob_translate_char_class(
+    singles: Vec<char>,
+    ranges: Vec<(char, char)>,
+    negate: bool,
+) -> String {
+    let mut out = String::new();
+    out.push('[');
+    if negate {
+        out.push('^');
+    }
+    for ch in singles {
+        if matches!(ch, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    for (start, end) in ranges {
+        if matches!(start, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(start);
+        out.push('-');
+        if matches!(end, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(end);
+    }
+    out.push(']');
+    out
+}
+
+fn glob_translate_segment(part: &str, star_expr: &str, ques_expr: &str) -> String {
+    let chars: Vec<char> = part.chars().collect();
+    let mut out = String::new();
+    let mut idx = 0usize;
+    while idx < chars.len() {
+        match chars[idx] {
+            '*' => out.push_str(star_expr),
+            '?' => out.push_str(ques_expr),
+            '[' => {
+                if let Some((singles, ranges, negate, next_idx)) =
+                    glob_translate_parse_char_class(&chars, idx)
+                {
+                    out.push_str(&glob_translate_char_class(singles, ranges, negate));
+                    idx = next_idx;
+                    continue;
+                } else {
+                    out.push_str("\\[");
+                }
+            }
+            ch => glob_regex_escape_char(&mut out, ch),
+        }
+        idx += 1;
+    }
+    out
+}
+
+fn glob_default_seps_text() -> String {
+    #[cfg(windows)]
+    {
+        "\\/".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "/".to_string()
+    }
+}
+
+fn glob_translate_text(
+    pat: &str,
+    recursive: bool,
+    include_hidden: bool,
+    seps: Option<&str>,
+) -> String {
+    let seps_text = if let Some(raw) = seps {
+        if raw.is_empty() {
+            glob_default_seps_text()
+        } else {
+            raw.to_string()
+        }
+    } else {
+        glob_default_seps_text()
+    };
+    let sep_chars: Vec<char> = seps_text.chars().collect();
+    let escaped_seps = glob_regex_escape_text(&seps_text);
+    let any_sep = if sep_chars.len() > 1 {
+        format!("[{escaped_seps}]")
+    } else {
+        escaped_seps.clone()
+    };
+    let not_sep = format!("[^{escaped_seps}]");
+    let (one_last_segment, one_segment, any_segments, any_last_segments) = if include_hidden {
+        let one_last_segment = format!("{not_sep}+");
+        let one_segment = format!("{one_last_segment}{any_sep}");
+        let any_segments = format!("(?:.+{any_sep})?");
+        let any_last_segments = ".*".to_string();
+        (
+            one_last_segment,
+            one_segment,
+            any_segments,
+            any_last_segments,
+        )
+    } else {
+        let one_last_segment = format!("[^{escaped_seps}.]{not_sep}*");
+        let one_segment = format!("{one_last_segment}{any_sep}");
+        let any_segments = format!("(?:{one_segment})*");
+        let any_last_segments = format!("{any_segments}(?:{one_last_segment})?");
+        (
+            one_last_segment,
+            one_segment,
+            any_segments,
+            any_last_segments,
+        )
+    };
+
+    let parts = glob_split_on_seps(pat, &sep_chars);
+    let last_part_idx = parts.len().saturating_sub(1);
+    let mut results: Vec<String> = Vec::new();
+    for (idx, part) in parts.iter().enumerate() {
+        if part == "*" {
+            if idx < last_part_idx {
+                results.push(one_segment.clone());
+            } else {
+                results.push(one_last_segment.clone());
+            }
+        } else if recursive && part == "**" {
+            if idx < last_part_idx {
+                if parts[idx + 1] != "**" {
+                    results.push(any_segments.clone());
+                }
+            } else {
+                results.push(any_last_segments.clone());
+            }
+        } else {
+            if !part.is_empty() {
+                if !include_hidden && part.chars().next().is_some_and(|ch| ch == '*' || ch == '?') {
+                    results.push(r"(?!\.)".to_string());
+                }
+                let star_expr = format!("{not_sep}*");
+                results.push(glob_translate_segment(part, &star_expr, &not_sep));
+            }
+            if idx < last_part_idx {
+                results.push(any_sep.clone());
+            }
+        }
+    }
+    let body = results.join("");
+    format!("(?s:{body})\\Z")
 }
 
 fn glob_split_components(text: &str, sep: char) -> Vec<String> {
@@ -2473,19 +3604,19 @@ fn open_impl(
                     };
                     match err.kind() {
                         ErrorKind::AlreadyExists => {
-                            return raise_exception::<_>(_py, "FileExistsError", &msg)
+                            return raise_exception::<_>(_py, "FileExistsError", &msg);
                         }
                         ErrorKind::NotFound => {
-                            return raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                            return raise_exception::<_>(_py, "FileNotFoundError", &msg);
                         }
                         ErrorKind::PermissionDenied => {
-                            return raise_exception::<_>(_py, "PermissionError", &msg)
+                            return raise_exception::<_>(_py, "PermissionError", &msg);
                         }
                         ErrorKind::IsADirectory => {
-                            return raise_exception::<_>(_py, "IsADirectoryError", &msg)
+                            return raise_exception::<_>(_py, "IsADirectoryError", &msg);
                         }
                         ErrorKind::NotADirectory => {
-                            return raise_exception::<_>(_py, "NotADirectoryError", &msg)
+                            return raise_exception::<_>(_py, "NotADirectoryError", &msg);
                         }
                         _ => return raise_exception::<_>(_py, "OSError", &msg),
                     }
@@ -2786,7 +3917,7 @@ fn cached_stdio_handle(
     handle_bits
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdin() -> u64 {
     crate::with_gil_entry!(_py, {
         cached_stdio_handle(_py, &SYS_STDIN_HANDLE_BITS, || {
@@ -2795,7 +3926,7 @@ pub extern "C" fn molt_sys_stdin() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdout() -> u64 {
     crate::with_gil_entry!(_py, {
         cached_stdio_handle(_py, &SYS_STDOUT_HANDLE_BITS, || {
@@ -2804,7 +3935,7 @@ pub extern "C" fn molt_sys_stdout() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stderr() -> u64 {
     crate::with_gil_entry!(_py, {
         cached_stdio_handle(_py, &SYS_STDERR_HANDLE_BITS, || {
@@ -2813,7 +3944,7 @@ pub extern "C" fn molt_sys_stderr() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let none = MoltObject::none().bits();
@@ -2831,7 +3962,7 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_open_ex(
     file_bits: u64,
     mode_bits: u64,
@@ -2857,7 +3988,7 @@ pub extern "C" fn molt_file_open_ex(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
@@ -2887,7 +4018,7 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_io_new(
     _cls_bits: u64,
     name_bits: u64,
@@ -2940,7 +4071,7 @@ pub extern "C" fn molt_file_io_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_io_init(
     _self_bits: u64,
     _name_bits: u64,
@@ -2951,7 +4082,7 @@ pub extern "C" fn molt_file_io_init(
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let raw_handle_ptr = match resolve_file_handle_ptr(_py, raw_bits) {
@@ -3031,7 +4162,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_buffered_init(
     _self_bits: u64,
     _raw_bits: u64,
@@ -3040,7 +4171,7 @@ pub extern "C" fn molt_buffered_init(
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_text_io_wrapper_new(
     _cls_bits: u64,
     buffer_bits: u64,
@@ -3139,7 +4270,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_text_io_wrapper_init(
     _self_bits: u64,
     _buffer_bits: u64,
@@ -3152,7 +4283,7 @@ pub extern "C" fn molt_text_io_wrapper_init(
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let payload = match unsafe { collect_bytes_like(_py, initial_bits) } {
@@ -3199,12 +4330,12 @@ pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_bytesio_init(_self_bits: u64, _initial_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let initial = if obj_from_bits(initial_bits).is_none() {
@@ -3260,7 +4391,7 @@ pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_b
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_stringio_init(
     _self_bits: u64,
     _initial_bits: u64,
@@ -3269,7 +4400,7 @@ pub extern "C" fn molt_stringio_init(
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3283,7 +4414,7 @@ pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3300,7 +4431,7 @@ pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3317,7 +4448,7 @@ pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3334,7 +4465,7 @@ pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3368,7 +4499,7 @@ pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_symlink(
     src_bits: u64,
     dst_bits: u64,
@@ -3407,7 +4538,7 @@ pub extern "C" fn molt_path_symlink(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3467,7 +4598,7 @@ pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_mkdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
@@ -3494,7 +4625,7 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
@@ -3521,7 +4652,7 @@ pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
@@ -3548,7 +4679,7 @@ pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_join(base_bits: u64, part_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3570,7 +4701,7 @@ pub extern "C" fn molt_path_join(base_bits: u64, part_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3592,7 +4723,7 @@ pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_isabs(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3604,7 +4735,7 @@ pub extern "C" fn molt_path_isabs(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_dirname(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3622,7 +4753,7 @@ pub extern "C" fn molt_path_dirname(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_basename(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3640,7 +4771,7 @@ pub extern "C" fn molt_path_basename(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_split(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3672,7 +4803,7 @@ pub extern "C" fn molt_path_split(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_splitext(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3703,7 +4834,7 @@ pub extern "C" fn molt_path_splitext(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_normpath(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3721,7 +4852,7 @@ pub extern "C" fn molt_path_normpath(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3742,7 +4873,7 @@ pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_resolve(path_bits: u64, strict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3767,7 +4898,7 @@ pub extern "C" fn molt_path_resolve(path_bits: u64, strict_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_relpath(path_bits: u64, start_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3796,7 +4927,7 @@ pub extern "C" fn molt_path_relpath(path_bits: u64, start_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_expandvars(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let path = match path_string_from_bits(_py, path_bits) {
@@ -3816,7 +4947,7 @@ pub extern "C" fn molt_path_expandvars(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_expandvars_env(path_bits: u64, env_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let path = match path_string_from_bits(_py, path_bits) {
@@ -3853,7 +4984,7 @@ pub extern "C" fn molt_path_expandvars_env(path_bits: u64, env_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_makedirs(path_bits: u64, exist_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -3916,7 +5047,7 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, exist_ok_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_parts(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3948,7 +5079,7 @@ pub extern "C" fn molt_path_parts(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_splitroot(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3987,7 +5118,7 @@ pub extern "C" fn molt_path_splitroot(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_compare(lhs_bits: u64, rhs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4003,7 +5134,7 @@ pub extern "C" fn molt_path_compare(lhs_bits: u64, rhs_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_parents(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4035,7 +5166,7 @@ pub extern "C" fn molt_path_parents(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_relative_to(path_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4060,7 +5191,7 @@ pub extern "C" fn molt_path_relative_to(path_bits: u64, base_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_relative_to_many(
     path_bits: u64,
     base_bits: u64,
@@ -4094,7 +5225,7 @@ pub extern "C" fn molt_path_relative_to_many(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_with_name(path_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4134,7 +5265,7 @@ pub extern "C" fn molt_path_with_name(path_bits: u64, name_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_with_suffix(path_bits: u64, suffix_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4172,7 +5303,7 @@ pub extern "C" fn molt_path_with_suffix(path_bits: u64, suffix_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_with_stem(path_bits: u64, stem_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4214,7 +5345,7 @@ pub extern "C" fn molt_path_with_stem(path_bits: u64, stem_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_is_relative_to(path_bits: u64, base_bits: u64, parts_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4240,7 +5371,7 @@ pub extern "C" fn molt_path_is_relative_to(path_bits: u64, base_bits: u64, parts
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_expanduser(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4301,7 +5432,7 @@ pub extern "C" fn molt_path_expanduser(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_name(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4319,7 +5450,7 @@ pub extern "C" fn molt_path_name(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_suffix(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4337,7 +5468,7 @@ pub extern "C" fn molt_path_suffix(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_stem(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4355,7 +5486,7 @@ pub extern "C" fn molt_path_stem(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_suffixes(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4387,7 +5518,7 @@ pub extern "C" fn molt_path_suffixes(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_as_uri(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4408,7 +5539,7 @@ pub extern "C" fn molt_path_as_uri(path_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_match(path_bits: u64, pattern_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -4424,7 +5555,7 @@ pub extern "C" fn molt_path_match(path_bits: u64, pattern_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -4447,7 +5578,7 @@ pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_glob_has_magic(pathname_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let pathname = match path_string_from_bits(_py, pathname_bits) {
@@ -4458,42 +5589,204 @@ pub extern "C" fn molt_glob_has_magic(pathname_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
-pub extern "C" fn molt_glob(pathname_bits: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_glob_escape(pathname_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sep = path_sep_char();
+        let (pathname, flavor) = match path_string_with_flavor_from_bits(_py, pathname_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let escaped = glob_escape_text(&pathname, sep);
+        if flavor == PathFlavor::Bytes {
+            let raw = raw_from_bytes_text(&escaped).unwrap_or_else(|| escaped.as_bytes().to_vec());
+            let ptr = alloc_bytes(_py, raw.as_slice());
+            if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            }
+        } else {
+            let ptr = alloc_string(_py, escaped.as_bytes());
+            if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_glob_translate(
+    pathname_bits: u64,
+    recursive_bits: u64,
+    include_hidden_bits: u64,
+    seps_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let pattern = if let Some(text) = string_obj_to_owned(obj_from_bits(pathname_bits)) {
+            text
+        } else {
+            let type_id = obj_from_bits(pathname_bits)
+                .as_ptr()
+                .map(|ptr| unsafe { object_type_id(ptr) });
+            if matches!(type_id, Some(TYPE_ID_BYTES) | Some(TYPE_ID_BYTEARRAY)) {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cannot use a string pattern on a bytes-like object",
+                );
+            }
+            let type_name = class_name_for_error(type_of_bits(_py, pathname_bits));
+            let msg = format!("expected string or bytes-like object, got '{type_name}'");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+
+        let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let include_hidden = is_truthy(_py, obj_from_bits(include_hidden_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        let seps = if obj_from_bits(seps_bits).is_none() {
+            None
+        } else if let Some(text) = string_obj_to_owned(obj_from_bits(seps_bits)) {
+            Some(text)
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "seps must be str or None");
+        };
+
+        let out = glob_translate_text(&pattern, recursive, include_hidden, seps.as_deref());
+        let ptr = alloc_string(_py, out.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_glob(
+    pathname_bits: u64,
+    root_dir_bits: u64,
+    dir_fd_bits: u64,
+    recursive_bits: u64,
+    include_hidden_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
-        let pathname = match path_string_from_bits(_py, pathname_bits) {
-            Ok(path) => path,
+        let sep = path_sep_char();
+
+        #[cfg(windows)]
+        let (pathname, pathname_flavor) =
+            match path_string_with_flavor_from_bits(_py, pathname_bits) {
+                Ok((path, flavor)) => (path.replace('/', "\\"), flavor),
+                Err(bits) => return bits,
+            };
+        #[cfg(not(windows))]
+        let (pathname, pathname_flavor) =
+            match path_string_with_flavor_from_bits(_py, pathname_bits) {
+                Ok((path, flavor)) => (path, flavor),
+                Err(bits) => return bits,
+            };
+
+        let root_dir = if obj_from_bits(root_dir_bits).is_none() {
+            None
+        } else {
+            #[cfg(windows)]
+            {
+                match path_string_with_flavor_from_bits(_py, root_dir_bits) {
+                    Ok((path, flavor)) => Some((path.replace('/', "\\"), flavor)),
+                    Err(bits) => return bits,
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                match path_string_with_flavor_from_bits(_py, root_dir_bits) {
+                    Ok((path, flavor)) => Some((path, flavor)),
+                    Err(bits) => return bits,
+                }
+            }
+        };
+
+        if let Some((_, root_dir_flavor)) = root_dir.as_ref() {
+            if *root_dir_flavor != pathname_flavor {
+                let msg = if path_isabs_text(&pathname, sep) {
+                    "Can't mix strings and bytes in path components"
+                } else if pathname_flavor == PathFlavor::Bytes {
+                    "cannot use a bytes pattern on a string-like object"
+                } else {
+                    "cannot use a string pattern on a bytes-like object"
+                };
+                return raise_exception::<_>(_py, "TypeError", msg);
+            }
+        }
+
+        let dir_fd = match glob_dir_fd_arg_from_bits(_py, dir_fd_bits) {
+            Err(bits) => return bits,
+            Ok(value) => value,
+        };
+
+        let bytes_mode = pathname_flavor == PathFlavor::Bytes;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let root_dir_is_absolute = root_dir
+                .as_ref()
+                .is_some_and(|(path, _)| path_isabs_text(path, sep));
+            if let GlobDirFdArg::Int(fd) = dir_fd {
+                if glob_dir_fd_root_text(fd, bytes_mode).is_none()
+                    && !path_isabs_text(&pathname, sep)
+                    && !root_dir_is_absolute
+                {
+                    return raise_exception::<_>(
+                        _py,
+                        "NotImplementedError",
+                        "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
+                    );
+                }
+            }
+        }
+
+        let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let include_hidden = is_truthy(_py, obj_from_bits(include_hidden_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        let root_ref = if let Some((root, _)) = root_dir.as_ref() {
+            Some(root.as_str())
+        } else {
+            None
+        };
+
+        let out = match glob_matches_text(
+            _py,
+            &pathname,
+            root_ref,
+            &dir_fd,
+            recursive,
+            include_hidden,
+            bytes_mode,
+            sep,
+        ) {
+            Ok(values) => values,
             Err(bits) => return bits,
         };
-        let sep = path_sep_char();
-        let mut dirname = path_dirname_text(&pathname, sep);
-        if dirname.is_empty() {
-            dirname = ".".to_string();
-        }
-        let basename = path_basename_text(&pathname, sep);
-        if !glob_has_magic_text(&basename) {
-            if std::fs::metadata(&pathname).is_ok() {
-                return alloc_string_list_bits(_py, &[pathname]);
-            }
-            return alloc_string_list_bits(_py, &[]);
-        }
-        let relative_matches =
-            match path_glob_matches(std::path::Path::new(&dirname), &basename, sep) {
-                Ok(values) => values,
-                Err(err) => return raise_io_error_for_glob(_py, err),
-            };
-        let mut out: Vec<String> = Vec::with_capacity(relative_matches.len());
-        for name in relative_matches {
-            out.push(path_join_text(dirname.clone(), &name, sep));
-        }
-        alloc_string_list_bits(_py, &out)
+        alloc_path_list_bits(_py, &out, bytes_mode)
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
@@ -4568,7 +5861,7 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_getcwd() -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -4601,7 +5894,89 @@ pub extern "C" fn molt_getcwd() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_fsencode(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (fspath_bits, flavor) = match fspath_bits_with_flavor(_py, path_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if flavor == PathFlavor::Bytes {
+            return fspath_bits;
+        }
+
+        let obj = obj_from_bits(fspath_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            dec_ref_bits(_py, fspath_bits);
+            return raise_exception::<_>(_py, "RuntimeError", "os fsencode received invalid path");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                dec_ref_bits(_py, fspath_bits);
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "os fsencode received invalid path",
+                );
+            }
+            let raw = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+            let encoded = match crate::object::ops::encode_string_with_errors(
+                raw,
+                filesystem_encoding(),
+                Some(filesystem_encode_errors()),
+            ) {
+                Ok(bytes) => bytes,
+                Err(crate::object::ops::EncodeError::UnknownEncoding(name)) => {
+                    dec_ref_bits(_py, fspath_bits);
+                    let msg = format!("unknown encoding: {name}");
+                    return raise_exception::<_>(_py, "LookupError", &msg);
+                }
+                Err(crate::object::ops::EncodeError::UnknownErrorHandler(name)) => {
+                    dec_ref_bits(_py, fspath_bits);
+                    let msg = format!("unknown error handler name '{name}'");
+                    return raise_exception::<_>(_py, "LookupError", &msg);
+                }
+                Err(crate::object::ops::EncodeError::InvalidChar {
+                    encoding,
+                    code,
+                    pos,
+                    limit,
+                }) => {
+                    let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
+                    let exc_bits = raise_unicode_encode_error::<_>(
+                        _py,
+                        encoding,
+                        fspath_bits,
+                        pos,
+                        pos + 1,
+                        &reason,
+                    );
+                    dec_ref_bits(_py, fspath_bits);
+                    return exc_bits;
+                }
+            };
+            dec_ref_bits(_py, fspath_bits);
+            let bytes_ptr = alloc_bytes(_py, encoded.as_slice());
+            if bytes_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(bytes_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getfilesystemencodeerrors() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = alloc_string(_py, filesystem_encode_errors().as_bytes());
+        if ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4658,7 +6033,7 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4719,7 +6094,7 @@ pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4770,7 +6145,7 @@ pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_pipe() -> u64 {
     crate::with_gil_entry!(_py, {
         #[cfg(target_arch = "wasm32")]
@@ -4829,7 +6204,7 @@ pub extern "C" fn molt_os_pipe() -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4859,7 +6234,7 @@ pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4919,7 +6294,7 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -4998,7 +6373,7 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let type_name = class_name_for_error(type_of_bits(_py, len_bits));
@@ -5021,7 +6396,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
                     _py,
                     "OverflowError",
                     "Python int too large to convert to C ssize_t",
-                )
+                );
             }
         };
         let mut buf = Vec::new();
@@ -5029,7 +6404,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "MemoryError", "out of memory");
         }
         buf.resize(len, 0);
-        if let Err(err) = getrandom(&mut buf) {
+        if let Err(err) = getrandom_fill(&mut buf) {
             let msg = format!("urandom failed: {err}");
             return raise_exception::<_>(_py, "OSError", &msg);
         }
@@ -5041,7 +6416,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_open_builtin(
     file_bits: u64,
     mode_bits: u64,
@@ -5438,11 +6813,7 @@ fn utf8_pending_len(bytes: &[u8]) -> usize {
         return 0;
     }
     let seq_len = cont + 1;
-    if expected > seq_len {
-        seq_len
-    } else {
-        0
-    }
+    if expected > seq_len { seq_len } else { 0 }
 }
 
 fn split_utf8_pending(handle: &mut MoltFileHandle, bytes: &mut Vec<u8>, at_eof: bool) {
@@ -6079,7 +7450,7 @@ pub(crate) fn file_handle_is_closed(handle: &MoltFileHandle) -> bool {
     Arc::clone(&handle.state).backend.lock().unwrap().is_none()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -6318,7 +7689,7 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -6549,7 +7920,7 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -6981,24 +8352,26 @@ unsafe fn read_text_chunk_multibyte(
     encoding_kind: &mut TextEncodingKind,
     errors: &str,
 ) -> Result<(Vec<u8>, bool), u64> {
-    let mut buf = Vec::new();
-    if !handle.text_pending_bytes.is_empty() {
-        let pending = std::mem::take(&mut handle.text_pending_bytes);
-        buf.extend_from_slice(&pending);
+    unsafe {
+        let mut buf = Vec::new();
+        if !handle.text_pending_bytes.is_empty() {
+            let pending = std::mem::take(&mut handle.text_pending_bytes);
+            buf.extend_from_slice(&pending);
+        }
+        let (mut more, at_eof) = file_read1_bytes(_py, handle, backend, None)?;
+        buf.append(&mut more);
+        split_text_pending_bytes(handle, &mut buf, at_eof, *encoding_kind);
+        let text_bytes = decode_multibyte_text(
+            _py,
+            handle,
+            encoding_label,
+            encoding_kind,
+            errors,
+            &buf,
+            at_eof,
+        )?;
+        Ok((text_bytes, at_eof))
     }
-    let (mut more, at_eof) = file_read1_bytes(_py, handle, backend, None)?;
-    buf.append(&mut more);
-    split_text_pending_bytes(handle, &mut buf, at_eof, *encoding_kind);
-    let text_bytes = decode_multibyte_text(
-        _py,
-        handle,
-        encoding_label,
-        encoding_kind,
-        errors,
-        &buf,
-        at_eof,
-    )?;
-    Ok((text_bytes, at_eof))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7012,77 +8385,85 @@ unsafe fn read_line_multibyte(
     encoding_kind: &mut TextEncodingKind,
     errors: &str,
 ) -> Result<Vec<u8>, u64> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut remaining = size;
-    if !handle.text_pending_text.is_empty() {
-        let mut take_len = handle.text_pending_text.len();
-        let mut stop = false;
-        if let Some(boundary) = pending_text_line_end(&handle.text_pending_text, newline) {
-            take_len = boundary;
-            stop = true;
-        }
-        if let Some(limit) = remaining {
-            let split = wtf8_split_index(&handle.text_pending_text, limit);
-            if split < take_len {
-                take_len = split;
+    unsafe {
+        let mut out: Vec<u8> = Vec::new();
+        let mut remaining = size;
+        if !handle.text_pending_text.is_empty() {
+            let mut take_len = handle.text_pending_text.len();
+            let mut stop = false;
+            if let Some(boundary) = pending_text_line_end(&handle.text_pending_text, newline) {
+                take_len = boundary;
                 stop = true;
             }
-        }
-        out.extend_from_slice(&handle.text_pending_text[..take_len]);
-        let rest = handle.text_pending_text.split_off(take_len);
-        handle.text_pending_text = rest;
-        if let Some(limit) = remaining {
-            let taken = wtf8_char_count(&out);
-            remaining = Some(limit.saturating_sub(taken));
-        }
-        if stop || remaining == Some(0) {
-            return Ok(out);
-        }
-    }
-    loop {
-        let (chunk, at_eof) =
-            read_text_chunk_multibyte(_py, handle, backend, encoding_label, encoding_kind, errors)?;
-        if chunk.is_empty() && at_eof {
-            break;
-        }
-        let mut take_len = chunk.len();
-        let mut stop = false;
-        if let Some(boundary) = pending_text_line_end(&chunk, newline) {
-            take_len = boundary;
-            stop = true;
-        }
-        if let Some(limit) = remaining {
-            let split = wtf8_split_index(&chunk, limit);
-            if split < take_len {
-                take_len = split;
-                stop = true;
+            if let Some(limit) = remaining {
+                let split = wtf8_split_index(&handle.text_pending_text, limit);
+                if split < take_len {
+                    take_len = split;
+                    stop = true;
+                }
+            }
+            out.extend_from_slice(&handle.text_pending_text[..take_len]);
+            let rest = handle.text_pending_text.split_off(take_len);
+            handle.text_pending_text = rest;
+            if let Some(limit) = remaining {
+                let taken = wtf8_char_count(&out);
+                remaining = Some(limit.saturating_sub(taken));
+            }
+            if stop || remaining == Some(0) {
+                return Ok(out);
             }
         }
-        out.extend_from_slice(&chunk[..take_len]);
-        let rest = chunk[take_len..].to_vec();
-        if let Some(limit) = remaining {
-            let taken = wtf8_char_count(&chunk[..take_len]);
-            remaining = Some(limit.saturating_sub(taken));
+        loop {
+            let (chunk, at_eof) = read_text_chunk_multibyte(
+                _py,
+                handle,
+                backend,
+                encoding_label,
+                encoding_kind,
+                errors,
+            )?;
+            if chunk.is_empty() && at_eof {
+                break;
+            }
+            let mut take_len = chunk.len();
+            let mut stop = false;
+            if let Some(boundary) = pending_text_line_end(&chunk, newline) {
+                take_len = boundary;
+                stop = true;
+            }
+            if let Some(limit) = remaining {
+                let split = wtf8_split_index(&chunk, limit);
+                if split < take_len {
+                    take_len = split;
+                    stop = true;
+                }
+            }
+            out.extend_from_slice(&chunk[..take_len]);
+            let rest = chunk[take_len..].to_vec();
+            if let Some(limit) = remaining {
+                let taken = wtf8_char_count(&chunk[..take_len]);
+                remaining = Some(limit.saturating_sub(taken));
+            }
+            if stop {
+                handle.text_pending_text = rest;
+                break;
+            }
+            if !rest.is_empty() {
+                handle.text_pending_text = rest;
+                break;
+            }
+            if remaining == Some(0) {
+                break;
+            }
+            if at_eof {
+                break;
+            }
         }
-        if stop {
-            handle.text_pending_text = rest;
-            break;
-        }
-        if !rest.is_empty() {
-            handle.text_pending_text = rest;
-            break;
-        }
-        if remaining == Some(0) {
-            break;
-        }
-        if at_eof {
-            break;
-        }
+        Ok(out)
     }
-    Ok(out)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7311,7 +8692,7 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7656,21 +9037,21 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         file_readinto_impl(_py, handle_bits, buffer_bits, "readinto")
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readinto1(handle_bits: u64, buffer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         file_readinto_impl(_py, handle_bits, buffer_bits, "readinto1")
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7753,7 +9134,7 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7814,7 +9195,7 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7847,7 +9228,7 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -7977,7 +9358,7 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_reconfigure(
     handle_bits: u64,
     encoding_bits: u64,
@@ -8107,7 +9488,7 @@ pub extern "C" fn molt_file_reconfigure(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8276,7 +9657,7 @@ pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8338,7 +9719,7 @@ pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8396,7 +9777,7 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8494,7 +9875,7 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8519,7 +9900,7 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8544,7 +9925,7 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8578,7 +9959,7 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8637,7 +10018,7 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8663,7 +10044,7 @@ pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let line_bits = molt_file_readline(handle_bits, MoltObject::from_int(-1).bits());
@@ -8690,7 +10071,7 @@ pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8706,7 +10087,7 @@ pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_exit(handle_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8722,7 +10103,7 @@ pub extern "C" fn molt_file_exit(handle_bits: u64, exc_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_exit_method(
     handle_bits: u64,
     _exc_type_bits: u64,
@@ -8732,7 +10113,7 @@ pub extern "C" fn molt_file_exit_method(
     crate::with_gil_entry!(_py, { molt_file_exit(handle_bits, exc_bits) })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8770,7 +10151,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                                 _py,
                                 "TypeError",
                                 "write expects str for text mode",
-                            )
+                            );
                         }
                     };
                     let written = match text_backend_write(_py, handle, backend, &text) {
@@ -8912,7 +10293,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -8975,7 +10356,7 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
@@ -9014,7 +10395,7 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle_obj = obj_from_bits(handle_bits);

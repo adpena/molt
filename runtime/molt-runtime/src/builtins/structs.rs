@@ -656,54 +656,58 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
 }
 
 unsafe fn memoryview_contiguous_bytes(ptr: *mut u8) -> Option<&'static [u8]> {
-    let (owner_ptr, base_offset, nbytes) = memoryview_contiguous_window(ptr, false)?;
-    let base = bytes_like_slice_raw(owner_ptr)?;
-    Some(&base[base_offset..base_offset + nbytes])
+    unsafe {
+        let (owner_ptr, base_offset, nbytes) = memoryview_contiguous_window(ptr, false)?;
+        let base = bytes_like_slice_raw(owner_ptr)?;
+        Some(&base[base_offset..base_offset + nbytes])
+    }
 }
 
 unsafe fn memoryview_contiguous_window(
     mut view_ptr: *mut u8,
     writable: bool,
 ) -> Option<(*mut u8, usize, usize)> {
-    const MAX_DEPTH: usize = 64;
-    if !memoryview_is_c_contiguous_view(view_ptr) {
-        return None;
-    }
-    if writable && memoryview_readonly(view_ptr) {
-        return None;
-    }
-    let nbytes = memoryview_nbytes(view_ptr);
-    let mut base_offset = 0usize;
-    for _ in 0..MAX_DEPTH {
+    unsafe {
+        const MAX_DEPTH: usize = 64;
         if !memoryview_is_c_contiguous_view(view_ptr) {
             return None;
         }
         if writable && memoryview_readonly(view_ptr) {
             return None;
         }
-        let rel_offset = memoryview_offset(view_ptr);
-        if rel_offset < 0 {
-            return None;
+        let nbytes = memoryview_nbytes(view_ptr);
+        let mut base_offset = 0usize;
+        for _ in 0..MAX_DEPTH {
+            if !memoryview_is_c_contiguous_view(view_ptr) {
+                return None;
+            }
+            if writable && memoryview_readonly(view_ptr) {
+                return None;
+            }
+            let rel_offset = memoryview_offset(view_ptr);
+            if rel_offset < 0 {
+                return None;
+            }
+            base_offset = base_offset.checked_add(rel_offset as usize)?;
+            let owner = obj_from_bits(memoryview_owner_bits(view_ptr));
+            let owner_ptr = owner.as_ptr()?;
+            let owner_type_id = object_type_id(owner_ptr);
+            if owner_type_id == TYPE_ID_MEMORYVIEW {
+                view_ptr = owner_ptr;
+                continue;
+            }
+            if writable && owner_type_id != TYPE_ID_BYTEARRAY {
+                return None;
+            }
+            let base = bytes_like_slice_raw(owner_ptr)?;
+            let end = base_offset.checked_add(nbytes)?;
+            if end > base.len() {
+                return None;
+            }
+            return Some((owner_ptr, base_offset, nbytes));
         }
-        base_offset = base_offset.checked_add(rel_offset as usize)?;
-        let owner = obj_from_bits(memoryview_owner_bits(view_ptr));
-        let owner_ptr = owner.as_ptr()?;
-        let owner_type_id = object_type_id(owner_ptr);
-        if owner_type_id == TYPE_ID_MEMORYVIEW {
-            view_ptr = owner_ptr;
-            continue;
-        }
-        if writable && owner_type_id != TYPE_ID_BYTEARRAY {
-            return None;
-        }
-        let base = bytes_like_slice_raw(owner_ptr)?;
-        let end = base_offset.checked_add(nbytes)?;
-        if end > base.len() {
-            return None;
-        }
-        return Some((owner_ptr, base_offset, nbytes));
+        None
     }
-    None
 }
 
 type StructIntrinsicError = (&'static str, String);
@@ -942,7 +946,7 @@ fn struct_unpack_values(
     Ok(out)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_calcsize(format_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let format_obj = obj_from_bits(format_bits);
@@ -961,7 +965,7 @@ pub extern "C" fn molt_struct_calcsize(format_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let format_obj = obj_from_bits(format_bits);
@@ -1008,7 +1012,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                 _py,
                                 "OverflowError",
                                 "total struct size too long",
-                            )
+                            );
                         }
                     };
                 }
@@ -1064,7 +1068,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                 _py,
                                 "OverflowError",
                                 "total struct size too long",
-                            )
+                            );
                         }
                     };
                 }
@@ -1110,7 +1114,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                     _py,
                                     "OverflowError",
                                     "total struct size too long",
-                                )
+                                );
                             }
                         };
                     }
@@ -1135,7 +1139,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                     _py,
                                     "OverflowError",
                                     "total struct size too long",
-                                )
+                                );
                             }
                         };
                     }
@@ -1200,7 +1204,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                     _py,
                                     "OverflowError",
                                     "total struct size too long",
-                                )
+                                );
                             }
                         };
                     }
@@ -1247,7 +1251,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                     _py,
                                     "OverflowError",
                                     "unsupported float size",
-                                )
+                                );
                             }
                         };
                         out.extend_from_slice(&bytes);
@@ -1258,7 +1262,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                                     _py,
                                     "OverflowError",
                                     "total struct size too long",
-                                )
+                                );
                             }
                         };
                     }
@@ -1273,7 +1277,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let format_obj = obj_from_bits(format_bits);
@@ -1309,7 +1313,7 @@ pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let payload_obj = obj_from_bits(data_bits);
@@ -1450,7 +1454,7 @@ pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_unpack_from(
     format_bits: u64,
     buffer_bits: u64,
@@ -1512,7 +1516,7 @@ pub extern "C" fn molt_struct_unpack_from(
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let format_obj = obj_from_bits(format_bits);
