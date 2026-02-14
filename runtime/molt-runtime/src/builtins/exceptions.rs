@@ -20,11 +20,11 @@ use crate::{
     TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool,
     alloc_list, alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
-    call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
-    class_name_for_error, code_filename_bits, code_firstlineno, code_linetable_bits,
-    code_name_bits, context_stack_unwind, current_task_key, current_task_ptr, current_token_id,
-    dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_order, dict_set_in_place,
-    dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
+    call_callable1, call_class_init_with_args, class_break_cycles, class_dict_bits,
+    class_name_bits, class_name_for_error, code_filename_bits, code_firstlineno,
+    code_linetable_bits, code_name_bits, context_stack_unwind, current_task_key, current_task_ptr,
+    current_token_id, dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_order,
+    dict_set_in_place, dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
     index_bigint_from_obj, instance_dict_bits, instance_set_dict_bits, int_bits_from_i64,
     intern_static_name, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
     module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index, molt_is_callable,
@@ -1378,6 +1378,7 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
                 }
                 let class_bits = MoltObject::from_ptr(class_ptr).bits();
                 let _ = molt_class_set_base(class_bits, tuple_bits);
+                set_exception_text_signature_none(_py, class_bits);
                 dec_ref_bits(_py, tuple_bits);
                 return cache_exception_type(_py, name, class_bits);
             }
@@ -1390,6 +1391,7 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let _ = molt_class_set_base(class_bits, base_bits);
+    set_exception_text_signature_none(_py, class_bits);
     cache_exception_type(_py, name, class_bits)
 }
 
@@ -1402,6 +1404,33 @@ fn alloc_class_obj_from_name(_py: &PyToken<'_>, name: &str) -> *mut u8 {
     let class_ptr = alloc_class_obj(_py, name_bits);
     dec_ref_bits(_py, name_bits);
     class_ptr
+}
+
+fn set_exception_text_signature_none(_py: &PyToken<'_>, class_bits: u64) {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__text_signature__") else {
+        return;
+    };
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits());
+    }
+    dec_ref_bits(_py, name_bits);
 }
 
 fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {

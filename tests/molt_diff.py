@@ -204,6 +204,70 @@ def _python_exe_version(python_exe: str) -> tuple[int, int] | None:
         return None
 
 
+@lru_cache(maxsize=None)
+def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
+    """Derive Molt sys/version environment from the CPython under test.
+
+    Differential runs compare Molt output against a chosen CPython version
+    (3.12/3.13/3.14). When semantics differ across those versions, Molt must be
+    configured to match the CPython baseline version for that run.
+    """
+
+    if not python_exe:
+        return {}
+    code = (
+        "import json,sys;"
+        "vi=sys.version_info;"
+        "print(json.dumps({"
+        "'executable':sys.executable,"
+        "'version':sys.version,"
+        "'version_info':[vi.major,vi.minor,vi.micro,vi.releaselevel,vi.serial]"
+        "}))"
+    )
+    try:
+        result = subprocess.run(
+            [python_exe, "-c", code],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return {}
+    if result.returncode != 0:
+        return {}
+    raw = (result.stdout or "").strip().splitlines()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw[-1])
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    version_info = payload.get("version_info")
+    if (
+        not isinstance(version_info, list)
+        or len(version_info) != 5
+        or not isinstance(version_info[0], int)
+        or not isinstance(version_info[1], int)
+        or not isinstance(version_info[2], int)
+        or not isinstance(version_info[3], str)
+        or not isinstance(version_info[4], int)
+    ):
+        return {}
+    major, minor, micro, releaselevel, serial = version_info
+    executable = payload.get("executable")
+    version = payload.get("version")
+    env: dict[str, str] = {
+        "MOLT_PYTHON_VERSION": f"{major}.{minor}",
+        "MOLT_SYS_VERSION_INFO": f"{major},{minor},{micro},{releaselevel},{serial}",
+    }
+    if isinstance(executable, str) and executable:
+        env["MOLT_SYS_EXECUTABLE"] = executable
+    if isinstance(version, str) and version:
+        env["MOLT_SYS_VERSION"] = version
+    return env
+
+
 def _host_platform_tags() -> set[str]:
     tags: set[str] = set()
     if os.name == "posix":
@@ -2637,7 +2701,10 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
     ):
         print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
         return "skip"
-    molt_out, molt_err, molt_ret = run_molt(file_path, build_profile)
+    molt_extra_env = _molt_sys_env_for_python_exe(python_exe)
+    molt_out, molt_err, molt_ret = run_molt(
+        file_path, build_profile, extra_env=molt_extra_env
+    )
     saw_dyld_retry = False
     if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
         _mark_dyld_guard(file_path)
@@ -2652,6 +2719,7 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
             build_profile,
             daemon_enabled=False,
             no_cache=False,
+            extra_env=molt_extra_env,
         )
         molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if _is_dyld_unknown_imports(molt_err):

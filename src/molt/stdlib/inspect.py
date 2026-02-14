@@ -316,6 +316,14 @@ def signature(obj: Any) -> Signature:
             return _signature_bind_bound_method(intrinsic_fn_sig, obj)
     if not callable(obj):
         raise TypeError(f"{obj!r} is not a callable object")
+    # CPython: for callable instances, delegate to their `__call__` method.
+    if not isinstance(obj, type):
+        call_attr = getattr(obj, "__call__", None)
+        if call_attr is not None and call_attr is not obj:
+            try:
+                return signature(call_attr)
+            except Exception:  # noqa: BLE001
+                pass
     if isinstance(obj, type):
         if obj is type:
             raise ValueError(f"no signature found for builtin {obj!r}")

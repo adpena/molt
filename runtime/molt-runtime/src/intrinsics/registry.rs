@@ -49,11 +49,13 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
             continue;
         };
         let mut registered = false;
-        if set_intrinsic_entry(_py, dict_ptr, registry_ptr, spec.name, func_bits) {
+        // Keep intrinsics confined to the private registry; they must not pollute
+        // the public `builtins` API surface (CPython parity).
+        if set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits) {
             registered = true;
         }
         if let Some(alias) = alias_name(spec.name) {
-            if set_intrinsic_entry(_py, dict_ptr, registry_ptr, &alias, func_bits) {
+            if set_intrinsic_entry(_py, registry_ptr, &alias, func_bits) {
                 registered = true;
             }
         }
@@ -109,7 +111,6 @@ fn set_dict_bool(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, value: bool) 
 
 fn set_intrinsic_entry(
     _py: &PyToken<'_>,
-    module_dict_ptr: *mut u8,
     registry_ptr: *mut u8,
     name: &str,
     func_bits: u64,
@@ -120,7 +121,6 @@ fn set_intrinsic_entry(
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     unsafe {
-        dict_set_in_place(_py, module_dict_ptr, key_bits, func_bits);
         dict_set_in_place(_py, registry_ptr, key_bits, func_bits);
     }
     dec_ref_bits(_py, key_bits);
