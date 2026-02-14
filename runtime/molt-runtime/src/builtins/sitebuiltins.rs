@@ -1,7 +1,8 @@
 use crate::object::ops::molt_print_builtin;
 use crate::object::ops::type_name;
 use crate::{
-    MoltObject, PyToken, alloc_string, alloc_tuple, dec_ref_bits, exception_pending, obj_from_bits,
+    MoltObject, PyToken, alloc_exception_from_class_bits, alloc_string, alloc_tuple, dec_ref_bits,
+    exception_pending, exception_type_bits_from_name, obj_from_bits, record_exception,
 };
 
 const MOLT_CREDITS_TEXT: &str = concat!(
@@ -12,8 +13,7 @@ const MOLT_CREDITS_TEXT: &str = concat!(
 
 // Keep `license()` self-contained: compiled binaries should not depend on files
 // being present at runtime.
-const MOLT_LICENSE_TEXT: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../LICENSE"));
+const MOLT_LICENSE_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../LICENSE"));
 
 fn print_str(_py: &PyToken<'_>, text: &[u8]) {
     let ptr = alloc_string(_py, text);
@@ -37,10 +37,7 @@ fn print_str(_py: &PyToken<'_>, text: &[u8]) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_help0() -> u64 {
     crate::with_gil_entry!(_py, {
-        print_str(
-            _py,
-            b"Molt help is not available in compiled binaries.",
-        );
+        print_str(_py, b"Molt help is not available in compiled binaries.");
         MoltObject::none().bits()
     })
 }
@@ -48,10 +45,7 @@ pub extern "C" fn molt_site_help0() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_help1(target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        print_str(
-            _py,
-            b"Molt help is not available in compiled binaries.",
-        );
+        print_str(_py, b"Molt help is not available in compiled binaries.");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -88,6 +82,34 @@ pub extern "C" fn molt_site_copyright() -> u64 {
             _py,
             "Copyright (c) 2026 Alejandro Peña.\nAll Rights Reserved.".as_bytes(),
         );
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_site_quitter_call(code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let code_obj = obj_from_bits(code_bits);
+        let args_ptr = if code_obj.is_none() {
+            alloc_tuple(_py, &[])
+        } else {
+            alloc_tuple(_py, &[code_bits])
+        };
+        if args_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let class_bits = exception_type_bits_from_name(_py, "SystemExit");
+        if class_bits == 0 {
+            dec_ref_bits(_py, args_bits);
+            return MoltObject::none().bits();
+        }
+        let exc_ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+        if exc_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        record_exception(_py, exc_ptr);
+        // Raising is communicated via the exception state; `None` is the sentinel.
         MoltObject::none().bits()
     })
 }

@@ -11712,6 +11712,41 @@ pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: 
     })
 }
 
+pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: &[u64]) -> u64 {
+    unsafe {
+        if iterables.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "map() must have at least two arguments",
+            );
+        }
+        let mut iters = Vec::with_capacity(iterables.len());
+        for &iterable_bits in iterables.iter() {
+            let iter_bits = molt_iter(iterable_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                return raise_not_iterable(_py, iterable_bits);
+            }
+            iters.push(iter_bits);
+        }
+        let total = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<u64>()
+            + std::mem::size_of::<*mut Vec<u64>>();
+        let map_ptr = alloc_object(_py, total, TYPE_ID_MAP);
+        if map_ptr.is_null() {
+            for iter_bits in iters {
+                dec_ref_bits(_py, iter_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let iters_ptr = Box::into_raw(Box::new(iters));
+        *(map_ptr as *mut u64) = func_bits;
+        *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
+        inc_ref_bits(_py, func_bits);
+        MoltObject::from_ptr(map_ptr).bits()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -11724,43 +11759,13 @@ pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "map expects a tuple");
             }
             let iterables = seq_vec_ref(iterables_ptr);
-            if iterables.is_empty() {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "map() must have at least two arguments",
-                );
-            }
-            let mut iters = Vec::with_capacity(iterables.len());
-            for &iterable_bits in iterables.iter() {
-                let iter_bits = molt_iter(iterable_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    return raise_not_iterable(_py, iterable_bits);
-                }
-                iters.push(iter_bits);
-            }
-            let total = std::mem::size_of::<MoltHeader>()
-                + std::mem::size_of::<u64>()
-                + std::mem::size_of::<*mut Vec<u64>>();
-            let map_ptr = alloc_object(_py, total, TYPE_ID_MAP);
-            if map_ptr.is_null() {
-                for iter_bits in iters {
-                    dec_ref_bits(_py, iter_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let iters_ptr = Box::into_raw(Box::new(iters));
-            *(map_ptr as *mut u64) = func_bits;
-            *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
-            inc_ref_bits(_py, func_bits);
-            MoltObject::from_ptr(map_ptr).bits()
+            map_new_impl(_py, func_bits, iterables.as_slice())
         }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+pub(crate) unsafe fn filter_new_impl(_py: &PyToken<'_>, func_bits: u64, iterable_bits: u64) -> u64 {
+    unsafe {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -11771,13 +11776,47 @@ pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         }
-        unsafe {
-            *(filter_ptr as *mut u64) = func_bits;
-            *(filter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = iter_bits;
-        }
+        *(filter_ptr as *mut u64) = func_bits;
+        *(filter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = iter_bits;
         inc_ref_bits(_py, func_bits);
         MoltObject::from_ptr(filter_ptr).bits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe { filter_new_impl(_py, func_bits, iterable_bits) }
     })
+}
+
+pub(crate) unsafe fn zip_new_impl(_py: &PyToken<'_>, iterables: &[u64], strict: bool) -> u64 {
+    unsafe {
+        let strict_bits = MoltObject::from_bool(strict).bits();
+        let mut iters = Vec::with_capacity(iterables.len());
+        for &iterable_bits in iterables.iter() {
+            let iter_bits = molt_iter(iterable_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                return raise_not_iterable(_py, iterable_bits);
+            }
+            iters.push(iter_bits);
+        }
+        let total = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<*mut Vec<u64>>()
+            + std::mem::size_of::<u64>();
+        let zip_ptr = alloc_object(_py, total, TYPE_ID_ZIP);
+        if zip_ptr.is_null() {
+            for iter_bits in iters {
+                dec_ref_bits(_py, iter_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let iters_ptr = Box::into_raw(Box::new(iters));
+        *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
+        zip_set_strict_bits(zip_ptr, strict_bits);
+        inc_ref_bits(_py, strict_bits);
+        MoltObject::from_ptr(zip_ptr).bits()
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -11797,133 +11836,113 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
                 return raise_exception::<_>(_py, "TypeError", "zip expects a tuple");
             }
             let iterables = seq_vec_ref(iterables_ptr);
-            let mut iters = Vec::with_capacity(iterables.len());
-            for &iterable_bits in iterables.iter() {
-                let iter_bits = molt_iter(iterable_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    return raise_not_iterable(_py, iterable_bits);
-                }
-                iters.push(iter_bits);
-            }
-            let total = std::mem::size_of::<MoltHeader>()
-                + std::mem::size_of::<*mut Vec<u64>>()
-                + std::mem::size_of::<u64>();
-            let zip_ptr = alloc_object(_py, total, TYPE_ID_ZIP);
-            if zip_ptr.is_null() {
-                for iter_bits in iters {
-                    dec_ref_bits(_py, iter_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let iters_ptr = Box::into_raw(Box::new(iters));
-            *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
-            zip_set_strict_bits(zip_ptr, strict_bits);
-            inc_ref_bits(_py, strict_bits);
-            MoltObject::from_ptr(zip_ptr).bits()
+            zip_new_impl(_py, iterables.as_slice(), strict)
         }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry!(_py, { unsafe { reversed_new_impl(_py, seq_bits) } })
+}
+
+pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 {
+    unsafe {
         let obj = obj_from_bits(seq_bits);
         if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_RANGE {
-                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
-                        return MoltObject::none().bits();
-                    };
-                    if step.is_zero() {
-                        return MoltObject::none().bits();
-                    }
-                    let len = range_len_bigint(&start, &stop, &step);
-                    let rev_bits = if len.is_zero() {
-                        alloc_range_from_bigints(_py, start.clone(), start.clone(), BigInt::from(1))
-                    } else {
-                        let last = &start + &step * (&len - 1);
-                        let rev_start = last;
-                        let rev_stop = &start - &step;
-                        let rev_step = -step;
-                        alloc_range_from_bigints(_py, rev_start, rev_stop, rev_step)
-                    };
-                    if obj_from_bits(rev_bits).is_none() {
-                        return MoltObject::none().bits();
-                    }
-                    let iter_bits = molt_iter(rev_bits);
-                    dec_ref_bits(_py, rev_bits);
-                    return iter_bits;
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_RANGE {
+                let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                    return MoltObject::none().bits();
+                };
+                if step.is_zero() {
+                    return MoltObject::none().bits();
                 }
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return MoltObject::none().bits();
-                    };
-                    let idx = dict_len(dict_ptr);
-                    let total = std::mem::size_of::<MoltHeader>()
-                        + std::mem::size_of::<u64>()
-                        + std::mem::size_of::<usize>();
-                    let rev_ptr = alloc_object(_py, total, TYPE_ID_REVERSED);
-                    if rev_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    inc_ref_bits(_py, dict_bits);
-                    *(rev_ptr as *mut u64) = dict_bits;
-                    reversed_set_index(rev_ptr, idx);
-                    return MoltObject::from_ptr(rev_ptr).bits();
+                let len = range_len_bigint(&start, &stop, &step);
+                let rev_bits = if len.is_zero() {
+                    alloc_range_from_bigints(_py, start.clone(), start.clone(), BigInt::from(1))
+                } else {
+                    let last = &start + &step * (&len - 1);
+                    let rev_start = last;
+                    let rev_stop = &start - &step;
+                    let rev_step = -step;
+                    alloc_range_from_bigints(_py, rev_start, rev_stop, rev_step)
+                };
+                if obj_from_bits(rev_bits).is_none() {
+                    return MoltObject::none().bits();
                 }
-                if type_id == TYPE_ID_LIST
-                    || type_id == TYPE_ID_TUPLE
-                    || type_id == TYPE_ID_STRING
-                    || type_id == TYPE_ID_BYTES
-                    || type_id == TYPE_ID_BYTEARRAY
-                    || type_id == TYPE_ID_DICT
-                    || type_id == TYPE_ID_DICT_KEYS_VIEW
+                let iter_bits = molt_iter(rev_bits);
+                dec_ref_bits(_py, rev_bits);
+                return iter_bits;
+            }
+            if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                    return MoltObject::none().bits();
+                };
+                let idx = dict_len(dict_ptr);
+                let total = std::mem::size_of::<MoltHeader>()
+                    + std::mem::size_of::<u64>()
+                    + std::mem::size_of::<usize>();
+                let rev_ptr = alloc_object(_py, total, TYPE_ID_REVERSED);
+                if rev_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                inc_ref_bits(_py, dict_bits);
+                *(rev_ptr as *mut u64) = dict_bits;
+                reversed_set_index(rev_ptr, idx);
+                return MoltObject::from_ptr(rev_ptr).bits();
+            }
+            if type_id == TYPE_ID_LIST
+                || type_id == TYPE_ID_TUPLE
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+                || type_id == TYPE_ID_DICT
+                || type_id == TYPE_ID_DICT_KEYS_VIEW
+                || type_id == TYPE_ID_DICT_VALUES_VIEW
+                || type_id == TYPE_ID_DICT_ITEMS_VIEW
+            {
+                let idx = if type_id == TYPE_ID_STRING {
+                    string_len(ptr)
+                } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    bytes_len(ptr)
+                } else if type_id == TYPE_ID_DICT {
+                    dict_order(ptr).len() / 2
+                } else if type_id == TYPE_ID_DICT_KEYS_VIEW
                     || type_id == TYPE_ID_DICT_VALUES_VIEW
                     || type_id == TYPE_ID_DICT_ITEMS_VIEW
                 {
-                    let idx = if type_id == TYPE_ID_STRING {
-                        string_len(ptr)
-                    } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                        bytes_len(ptr)
-                    } else if type_id == TYPE_ID_DICT {
-                        dict_order(ptr).len() / 2
-                    } else if type_id == TYPE_ID_DICT_KEYS_VIEW
-                        || type_id == TYPE_ID_DICT_VALUES_VIEW
-                        || type_id == TYPE_ID_DICT_ITEMS_VIEW
-                    {
-                        dict_view_len(ptr)
-                    } else if type_id == TYPE_ID_LIST {
-                        list_len(ptr)
-                    } else {
-                        tuple_len(ptr)
-                    };
-                    let total = std::mem::size_of::<MoltHeader>()
-                        + std::mem::size_of::<u64>()
-                        + std::mem::size_of::<usize>();
-                    let rev_ptr = alloc_object(_py, total, TYPE_ID_REVERSED);
-                    if rev_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    inc_ref_bits(_py, seq_bits);
-                    *(rev_ptr as *mut u64) = seq_bits;
-                    reversed_set_index(rev_ptr, idx);
-                    return MoltObject::from_ptr(rev_ptr).bits();
+                    dict_view_len(ptr)
+                } else if type_id == TYPE_ID_LIST {
+                    list_len(ptr)
+                } else {
+                    tuple_len(ptr)
+                };
+                let total = std::mem::size_of::<MoltHeader>()
+                    + std::mem::size_of::<u64>()
+                    + std::mem::size_of::<usize>();
+                let rev_ptr = alloc_object(_py, total, TYPE_ID_REVERSED);
+                if rev_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__reversed__") {
-                    if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                        dec_ref_bits(_py, name_bits);
-                        let res = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        return res;
-                    }
+                inc_ref_bits(_py, seq_bits);
+                *(rev_ptr as *mut u64) = seq_bits;
+                reversed_set_index(rev_ptr, idx);
+                return MoltObject::from_ptr(rev_ptr).bits();
+            }
+            if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__reversed__") {
+                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                     dec_ref_bits(_py, name_bits);
+                    let res = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res;
                 }
+                dec_ref_bits(_py, name_bits);
             }
         }
         let msg = format!("'{}' object is not reversible", type_name(_py, obj));
         raise_exception::<_>(_py, "TypeError", &msg)
-    })
+    }
 }
 
 struct SortItem {
@@ -12176,8 +12195,40 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if obj_bits == missing {
+            // CPython: dir() (no args) lists the caller's local scope.
+            unsafe {
+                // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
+                // re-entrant and many runtime helpers rely on nested calls.
+                let locals_bits = crate::molt_locals_builtin();
+                if exception_pending(_py) {
+                    if !obj_from_bits(locals_bits).is_none() {
+                        dec_ref_bits(_py, locals_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let list_bits = list_from_iter_bits(_py, locals_bits)
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if !obj_from_bits(locals_bits).is_none() {
+                    dec_ref_bits(_py, locals_bits);
+                }
+                if obj_from_bits(list_bits).is_none() || exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let none_bits = MoltObject::none().bits();
+                let reverse_bits = MoltObject::from_int(0).bits();
+                let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return list_bits;
+            }
+        }
+
         let mut names: Vec<u64> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        let mut extra_owned: Vec<u64> = Vec::new();
         let _obj = obj_from_bits(obj_bits);
         if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
             unsafe {
@@ -12205,7 +12256,46 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
             }
         }
+
+        // Our runtime keeps many builtin methods in fast method caches rather than in
+        // `type.__dict__`. CPython's dir() includes those names (via slot-based lookup),
+        // so ensure they're visible for parity.
+        //
+        // Note: these names are stable and exist on all objects in CPython 3.12+.
+        for name in [
+            &b"__getattribute__"[..],
+            &b"__new__"[..],
+            &b"__init__"[..],
+            &b"__init_subclass__"[..],
+            &b"__setattr__"[..],
+            &b"__delattr__"[..],
+            &b"__eq__"[..],
+            &b"__ne__"[..],
+            &b"__repr__"[..],
+            &b"__str__"[..],
+        ] {
+            let Ok(name_str) = std::str::from_utf8(name) else {
+                continue;
+            };
+            if !seen.insert(name_str.to_string()) {
+                continue;
+            }
+            unsafe {
+                let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                };
+                extra_owned.push(bits);
+                names.push(bits);
+            }
+        }
+
         let list_ptr = alloc_list(_py, &names);
+        for owned in extra_owned {
+            dec_ref_bits(_py, owned);
+        }
         if list_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -12379,8 +12469,8 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
                 std::env::var("MOLT_TRACE_TYPE_CALL").ok().as_deref(),
                 Some("1")
             ) {
-                let class_name =
-                    string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr))).unwrap_or_default();
+                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr)))
+                    .unwrap_or_default();
                 let builtins = builtin_classes(_py);
                 let kind = if cls_bits == builtins.type_obj {
                     "builtins.type"
@@ -13088,11 +13178,8 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         let line_bits = if stdin_is_handle {
             molt_file_readline(stdin_bits, MoltObject::from_int(-1).bits())
         } else {
-            let readline_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.readline_name,
-                b"readline",
-            );
+            let readline_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.readline_name, b"readline");
             let method_bits = molt_get_attr_name(stdin_bits, readline_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, stdin_bits);
@@ -26298,7 +26385,10 @@ pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bi
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    &format!("'{}' object does not support item assignment", type_name(_py, dict_obj)),
+                    &format!(
+                        "'{}' object does not support item assignment",
+                        type_name(_py, dict_obj)
+                    ),
                 );
             };
             let Some(real_dict_ptr) = obj_from_bits(real_dict_bits).as_ptr() else {
@@ -29837,33 +29927,27 @@ pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
 pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let has_start = is_truthy(_py, obj_from_bits(has_start_bits));
-        if std::env::var("MOLT_DEBUG_ENUM").as_deref() == Ok("1") {
-            let iterable_obj = obj_from_bits(iterable_bits);
-            eprintln!(
-                "molt_enumerate: input type={} has_start={}",
-                type_name(_py, iterable_obj),
-                has_start
-            );
-        }
+        let start_opt = if has_start { Some(start_bits) } else { None };
+        unsafe { enumerate_new_impl(_py, iterable_bits, start_opt) }
+    })
+}
+
+pub(crate) unsafe fn enumerate_new_impl(
+    _py: &PyToken<'_>,
+    iterable_bits: u64,
+    start_opt: Option<u64>,
+) -> u64 {
+    unsafe {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
-            if std::env::var("MOLT_DEBUG_ENUM").as_deref() == Ok("1") {
-                let iterable_obj = obj_from_bits(iterable_bits);
-                eprintln!(
-                    "molt_enumerate: non-iterable input type={}",
-                    type_name(_py, iterable_obj)
-                );
-            }
             return raise_not_iterable(_py, iterable_bits);
         }
-        let index_bits = if has_start {
+        let index_bits = if let Some(start_bits) = start_opt {
             let start_obj = obj_from_bits(start_bits);
             let mut is_int_like = start_obj.is_int() || start_obj.is_bool();
             if !is_int_like {
                 if let Some(ptr) = start_obj.as_ptr() {
-                    unsafe {
-                        is_int_like = object_type_id(ptr) == TYPE_ID_BIGINT;
-                    }
+                    is_int_like = object_type_id(ptr) == TYPE_ID_BIGINT;
                 }
             }
             if !is_int_like {
@@ -29876,25 +29960,13 @@ pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_
         let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
         let enum_ptr = alloc_object(_py, total, TYPE_ID_ENUMERATE);
         if enum_ptr.is_null() {
-            if std::env::var("MOLT_DEBUG_ENUM").as_deref() == Ok("1") {
-                eprintln!("molt_enumerate: alloc_object failed");
-            }
             return MoltObject::none().bits();
         }
-        unsafe {
-            *(enum_ptr as *mut u64) = iter_bits;
-            *(enum_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = index_bits;
-        }
+        *(enum_ptr as *mut u64) = iter_bits;
+        *(enum_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = index_bits;
         inc_ref_bits(_py, index_bits);
-        let enum_bits = MoltObject::from_ptr(enum_ptr).bits();
-        if std::env::var("MOLT_DEBUG_ENUM").as_deref() == Ok("1") {
-            eprintln!(
-                "molt_enumerate: created enum ptr={:?} bits=0x{:x}",
-                enum_ptr, enum_bits
-            );
-        }
-        enum_bits
-    })
+        MoltObject::from_ptr(enum_ptr).bits()
+    }
 }
 
 #[unsafe(no_mangle)]

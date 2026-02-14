@@ -14,27 +14,10 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # yet (we are defining them). Use the module object dict via `sys.modules`.
 _NS = _sys.modules[__name__].__dict__
 
-TYPE_CHECKING = False
-
-
-def cast(_type, value):
-    return value
-
-
-if TYPE_CHECKING:
-    from typing import Any, Callable, Optional
-else:
-
-    class _TypingAlias:
-        __slots__ = ()
-
-        def __getitem__(self, _item):
-            return self
-
-
-Any = object()
-Callable = _TypingAlias()
-Optional = _TypingAlias()
+# `builtins` must match CPython's public API surface; keep typing helpers out of the
+# runtime module namespace.
+if False:  # TYPE_CHECKING
+    from typing import Any  # noqa: F401
 
 _MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", _NS)
 _MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", _NS)
@@ -177,7 +160,9 @@ if _molt_import_impl is None:
 else:
     __import__ = _molt_import_impl
 
-if TYPE_CHECKING:
+if False:  # TYPE_CHECKING
+    from typing import Callable, Optional  # noqa: F401
+
     _molt_getargv: Callable[[], list[str]]
     _molt_getframe: Callable[[object], object]
     _molt_trace_enter_slot: Callable[[int], object]
@@ -279,7 +264,7 @@ if TYPE_CHECKING:
     molt_rlock_drop: Callable[[object], object]
 
 
-def _require_builtin_intrinsic(name: str) -> Any:
+def _require_builtin_intrinsic(name: str) -> object:
     return _require_intrinsic(name, _NS)
 
 
@@ -315,6 +300,16 @@ def exec(source, globals=None, locals=None, *, closure=None):
     raise _dynamic_execution_unavailable("exec")
 
 
+_MOLT_POW = _require_builtin_intrinsic("molt_pow")
+_MOLT_POW_MOD = _require_builtin_intrinsic("molt_pow_mod")
+
+
+def pow(base, exp, mod=None):
+    if mod is None:
+        return _MOLT_POW(base, exp)
+    return _MOLT_POW_MOD(base, exp, mod)
+
+
 def input(prompt: object = "", /) -> str:
     intrinsic = _require_builtin_intrinsic("molt_input_builtin")
     return intrinsic(prompt)
@@ -343,6 +338,7 @@ __all__ = [
     "hex",
     "abs",
     "divmod",
+    "pow",
     "compile",
     "open",
     "input",
@@ -402,6 +398,8 @@ __all__ = [
     "credits",
     "copyright",
     "license",
+    "quit",
+    "exit",
     "vars",
     "Ellipsis",
     "NotImplemented",
@@ -454,7 +452,6 @@ __all__ = [
     "SystemError",
     "SystemExit",
     "TimeoutError",
-    "CancelledError",
     "ProcessLookupError",
     "TypeError",
     "UnboundLocalError",
@@ -537,10 +534,12 @@ bytes = bytes
 bytearray = bytearray
 memoryview = memoryview
 iter = iter
-map = map
-filter = filter
-zip = zip
-reversed = reversed
+_molt_builtin_class_lookup = _require_builtin_intrinsic("molt_builtin_class_lookup")
+enumerate = _molt_builtin_class_lookup("enumerate")
+reversed = _molt_builtin_class_lookup("reversed")
+zip = _molt_builtin_class_lookup("zip")
+map = _molt_builtin_class_lookup("map")
+filter = _molt_builtin_class_lookup("filter")
 next = next
 aiter = aiter
 anext = anext
@@ -559,19 +558,20 @@ help = _sitebuiltins.help
 credits = _sitebuiltins.credits
 copyright = _sitebuiltins.copyright
 license = _sitebuiltins.license
+quit = _sitebuiltins.quit
+exit = _sitebuiltins.exit
 vars = vars
 Ellipsis = ...
 # Avoid bootstrap-time global lookup of NotImplemented in runtimes where builtins
 # are still being initialized; rich-compare returns the singleton directly.
 NotImplemented = object.__eq__(object(), object())
+_NS["True"] = True
+_NS["False"] = False
+_NS["None"] = None
 BaseException = BaseException
 BaseExceptionGroup = BaseExceptionGroup
 Exception = Exception
 ExceptionGroup = ExceptionGroup
-
-
-class CancelledError(BaseException):
-    pass
 
 
 ArithmeticError = ArithmeticError
@@ -640,8 +640,6 @@ BytesWarning = BytesWarning
 ResourceWarning = ResourceWarning
 EncodingWarning = EncodingWarning
 
-WindowsError = OSError
-
 _molt_getargv = _require_builtin_intrinsic("molt_getargv")
 _molt_getframe = _require_builtin_intrinsic("molt_getframe")
 _molt_trace_enter_slot = _require_builtin_intrinsic("molt_trace_enter_slot")
@@ -663,11 +661,38 @@ _molt_function_set_builtin = _require_builtin_intrinsic("molt_function_set_built
 _molt_function_set_builtin(compile)
 _molt_function_set_builtin(input)
 _molt_function_set_builtin(breakpoint)
+_molt_function_set_builtin(eval)
+_molt_function_set_builtin(exec)
+_molt_function_set_builtin(pow)
+try:
+    # CPython 3.12+ `inspect.signature` uses `__text_signature__` for these builtins.
+    eval.__text_signature__ = "(source, globals=None, locals=None, /)"  # type: ignore[attr-defined]
+    exec.__text_signature__ = (  # type: ignore[attr-defined]
+        "(source, globals=None, locals=None, /, *, closure=None)"
+    )
+except Exception as _exc:  # noqa: BLE001
+    raise RuntimeError(
+        "builtins.eval/exec missing __text_signature__ support for inspect.signature parity"
+    ) from _exc
+
+try:
+    # CPython 3.12+ builtin-function signatures (Python-defined builtins in this module).
+    compile.__text_signature__ = (  # type: ignore[attr-defined]
+        "(source, filename, mode, flags=0, dont_inherit=False, optimize=-1, *, _feature_version=-1)"
+    )
+    input.__text_signature__ = "(prompt='', /)"  # type: ignore[attr-defined]
+    pow.__text_signature__ = "(base, exp, mod=None)"  # type: ignore[attr-defined]
+except Exception as _exc:  # noqa: BLE001
+    raise RuntimeError(
+        "builtins.compile/input/pow missing __text_signature__ support for inspect.signature parity"
+    ) from _exc
 _molt_class_new = _require_builtin_intrinsic("molt_class_new")
 _molt_class_set_base = _require_builtin_intrinsic("molt_class_set_base")
 _molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_name")
 _molt_os_name = _require_builtin_intrinsic("molt_os_name")
 _molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
+if _molt_sys_platform() == "win32":
+    WindowsError = OSError
 _molt_time_monotonic = _require_builtin_intrinsic("molt_time_monotonic")
 _molt_time_monotonic_ns = _require_builtin_intrinsic("molt_time_monotonic_ns")
 _molt_time_time = _require_builtin_intrinsic("molt_time_time")

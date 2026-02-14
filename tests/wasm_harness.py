@@ -78,12 +78,10 @@ def _intrinsic_registry_js() -> str:
         "    const fnBits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));"
     )
     lines.append("    const nameBits = boxPtr({ type: 'str', value: name });")
-    lines.append("    dictSetValue(dict, nameBits, fnBits);")
     lines.append("    dictSetValue(registry, nameBits, fnBits);")
     lines.append("    if (name.startsWith('molt_')) {")
     lines.append("      const alias = `_molt_${name.slice(5)}`;")
     lines.append("      const aliasBits = boxPtr({ type: 'str', value: alias });")
-    lines.append("      dictSetValue(dict, aliasBits, fnBits);")
     lines.append("      dictSetValue(registry, aliasBits, fnBits);")
     lines.append("    }")
     lines.append("  }")
