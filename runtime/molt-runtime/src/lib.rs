@@ -127,7 +127,7 @@ pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
-    builtin_type_bits, class_name_for_error, is_builtin_class_bits,
+    builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
 pub use crate::builtins::codecs::*;
 pub(crate) use crate::builtins::containers::{
@@ -171,12 +171,11 @@ pub(crate) use crate::builtins::exceptions::{
     generator_exception_stack_take, generator_raise_active, handle_system_exit,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
     molt_exception_pending, molt_exception_set_last, molt_getframe, molt_globals_builtin,
-    molt_locals_builtin, molt_raise, raise_exception,
-    raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
-    raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
-    set_task_raise_active, task_exception_baseline_drop, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_drop,
+    molt_locals_builtin, molt_raise, raise_exception, raise_key_error_with_key, raise_not_iterable,
+    raise_unicode_decode_error, raise_unicode_encode_error, raise_unsupported_inplace,
+    record_exception, set_generator_raise, set_task_raise_active, task_exception_baseline_drop,
+    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_drop,
+    task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_drop,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
     task_last_exception_drop, task_raise_active,
@@ -314,13 +313,13 @@ pub use crate::object::weakref::{
 pub(crate) use crate::object::{
     Buffer2D, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
-    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_IMMORTAL, HEADER_FLAG_SKIP_CLASS_DECREF,
-    HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
-    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED,
-    MemoryView, MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState,
-    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PtrSlot, alloc_object, alloc_object_zeroed,
-    alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data, bytes_len,
-    dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
+    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_IMMORTAL,
+    HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
+    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
+    MoltFileHandle, MoltFileState, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PtrSlot, alloc_object,
+    alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data,
+    bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
     dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
     init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
     maybe_ptr_from_bits, memoryview_format_bits, memoryview_itemsize, memoryview_len,

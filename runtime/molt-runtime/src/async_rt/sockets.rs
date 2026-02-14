@@ -4,6 +4,8 @@ use crate::*;
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 #[cfg(not(target_arch = "wasm32"))]
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 #[cfg(not(target_arch = "wasm32"))]
@@ -15,8 +17,6 @@ use std::collections::VecDeque;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::{CStr, CString, OsString};
 use std::io::ErrorKind;
-use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive};
 #[cfg(target_arch = "wasm32")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(not(target_arch = "wasm32"))]
@@ -8101,9 +8101,7 @@ fn socket_u16_from_index(_py: &PyToken<'_>, value_bits: u64, func: &str) -> Opti
     );
     let value = index_bigint_from_obj(_py, value_bits, &err)?;
     if value.is_negative() {
-        let msg = format!(
-            "{func}: can't convert negative Python int to C 16-bit unsigned integer"
-        );
+        let msg = format!("{func}: can't convert negative Python int to C 16-bit unsigned integer");
         raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
         return None;
     }

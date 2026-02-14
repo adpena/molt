@@ -8,14 +8,13 @@ use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
     BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
     RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_COMPLEX,
-    TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST,
-    TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR,
-    TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, class_break_cycles, class_bump_layout_version, class_dict_bits,
-    class_name_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits, intern_static_name,
-    molt_class_set_base, obj_from_bits, object_set_class_bits, object_type_id, runtime_state,
-    runtime_state_for_gil, string_obj_to_owned,
+    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
+    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
+    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
+    class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
+    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_set_class_bits,
+    object_type_id, raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -602,16 +601,27 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         union_type,
     ] {
         set_class_attr_string(_py, bits, b"__module__", "builtins");
+        // Prevent inheriting `object.__text_signature__` across the builtins type graph.
+        // CPython generally defines `__text_signature__ = None` on builtin types unless
+        // a specific public signature is provided.
+        set_class_attr_none(_py, bits, b"__text_signature__");
     }
-    // CPython 3.12 defines `__text_signature__` on these types but sets it to None.
-    set_class_attr_none(_py, classmethod, b"__text_signature__");
-    set_class_attr_none(_py, staticmethod, b"__text_signature__");
     set_class_attr_string(
         _py,
         property,
         b"__text_signature__",
         "(fget=None, fset=None, fdel=None, doc=None)",
     );
+    // Signature metadata for builtin types used by `inspect.signature` (CPython parity).
+    // Keep these in sync with the 3.12+ union expectations in differential probes.
+    set_class_attr_string(_py, object, b"__text_signature__", "()");
+    set_class_attr_string(_py, memoryview, b"__text_signature__", "(object)");
+    set_class_attr_string(_py, enumerate, b"__text_signature__", "(iterable, start=0)");
+    set_class_attr_string(_py, reversed, b"__text_signature__", "(sequence, /)");
+    set_class_attr_string(_py, complex, b"__text_signature__", "(real=0, imag=0)");
+    set_class_attr_string(_py, float, b"__text_signature__", "(x=0, /)");
+    set_class_attr_string(_py, list, b"__text_signature__", "(iterable=(), /)");
+    set_class_attr_string(_py, tuple, b"__text_signature__", "(iterable=(), /)");
 
     BuiltinClasses {
         object,
@@ -895,4 +905,56 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
         string_obj_to_owned(obj_from_bits(class_name_bits(ptr)))
             .unwrap_or_else(|| "<class>".to_string())
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "builtin class name must be str");
+        };
+        let builtins = builtin_classes(_py);
+        let bits = match name.as_str() {
+            "object" => builtins.object,
+            "type" => builtins.type_obj,
+            "NoneType" => builtins.none_type,
+            "ellipsis" => builtins.ellipsis_type,
+            "NotImplementedType" => builtins.not_implemented_type,
+            "BaseException" => builtins.base_exception,
+            "Exception" => builtins.exception,
+            "BaseExceptionGroup" => builtins.base_exception_group,
+            "ExceptionGroup" => builtins.exception_group,
+            "int" => builtins.int,
+            "float" => builtins.float,
+            "complex" => builtins.complex,
+            "bool" => builtins.bool,
+            "str" => builtins.str,
+            "bytes" => builtins.bytes,
+            "bytearray" => builtins.bytearray,
+            "list" => builtins.list,
+            "tuple" => builtins.tuple,
+            "dict" => builtins.dict,
+            "set" => builtins.set,
+            "frozenset" => builtins.frozenset,
+            "range" => builtins.range,
+            "slice" => builtins.slice,
+            "memoryview" => builtins.memoryview,
+            "enumerate" => builtins.enumerate,
+            "reversed" => builtins.reversed,
+            "zip" => builtins.zip,
+            "map" => builtins.map,
+            "filter" => builtins.filter,
+            "super" => builtins.super_type,
+            "classmethod" => builtins.classmethod,
+            "staticmethod" => builtins.staticmethod,
+            "property" => builtins.property,
+            "GenericAlias" => builtins.generic_alias,
+            _ => {
+                let msg = format!("builtin class unavailable: {name}");
+                return raise_exception::<_>(_py, "RuntimeError", &msg);
+            }
+        };
+        inc_ref_bits(_py, bits);
+        bits
+    })
 }

@@ -59,9 +59,9 @@ use crate::{
     asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
     builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
     call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all, callargs_ptr,
-    classmethod_func_bits,
-    code_filename_bits, code_linetable_bits, code_name_bits, code_varnames_bits,
-    context_payload_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
+    code_varnames_bits, context_payload_bits,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_enter_context_task_drop,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
@@ -926,7 +926,10 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         if debug_file_rc() {
             let header = &*header_ptr;
             if header.type_id == TYPE_ID_FILE_HANDLE {
-                eprintln!("molt file rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
+                eprintln!(
+                    "molt file rc inc ptr=0x{:x} count={}",
+                    ptr as usize, new_count
+                );
             }
         }
     }
@@ -985,7 +988,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // Debug-only: cached builtin function objects must not be freed while still cached.
                 // When they do hit zero, capture a backtrace to identify the incorrect owner.
                 let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
-                let obj_init_subclass_ptr = crate::molt_object_init_subclass as *const () as usize as u64;
+                let obj_init_subclass_ptr =
+                    crate::molt_object_init_subclass as *const () as usize as u64;
                 let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
                 if freed_fn_ptr == obj_init_subclass_ptr || freed_fn_ptr == type_init_ptr {
                     let bt = std::backtrace::Backtrace::force_capture();

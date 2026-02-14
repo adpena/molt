@@ -221,16 +221,196 @@ unsafe fn call_type_with_builder(
             }
         }
         if is_builtin_class_bits(_py, class_bits) {
-            if class_bits == builtins.dict {
-                let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
-                    (
-                        (*ptr).pos.as_slice(),
-                        (*ptr).kw_names.as_slice(),
-                        (*ptr).kw_values.as_slice(),
-                    )
+            let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
+                (
+                    (*ptr).pos.as_slice(),
+                    (*ptr).kw_names.as_slice(),
+                    (*ptr).kw_values.as_slice(),
+                )
+            } else {
+                (&[] as &[u64], &[] as &[u64], &[] as &[u64])
+            };
+
+            if class_bits == builtins.enumerate {
+                if pos_args.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "enumerate() missing required argument 'iterable' (pos 1)",
+                    );
+                }
+                if pos_args.len() > 2 {
+                    let msg = format!(
+                        "enumerate expected at most 2 arguments, got {}",
+                        pos_args.len()
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                let iterable_bits = pos_args[0];
+                let mut start_opt = if pos_args.len() == 2 {
+                    Some(pos_args[1])
                 } else {
-                    (&[] as &[u64], &[] as &[u64], &[] as &[u64])
+                    None
                 };
+                for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
+                    let name = string_obj_to_owned(obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<name>".to_string());
+                    if name != "start" {
+                        let msg =
+                            format!("enumerate() got an unexpected keyword argument '{name}'");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if start_opt.is_some() {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "enumerate() got multiple values for argument 'start'",
+                        );
+                    }
+                    start_opt = Some(val_bits);
+                }
+                return crate::object::ops::enumerate_new_impl(_py, iterable_bits, start_opt);
+            }
+
+            if class_bits == builtins.bool {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "bool() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() > 1 {
+                    let msg = format!("bool expected at most 1 argument, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if pos_args.is_empty() {
+                    return MoltObject::from_bool(false).bits();
+                }
+                return MoltObject::from_bool(is_truthy(_py, obj_from_bits(pos_args[0]))).bits();
+            }
+
+            if class_bits == builtins.complex {
+                if pos_args.len() > 2 {
+                    let msg = format!(
+                        "complex expected at most 2 arguments, got {}",
+                        pos_args.len()
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                let mut real_opt = pos_args.first().copied();
+                let mut imag_opt = if pos_args.len() == 2 {
+                    Some(pos_args[1])
+                } else {
+                    None
+                };
+                let mut has_imag = imag_opt.is_some();
+
+                for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
+                    let name = string_obj_to_owned(obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<name>".to_string());
+                    match name.as_str() {
+                        "real" => {
+                            if real_opt.is_some() {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "complex() got multiple values for argument 'real'",
+                                );
+                            }
+                            real_opt = Some(val_bits);
+                        }
+                        "imag" => {
+                            if imag_opt.is_some() {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "complex() got multiple values for argument 'imag'",
+                                );
+                            }
+                            imag_opt = Some(val_bits);
+                            has_imag = true;
+                        }
+                        _ => {
+                            let msg =
+                                format!("complex() got an unexpected keyword argument '{name}'");
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                    }
+                }
+
+                let real_bits = real_opt.unwrap_or_else(|| MoltObject::from_int(0).bits());
+                let imag_bits = imag_opt.unwrap_or_else(|| MoltObject::from_int(0).bits());
+                let has_imag_bits = MoltObject::from_int(if has_imag { 1 } else { 0 }).bits();
+                return crate::molt_complex_from_obj(real_bits, imag_bits, has_imag_bits);
+            }
+
+            if class_bits == builtins.reversed {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "reversed() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() != 1 {
+                    let msg = format!("reversed expected 1 argument, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                return crate::object::ops::reversed_new_impl(_py, pos_args[0]);
+            }
+
+            if class_bits == builtins.map {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "map() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() < 2 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "map() must have at least two arguments",
+                    );
+                }
+                return crate::object::ops::map_new_impl(_py, pos_args[0], &pos_args[1..]);
+            }
+
+            if class_bits == builtins.filter {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "filter() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() != 2 {
+                    let msg = format!("filter expected 2 arguments, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                return crate::object::ops::filter_new_impl(_py, pos_args[0], pos_args[1]);
+            }
+
+            if class_bits == builtins.zip {
+                let mut strict = false;
+                for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
+                    let name = string_obj_to_owned(obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<name>".to_string());
+                    if name != "strict" {
+                        let msg = format!("zip() got an unexpected keyword argument '{name}'");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    strict = is_truthy(_py, obj_from_bits(val_bits));
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
+                return crate::object::ops::zip_new_impl(_py, pos_args, strict);
+            }
+
+            if class_bits == builtins.dict {
                 let dict_bits = match pos_args.len() {
                     0 => molt_dict_new(0),
                     1 => molt_dict_from_obj(pos_args[0]),
@@ -1649,20 +1829,24 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 let name = string_obj_to_owned(obj_from_bits(arg_names[idx]))
                     .unwrap_or_else(|| "?".to_string());
                 if matches!(
-                    std::env::var("MOLT_TRACE_CALL_BIND_MISSING").ok().as_deref(),
+                    std::env::var("MOLT_TRACE_CALL_BIND_MISSING")
+                        .ok()
+                        .as_deref(),
                     Some("1")
                 ) {
                     let func_name_bits = function_name_bits(_py, func_ptr);
-                    let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none()
-                    {
-                        "<function>".to_string()
-                    } else {
-                        string_obj_to_owned(obj_from_bits(func_name_bits))
-                            .unwrap_or_else(|| "<function>".to_string())
-                    };
+                    let func_name =
+                        if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
+                            "<function>".to_string()
+                        } else {
+                            string_obj_to_owned(obj_from_bits(func_name_bits))
+                                .unwrap_or_else(|| "<function>".to_string())
+                        };
                     eprintln!(
                         "molt call_bind: missing required arg func={} arg={} pos={}",
-                        func_name, name, idx + 1
+                        func_name,
+                        name,
+                        idx + 1
                     );
                 }
                 let msg = format!("missing required argument '{name}'");
@@ -1832,16 +2016,16 @@ unsafe fn bind_builtin_call(
                 if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
                     let self_type_id = object_type_id(self_ptr);
                     if self_type_id == TYPE_ID_TYPE {
-                        self_label =
-                            string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
-                                .unwrap_or_else(|| "<type>".to_string());
+                        self_label = string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
+                            .unwrap_or_else(|| "<type>".to_string());
                         let meta_bits = object_class_bits(self_ptr);
                         if meta_bits != 0 {
                             if let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr() {
                                 if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                                    meta_label =
-                                        string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
-                                            .unwrap_or_else(|| "<meta>".to_string());
+                                    meta_label = string_obj_to_owned(obj_from_bits(
+                                        class_name_bits(meta_ptr),
+                                    ))
+                                    .unwrap_or_else(|| "<meta>".to_string());
                                 }
                             }
                         }

@@ -323,7 +323,10 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         kwonly_params=("key", "reverse"),
         kw_defaults=(ast.Constant(None), ast.Constant(False)),
     ),
-    "dir": BuiltinFuncSpec("molt_dir_builtin", ("obj",)),
+    # CPython: dir([object]) uses the caller's locals() when called with no args.
+    # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
+    # default so the runtime can detect the no-arg case cheaply.
+    "dir": BuiltinFuncSpec("molt_dir_builtin", ("obj",), (_MOLT_MISSING,)),
     "open": BuiltinFuncSpec(
         "molt_open_builtin",
         (),
