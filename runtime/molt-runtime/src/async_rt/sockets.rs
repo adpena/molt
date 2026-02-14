@@ -15,6 +15,8 @@ use std::collections::VecDeque;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::{CStr, CString, OsString};
 use std::io::ErrorKind;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 #[cfg(target_arch = "wasm32")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(not(target_arch = "wasm32"))]
@@ -8088,6 +8090,102 @@ pub extern "C" fn molt_socket_inet_ntop(_family_bits: u64, _packed_bits: u64) ->
             return MoltObject::from_ptr(ptr).bits();
         }
         raise_exception::<_>(_py, "ValueError", "unsupported address family")
+    })
+}
+
+fn socket_u16_from_index(_py: &PyToken<'_>, value_bits: u64, func: &str) -> Option<u16> {
+    let obj = obj_from_bits(value_bits);
+    let err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        crate::type_name(_py, obj)
+    );
+    let value = index_bigint_from_obj(_py, value_bits, &err)?;
+    if value.is_negative() {
+        let msg = format!(
+            "{func}: can't convert negative Python int to C 16-bit unsigned integer"
+        );
+        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        return None;
+    }
+    if value > BigInt::from(u16::MAX) {
+        let msg = format!("{func}: Python int too large to convert to C 16-bit unsigned integer");
+        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        return None;
+    }
+    let Some(out) = value.to_u16() else {
+        // Should be unreachable after bounds checks, but keep error-shape deterministic.
+        let msg = format!("{func}: Python int too large to convert to C 16-bit unsigned integer");
+        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        return None;
+    };
+    Some(out)
+}
+
+fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
+    // CPython's socket.htonl/ntohl require `int` (not generic __index__).
+    let obj = obj_from_bits(value_bits);
+    let Some(value) = to_bigint(obj) else {
+        let type_name = class_name_for_error(type_of_bits(_py, value_bits));
+        let msg = format!("expected int, {type_name} found");
+        raise_exception::<Option<u32>>(_py, "TypeError", &msg);
+        return None;
+    };
+    if value.is_negative() {
+        raise_exception::<Option<u32>>(
+            _py,
+            "OverflowError",
+            "can't convert negative value to unsigned int",
+        );
+        return None;
+    }
+    if value > BigInt::from(u32::MAX) {
+        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
+        return None;
+    }
+    let Some(out) = value.to_u32() else {
+        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
+        return None;
+    };
+    Some(out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_htons(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = socket_u16_from_index(_py, value_bits, "htons") else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(u16::to_be(value) as i64).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_ntohs(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = socket_u16_from_index(_py, value_bits, "ntohs") else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(u16::to_be(value) as i64).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_htonl(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(u32::to_be(value) as i64).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(u32::to_be(value) as i64).bits()
     })
 }
 

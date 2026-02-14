@@ -275,12 +275,6 @@ pub struct OpIR {
     pub task_kind: Option<String>,
 }
 
-#[derive(Clone)]
-struct TrackedValue {
-    name: String,
-    value: Value,
-}
-
 #[derive(Clone, Copy)]
 struct VarValue(Value);
 
@@ -654,19 +648,19 @@ fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
 }
 
 fn drain_cleanup_tracked(
-    names: &mut Vec<TrackedValue>,
+    names: &mut Vec<String>,
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-) -> Vec<TrackedValue> {
+) -> Vec<String> {
     let mut cleanup = Vec::new();
-    names.retain(|tracked| {
-        if skip == Some(tracked.name.as_str()) {
+    names.retain(|name| {
+        if skip == Some(name.as_str()) {
             return true;
         }
-        let last = last_use.get(&tracked.name).copied().unwrap_or(op_idx);
+        let last = last_use.get(name).copied().unwrap_or(op_idx);
         if last <= op_idx {
-            cleanup.push(tracked.clone());
+            cleanup.push(name.clone());
             return false;
         }
         true
@@ -675,17 +669,34 @@ fn drain_cleanup_tracked(
 }
 
 fn collect_cleanup_tracked(
-    names: &[TrackedValue],
+    names: &[String],
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-) -> Vec<TrackedValue> {
+) -> Vec<String> {
     names
         .iter()
-        .filter(|tracked| skip != Some(tracked.name.as_str()))
-        .filter(|tracked| last_use.get(&tracked.name).copied().unwrap_or(op_idx) <= op_idx)
+        .filter(|name| skip != Some(name.as_str()))
+        .filter(|name| last_use.get(*name).copied().unwrap_or(op_idx) <= op_idx)
         .cloned()
         .collect()
+}
+
+fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
+    if src.is_empty() {
+        return;
+    }
+    if dst.is_empty() {
+        dst.extend(src);
+        return;
+    }
+    // Dedup by `name` so multi-predecessor merges don't create double-decref hazards.
+    let mut seen: HashSet<String> = dst.iter().cloned().collect();
+    for name in src {
+        if seen.insert(name.clone()) {
+            dst.push(name);
+        }
+    }
 }
 
 fn drain_cleanup_entry_tracked(
@@ -749,6 +760,7 @@ struct IfFrame {
     then_terminal: bool,
     else_terminal: bool,
     phi_ops: Vec<(String, String, String)>,
+    phi_params: Vec<Value>,
 }
 
 struct LoopFrame {
@@ -1399,18 +1411,28 @@ impl SimpleBackend {
         let mut trace_name_var: Option<Variable> = None;
         let mut trace_len_var: Option<Variable> = None;
         let mut trace_func: Option<FuncRef> = None;
+        // When op tracing is enabled, we install the trace data segment and trace function ref
+        // early, but we must not emit any instructions into the entry block until all block
+        // parameters have been appended (Cranelift panics otherwise). We therefore defer the
+        // `symbol_value` + `iconst` instructions until after parameter block params are created.
+        let mut trace_data: Option<(cranelift_module::DataId, i64)> = None;
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
         let mut entry_vars: HashMap<String, Value> = HashMap::new();
         let mut state_blocks = HashMap::new();
         let mut resume_states: HashSet<i64> = HashSet::new();
         let mut reachable_blocks: HashSet<Block> = HashSet::new();
+        // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
+        // are known. Our IR uses structured control-flow; for `if` this means then/else
+        // each have a single predecessor and can be sealed immediately, and the merge block
+        // can be sealed once end_if wiring is complete.
+        let mut sealed_blocks: HashSet<Block> = HashSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
         let mut loop_depth: i32 = 0;
-        let mut block_tracked_obj: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
-        let mut block_tracked_ptr: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
+        let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
+        let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
         let mut last_out: Option<(String, Value)> = None;
 
@@ -1504,17 +1526,7 @@ impl SimpleBackend {
             let mut data_ctx = DataDescription::new();
             data_ctx.define(func_ir.name.as_bytes().to_vec().into_boxed_slice());
             self.module.define_data(data_id, &data_ctx).unwrap();
-            let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-            let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-            let name_len = builder.ins().iconst(types::I64, func_ir.name.len() as i64);
-
-            let name_var = builder.declare_var(types::I64);
-            builder.def_var(name_var, name_ptr);
-            trace_name_var = Some(name_var);
-
-            let len_var = builder.declare_var(types::I64);
-            builder.def_var(len_var, name_len);
-            trace_len_var = Some(len_var);
+            trace_data = Some((data_id, func_ir.name.len() as i64));
 
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64));
@@ -1536,6 +1548,20 @@ impl SimpleBackend {
             def_var_named(&mut builder, &vars, name, val);
         }
 
+        if let Some((data_id, name_len_i64)) = trace_data {
+            let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+            let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+            let name_len = builder.ins().iconst(types::I64, name_len_i64);
+
+            let name_var = builder.declare_var(types::I64);
+            builder.def_var(name_var, name_ptr);
+            trace_name_var = Some(name_var);
+
+            let len_var = builder.declare_var(types::I64);
+            builder.def_var(len_var, name_len);
+            trace_len_var = Some(len_var);
+        }
+
         if stateful && vars.contains_key("self") {
             let self_ptr = var_get(&mut builder, &vars, "self").expect("Self not found");
             let self_bits = box_ptr_value(&mut builder, *self_ptr);
@@ -1548,6 +1574,7 @@ impl SimpleBackend {
         };
 
         builder.seal_block(entry_block);
+        sealed_blocks.insert(entry_block);
 
         // 1. Pre-pass: discover states and create blocks
         for op in &func_ir.ops {
@@ -5246,6 +5273,60 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                "dict_set" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                        panic!("Dict not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let key_bits = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                        panic!("Key not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
+                        panic!("Value not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_dict_set", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "dict_update_missing" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                        panic!("Dict not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let key_bits = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                        panic!("Key not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
+                        panic!("Value not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_dict_update_missing", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
                 "del_index" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
@@ -8548,6 +8629,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[]);
                 }
+                "frame_locals_set" => {
+                    let arg_names = op.args.as_deref().unwrap_or(&[]);
+                    let dict_bits = arg_names
+                        .first()
+                        .map(|name| *var_get(&mut builder, &vars, name).expect("Arg not found"))
+                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_frame_locals_set", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[dict_bits]);
+                }
                 "line" => {
                     let line = op.value.unwrap_or(0);
                     let line_val = builder.ins().iconst(types::I64, line);
@@ -8560,43 +8657,35 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
-                    if !is_block_filled {
-                        if let Some(block) = builder.current_block() {
-                            if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                                }
-                            }
-                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref, &[tracked.value]);
-                                }
-                            }
-                            if loop_depth == 0 {
-                                let cleanup = drain_cleanup_entry_tracked(
-                                    &mut tracked_obj_vars,
-                                    &entry_vars,
-                                    &last_use,
-                                    op_idx,
-                                );
-                                for val in cleanup {
-                                    builder.ins().call(local_dec_ref_obj, &[val]);
-                                }
-                                let cleanup = drain_cleanup_entry_tracked(
-                                    &mut tracked_vars,
-                                    &entry_vars,
-                                    &last_use,
-                                    op_idx,
-                                );
-                                for val in cleanup {
-                                    builder.ins().call(local_dec_ref, &[val]);
-                                }
-                            }
-                        }
-                    }
-                }
+	                    if !is_block_filled {
+	                        if let Some(block) = builder.current_block() {
+		                            if let Some(names) = block_tracked_obj.get_mut(&block) {
+		                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked obj var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+		                                }
+		                            }
+		                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
+		                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked ptr var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref, &[*val]);
+		                                }
+		                            }
+		                        }
+		                    }
+		                }
                 "missing" => {
                     let mut sig = self.module.make_signature();
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8650,6 +8739,64 @@ impl SimpleBackend {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
+                    // Collect arg values that are dead after this call. We explicitly avoid
+                    // decrementing function parameters here: parameters are treated as borrowed
+                    // by this backend (caller owns), so only non-param temporaries should be
+                    // released at the call site.
+                    let mut arg_cleanup = Vec::new();
+                    let mut arg_cleanup_names = HashSet::new();
+                    for (name, value) in args_names.iter().zip(args.iter()) {
+                        if func_ir.params.iter().any(|p| p == name) {
+                            continue;
+                        }
+                        let last = last_use.get(name).copied().unwrap_or(op_idx);
+                        if last <= op_idx {
+                            arg_cleanup.push(*value);
+                            arg_cleanup_names.insert(name.clone());
+                        }
+                    }
+
+                    // `call` lowers to a multi-block control-flow sequence (recursion guard +
+                    // call block + fail block + merge block). If the call happens in a non-entry
+                    // block, any temporaries tracked on the current block would otherwise be
+                    // orphaned when we terminate the block with the guard brif. Drain the
+                    // current block's tracked sets here, but emit the actual decrefs *after* the
+                    // call (or on the guard-fail path) so arguments remain alive during the call.
+	                    let origin_block = builder
+	                        .current_block()
+	                        .expect("call requires an active block");
+	                    let mut origin_obj_live =
+	                        block_tracked_obj.remove(&origin_block).unwrap_or_default();
+	                    let origin_obj_cleanup =
+	                        drain_cleanup_tracked(&mut origin_obj_live, &last_use, op_idx, None);
+	                    let mut origin_ptr_live =
+	                        block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+	                    let origin_ptr_cleanup =
+	                        drain_cleanup_tracked(&mut origin_ptr_live, &last_use, op_idx, None);
+	                    if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
+	                        && (func_ir.name.contains("open_arg_drop_check")
+	                            || func_ir.name.contains("builtins_symbol_open"))
+	                    {
+	                        let obj_names: Vec<&str> =
+	                            origin_obj_cleanup.iter().map(|t| t.as_str()).collect();
+	                        let ptr_names: Vec<&str> =
+	                            origin_ptr_cleanup.iter().map(|t| t.as_str()).collect();
+	                        eprintln!(
+	                            "debug call cleanup func={} op_idx={} origin_block={:?} obj_cleanup={} ptr_cleanup={}",
+	                            func_ir.name,
+	                            op_idx,
+                            origin_block,
+                            obj_names.len(),
+                            ptr_names.len(),
+                        );
+                        if !obj_names.is_empty() {
+                            eprintln!("debug call cleanup obj_names={:?}", obj_names);
+                        }
+                        if !ptr_names.is_empty() {
+                            eprintln!("debug call cleanup ptr_names={:?}", ptr_names);
+                        }
+                    }
+
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
                         sig.params.push(AbiParam::new(types::I64));
@@ -8699,12 +8846,26 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_trace_exit", Linkage::Import, &trace_exit_sig)
                         .unwrap();
-                    let trace_exit_local =
-                        self.module.declare_func_in_func(trace_exit, builder.func);
-                    let merge_block = builder.create_block();
-                    builder.append_block_param(merge_block, types::I64);
-                    let guard_call = builder.ins().call(guard_enter_local, &[]);
-                    let guard_val = builder.inst_results(guard_call)[0];
+	                    let trace_exit_local =
+	                        self.module.declare_func_in_func(trace_exit, builder.func);
+	                    let merge_block = builder.create_block();
+	                    builder.append_block_param(merge_block, types::I64);
+	                    // Carry any live tracked values across the call's internal control flow into the
+	                    // continuation block.
+	                    if !origin_obj_live.is_empty() {
+	                        extend_unique_tracked(
+	                            block_tracked_obj.entry(merge_block).or_default(),
+	                            origin_obj_live.clone(),
+	                        );
+	                    }
+	                    if !origin_ptr_live.is_empty() {
+	                        extend_unique_tracked(
+	                            block_tracked_ptr.entry(merge_block).or_default(),
+	                            origin_ptr_live.clone(),
+	                        );
+	                    }
+	                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+	                    let guard_val = builder.inst_results(guard_call)[0];
                     let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
                     let call_block = builder.create_block();
                     let fail_block = builder.create_block();
@@ -8718,55 +8879,63 @@ impl SimpleBackend {
                     let code_id_val = builder.ins().iconst(types::I64, code_id);
                     let _ = builder.ins().call(trace_enter_local, &[code_id_val]);
                     let call = builder.ins().call(local_callee, &args);
-                    let res = builder.inst_results(call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
-                    let _ = builder.ins().call(guard_exit_local, &[]);
-                    if loop_depth == 0 {
-                        let cleanup = drain_cleanup_entry_tracked(
-                            &mut tracked_obj_vars,
-                            &entry_vars,
-                            &last_use,
-                            op_idx,
-                        );
-                        for val in cleanup {
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                        }
-                        let cleanup = drain_cleanup_entry_tracked(
-                            &mut tracked_vars,
-                            &entry_vars,
-                            &last_use,
-                            op_idx,
-                        );
-                        for val in cleanup {
-                            builder.ins().call(local_dec_ref, &[val]);
-                        }
-                    }
-                    jump_block(&mut builder, merge_block, &[res]);
+	                    let res = builder.inst_results(call)[0];
+	                    let _ = builder.ins().call(trace_exit_local, &[]);
+	                    let _ = builder.ins().call(guard_exit_local, &[]);
+	                    for name in &origin_obj_cleanup {
+	                        if arg_cleanup_names.contains(name) {
+	                            continue;
+	                        }
+	                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked obj var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+	                    for name in &origin_ptr_cleanup {
+	                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked ptr var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref, &[*val]);
+	                    }
+		                    for val in &arg_cleanup {
+		                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+	                    jump_block(&mut builder, merge_block, &[res]);
 
                     builder.switch_to_block(fail_block);
-                    builder.seal_block(fail_block);
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    if loop_depth == 0 {
-                        let cleanup = drain_cleanup_entry_tracked(
-                            &mut tracked_obj_vars,
-                            &entry_vars,
-                            &last_use,
-                            op_idx,
-                        );
-                        for val in cleanup {
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                        }
-                        let cleanup = drain_cleanup_entry_tracked(
-                            &mut tracked_vars,
-                            &entry_vars,
-                            &last_use,
-                            op_idx,
-                        );
-                        for val in cleanup {
-                            builder.ins().call(local_dec_ref, &[val]);
-                        }
-                    }
-                    jump_block(&mut builder, merge_block, &[none_bits]);
+	                    builder.seal_block(fail_block);
+	                    let none_bits = builder.ins().iconst(types::I64, box_none());
+	                    for name in &origin_obj_cleanup {
+	                        if arg_cleanup_names.contains(name) {
+	                            continue;
+	                        }
+	                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked obj var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+	                    for name in &origin_ptr_cleanup {
+	                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked ptr var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref, &[*val]);
+	                    }
+		                    for val in &arg_cleanup {
+		                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+	                    jump_block(&mut builder, merge_block, &[none_bits]);
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
@@ -11155,8 +11324,14 @@ impl SimpleBackend {
                 "check_exception" => {
                     let target_id = op.value.unwrap();
                     let target_block = state_blocks[&target_id];
-                    let mut carry_obj: Vec<TrackedValue> = Vec::new();
-                    let mut carry_ptr: Vec<TrackedValue> = Vec::new();
+                    let mut carry_obj: Vec<String> = Vec::new();
+                    let mut carry_ptr: Vec<String> = Vec::new();
+                    // `check_exception` terminates the current block (brif) to either jump to the
+                    // exception handler label or continue on the fallthrough path. That means any
+                    // temporaries tracked on the current block would otherwise have no natural
+                    // "line"/control-flow cleanup point until much later. Drain dead values here so
+                    // short-lived temporaries (for example list indexing results) are decref'd
+                    // deterministically and do not leak across exception checks.
                     let mut preserved_last_out: Option<(String, Value)> = None;
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.remove(&block) {
@@ -11166,16 +11341,8 @@ impl SimpleBackend {
                             carry_ptr.extend(names);
                         }
                         if block == entry_block && loop_depth == 0 {
-                            for name in tracked_obj_vars.drain(..) {
-                                if let Some(val) = entry_vars.get(&name) {
-                                    carry_obj.push(TrackedValue { name, value: *val });
-                                }
-                            }
-                            for name in tracked_vars.drain(..) {
-                                if let Some(val) = entry_vars.get(&name) {
-                                    carry_ptr.push(TrackedValue { name, value: *val });
-                                }
-                            }
+                            carry_obj.extend(tracked_obj_vars.drain(..));
+                            carry_ptr.extend(tracked_vars.drain(..));
                         }
                         if let Some((name, value)) = last_out.as_ref() {
                             let last = last_use.get(name).copied().unwrap_or(op_idx);
@@ -11192,6 +11359,32 @@ impl SimpleBackend {
                                 op_idx,
                                 preserved_last_out.as_ref().map(|(name, _)| name)
                             );
+                        }
+                    }
+                    if !carry_obj.is_empty() {
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked obj var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                    }
+                    if !carry_ptr.is_empty() {
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked ptr var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref, &[*val]);
                         }
                     }
                     let mut sig = self.module.make_signature();
@@ -11350,6 +11543,34 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*cond]);
                     let truthy = builder.inst_results(call)[0];
                     let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                    // `if` terminates the current block (brif) into then/else blocks. Any live
+                    // tracked values must be carried into both successors; otherwise they leak
+                    // when the predecessor block is never revisited.
+	                    let origin_block = builder
+	                        .current_block()
+	                        .expect("if requires an active block");
+	                    let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
+	                    let cleanup_obj = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+	                    for name in cleanup_obj {
+	                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked obj var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+	                    let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+	                    let cleanup_ptr = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+	                    for name in cleanup_ptr {
+	                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked ptr var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref, &[*val]);
+	                    }
                     let then_block = builder.create_block();
                     let else_block = builder.create_block();
                     let merge_block = builder.create_block();
@@ -11359,9 +11580,42 @@ impl SimpleBackend {
                     }
                     reachable_blocks.insert(then_block);
                     reachable_blocks.insert(else_block);
+                    if !carry_obj.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(then_block).or_default(),
+                            carry_obj.clone(),
+                        );
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(else_block).or_default(),
+                            carry_obj.clone(),
+                        );
+                    }
+                    if !carry_ptr.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(then_block).or_default(),
+                            carry_ptr.clone(),
+                        );
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(else_block).or_default(),
+                            carry_ptr.clone(),
+                        );
+                    }
                     builder
                         .ins()
                         .brif(cond_bool, then_block, &[], else_block, &[]);
+
+                    // Seal blocks now that their predecessor sets are complete.
+                    // Structured `if` creates exactly one predecessor for each of then/else.
+                    //
+                    // Note: we deliberately do not seal `origin_block` here because it may have
+                    // been sealed earlier (for example the function entry block is sealed up-front).
+                    if sealed_blocks.insert(then_block) {
+                        builder.seal_block(then_block);
+                    }
+                    if sealed_blocks.insert(else_block) {
+                        builder.seal_block(else_block);
+                    }
+
                     switch_to_block_tracking(&mut builder, then_block, &mut is_block_filled);
                     if_stack.push(IfFrame {
                         else_block,
@@ -11370,6 +11624,7 @@ impl SimpleBackend {
                         then_terminal: false,
                         else_terminal: false,
                         phi_ops: Vec::new(),
+                        phi_params: Vec::new(),
                     });
                 }
                 "else" => {
@@ -11413,30 +11668,79 @@ impl SimpleBackend {
                         frame.phi_ops = phi_ops;
                     }
 
-                    if !is_block_filled {
-                        for (out, then_name, _) in &frame.phi_ops {
-                            let then_val = var_get(&mut builder, &vars, then_name)
-                                .unwrap_or_else(|| panic!("phi arg not found: {then_name}"));
-                            def_var_named(&mut builder, &vars, out, *then_val);
-                        }
-                        if let Some(block) = builder.current_block() {
-                            if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                                }
-                            }
-                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref, &[tracked.value]);
-                                }
-                            }
-                            ensure_block_in_layout(&mut builder, frame.merge_block);
-                            reachable_blocks.insert(frame.merge_block);
-                            jump_block(&mut builder, frame.merge_block, &[]);
-                        }
-                    }
+	                    if !is_block_filled {
+	                        // If this structured `if` is followed by `phi` ops, route values through
+	                        // merge-block parameters (real SSA join) instead of attempting to "define"
+	                        // the output in each predecessor block.
+	                        let mut phi_args: Vec<Value> = Vec::new();
+	                        if !frame.phi_ops.is_empty() {
+	                            if frame.phi_params.is_empty() {
+	                                for (_out, then_name, _else_name) in &frame.phi_ops {
+	                                    let then_val = var_get(&mut builder, &vars, then_name)
+	                                        .unwrap_or_else(|| {
+	                                            panic!("phi arg not found: {then_name}")
+	                                        });
+	                                    let ty = builder.func.dfg.value_type(*then_val);
+	                                    let param =
+	                                        builder.append_block_param(frame.merge_block, ty);
+	                                    frame.phi_params.push(param);
+	                                    phi_args.push(*then_val);
+	                                }
+	                            } else {
+	                                for (_out, then_name, _else_name) in &frame.phi_ops {
+	                                    let then_val = var_get(&mut builder, &vars, then_name)
+	                                        .unwrap_or_else(|| {
+	                                            panic!("phi arg not found: {then_name}")
+	                                        });
+	                                    phi_args.push(*then_val);
+	                                }
+	                            }
+	                        }
+	                        if let Some(block) = builder.current_block() {
+		                            let mut carry_obj =
+		                                block_tracked_obj.remove(&block).unwrap_or_default();
+		                            let cleanup =
+		                                drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+		                            for name in cleanup {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked obj var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref_obj, &[*val]);
+		                            }
+		                            if !carry_obj.is_empty() {
+		                                extend_unique_tracked(
+		                                    block_tracked_obj.entry(frame.merge_block).or_default(),
+	                                    carry_obj,
+	                                );
+	                            }
+
+		                            let mut carry_ptr =
+		                                block_tracked_ptr.remove(&block).unwrap_or_default();
+		                            let cleanup =
+		                                drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+		                            for name in cleanup {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked ptr var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref, &[*val]);
+		                            }
+	                            if !carry_ptr.is_empty() {
+	                                extend_unique_tracked(
+	                                    block_tracked_ptr.entry(frame.merge_block).or_default(),
+	                                    carry_ptr,
+	                                );
+	                            }
+	                            ensure_block_in_layout(&mut builder, frame.merge_block);
+	                            reachable_blocks.insert(frame.merge_block);
+	                            jump_block(&mut builder, frame.merge_block, &phi_args);
+	                        }
+	                    }
 
                     switch_to_block_tracking(&mut builder, frame.else_block, &mut is_block_filled);
                     frame.has_else = true;
@@ -11463,89 +11767,267 @@ impl SimpleBackend {
                         frame.phi_ops = phi_ops;
                     }
 
-                    if frame.has_else {
-                        frame.else_terminal = is_block_filled;
-                        if !is_block_filled {
-                            for (out, _, else_name) in &frame.phi_ops {
-                                let else_val = var_get(&mut builder, &vars, else_name)
-                                    .unwrap_or_else(|| panic!("phi arg not found: {else_name}"));
-                                def_var_named(&mut builder, &vars, out, *else_val);
-                            }
-                            if let Some(block) = builder.current_block() {
-                                if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                    let cleanup =
-                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                    for tracked in cleanup {
-                                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                                    }
-                                }
-                                if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                    let cleanup =
-                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                    for tracked in cleanup {
-                                        builder.ins().call(local_dec_ref, &[tracked.value]);
-                                    }
-                                }
-                                ensure_block_in_layout(&mut builder, frame.merge_block);
-                                reachable_blocks.insert(frame.merge_block);
-                                jump_block(&mut builder, frame.merge_block, &[]);
-                            }
-                        }
-                    } else {
-                        frame.then_terminal = is_block_filled;
-                        frame.else_terminal = false;
-                        if !is_block_filled {
-                            for (out, then_name, _) in &frame.phi_ops {
-                                let then_val = var_get(&mut builder, &vars, then_name)
-                                    .unwrap_or_else(|| panic!("phi arg not found: {then_name}"));
-                                def_var_named(&mut builder, &vars, out, *then_val);
-                            }
-                            if let Some(block) = builder.current_block() {
-                                if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                    let cleanup =
-                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                    for tracked in cleanup {
-                                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                                    }
-                                }
-                                if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                    let cleanup =
-                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                    for tracked in cleanup {
-                                        builder.ins().call(local_dec_ref, &[tracked.value]);
-                                    }
-                                }
-                                ensure_block_in_layout(&mut builder, frame.merge_block);
-                                reachable_blocks.insert(frame.merge_block);
-                                jump_block(&mut builder, frame.merge_block, &[]);
-                            }
-                        }
+	                    if frame.has_else {
+	                        frame.else_terminal = is_block_filled;
+	                        if !is_block_filled {
+	                            let mut phi_args: Vec<Value> = Vec::new();
+	                            if !frame.phi_ops.is_empty() {
+	                                if frame.phi_params.is_empty() {
+	                                    for (_out, _then_name, else_name) in &frame.phi_ops {
+	                                        let else_val = var_get(&mut builder, &vars, else_name)
+	                                            .unwrap_or_else(|| {
+	                                                panic!("phi arg not found: {else_name}")
+	                                            });
+	                                        let ty = builder.func.dfg.value_type(*else_val);
+	                                        let param = builder
+	                                            .append_block_param(frame.merge_block, ty);
+	                                        frame.phi_params.push(param);
+	                                        phi_args.push(*else_val);
+	                                    }
+	                                } else {
+	                                    for (_out, _then_name, else_name) in &frame.phi_ops {
+	                                        let else_val = var_get(&mut builder, &vars, else_name)
+	                                            .unwrap_or_else(|| {
+	                                                panic!("phi arg not found: {else_name}")
+	                                            });
+	                                        phi_args.push(*else_val);
+	                                    }
+	                                }
+	                            }
+	                            if let Some(block) = builder.current_block() {
+		                                let mut carry_obj =
+		                                    block_tracked_obj.remove(&block).unwrap_or_default();
+		                                let cleanup =
+		                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked obj var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+		                                }
+	                                if !carry_obj.is_empty() {
+	                                    extend_unique_tracked(
+	                                        block_tracked_obj.entry(frame.merge_block).or_default(),
+	                                        carry_obj,
+	                                    );
+	                                }
+
+		                                let mut carry_ptr =
+		                                    block_tracked_ptr.remove(&block).unwrap_or_default();
+		                                let cleanup =
+		                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked ptr var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref, &[*val]);
+		                                }
+	                                if !carry_ptr.is_empty() {
+	                                    extend_unique_tracked(
+	                                        block_tracked_ptr.entry(frame.merge_block).or_default(),
+	                                        carry_ptr,
+	                                    );
+	                                }
+	                                ensure_block_in_layout(&mut builder, frame.merge_block);
+	                                reachable_blocks.insert(frame.merge_block);
+	                                jump_block(&mut builder, frame.merge_block, &phi_args);
+	                            }
+	                        }
+	                    } else {
+	                        frame.then_terminal = is_block_filled;
+	                        frame.else_terminal = false;
+	                        if !is_block_filled {
+	                            let mut phi_args: Vec<Value> = Vec::new();
+	                            if !frame.phi_ops.is_empty() {
+	                                if frame.phi_params.is_empty() {
+	                                    for (_out, then_name, _else_name) in &frame.phi_ops {
+	                                        let then_val = var_get(&mut builder, &vars, then_name)
+	                                            .unwrap_or_else(|| {
+	                                                panic!("phi arg not found: {then_name}")
+	                                            });
+	                                        let ty = builder.func.dfg.value_type(*then_val);
+	                                        let param = builder
+	                                            .append_block_param(frame.merge_block, ty);
+	                                        frame.phi_params.push(param);
+	                                        phi_args.push(*then_val);
+	                                    }
+	                                } else {
+	                                    for (_out, then_name, _else_name) in &frame.phi_ops {
+	                                        let then_val = var_get(&mut builder, &vars, then_name)
+	                                            .unwrap_or_else(|| {
+	                                                panic!("phi arg not found: {then_name}")
+	                                            });
+	                                        phi_args.push(*then_val);
+	                                    }
+	                                }
+	                            }
+	                            if let Some(block) = builder.current_block() {
+		                                let mut carry_obj =
+		                                    block_tracked_obj.remove(&block).unwrap_or_default();
+		                                let cleanup =
+		                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked obj var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+		                                }
+	                                if !carry_obj.is_empty() {
+	                                    extend_unique_tracked(
+	                                        block_tracked_obj.entry(frame.merge_block).or_default(),
+	                                        carry_obj,
+	                                    );
+	                                }
+
+		                                let mut carry_ptr =
+		                                    block_tracked_ptr.remove(&block).unwrap_or_default();
+		                                let cleanup =
+		                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+		                                for name in cleanup {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked ptr var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref, &[*val]);
+		                                }
+	                                if !carry_ptr.is_empty() {
+	                                    extend_unique_tracked(
+	                                        block_tracked_ptr.entry(frame.merge_block).or_default(),
+	                                        carry_ptr,
+	                                    );
+	                                }
+	                                ensure_block_in_layout(&mut builder, frame.merge_block);
+	                                reachable_blocks.insert(frame.merge_block);
+	                                jump_block(&mut builder, frame.merge_block, &phi_args);
+	                            }
+	                        }
 
                         switch_to_block_tracking(
                             &mut builder,
                             frame.else_block,
                             &mut is_block_filled,
                         );
-                        for (out, _, else_name) in &frame.phi_ops {
-                            let else_val = var_get(&mut builder, &vars, else_name)
-                                .unwrap_or_else(|| panic!("phi arg not found: {else_name}"));
-                            def_var_named(&mut builder, &vars, out, *else_val);
-                        }
-                        ensure_block_in_layout(&mut builder, frame.merge_block);
-                        reachable_blocks.insert(frame.merge_block);
-                        jump_block(&mut builder, frame.merge_block, &[]);
-                    }
+	                        let mut phi_args: Vec<Value> = Vec::new();
+	                        if !frame.phi_ops.is_empty() {
+	                            if frame.phi_params.is_empty() {
+	                                for (_out, _then_name, else_name) in &frame.phi_ops {
+	                                    let else_val = var_get(&mut builder, &vars, else_name)
+	                                        .unwrap_or_else(|| {
+	                                            panic!("phi arg not found: {else_name}")
+	                                        });
+	                                    let ty = builder.func.dfg.value_type(*else_val);
+	                                    let param =
+	                                        builder.append_block_param(frame.merge_block, ty);
+	                                    frame.phi_params.push(param);
+	                                    phi_args.push(*else_val);
+	                                }
+	                            } else {
+	                                for (_out, _then_name, else_name) in &frame.phi_ops {
+	                                    let else_val = var_get(&mut builder, &vars, else_name)
+	                                        .unwrap_or_else(|| {
+	                                            panic!("phi arg not found: {else_name}")
+	                                        });
+	                                    phi_args.push(*else_val);
+	                                }
+	                            }
+	                        }
+	                        if let Some(block) = builder.current_block() {
+		                            let mut carry_obj =
+		                                block_tracked_obj.remove(&block).unwrap_or_default();
+		                            let cleanup =
+		                                drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+		                            for name in cleanup {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked obj var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref_obj, &[*val]);
+		                            }
+	                            if !carry_obj.is_empty() {
+	                                extend_unique_tracked(
+	                                    block_tracked_obj.entry(frame.merge_block).or_default(),
+	                                    carry_obj,
+	                                );
+	                            }
+
+		                            let mut carry_ptr =
+		                                block_tracked_ptr.remove(&block).unwrap_or_default();
+		                            let cleanup =
+		                                drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+		                            for name in cleanup {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked ptr var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref, &[*val]);
+		                            }
+	                            if !carry_ptr.is_empty() {
+	                                extend_unique_tracked(
+	                                    block_tracked_ptr.entry(frame.merge_block).or_default(),
+	                                    carry_ptr,
+	                                );
+	                            }
+	                        }
+	                        ensure_block_in_layout(&mut builder, frame.merge_block);
+	                        reachable_blocks.insert(frame.merge_block);
+	                        jump_block(&mut builder, frame.merge_block, &phi_args);
+	                    }
 
                     let both_filled = frame.then_terminal && frame.else_terminal;
                     if both_filled {
                         is_block_filled = true;
                     } else if reachable_blocks.contains(&frame.merge_block) {
+                        if sealed_blocks.insert(frame.merge_block) {
+                            builder.seal_block(frame.merge_block);
+                        }
                         ensure_block_in_layout(&mut builder, frame.merge_block);
                         switch_to_block_tracking(
                             &mut builder,
                             frame.merge_block,
                             &mut is_block_filled,
                         );
+                        // Materialize the merged value(s) for any `phi` ops by binding the
+                        // merge-block parameters to their output variable names.
+                        if !frame.phi_ops.is_empty() {
+                            for (idx, (out, _then_name, _else_name)) in
+                                frame.phi_ops.iter().enumerate()
+                            {
+                                let param = frame.phi_params.get(idx).copied().unwrap_or_else(|| {
+                                    panic!("phi param missing for {out} in {}", func_ir.name)
+                                });
+                                def_var_named(&mut builder, &vars, out, param);
+                            }
+                            // Refcount tracking is name-based. A `phi` output is a new name for a
+                            // value that came from one of the predecessor blocks. If we don't
+                            // transfer tracking to the output name, the predecessor name can be
+                            // decref'd at the phi boundary while the output is still live,
+                            // leading to UAF/segfaults for object-valued if-expressions.
+                            if let Some(tracked) = block_tracked_obj.get_mut(&frame.merge_block) {
+                                for (_out, then_name, else_name) in &frame.phi_ops {
+                                    tracked.retain(|name| name != then_name && name != else_name);
+                                }
+                                for (out, _then_name, _else_name) in &frame.phi_ops {
+                                    if !tracked.iter().any(|name| name == out) {
+                                        tracked.push(out.clone());
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         is_block_filled = true;
                     }
@@ -11638,11 +12120,23 @@ impl SimpleBackend {
                         .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                     switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                     builder.seal_block(cleanup_block);
-                    for tracked in tracked_obj_snapshot {
-                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                    for name in tracked_obj_snapshot {
+                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                            panic!(
+                                "Tracked obj var not found in {} op {}: {}",
+                                func_ir.name, op_idx, name
+                            )
+                        });
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
-                    for tracked in tracked_ptr_snapshot {
-                        builder.ins().call(local_dec_ref, &[tracked.value]);
+                    for name in tracked_ptr_snapshot {
+                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                            panic!(
+                                "Tracked ptr var not found in {} op {}: {}",
+                                func_ir.name, op_idx, name
+                            )
+                        });
+                        builder.ins().call(local_dec_ref, &[*val]);
                     }
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
@@ -11686,11 +12180,23 @@ impl SimpleBackend {
                         .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
                     switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                     builder.seal_block(cleanup_block);
-                    for tracked in tracked_obj_snapshot {
-                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                    for name in tracked_obj_snapshot {
+                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                            panic!(
+                                "Tracked obj var not found in {} op {}: {}",
+                                func_ir.name, op_idx, name
+                            )
+                        });
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
-                    for tracked in tracked_ptr_snapshot {
-                        builder.ins().call(local_dec_ref, &[tracked.value]);
+                    for name in tracked_ptr_snapshot {
+                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                            panic!(
+                                "Tracked ptr var not found in {} op {}: {}",
+                                func_ir.name, op_idx, name
+                            )
+                        });
+                        builder.ins().call(local_dec_ref, &[*val]);
                     }
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
@@ -11705,14 +12211,26 @@ impl SimpleBackend {
                         .expect("loop_break requires an active block");
                     if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for tracked in cleanup {
-                            builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked obj var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for tracked in cleanup {
-                            builder.ins().call(local_dec_ref, &[tracked.value]);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked ptr var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref, &[*val]);
                         }
                     }
                     reachable_blocks.insert(frame.after_block);
@@ -11739,14 +12257,26 @@ impl SimpleBackend {
                         .expect("loop_continue requires an active block");
                     if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for tracked in cleanup {
-                            builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked obj var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for tracked in cleanup {
-                            builder.ins().call(local_dec_ref, &[tracked.value]);
+                        for name in cleanup {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked ptr var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref, &[*val]);
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
@@ -12732,21 +13262,51 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ret" => {
-                    let Some(var_name) = op.var.as_ref() else {
-                        if let Some(block) = builder.current_block() {
-                            if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                                }
-                            }
-                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for tracked in cleanup {
-                                    builder.ins().call(local_dec_ref, &[tracked.value]);
-                                }
-                            }
+                    if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
+                        && (func_ir.name.contains("open0_dead_comp_capture_probe__touch")
+                            || func_ir.name == "__main____touch")
+                    {
+                        eprintln!(
+                            "debug ret cleanup func={} op_idx={} ret_var={:?} tracked_obj_vars_len={} tracked_vars_len={}",
+                            func_ir.name,
+                            op_idx,
+                            op.var.as_deref(),
+                            tracked_obj_vars.len(),
+                            tracked_vars.len(),
+                        );
+                        if !tracked_obj_vars.is_empty() {
+                            eprintln!("debug ret cleanup tracked_obj_vars={:?}", tracked_obj_vars);
                         }
+                        if !tracked_vars.is_empty() {
+                            eprintln!("debug ret cleanup tracked_vars={:?}", tracked_vars);
+                        }
+                    }
+	                    let Some(var_name) = op.var.as_ref() else {
+		                        if let Some(block) = builder.current_block() {
+		                            // Function return: fully drain per-block tracked values.
+		                            if let Some(names) = block_tracked_obj.remove(&block) {
+		                                for name in names {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked obj var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+		                                }
+		                            }
+		                            if let Some(names) = block_tracked_ptr.remove(&block) {
+		                                for name in names {
+		                                    let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                        panic!(
+		                                            "Tracked ptr var not found in {} op {}: {}",
+		                                            func_ir.name, op_idx, name
+		                                        )
+		                                    });
+		                                    builder.ins().call(local_dec_ref, &[*val]);
+		                                }
+		                            }
+		                        }
                         for name in &tracked_vars {
                             if let Some(val) = entry_vars.get(name) {
                                 builder.ins().call(local_dec_ref, &[*val]);
@@ -12767,24 +13327,39 @@ impl SimpleBackend {
                         is_block_filled = true;
                         continue;
                     };
-                    let ret_val =
-                        *var_get(&mut builder, &vars, var_name).expect("Return variable not found");
-                    if let Some(block) = builder.current_block() {
-                        if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup =
-                                drain_cleanup_tracked(names, &last_use, op_idx, Some(var_name));
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                            }
-                        }
-                        if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup =
-                                drain_cleanup_tracked(names, &last_use, op_idx, Some(var_name));
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref, &[tracked.value]);
-                            }
-                        }
-                    }
+	                    let ret_val =
+	                        *var_get(&mut builder, &vars, var_name).expect("Return variable not found");
+		                    if let Some(block) = builder.current_block() {
+		                        // Function return: fully drain per-block tracked values (except return).
+		                        if let Some(names) = block_tracked_obj.remove(&block) {
+		                            for name in names {
+		                                if name == *var_name {
+		                                    continue;
+		                                }
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked obj var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref_obj, &[*val]);
+		                            }
+		                        }
+		                        if let Some(names) = block_tracked_ptr.remove(&block) {
+		                            for name in names {
+		                                if name == *var_name {
+		                                    continue;
+		                                }
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked ptr var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref, &[*val]);
+		                            }
+		                        }
+		                    }
                     tracked_vars.retain(|v| v != var_name);
                     tracked_obj_vars.retain(|v| v != var_name);
                     for name in &tracked_vars {
@@ -12805,21 +13380,32 @@ impl SimpleBackend {
                     }
                     is_block_filled = true;
                 }
-                "ret_void" => {
-                    if let Some(block) = builder.current_block() {
-                        if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                            }
-                        }
-                        if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref, &[tracked.value]);
-                            }
-                        }
-                    }
+		                "ret_void" => {
+		                    if let Some(block) = builder.current_block() {
+		                        // Function return: fully drain per-block tracked values.
+		                        if let Some(names) = block_tracked_obj.remove(&block) {
+		                            for name in names {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked obj var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref_obj, &[*val]);
+		                            }
+		                        }
+		                        if let Some(names) = block_tracked_ptr.remove(&block) {
+		                            for name in names {
+		                                let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+		                                    panic!(
+		                                        "Tracked ptr var not found in {} op {}: {}",
+		                                        func_ir.name, op_idx, name
+		                                    )
+		                                });
+		                                builder.ins().call(local_dec_ref, &[*val]);
+		                            }
+		                        }
+		                    }
                     for name in &tracked_vars {
                         if let Some(val) = entry_vars.get(name) {
                             builder.ins().call(local_dec_ref, &[*val]);
@@ -12839,21 +13425,44 @@ impl SimpleBackend {
                     }
                     is_block_filled = true;
                 }
-                "jump" => {
-                    let target_id = op.value.unwrap();
-                    let target_block = state_blocks[&target_id];
-                    if let Some(block) = builder.current_block() {
-                        if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                            }
+	                "jump" => {
+	                    let target_id = op.value.unwrap();
+	                    let target_block = state_blocks[&target_id];
+	                    if let Some(block) = builder.current_block() {
+	                        let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
+	                        let cleanup = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+	                        for name in cleanup {
+	                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                                panic!(
+	                                    "Tracked obj var not found in {} op {}: {}",
+	                                    func_ir.name, op_idx, name
+	                                )
+	                            });
+	                            builder.ins().call(local_dec_ref_obj, &[*val]);
+	                        }
+                        if !carry_obj.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(target_block).or_default(),
+                                carry_obj,
+                            );
                         }
-                        if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref, &[tracked.value]);
-                            }
+
+	                        let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
+	                        let cleanup = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+	                        for name in cleanup {
+	                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                                panic!(
+	                                    "Tracked ptr var not found in {} op {}: {}",
+	                                    func_ir.name, op_idx, name
+	                                )
+	                            });
+	                            builder.ins().call(local_dec_ref, &[*val]);
+	                        }
+                        if !carry_ptr.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(target_block).or_default(),
+                                carry_ptr,
+                            );
                         }
                     }
                     reachable_blocks.insert(target_block);
@@ -12865,6 +13474,9 @@ impl SimpleBackend {
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let target_id = op.value.unwrap();
                     let target_block = state_blocks[&target_id];
+                    let origin_block = builder
+                        .current_block()
+                        .expect("br_if requires an active block");
 
                     let fallthrough_block = builder.create_block();
                     // Note: In Molt IR, cond is 0 for false, !=0 for true.
@@ -12878,6 +13490,52 @@ impl SimpleBackend {
 
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough_block);
+                    // br_if terminates the current block and can transfer control to either
+                    // successor. Carry all live tracked values into both.
+	                    let mut carry_obj =
+	                        block_tracked_obj.remove(&origin_block).unwrap_or_default();
+	                    let cleanup = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+	                    for name in cleanup {
+	                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked obj var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref_obj, &[*val]);
+	                    }
+                    if !carry_obj.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(target_block).or_default(),
+                            carry_obj.clone(),
+                        );
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(fallthrough_block).or_default(),
+                            carry_obj.clone(),
+                        );
+                    }
+	                    let mut carry_ptr =
+	                        block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+	                    let cleanup = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+	                    for name in cleanup {
+	                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+	                            panic!(
+	                                "Tracked ptr var not found in {} op {}: {}",
+	                                func_ir.name, op_idx, name
+	                            )
+	                        });
+	                        builder.ins().call(local_dec_ref, &[*val]);
+	                    }
+                    if !carry_ptr.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(target_block).or_default(),
+                            carry_ptr.clone(),
+                        );
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(fallthrough_block).or_default(),
+                            carry_ptr.clone(),
+                        );
+                    }
                     builder
                         .ins()
                         .brif(cond_bool, target_block, &[], fallthrough_block, &[]);
@@ -12935,7 +13593,18 @@ impl SimpleBackend {
                 }
             }
 
-            if !is_block_filled && loop_depth == 0 {
+            // IMPORTANT: entry-tracked cleanup must be control-flow safe.
+            //
+            // `tracked_obj_vars`/`tracked_vars` are populated only for values defined in the
+            // entry block, but this loop walks IR ops in a linear order while switching across
+            // blocks for `if`/`else`/loops. Draining the entry-tracked lists while we are
+            // emitting code for a non-entry block can incorrectly place the decref only on one
+            // branch (for example the `then` side of an `if`), causing leaks on the other path.
+            //
+            // We therefore only drain entry-tracked cleanup while still emitting the entry block.
+            // Values whose "last use" happens exclusively in a non-entry block remain live until
+            // the function-level return cleanup, which is emitted on all paths.
+            if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
                 let cleanup = drain_cleanup_entry_tracked(
                     &mut tracked_obj_vars,
                     &entry_vars,
@@ -12954,30 +13623,32 @@ impl SimpleBackend {
 
             if let Some(name) = out_name.as_ref() {
                 if name != "none" {
-                    if let Some(block) = builder.current_block() {
-                        if block == entry_block && loop_depth == 0 {
-                            if output_is_ptr {
-                                tracked_vars.push(name.clone());
-                            } else {
-                                tracked_obj_vars.push(name.clone());
-                            }
-                            if let Some(val) = var_get(&mut builder, &vars, &name) {
-                                entry_vars.insert(name.clone(), *val);
-                            }
-                        } else if let Some(val) = var_get(&mut builder, &vars, &name) {
-                            let tracked = TrackedValue {
-                                name: name.to_string(),
-                                value: *val,
-                            };
-                            if output_is_ptr {
-                                block_tracked_ptr.entry(block).or_default().push(tracked);
-                            } else {
-                                block_tracked_obj.entry(block).or_default().push(tracked);
-                            }
-                        }
-                    }
-                }
-            }
+	                    if let Some(block) = builder.current_block() {
+	                        if block == entry_block && loop_depth == 0 {
+	                            if output_is_ptr {
+	                                tracked_vars.push(name.clone());
+	                            } else {
+	                                tracked_obj_vars.push(name.clone());
+	                            }
+	                            if let Some(val) = var_get(&mut builder, &vars, &name) {
+	                                entry_vars.insert(name.clone(), *val);
+	                            }
+	                        } else {
+	                            if output_is_ptr {
+	                                block_tracked_ptr
+	                                    .entry(block)
+	                                    .or_default()
+	                                    .push(name.to_string());
+	                            } else {
+	                                block_tracked_obj
+	                                    .entry(block)
+	                                    .or_default()
+	                                    .push(name.to_string());
+	                            }
+	                        }
+	                    }
+	                }
+	            }
         }
 
         // Finalize Master Return Block

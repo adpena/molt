@@ -156,6 +156,11 @@ def _configure_required_top_level(module, monkeypatch, stdlib_root: Path) -> Non
     )
 
 
+def test_critical_allowlist_includes_re() -> None:
+    module = _load_gate_module()
+    assert "re" in module.CRITICAL_STRICT_IMPORT_ROOTS
+
+
 def test_all_stdlib_fallback_gate_is_default(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

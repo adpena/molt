@@ -126,7 +126,12 @@ def main() -> None:
             tty=use_tty,
         )
         run_uv(
-            ["python3", "tools/check_core_lane_lowering.py"],
+            [
+                "python3",
+                "tools/check_core_lane_lowering.py",
+                "--manifest",
+                "tests/differential/basic/CORE_TESTS.txt",
+            ],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )

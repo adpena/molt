@@ -524,6 +524,8 @@ unsafe fn call_type_with_builder(
         builder_guard.release();
         let args_ptr = callargs_ptr(builder_ptr);
         if !args_ptr.is_null() {
+            // The CallArgs builder owns its slots; take a reference for the instance we inject.
+            inc_ref_bits(_py, inst_bits);
             (*args_ptr).pos.insert(0, inst_bits);
         }
         let _ = molt_call_bind(init_bits, builder_bits);
@@ -723,6 +725,24 @@ pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
     unsafe { *(ptr as *mut *mut CallArgs) }
 }
 
+pub(crate) unsafe fn callargs_dec_ref_all(_py: &PyToken<'_>, args_ptr: *mut CallArgs) {
+    unsafe {
+        if args_ptr.is_null() {
+            return;
+        }
+        let args = &*args_ptr;
+        for &bits in args.pos.iter() {
+            dec_ref_bits(_py, bits);
+        }
+        for &bits in args.kw_names.iter() {
+            dec_ref_bits(_py, bits);
+        }
+        for &bits in args.kw_values.iter() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -794,6 +814,9 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
                 return MoltObject::none().bits();
             }
             let args = &mut *args_ptr;
+            // CallArgs must keep arguments alive even if the caller drops its temporaries before
+            // `molt_call_bind` executes.
+            inc_ref_bits(_py, val);
             args.pos.push(val);
             MoltObject::none().bits()
         })
@@ -826,6 +849,10 @@ unsafe fn callargs_push_kw(
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
+        // CallArgs must keep keyword arguments alive even if the caller drops its temporaries
+        // before `molt_call_bind` executes.
+        inc_ref_bits(_py, name_bits);
+        inc_ref_bits(_py, val_bits);
         args.kw_names.push(name_bits);
         args.kw_values.push(val_bits);
         MoltObject::none().bits()
@@ -1073,8 +1100,6 @@ unsafe fn try_call_bind_ic_fast(
             }
             let self_bits = bound_method_self_bits(call_ptr);
             let arg0 = args.pos[0];
-            *(builder_ptr as *mut *mut CallArgs) = std::ptr::null_mut();
-            let _args = Box::from_raw(args_ptr);
             return Some(molt_list_append(self_bits, arg0));
         }
 
@@ -1089,8 +1114,6 @@ unsafe fn try_call_bind_ic_fast(
                 return None;
             }
             let pos = args.pos.clone();
-            *(builder_ptr as *mut *mut CallArgs) = std::ptr::null_mut();
-            let _args = Box::from_raw(args_ptr);
             return Some(call_function_obj_vec(_py, call_bits, pos.as_slice()));
         }
 
@@ -1350,9 +1373,11 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             if args_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            *(builder_ptr as *mut *mut CallArgs) = std::ptr::null_mut();
-            let mut args = Box::from_raw(args_ptr);
+            let args = &mut *args_ptr;
             if let Some(self_bits) = self_bits {
+                // The CallArgs builder owns its slots (see `molt_callargs_push_pos`), so inserting
+                // an extra positional argument must take a reference as well.
+                inc_ref_bits(_py, self_bits);
                 args.pos.insert(0, self_bits);
             }
             let bind_kind_bits = function_attr_bits(
@@ -1366,17 +1391,17 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             );
             if let Some(kind_bits) = bind_kind_bits {
                 if obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN) {
-                    if let Some(bound_args) = bind_builtin_open(_py, &args) {
+                    if let Some(bound_args) = bind_builtin_open(_py, args) {
                         return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
                     }
                     return MoltObject::none().bits();
                 }
             }
             if fn_ptr == fn_addr!(dict_update_method) {
-                return bind_builtin_dict_update(_py, &args);
+                return bind_builtin_dict_update(_py, args);
             }
             if fn_ptr == fn_addr!(molt_open_builtin) {
-                if let Some(bound_args) = bind_builtin_open(_py, &args) {
+                if let Some(bound_args) = bind_builtin_open(_py, args) {
                     return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
                 }
                 return MoltObject::none().bits();
@@ -1401,7 +1426,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 seq_vec_ref(arg_names_ptr).clone()
             } else {
-                if let Some(bound_args) = bind_builtin_call(_py, func_bits, func_ptr, &args) {
+                if let Some(bound_args) = bind_builtin_call(_py, func_bits, func_ptr, args) {
                     return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
                 }
                 if exception_pending(_py) {
@@ -1623,6 +1648,23 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 let name = string_obj_to_owned(obj_from_bits(arg_names[idx]))
                     .unwrap_or_else(|| "?".to_string());
+                if matches!(
+                    std::env::var("MOLT_TRACE_CALL_BIND_MISSING").ok().as_deref(),
+                    Some("1")
+                ) {
+                    let func_name_bits = function_name_bits(_py, func_ptr);
+                    let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none()
+                    {
+                        "<function>".to_string()
+                    } else {
+                        string_obj_to_owned(obj_from_bits(func_name_bits))
+                            .unwrap_or_else(|| "<function>".to_string())
+                    };
+                    eprintln!(
+                        "molt call_bind: missing required arg func={} arg={} pos={}",
+                        func_name, name, idx + 1
+                    );
+                }
                 let msg = format!("missing required argument '{name}'");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
@@ -1775,6 +1817,55 @@ unsafe fn bind_builtin_call(
             return bind_builtin_open(_py, args);
         }
         if fn_ptr == fn_addr!(molt_type_new) || fn_ptr == fn_addr!(molt_type_init) {
+            if matches!(
+                std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
+                Some("1")
+            ) {
+                let kind = if fn_ptr == fn_addr!(molt_type_new) {
+                    "type.__new__"
+                } else {
+                    "type.__init__"
+                };
+                let self_bits = args.pos.first().copied().unwrap_or(0);
+                let mut self_label = "<unknown>".to_string();
+                let mut meta_label = "<unknown>".to_string();
+                if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
+                    let self_type_id = object_type_id(self_ptr);
+                    if self_type_id == TYPE_ID_TYPE {
+                        self_label =
+                            string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
+                                .unwrap_or_else(|| "<type>".to_string());
+                        let meta_bits = object_class_bits(self_ptr);
+                        if meta_bits != 0 {
+                            if let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr() {
+                                if object_type_id(meta_ptr) == TYPE_ID_TYPE {
+                                    meta_label =
+                                        string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
+                                            .unwrap_or_else(|| "<meta>".to_string());
+                                }
+                            }
+                        }
+                    } else {
+                        self_label = format!("<type_id={self_type_id}>");
+                    }
+                } else {
+                    self_label = type_name(_py, obj_from_bits(self_bits)).to_string();
+                }
+                eprintln!(
+                    "molt bind: {} self={} meta={} pos_len={} kw_len={}",
+                    kind,
+                    self_label,
+                    meta_label,
+                    args.pos.len(),
+                    args.kw_names.len(),
+                );
+                if matches!(
+                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
+                    Some("1")
+                ) {
+                    eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
+                }
+            }
             return bind_builtin_type_new_init(_py, args);
         }
         if fn_ptr == fn_addr!(dict_get_method) {
@@ -2682,6 +2773,17 @@ unsafe fn bind_builtin_type_new_init(_py: &PyToken<'_>, args: &CallArgs) -> Opti
         let names = ["name", "bases", "dict"];
         for (idx, val) in values.iter().enumerate() {
             if val.is_none() {
+                if matches!(
+                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
+                    Some("1")
+                ) {
+                    eprintln!(
+                        "molt bind: type.__new__/__init__ missing {} (pos_len={} kw_len={})",
+                        names[idx],
+                        args.pos.len(),
+                        args.kw_names.len(),
+                    );
+                }
                 let msg = format!("missing required argument '{}'", names[idx]);
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }

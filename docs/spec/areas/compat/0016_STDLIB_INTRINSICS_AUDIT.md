@@ -954,7 +954,7 @@
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
-- Critical roots: `socket`, `threading`, `asyncio`, `pathlib`, `time`, `traceback`, `sys`, `os`
+- Critical roots: `re`, `socket`, `threading`, `asyncio`, `pathlib`, `time`, `traceback`, `sys`, `os`
 - Gate rule: for each listed root currently intrinsic-implemented, every transitive stdlib import in its closure must also be intrinsic-implemented.
 - Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).
 
