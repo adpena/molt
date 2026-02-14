@@ -3144,7 +3144,17 @@ def _check_lockfiles(
 
 
 def _lock_check_cache_path(project_root: Path, name: str) -> Path:
-    return project_root / "target" / "lock_checks" / f"{name}.json"
+    # The lock-check cache can grow (especially for Cargo metadata inputs).
+    # Keep it colocated with Cargo build outputs when CARGO_TARGET_DIR is set so
+    # developers can move all large artifacts onto an external volume.
+    target_dir_env = os.environ.get("CARGO_TARGET_DIR")
+    if target_dir_env:
+        target_dir = Path(target_dir_env)
+        if not target_dir.is_absolute():
+            target_dir = project_root / target_dir
+    else:
+        target_dir = project_root / "target"
+    return target_dir / "lock_checks" / f"{name}.json"
 
 
 def _lock_check_inputs(

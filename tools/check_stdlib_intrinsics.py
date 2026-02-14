@@ -136,6 +136,7 @@ PRIORITY_LOWERING_QUEUES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 CRITICAL_STRICT_IMPORT_ROOTS: tuple[str, ...] = (
+    "re",
     "socket",
     "threading",
     "asyncio",

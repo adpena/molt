@@ -1317,6 +1317,7 @@ tests/differential/stdlib/inspect_isawaitable.py
 tests/differential/stdlib/inspect_iscoroutine.py
 tests/differential/stdlib/inspect_iscoroutinefunction.py
 tests/differential/stdlib/inspect_signature_bound.py
+tests/differential/stdlib/inspect_signature_descriptor_builtins.py
 tests/differential/stdlib/inspect_signature_intrinsic_payload.py
 tests/differential/stdlib/inspect_signature_posonly.py
 tests/differential/stdlib/inspect_unwrap.py
@@ -1482,6 +1483,7 @@ tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
 tests/differential/stdlib/os_urandom_basic.py
 tests/differential/stdlib/pathlib_basic_ops.py
+tests/differential/stdlib/pathlib_basic_str_and_parts.py
 tests/differential/stdlib/pathlib_compare_intrinsic.py
 tests/differential/stdlib/pathlib_glob_charclass_intrinsic.py
 tests/differential/stdlib/pathlib_glob_relative.py
@@ -1503,10 +1505,12 @@ tests/differential/stdlib/pdb_basic.py
 tests/differential/stdlib/pep615_zoneinfo_basic.py
 tests/differential/stdlib/pickle_alias_cycle_identity.py
 tests/differential/stdlib/pickle_basic.py
+tests/differential/stdlib/pickle_class_dataclass_roundtrip.py
 tests/differential/stdlib/pickle_cpython_opcode_literals.py
+tests/differential/stdlib/pickle_hooks_surface_buffers.py
 tests/differential/stdlib/pickle_main_function_global_resolution.py
-tests/differential/stdlib/pickle_persistent_hooks.py
 tests/differential/stdlib/pickle_out_of_band_buffers.py
+tests/differential/stdlib/pickle_persistent_hooks.py
 tests/differential/stdlib/pickle_protocol1_basic.py
 tests/differential/stdlib/pickle_protocols_2_5_roundtrip.py
 tests/differential/stdlib/pickle_reduce_copyreg_extension.py
@@ -1538,6 +1542,7 @@ tests/differential/stdlib/re_flags_groups.py
 tests/differential/stdlib/re_flags_groups_errors.py
 tests/differential/stdlib/re_fullmatch_finditer.py
 tests/differential/stdlib/re_groupdict_defaults.py
+tests/differential/stdlib/re_internal_shims_importable.py
 tests/differential/stdlib/re_lookaround_backref.py
 tests/differential/stdlib/re_lookaround_inline_flags.py
 tests/differential/stdlib/re_lookbehind_length_error.py
@@ -1584,6 +1589,7 @@ tests/differential/stdlib/smtplib_basic.py
 tests/differential/stdlib/smtplib_sendmail_basic.py
 tests/differential/stdlib/socket_backpressure_large_send.py
 tests/differential/stdlib/socket_basic.py
+tests/differential/stdlib/socket_byteorder_and__socket_surface.py
 tests/differential/stdlib/socket_closed_send_recv_errors.py
 tests/differential/stdlib/socket_connect_ex_result.py
 tests/differential/stdlib/socket_constants_errors.py

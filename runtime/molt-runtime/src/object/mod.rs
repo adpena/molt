@@ -58,7 +58,8 @@ use crate::{
     asyncio_wait_for_poll_fn_addr, asyncio_wait_for_task_drop, asyncio_wait_poll_fn_addr,
     asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
     builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
-    call_iter_callable_bits, call_iter_sentinel_bits, callargs_ptr, classmethod_func_bits,
+    call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all, callargs_ptr,
+    classmethod_func_bits,
     code_filename_bits, code_linetable_bits, code_name_bits, code_varnames_bits,
     context_payload_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_enter_context_task_drop,
@@ -120,6 +121,12 @@ fn debug_rc_object() -> bool {
 fn debug_dec_ref_zero() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_DECREF_ZERO").as_deref() == Ok("1"))
+}
+
+#[inline]
+fn debug_file_rc() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FILE_RC").as_deref() == Ok("1"))
 }
 
 fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
@@ -333,6 +340,9 @@ pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u64 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u64 = 1 << 12;
 pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u64 = 1 << 13;
 pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
+// CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
+// Use this only for runtime singletons/cached builtin callables.
+pub(crate) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
@@ -898,6 +908,9 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             return;
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
+            return;
+        }
         let new_count = (*header_ptr)
             .ref_count
             .fetch_add(1, AtomicOrdering::Relaxed)
@@ -908,6 +921,12 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
                 && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
             {
                 eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
+            }
+        }
+        if debug_file_rc() {
+            let header = &*header_ptr;
+            if header.type_id == TYPE_ID_FILE_HANDLE {
+                eprintln!("molt file rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
             }
         }
     }
@@ -926,7 +945,17 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
             return;
         }
+        if (header.flags & HEADER_FLAG_IMMORTAL) != 0 {
+            return;
+        }
         let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        if debug_file_rc() && header.type_id == TYPE_ID_FILE_HANDLE {
+            eprintln!(
+                "molt file rc dec ptr=0x{:x} count={}",
+                ptr as usize,
+                prev.saturating_sub(1)
+            );
+        }
         if debug_rc_object()
             && header.type_id == TYPE_ID_OBJECT
             && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
@@ -944,6 +973,27 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
                     ptr as usize, header.type_id
                 );
+            }
+            if header.type_id == TYPE_ID_FUNCTION
+                && matches!(
+                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION")
+                        .ok()
+                        .as_deref(),
+                    Some("1")
+                )
+            {
+                // Debug-only: cached builtin function objects must not be freed while still cached.
+                // When they do hit zero, capture a backtrace to identify the incorrect owner.
+                let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
+                let obj_init_subclass_ptr = crate::molt_object_init_subclass as *const () as usize as u64;
+                let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
+                if freed_fn_ptr == obj_init_subclass_ptr || freed_fn_ptr == type_init_ptr {
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    eprintln!(
+                        "molt dec_ref_zero function ptr=0x{:x} obj_init_subclass=0x{:x} type_init=0x{:x}\n{bt}",
+                        freed_fn_ptr, obj_init_subclass_ptr, type_init_ptr,
+                    );
+                }
             }
             weakref_clear_for_ptr(py, ptr);
             match header.type_id {
@@ -1021,6 +1071,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_CALLARGS => {
                     let args_ptr = callargs_ptr(ptr);
                     if !args_ptr.is_null() {
+                        callargs_dec_ref_all(py, args_ptr);
                         drop(Box::from_raw(args_ptr));
                     }
                 }
@@ -1330,6 +1381,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if !handle_ptr.is_null() {
                         let handle = &mut *handle_ptr;
                         flush_file_handle_on_drop(py, handle);
+                        // Match CPython: file handles close their underlying backend/FD on drop.
+                        // This is required for correct semantics in cases like open(0) where the
+                        // file descriptor should be closed once the last reference is released.
+                        crate::builtins::io::file_handle_close_ptr(ptr);
                         if handle.name_bits != 0 && !obj_from_bits(handle.name_bits).is_none() {
                             dec_ref_bits(py, handle.name_bits);
                         }

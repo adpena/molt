@@ -1,5 +1,22 @@
 # Repository Guidelines
 
+## Hard Gate: External Volume Only (Non-Negotiable, Urgent)
+- We are disk-space constrained on the local/internal drive. Local development MUST place all build artifacts, logs, caches, tmp files, debugging outputs, and `target/`-style directories on the external volume rooted at `/Volumes/APDataStore/Molt`.
+- This is not advisory. If `/Volumes/APDataStore/Molt` is not mounted, do not run heavy workflows (build, run, diff, test, bench, regrtest). Mount the volume first (or explicitly choose a different external root and plumb it through the env vars below).
+- Hard prohibition: do not generate large artifacts under the repo on the local drive (examples: `target/`, `dist/`, `build/`, `wasm/`, `logs/`, `bench/results/`, `runtime/**/target/`). Those are emergency-only fallbacks when the external volume is unavailable and the task is explicitly approved as local-disk-impacting.
+- Canonical env defaults (use these in your shell before any build/test/bench work):
+  - `export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`
+  - `export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target`
+  - `export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR`
+  - `export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache`
+  - `export MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/diff`
+  - `export MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp`
+  - `export UV_CACHE_DIR=$MOLT_EXT_ROOT/uv-cache`
+  - `export TMPDIR=$MOLT_EXT_ROOT/tmp`
+- Notes:
+  - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). This is mandatory to prevent local `target/` growth.
+  - If you hit Unix-socket filesystem limitations on the external volume, keep artifacts on external but place only daemon sockets on local temp: `export MOLT_BACKEND_DAEMON_SOCKET_DIR=/tmp/molt_backend_sockets` (small/allowed exception).
+
 ## Non-Negotiable: Raise On Missing Features
 - Always raise on missing features; never fallback silently.
 - Never build coverage or implementations that rely on host Python in any way.
@@ -87,7 +104,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `molt bench --script examples/hello.py`: run the bench harness on a custom script.
 - `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
 - Build cache determinism is now enforced by default in the CLI (`PYTHONHASHSEED=0`) to stabilize cache keys across invocations. Override with `MOLT_HASH_SEED=<value>` (set `MOLT_HASH_SEED=random` to opt out).
-- Lockfile verification (`uv lock --check`, `cargo metadata --locked`) is cached under `target/lock_checks/`; remove those files when you need to force a full lock re-check.
+- Lockfile verification (`uv lock --check`, `cargo metadata --locked`) is cached under `<CARGO_TARGET_DIR>/lock_checks/` when `CARGO_TARGET_DIR` is set (otherwise `target/lock_checks/`); remove those files when you need to force a full lock re-check.
 - Development profile routing: `--profile dev` maps to Cargo profile `dev-fast` by default (override with `MOLT_DEV_CARGO_PROFILE`; release uses `MOLT_RELEASE_CARGO_PROFILE`).
 - Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.
 - Native backend compiles use a local backend daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
@@ -179,7 +196,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Keep `tests/test_molt_diff_expected_failures.py` green so manifest coverage and `XFAIL`/`XPASS` behavior stay enforced.
 - Run the core-lane lowering gate with the current manifest path:
   - `python3 tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt`
-- NON-NEGOTIABLE: Always use the external volume as the outdir root when it is available (prefer `/Volumes/APDataStore/Molt`); if it is not available, write outputs to the repo’s standard build folders (for example `logs/`, `bench/results/`, `target/`, `dist/`, `build/`, `wasm/`, or `runtime/**/target/`) and never to the repo root.
+- NON-NEGOTIABLE: Differential work MUST use the external volume root `/Volumes/APDataStore/Molt` (see “Hard Gate: External Volume Only”). If it is not available, abort the run rather than filling the internal drive.
 - NON-NEGOTIABLE: Always run the differential testing suite with memory profiling enabled (`MOLT_DIFF_MEASURE_RSS=1`).
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - NON-NEGOTIABLE: Enforce a 10 GB per-process memory cap for diff runs when possible.
@@ -211,13 +228,13 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is platform-safe auto (`1` on macOS, `0` elsewhere) and dyld guard/retry also enables it.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
-  - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+  - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- Example (multi-target list, auto-parallel): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+- Example (multi-target list, auto-parallel): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
-    `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file /Volumes/APDataStore/Molt/diff_live.log --log-aggregate /Volumes/APDataStore/Molt/diff_full.log --log-dir /Volumes/APDataStore/Molt/diff_logs tests/differential`
+    `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file /Volumes/APDataStore/Molt/diff_live.log --log-aggregate /Volumes/APDataStore/Molt/diff_full.log --log-dir /Volumes/APDataStore/Molt/diff_logs tests/differential`
   - Example (monitor live log): `tail -f /Volumes/APDataStore/Molt/diff_live.log`
   - Example (monitor aggregate log): `tail -f /Volumes/APDataStore/Molt/diff_full.log`
   - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.

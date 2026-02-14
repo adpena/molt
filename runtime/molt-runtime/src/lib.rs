@@ -170,7 +170,8 @@ pub(crate) use crate::builtins::exceptions::{
     frame_stack_set_line, generator_exception_stack_drop, generator_exception_stack_store,
     generator_exception_stack_take, generator_raise_active, handle_system_exit,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
-    molt_exception_pending, molt_exception_set_last, molt_getframe, molt_raise, raise_exception,
+    molt_exception_pending, molt_exception_set_last, molt_getframe, molt_globals_builtin,
+    molt_locals_builtin, molt_raise, raise_exception,
     raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
     raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
     set_task_raise_active, task_exception_baseline_drop, task_exception_baseline_store,
@@ -207,6 +208,7 @@ pub(crate) use crate::builtins::numbers::{
 pub use crate::builtins::operator::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::select::*;
+pub use crate::builtins::sitebuiltins::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -225,8 +227,8 @@ pub use crate::builtins::zlib::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
-    callargs_ptr, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
-    molt_callargs_new, molt_callargs_push_pos,
+    callargs_dec_ref_all, callargs_ptr, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_class_no_pool, call_builtin_type_if_needed,
@@ -312,7 +314,7 @@ pub use crate::object::weakref::{
 pub(crate) use crate::object::{
     Buffer2D, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
-    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF,
+    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_IMMORTAL, HEADER_FLAG_SKIP_CLASS_DECREF,
     HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
     HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED,
     MemoryView, MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState,

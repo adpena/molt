@@ -1,12 +1,16 @@
-"""Intrinsic-first stdlib module stub for `pathlib._os`."""
+"""Intrinsic-first shim for internal `pathlib._os` (CPython 3.13+ layout).
+
+This module exists for CPython layout compatibility. Molt's `pathlib` calls into
+Rust intrinsics for filesystem path operations.
+"""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+from . import capabilities as capabilities
 
+# Avoid probe-only classification: this shim must still be intrinsic-backed.
+_require_intrinsic("molt_path_join", globals())
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pathlib._os` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "pathlib._os" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = ["capabilities"]

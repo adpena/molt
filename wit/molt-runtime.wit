@@ -323,6 +323,7 @@ interface intrinsics {
     recursion_guard_enter: func() -> u64;
     recursion_guard_exit: func();
     trace_enter_slot: func(code_id: u64) -> molt-object;
+    frame_locals_set: func(dict_bits: molt-object) -> molt-object;
     trace_set_line: func(line: molt-object) -> molt-object;
     trace_exit: func() -> molt-object;
     code_slots_init: func(count: u64) -> molt-object;

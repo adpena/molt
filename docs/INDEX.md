@@ -81,4 +81,3 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 
 ## Internal And Archival
 - Agent memory log (archival context, not canonical status): [docs/AGENT_MEMORY.md](docs/AGENT_MEMORY.md)
-- Agent lock coordination notes (internal operations): [docs/AGENT_LOCKS.md](docs/AGENT_LOCKS.md)

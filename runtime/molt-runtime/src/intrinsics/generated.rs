@@ -7,4869 +7,1012 @@ pub(crate) struct IntrinsicSpec {
 }
 
 pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
-    IntrinsicSpec {
-        name: "molt_capabilities_trusted",
-        symbol: "molt_capabilities_trusted",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_capabilities_has",
-        symbol: "molt_capabilities_has",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_capabilities_require",
-        symbol: "molt_capabilities_require",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_register",
-        symbol: "molt_weakref_register",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_get",
-        symbol: "molt_weakref_get",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_peek",
-        symbol: "molt_weakref_peek",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_drop",
-        symbol: "molt_weakref_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_collect",
-        symbol: "molt_weakref_collect",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_find_nocallback",
-        symbol: "molt_weakref_find_nocallback",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_refs",
-        symbol: "molt_weakref_refs",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_count",
-        symbol: "molt_weakref_count",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_finalize_track",
-        symbol: "molt_weakref_finalize_track",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakref_finalize_untrack",
-        symbol: "molt_weakref_finalize_untrack",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_set",
-        symbol: "molt_weakkeydict_set",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_get",
-        symbol: "molt_weakkeydict_get",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_del",
-        symbol: "molt_weakkeydict_del",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_contains",
-        symbol: "molt_weakkeydict_contains",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_len",
-        symbol: "molt_weakkeydict_len",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_items",
-        symbol: "molt_weakkeydict_items",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_keyrefs",
-        symbol: "molt_weakkeydict_keyrefs",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_popitem",
-        symbol: "molt_weakkeydict_popitem",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakkeydict_clear",
-        symbol: "molt_weakkeydict_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_set",
-        symbol: "molt_weakvaluedict_set",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_get",
-        symbol: "molt_weakvaluedict_get",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_del",
-        symbol: "molt_weakvaluedict_del",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_contains",
-        symbol: "molt_weakvaluedict_contains",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_len",
-        symbol: "molt_weakvaluedict_len",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_items",
-        symbol: "molt_weakvaluedict_items",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_valuerefs",
-        symbol: "molt_weakvaluedict_valuerefs",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_popitem",
-        symbol: "molt_weakvaluedict_popitem",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakvaluedict_clear",
-        symbol: "molt_weakvaluedict_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_add",
-        symbol: "molt_weakset_add",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_discard",
-        symbol: "molt_weakset_discard",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_remove",
-        symbol: "molt_weakset_remove",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_pop",
-        symbol: "molt_weakset_pop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_contains",
-        symbol: "molt_weakset_contains",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_len",
-        symbol: "molt_weakset_len",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_items",
-        symbol: "molt_weakset_items",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_weakset_clear",
-        symbol: "molt_weakset_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_bootstrap",
-        symbol: "molt_abc_bootstrap",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_collections_abc_runtime_types",
-        symbol: "molt_collections_abc_runtime_types",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_get_cache_token",
-        symbol: "molt_abc_get_cache_token",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_init",
-        symbol: "molt_abc_init",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_register",
-        symbol: "molt_abc_register",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_instancecheck",
-        symbol: "molt_abc_instancecheck",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_subclasscheck",
-        symbol: "molt_abc_subclasscheck",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_get_dump",
-        symbol: "molt_abc_get_dump",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_reset_registry",
-        symbol: "molt_abc_reset_registry",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_reset_caches",
-        symbol: "molt_abc_reset_caches",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_abc_update_abstractmethods",
-        symbol: "molt_abc_update_abstractmethods",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_enum_init_member",
-        symbol: "molt_enum_init_member",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_re_literal_matches",
-        symbol: "molt_re_literal_matches",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_re_literal_advance",
-        symbol: "molt_re_literal_advance",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_re_any_advance",
-        symbol: "molt_re_any_advance",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_re_char_in_range",
-        symbol: "molt_re_char_in_range",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_re_category_matches",
-        symbol: "molt_re_category_matches",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_re_anchor_matches",
-        symbol: "molt_re_anchor_matches",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_re_group_is_set",
-        symbol: "molt_re_group_is_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_re_backref_advance",
-        symbol: "molt_re_backref_advance",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_re_backref_group_advance",
-        symbol: "molt_re_backref_group_advance",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_re_apply_scoped_flags",
-        symbol: "molt_re_apply_scoped_flags",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_re_group_capture",
-        symbol: "molt_re_group_capture",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_re_charclass_matches",
-        symbol: "molt_re_charclass_matches",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_re_charclass_advance",
-        symbol: "molt_re_charclass_advance",
-        arity: 8,
-    },
-    IntrinsicSpec {
-        name: "molt_re_group_values",
-        symbol: "molt_re_group_values",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_re_expand_replacement",
-        symbol: "molt_re_expand_replacement",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_shlex_quote",
-        symbol: "molt_shlex_quote",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_shlex_split",
-        symbol: "molt_shlex_split",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_shlex_split_ex",
-        symbol: "molt_shlex_split_ex",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_shlex_join",
-        symbol: "molt_shlex_join",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_fnmatch",
-        symbol: "molt_fnmatch",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_fnmatchcase",
-        symbol: "molt_fnmatchcase",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_fnmatch_filter",
-        symbol: "molt_fnmatch_filter",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_fnmatch_translate",
-        symbol: "molt_fnmatch_translate",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_pkgutil_iter_modules",
-        symbol: "molt_pkgutil_iter_modules",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_pkgutil_walk_packages",
-        symbol: "molt_pkgutil_walk_packages",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_shutil_copyfile",
-        symbol: "molt_shutil_copyfile",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_shutil_which",
-        symbol: "molt_shutil_which",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_py_compile_compile",
-        symbol: "molt_py_compile_compile",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_compileall_compile_file",
-        symbol: "molt_compileall_compile_file",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_compileall_compile_dir",
-        symbol: "molt_compileall_compile_dir",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_compileall_compile_path",
-        symbol: "molt_compileall_compile_path",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_constants",
-        symbol: "molt_stat_constants",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_ifmt",
-        symbol: "molt_stat_ifmt",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_imode",
-        symbol: "molt_stat_imode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_isdir",
-        symbol: "molt_stat_isdir",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_isreg",
-        symbol: "molt_stat_isreg",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_ischr",
-        symbol: "molt_stat_ischr",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_isblk",
-        symbol: "molt_stat_isblk",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_isfifo",
-        symbol: "molt_stat_isfifo",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_islnk",
-        symbol: "molt_stat_islnk",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stat_issock",
-        symbol: "molt_stat_issock",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_wrap",
-        symbol: "molt_textwrap_wrap",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_fill",
-        symbol: "molt_textwrap_fill",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_indent",
-        symbol: "molt_textwrap_indent",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_quote",
-        symbol: "molt_urllib_quote",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_quote_plus",
-        symbol: "molt_urllib_quote_plus",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_unquote",
-        symbol: "molt_urllib_unquote",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_unquote_plus",
-        symbol: "molt_urllib_unquote_plus",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_parse_qsl",
-        symbol: "molt_urllib_parse_qsl",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_parse_qs",
-        symbol: "molt_urllib_parse_qs",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urlencode",
-        symbol: "molt_urllib_urlencode",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urlsplit",
-        symbol: "molt_urllib_urlsplit",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urlparse",
-        symbol: "molt_urllib_urlparse",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urlunsplit",
-        symbol: "molt_urllib_urlunsplit",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urlunparse",
-        symbol: "molt_urllib_urlunparse",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urldefrag",
-        symbol: "molt_urllib_urldefrag",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_urljoin",
-        symbol: "molt_urllib_urljoin",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_error_urlerror_init",
-        symbol: "molt_urllib_error_urlerror_init",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_error_urlerror_str",
-        symbol: "molt_urllib_error_urlerror_str",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_error_httperror_init",
-        symbol: "molt_urllib_error_httperror_init",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_error_httperror_str",
-        symbol: "molt_urllib_error_httperror_str",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_error_content_too_short_init",
-        symbol: "molt_urllib_error_content_too_short_init",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_request_init",
-        symbol: "molt_urllib_request_request_init",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_opener_init",
-        symbol: "molt_urllib_request_opener_init",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_add_handler",
-        symbol: "molt_urllib_request_add_handler",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_open",
-        symbol: "molt_urllib_request_open",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_process_http_error",
-        symbol: "molt_urllib_request_process_http_error",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_read",
-        symbol: "molt_urllib_request_response_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_close",
-        symbol: "molt_urllib_request_response_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_drop",
-        symbol: "molt_urllib_request_response_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_geturl",
-        symbol: "molt_urllib_request_response_geturl",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_getcode",
-        symbol: "molt_urllib_request_response_getcode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_getreason",
-        symbol: "molt_urllib_request_response_getreason",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_urllib_request_response_getheaders",
-        symbol: "molt_urllib_request_response_getheaders",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_cookiejar_new",
-        symbol: "molt_http_cookiejar_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_http_cookiejar_len",
-        symbol: "molt_http_cookiejar_len",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_cookiejar_clear",
-        symbol: "molt_http_cookiejar_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_cookiejar_extract",
-        symbol: "molt_http_cookiejar_extract",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_cookiejar_header_for_url",
-        symbol: "molt_http_cookiejar_header_for_url",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_ctypes_require_ffi",
-        symbol: "molt_ctypes_require_ffi",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_ctypes_coerce_value",
-        symbol: "molt_ctypes_coerce_value",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_ctypes_default_value",
-        symbol: "molt_ctypes_default_value",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ctypes_sizeof",
-        symbol: "molt_ctypes_sizeof",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_execute",
-        symbol: "molt_http_client_execute",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_read",
-        symbol: "molt_http_client_response_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_close",
-        symbol: "molt_http_client_response_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_drop",
-        symbol: "molt_http_client_response_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_getstatus",
-        symbol: "molt_http_client_response_getstatus",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_getreason",
-        symbol: "molt_http_client_response_getreason",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_getheader",
-        symbol: "molt_http_client_response_getheader",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_client_response_getheaders",
-        symbol: "molt_http_client_response_getheaders",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_register",
-        symbol: "molt_socketserver_register",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_unregister",
-        symbol: "molt_socketserver_unregister",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_dispatch_begin",
-        symbol: "molt_socketserver_dispatch_begin",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_dispatch_poll",
-        symbol: "molt_socketserver_dispatch_poll",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_dispatch_cancel",
-        symbol: "molt_socketserver_dispatch_cancel",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_get_request_poll",
-        symbol: "molt_socketserver_get_request_poll",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_set_response",
-        symbol: "molt_socketserver_set_response",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_serve_forever",
-        symbol: "molt_socketserver_serve_forever",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_handle_request",
-        symbol: "molt_socketserver_handle_request",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketserver_shutdown",
-        symbol: "molt_socketserver_shutdown",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_read_request",
-        symbol: "molt_http_server_read_request",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_compute_close_connection",
-        symbol: "molt_http_server_compute_close_connection",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_handle_one_request",
-        symbol: "molt_http_server_handle_one_request",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_send_response",
-        symbol: "molt_http_server_send_response",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_send_response_only",
-        symbol: "molt_http_server_send_response_only",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_send_header",
-        symbol: "molt_http_server_send_header",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_end_headers",
-        symbol: "molt_http_server_end_headers",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_send_error",
-        symbol: "molt_http_server_send_error",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_version_string",
-        symbol: "molt_http_server_version_string",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_date_time_string",
-        symbol: "molt_http_server_date_time_string",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_context_null",
-        symbol: "molt_context_null",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_context_closing",
-        symbol: "molt_context_closing",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_closing",
-        symbol: "molt_contextlib_closing",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_aclosing_enter",
-        symbol: "molt_contextlib_aclosing_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_aclosing_exit",
-        symbol: "molt_contextlib_aclosing_exit",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_abstract_enter",
-        symbol: "molt_contextlib_abstract_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_abstract_aenter",
-        symbol: "molt_contextlib_abstract_aenter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_abstract_subclasshook",
-        symbol: "molt_contextlib_abstract_subclasshook",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_abstract_async_subclasshook",
-        symbol: "molt_contextlib_abstract_async_subclasshook",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_contextdecorator_call",
-        symbol: "molt_contextlib_contextdecorator_call",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_chdir_enter",
-        symbol: "molt_contextlib_chdir_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_chdir_exit",
-        symbol: "molt_contextlib_chdir_exit",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_new",
-        symbol: "molt_contextlib_asyncgen_cm_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_drop",
-        symbol: "molt_contextlib_asyncgen_cm_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_aenter",
-        symbol: "molt_contextlib_asyncgen_cm_aenter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_aexit",
-        symbol: "molt_contextlib_asyncgen_cm_aexit",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_generator_enter",
-        symbol: "molt_contextlib_generator_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_generator_exit",
-        symbol: "molt_contextlib_generator_exit",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_enter",
-        symbol: "molt_contextlib_asyncgen_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_exit",
-        symbol: "molt_contextlib_asyncgen_exit",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_suppress_match",
-        symbol: "molt_contextlib_suppress_match",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_redirect_enter",
-        symbol: "molt_contextlib_redirect_enter",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_redirect_exit",
-        symbol: "molt_contextlib_redirect_exit",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_new",
-        symbol: "molt_contextlib_exitstack_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_drop",
-        symbol: "molt_contextlib_exitstack_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_push",
-        symbol: "molt_contextlib_exitstack_push",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_push_callback",
-        symbol: "molt_contextlib_exitstack_push_callback",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_pop",
-        symbol: "molt_contextlib_exitstack_pop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_pop_all",
-        symbol: "molt_contextlib_exitstack_pop_all",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_enter_context",
-        symbol: "molt_contextlib_exitstack_enter_context",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_exitstack_exit",
-        symbol: "molt_contextlib_exitstack_exit",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_async_exitstack_push_callback",
-        symbol: "molt_contextlib_async_exitstack_push_callback",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_async_exitstack_push_exit",
-        symbol: "molt_contextlib_async_exitstack_push_exit",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_async_exitstack_enter_context",
-        symbol: "molt_contextlib_async_exitstack_enter_context",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_async_exitstack_exit",
-        symbol: "molt_contextlib_async_exitstack_exit",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_new",
-        symbol: "molt_email_message_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_from_bytes",
-        symbol: "molt_email_message_from_bytes",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_set",
-        symbol: "molt_email_message_set",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_get",
-        symbol: "molt_email_message_get",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_set_content",
-        symbol: "molt_email_message_set_content",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_add_alternative",
-        symbol: "molt_email_message_add_alternative",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_add_attachment",
-        symbol: "molt_email_message_add_attachment",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_is_multipart",
-        symbol: "molt_email_message_is_multipart",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_payload",
-        symbol: "molt_email_message_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_content",
-        symbol: "molt_email_message_content",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_content_type",
-        symbol: "molt_email_message_content_type",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_filename",
-        symbol: "molt_email_message_filename",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_as_string",
-        symbol: "molt_email_message_as_string",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_items",
-        symbol: "molt_email_message_items",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_drop",
-        symbol: "molt_email_message_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_utils_make_msgid",
-        symbol: "molt_email_utils_make_msgid",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_utils_getaddresses",
-        symbol: "molt_email_utils_getaddresses",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_utils_parsedate_tz",
-        symbol: "molt_email_utils_parsedate_tz",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_utils_format_datetime",
-        symbol: "molt_email_utils_format_datetime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_utils_parsedate_to_datetime",
-        symbol: "molt_email_utils_parsedate_to_datetime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_email_policy_new",
-        symbol: "molt_email_policy_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_email_header_encode_word",
-        symbol: "molt_email_header_encode_word",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_email_address_addr_spec",
-        symbol: "molt_email_address_addr_spec",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_email_address_format",
-        symbol: "molt_email_address_format",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncgen_shutdown",
-        symbol: "molt_asyncgen_shutdown",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_block_on",
-        symbol: "molt_block_on",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_new",
-        symbol: "molt_chan_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_send",
-        symbol: "molt_chan_send",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_recv",
-        symbol: "molt_chan_recv",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_try_send",
-        symbol: "molt_chan_try_send",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_try_recv",
-        symbol: "molt_chan_try_recv",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_send_blocking",
-        symbol: "molt_chan_send_blocking",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_recv_blocking",
-        symbol: "molt_chan_recv_blocking",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_chan_drop",
-        symbol: "molt_chan_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_pending",
-        symbol: "molt_pending",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_spawn",
-        symbol: "molt_spawn",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_async_sleep",
-        symbol: "molt_async_sleep_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_wait_for_new",
-        symbol: "molt_asyncio_wait_for_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_wait_new",
-        symbol: "molt_asyncio_wait_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_gather_new",
-        symbol: "molt_asyncio_gather_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_cancel_pending",
-        symbol: "molt_asyncio_cancel_pending",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_batch_run",
-        symbol: "molt_asyncio_ready_batch_run",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_queue_drain",
-        symbol: "molt_asyncio_ready_queue_drain",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_waiters_notify",
-        symbol: "molt_asyncio_waiters_notify",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_waiters_notify_exception",
-        symbol: "molt_asyncio_waiters_notify_exception",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_waiters_remove",
-        symbol: "molt_asyncio_waiters_remove",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_barrier_release",
-        symbol: "molt_asyncio_barrier_release",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_condition_wait_for_step",
-        symbol: "molt_asyncio_condition_wait_for_step",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_future_transfer",
-        symbol: "molt_asyncio_future_transfer",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_waiters_cleanup",
-        symbol: "molt_asyncio_event_waiters_cleanup",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_set",
-        symbol: "molt_asyncio_task_registry_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_get",
-        symbol: "molt_asyncio_task_registry_get",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_contains",
-        symbol: "molt_asyncio_task_registry_contains",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_current",
-        symbol: "molt_asyncio_task_registry_current",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_current_for_loop",
-        symbol: "molt_asyncio_task_registry_current_for_loop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_pop",
-        symbol: "molt_asyncio_task_registry_pop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_move",
-        symbol: "molt_asyncio_task_registry_move",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_values",
-        symbol: "molt_asyncio_task_registry_values",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_live",
-        symbol: "molt_asyncio_task_registry_live",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_registry_live_set",
-        symbol: "molt_asyncio_task_registry_live_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_waiters_register",
-        symbol: "molt_asyncio_event_waiters_register",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_waiters_unregister",
-        symbol: "molt_asyncio_event_waiters_unregister",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_waiters_cleanup_token",
-        symbol: "molt_asyncio_event_waiters_cleanup_token",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_child_watcher_add",
-        symbol: "molt_asyncio_child_watcher_add",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_child_watcher_remove",
-        symbol: "molt_asyncio_child_watcher_remove",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_child_watcher_clear",
-        symbol: "molt_asyncio_child_watcher_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_child_watcher_pop",
-        symbol: "molt_asyncio_child_watcher_pop",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_require_ssl_transport_support",
-        symbol: "molt_asyncio_require_ssl_transport_support",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ssl_transport_orchestrate",
-        symbol: "molt_asyncio_ssl_transport_orchestrate",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_tls_client_connect_new",
-        symbol: "molt_asyncio_tls_client_connect_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_tls_client_from_fd_new",
-        symbol: "molt_asyncio_tls_client_from_fd_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_tls_server_payload",
-        symbol: "molt_asyncio_tls_server_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_tls_server_from_fd_new",
-        symbol: "molt_asyncio_tls_server_from_fd_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_require_unix_socket_support",
-        symbol: "molt_asyncio_require_unix_socket_support",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_require_child_watcher_support",
-        symbol: "molt_asyncio_require_child_watcher_support",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_running_loop_get",
-        symbol: "molt_asyncio_running_loop_get",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_running_loop_set",
-        symbol: "molt_asyncio_running_loop_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_loop_get",
-        symbol: "molt_asyncio_event_loop_get",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_loop_get_current",
-        symbol: "molt_asyncio_event_loop_get_current",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_loop_set",
-        symbol: "molt_asyncio_event_loop_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_loop_policy_get",
-        symbol: "molt_asyncio_event_loop_policy_get",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_loop_policy_set",
-        symbol: "molt_asyncio_event_loop_policy_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_taskgroup_on_task_done",
-        symbol: "molt_asyncio_taskgroup_on_task_done",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_taskgroup_request_cancel",
-        symbol: "molt_asyncio_taskgroup_request_cancel",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_tasks_add_done_callback",
-        symbol: "molt_asyncio_tasks_add_done_callback",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_cancel_apply",
-        symbol: "molt_asyncio_task_cancel_apply",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_task_uncancel_apply",
-        symbol: "molt_asyncio_task_uncancel_apply",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_future_invoke_callbacks",
-        symbol: "molt_asyncio_future_invoke_callbacks",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_event_set_waiters",
-        symbol: "molt_asyncio_event_set_waiters",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_loop_enqueue_handle",
-        symbol: "molt_asyncio_loop_enqueue_handle",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_handle_new",
-        symbol: "molt_asyncio_timer_handle_new",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_schedule",
-        symbol: "molt_asyncio_timer_schedule",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_timer_handle_cancel",
-        symbol: "molt_asyncio_timer_handle_cancel",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_fd_watcher_new",
-        symbol: "molt_asyncio_fd_watcher_new",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_fd_watcher_register",
-        symbol: "molt_asyncio_fd_watcher_register",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_fd_watcher_unregister",
-        symbol: "molt_asyncio_fd_watcher_unregister",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_subprocess_stdio_normalize",
-        symbol: "molt_asyncio_subprocess_stdio_normalize",
-        arity: 11,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_server_accept_loop_new",
-        symbol: "molt_asyncio_server_accept_loop_new",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_ready_runner_new",
-        symbol: "molt_asyncio_ready_runner_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_stream_reader_read_new",
-        symbol: "molt_asyncio_stream_reader_read_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_stream_reader_readline_new",
-        symbol: "molt_asyncio_stream_reader_readline_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_stream_send_all_new",
-        symbol: "molt_asyncio_stream_send_all_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_stream_buffer_snapshot",
-        symbol: "molt_asyncio_stream_buffer_snapshot",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_stream_buffer_consume",
-        symbol: "molt_asyncio_stream_buffer_consume",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_socket_reader_read_new",
-        symbol: "molt_asyncio_socket_reader_read_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_socket_reader_readline_new",
-        symbol: "molt_asyncio_socket_reader_readline_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_recv_new",
-        symbol: "molt_asyncio_sock_recv_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_connect_new",
-        symbol: "molt_asyncio_sock_connect_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_accept_new",
-        symbol: "molt_asyncio_sock_accept_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_recv_into_new",
-        symbol: "molt_asyncio_sock_recv_into_new",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_sendall_new",
-        symbol: "molt_asyncio_sock_sendall_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_recvfrom_new",
-        symbol: "molt_asyncio_sock_recvfrom_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_recvfrom_into_new",
-        symbol: "molt_asyncio_sock_recvfrom_into_new",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_sock_sendto_new",
-        symbol: "molt_asyncio_sock_sendto_new",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_time_monotonic",
-        symbol: "molt_time_monotonic",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_monotonic_ns",
-        symbol: "molt_time_monotonic_ns",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_perf_counter",
-        symbol: "molt_time_perf_counter",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_perf_counter_ns",
-        symbol: "molt_time_perf_counter_ns",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_time",
-        symbol: "molt_time_time",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_time_ns",
-        symbol: "molt_time_time_ns",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_process_time",
-        symbol: "molt_time_process_time",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_process_time_ns",
-        symbol: "molt_time_process_time_ns",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_localtime",
-        symbol: "molt_time_localtime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_time_gmtime",
-        symbol: "molt_time_gmtime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_time_strftime",
-        symbol: "molt_time_strftime",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_time_timezone",
-        symbol: "molt_time_timezone",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_daylight",
-        symbol: "molt_time_daylight",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_altzone",
-        symbol: "molt_time_altzone",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_tzname",
-        symbol: "molt_time_tzname",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_time_asctime",
-        symbol: "molt_time_asctime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_time_mktime",
-        symbol: "molt_time_mktime",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_time_timegm",
-        symbol: "molt_time_timegm",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_time_get_clock_info",
-        symbol: "molt_time_get_clock_info",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heapify",
-        symbol: "molt_heapq_heapify",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heappush",
-        symbol: "molt_heapq_heappush",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heappop",
-        symbol: "molt_heapq_heappop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heapreplace",
-        symbol: "molt_heapq_heapreplace",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heappushpop",
-        symbol: "molt_heapq_heappushpop",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_log",
-        symbol: "molt_math_log",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_log2",
-        symbol: "molt_math_log2",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_log10",
-        symbol: "molt_math_log10",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_log1p",
-        symbol: "molt_math_log1p",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_exp",
-        symbol: "molt_math_exp",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_expm1",
-        symbol: "molt_math_expm1",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_fma",
-        symbol: "molt_math_fma",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_math_sin",
-        symbol: "molt_math_sin",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_cos",
-        symbol: "molt_math_cos",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_acos",
-        symbol: "molt_math_acos",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_lgamma",
-        symbol: "molt_math_lgamma",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_gamma",
-        symbol: "molt_math_gamma",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_erf",
-        symbol: "molt_math_erf",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_erfc",
-        symbol: "molt_math_erfc",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_isfinite",
-        symbol: "molt_math_isfinite",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_isinf",
-        symbol: "molt_math_isinf",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_isnan",
-        symbol: "molt_math_isnan",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_fabs",
-        symbol: "molt_math_fabs",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_copysign",
-        symbol: "molt_math_copysign",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_sqrt",
-        symbol: "molt_math_sqrt",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_floor",
-        symbol: "molt_math_floor",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_ceil",
-        symbol: "molt_math_ceil",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_trunc",
-        symbol: "molt_math_trunc",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_fmod",
-        symbol: "molt_math_fmod",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_modf",
-        symbol: "molt_math_modf",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_frexp",
-        symbol: "molt_math_frexp",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_ldexp",
-        symbol: "molt_math_ldexp",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_isclose",
-        symbol: "molt_math_isclose",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_math_prod",
-        symbol: "molt_math_prod",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_fsum",
-        symbol: "molt_math_fsum",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_gcd",
-        symbol: "molt_math_gcd",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_lcm",
-        symbol: "molt_math_lcm",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_factorial",
-        symbol: "molt_math_factorial",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_comb",
-        symbol: "molt_math_comb",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_perm",
-        symbol: "molt_math_perm",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_degrees",
-        symbol: "molt_math_degrees",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_radians",
-        symbol: "molt_math_radians",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_hypot",
-        symbol: "molt_math_hypot",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_dist",
-        symbol: "molt_math_dist",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_isqrt",
-        symbol: "molt_math_isqrt",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_nextafter",
-        symbol: "molt_math_nextafter",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_ulp",
-        symbol: "molt_math_ulp",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_remainder",
-        symbol: "molt_math_remainder",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_tan",
-        symbol: "molt_math_tan",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_asin",
-        symbol: "molt_math_asin",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_atan",
-        symbol: "molt_math_atan",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_atan2",
-        symbol: "molt_math_atan2",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_math_sinh",
-        symbol: "molt_math_sinh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_cosh",
-        symbol: "molt_math_cosh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_tanh",
-        symbol: "molt_math_tanh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_asinh",
-        symbol: "molt_math_asinh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_acosh",
-        symbol: "molt_math_acosh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_math_atanh",
-        symbol: "molt_math_atanh",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_mean",
-        symbol: "molt_statistics_mean",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_fmean",
-        symbol: "molt_statistics_fmean",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_stdev",
-        symbol: "molt_statistics_stdev",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_variance",
-        symbol: "molt_statistics_variance",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_pvariance",
-        symbol: "molt_statistics_pvariance",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_pstdev",
-        symbol: "molt_statistics_pstdev",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_median",
-        symbol: "molt_statistics_median",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_median_low",
-        symbol: "molt_statistics_median_low",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_median_high",
-        symbol: "molt_statistics_median_high",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_median_grouped",
-        symbol: "molt_statistics_median_grouped",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_mode",
-        symbol: "molt_statistics_mode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_multimode",
-        symbol: "molt_statistics_multimode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_quantiles",
-        symbol: "molt_statistics_quantiles",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_harmonic_mean",
-        symbol: "molt_statistics_harmonic_mean",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_geometric_mean",
-        symbol: "molt_statistics_geometric_mean",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_covariance",
-        symbol: "molt_statistics_covariance",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_correlation",
-        symbol: "molt_statistics_correlation",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_statistics_linear_regression",
-        symbol: "molt_statistics_linear_regression",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_new",
-        symbol: "molt_decimal_context_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_get_current",
-        symbol: "molt_decimal_context_get_current",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_set_current",
-        symbol: "molt_decimal_context_set_current",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_copy",
-        symbol: "molt_decimal_context_copy",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_drop",
-        symbol: "molt_decimal_context_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_get_prec",
-        symbol: "molt_decimal_context_get_prec",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_set_prec",
-        symbol: "molt_decimal_context_set_prec",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_get_rounding",
-        symbol: "molt_decimal_context_get_rounding",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_set_rounding",
-        symbol: "molt_decimal_context_set_rounding",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_clear_flags",
-        symbol: "molt_decimal_context_clear_flags",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_get_flag",
-        symbol: "molt_decimal_context_get_flag",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_set_flag",
-        symbol: "molt_decimal_context_set_flag",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_get_trap",
-        symbol: "molt_decimal_context_get_trap",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_context_set_trap",
-        symbol: "molt_decimal_context_set_trap",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_from_str",
-        symbol: "molt_decimal_from_str",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_from_int",
-        symbol: "molt_decimal_from_int",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_clone",
-        symbol: "molt_decimal_clone",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_drop",
-        symbol: "molt_decimal_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_to_string",
-        symbol: "molt_decimal_to_string",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_as_tuple",
-        symbol: "molt_decimal_as_tuple",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_to_float",
-        symbol: "molt_decimal_to_float",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_div",
-        symbol: "molt_decimal_div",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_quantize",
-        symbol: "molt_decimal_quantize",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_compare",
-        symbol: "molt_decimal_compare",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_compare_total",
-        symbol: "molt_decimal_compare_total",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_normalize",
-        symbol: "molt_decimal_normalize",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_decimal_exp",
-        symbol: "molt_decimal_exp",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_hash_new",
-        symbol: "molt_hash_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_hash_update",
-        symbol: "molt_hash_update",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_hash_copy",
-        symbol: "molt_hash_copy",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_hash_digest",
-        symbol: "molt_hash_digest",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_hash_drop",
-        symbol: "molt_hash_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_hmac_new",
-        symbol: "molt_hmac_new",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_hmac_update",
-        symbol: "molt_hmac_update",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_hmac_copy",
-        symbol: "molt_hmac_copy",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_hmac_digest",
-        symbol: "molt_hmac_digest",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_hmac_drop",
-        symbol: "molt_hmac_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_compare_digest",
-        symbol: "molt_compare_digest",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_pbkdf2_hmac",
-        symbol: "molt_pbkdf2_hmac",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_scrypt",
-        symbol: "molt_scrypt",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_os_dup",
-        symbol: "molt_os_dup",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_os_close",
-        symbol: "molt_os_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_os_read",
-        symbol: "molt_os_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_os_write",
-        symbol: "molt_os_write",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_os_pipe",
-        symbol: "molt_os_pipe",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_os_get_inheritable",
-        symbol: "molt_os_get_inheritable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_os_set_inheritable",
-        symbol: "molt_os_set_inheritable",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_os_urandom",
-        symbol: "molt_os_urandom",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_os_name",
-        symbol: "molt_os_name",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_os_fsencode",
-        symbol: "molt_os_fsencode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_getcwd",
-        symbol: "molt_getcwd",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_getpid",
-        symbol: "molt_getpid",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_signal_raise",
-        symbol: "molt_signal_raise",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_env_get",
-        symbol: "molt_env_get",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_env_snapshot",
-        symbol: "molt_env_snapshot",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_env_set",
-        symbol: "molt_env_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_env_unset",
-        symbol: "molt_env_unset",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_env_len",
-        symbol: "molt_env_len",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_env_contains",
-        symbol: "molt_env_contains",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_env_popitem",
-        symbol: "molt_env_popitem",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_env_clear",
-        symbol: "molt_env_clear",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_env_putenv",
-        symbol: "molt_env_putenv",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_env_unsetenv",
-        symbol: "molt_env_unsetenv",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_locale_setlocale",
-        symbol: "molt_locale_setlocale",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_locale_getpreferredencoding",
-        symbol: "molt_locale_getpreferredencoding",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_locale_getlocale",
-        symbol: "molt_locale_getlocale",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_gettext_gettext",
-        symbol: "molt_gettext_gettext",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_gettext_ngettext",
-        symbol: "molt_gettext_ngettext",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_errno_constants",
-        symbol: "molt_errno_constants",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_path_exists",
-        symbol: "molt_path_exists",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_isdir",
-        symbol: "molt_path_isdir",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_isfile",
-        symbol: "molt_path_isfile",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_islink",
-        symbol: "molt_path_islink",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_readlink",
-        symbol: "molt_path_readlink",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_symlink",
-        symbol: "molt_path_symlink",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_path_listdir",
-        symbol: "molt_path_listdir",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_mkdir",
-        symbol: "molt_path_mkdir",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_chmod",
-        symbol: "molt_path_chmod",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_unlink",
-        symbol: "molt_path_unlink",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_rmdir",
-        symbol: "molt_path_rmdir",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_join",
-        symbol: "molt_path_join",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_join_many",
-        symbol: "molt_path_join_many",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_isabs",
-        symbol: "molt_path_isabs",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_dirname",
-        symbol: "molt_path_dirname",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_basename",
-        symbol: "molt_path_basename",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_name",
-        symbol: "molt_path_name",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_split",
-        symbol: "molt_path_split",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_splitext",
-        symbol: "molt_path_splitext",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_suffix",
-        symbol: "molt_path_suffix",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_stem",
-        symbol: "molt_path_stem",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_suffixes",
-        symbol: "molt_path_suffixes",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_normpath",
-        symbol: "molt_path_normpath",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_abspath",
-        symbol: "molt_path_abspath",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_resolve",
-        symbol: "molt_path_resolve",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_as_uri",
-        symbol: "molt_path_as_uri",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_relpath",
-        symbol: "molt_path_relpath",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_expandvars",
-        symbol: "molt_path_expandvars",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_expandvars_env",
-        symbol: "molt_path_expandvars_env",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_makedirs",
-        symbol: "molt_path_makedirs",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_parts",
-        symbol: "molt_path_parts",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_splitroot",
-        symbol: "molt_path_splitroot",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_parents",
-        symbol: "molt_path_parents",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_compare",
-        symbol: "molt_path_compare",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_relative_to",
-        symbol: "molt_path_relative_to",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_relative_to_many",
-        symbol: "molt_path_relative_to_many",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_path_with_name",
-        symbol: "molt_path_with_name",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_with_suffix",
-        symbol: "molt_path_with_suffix",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_with_stem",
-        symbol: "molt_path_with_stem",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_is_relative_to",
-        symbol: "molt_path_is_relative_to",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_path_expanduser",
-        symbol: "molt_path_expanduser",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_path_match",
-        symbol: "molt_path_match",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_path_glob",
-        symbol: "molt_path_glob",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_glob_has_magic",
-        symbol: "molt_glob_has_magic",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_glob_escape",
-        symbol: "molt_glob_escape",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_glob_translate",
-        symbol: "molt_glob_translate",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_glob",
-        symbol: "molt_glob",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_io_class",
-        symbol: "molt_io_class",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_open",
-        symbol: "molt_file_open",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_open_ex",
-        symbol: "molt_file_open_ex",
-        arity: 8,
-    },
-    IntrinsicSpec {
-        name: "molt_file_read",
-        symbol: "molt_file_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readline",
-        symbol: "molt_file_readline",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readlines",
-        symbol: "molt_file_readlines",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_read1",
-        symbol: "molt_file_read1",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readall",
-        symbol: "molt_file_readall",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readinto",
-        symbol: "molt_file_readinto",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readinto1",
-        symbol: "molt_file_readinto1",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_peek",
-        symbol: "molt_file_peek",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_getvalue",
-        symbol: "molt_file_getvalue",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_getbuffer",
-        symbol: "molt_file_getbuffer",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_detach",
-        symbol: "molt_file_detach",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_reconfigure",
-        symbol: "molt_file_reconfigure",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_file_seek",
-        symbol: "molt_file_seek",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_file_tell",
-        symbol: "molt_file_tell",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_fileno",
-        symbol: "molt_file_fileno",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_truncate",
-        symbol: "molt_file_truncate",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_readable",
-        symbol: "molt_file_readable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_writable",
-        symbol: "molt_file_writable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_seekable",
-        symbol: "molt_file_seekable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_isatty",
-        symbol: "molt_file_isatty",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_iter",
-        symbol: "molt_file_iter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_next",
-        symbol: "molt_file_next",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_enter",
-        symbol: "molt_file_enter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_exit",
-        symbol: "molt_file_exit",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_exit_method",
-        symbol: "molt_file_exit_method",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_write",
-        symbol: "molt_file_write",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_writelines",
-        symbol: "molt_file_writelines",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_file_flush",
-        symbol: "molt_file_flush",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_close",
-        symbol: "molt_file_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_file_io_new",
-        symbol: "molt_file_io_new",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_file_io_init",
-        symbol: "molt_file_io_init",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_buffered_new",
-        symbol: "molt_buffered_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_buffered_init",
-        symbol: "molt_buffered_init",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_text_io_wrapper_new",
-        symbol: "molt_text_io_wrapper_new",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_text_io_wrapper_init",
-        symbol: "molt_text_io_wrapper_init",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_bytesio_new",
-        symbol: "molt_bytesio_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_bytesio_init",
-        symbol: "molt_bytesio_init",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_stringio_new",
-        symbol: "molt_stringio_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_stringio_init",
-        symbol: "molt_stringio_init",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_repr_from_obj",
-        symbol: "molt_repr_from_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_string_capitalize",
-        symbol: "molt_string_capitalize",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_codecs_decode",
-        symbol: "molt_codecs_decode",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_codecs_encode",
-        symbol: "molt_codecs_encode",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_codecs_lookup_name",
-        symbol: "molt_codecs_lookup_name",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_encodings_aliases_map",
-        symbol: "molt_encodings_aliases_map",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_pack",
-        symbol: "molt_struct_pack",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_unpack",
-        symbol: "molt_struct_unpack",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_calcsize",
-        symbol: "molt_struct_calcsize",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_pack_into",
-        symbol: "molt_struct_pack_into",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_unpack_from",
-        symbol: "molt_struct_unpack_from",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_struct_iter_unpack",
-        symbol: "molt_struct_iter_unpack",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_deflate_raw",
-        symbol: "molt_deflate_raw",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_inflate_raw",
-        symbol: "molt_inflate_raw",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_new",
-        symbol: "molt_cancel_token_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_clone",
-        symbol: "molt_cancel_token_clone",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_drop",
-        symbol: "molt_cancel_token_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_cancel",
-        symbol: "molt_cancel_token_cancel",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_is_cancelled",
-        symbol: "molt_cancel_token_is_cancelled",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_set_current",
-        symbol: "molt_cancel_token_set_current",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cancel_token_get_current",
-        symbol: "molt_cancel_token_get_current",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_future_cancel",
-        symbol: "molt_future_cancel",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_future_cancel_msg",
-        symbol: "molt_future_cancel_msg",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_future_cancel_clear",
-        symbol: "molt_future_cancel_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_promise_new",
-        symbol: "molt_promise_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_promise_set_result",
-        symbol: "molt_promise_set_result",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_promise_set_exception",
-        symbol: "molt_promise_set_exception",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_task_register_token_owned",
-        symbol: "molt_task_register_token_owned",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_io_wait",
-        symbol: "molt_io_wait",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_io_wait_new",
-        symbol: "molt_io_wait_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_select_select",
-        symbol: "molt_select_select",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_new",
-        symbol: "molt_select_selector_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_fileno",
-        symbol: "molt_select_selector_fileno",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_register",
-        symbol: "molt_select_selector_register",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_unregister",
-        symbol: "molt_select_selector_unregister",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_modify",
-        symbol: "molt_select_selector_modify",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_poll",
-        symbol: "molt_select_selector_poll",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_close",
-        symbol: "molt_select_selector_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_select_selector_drop",
-        symbol: "molt_select_selector_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_wait_new",
-        symbol: "molt_ws_wait_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_pair_obj",
-        symbol: "molt_ws_pair_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_connect_obj",
-        symbol: "molt_ws_connect_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_send_obj",
-        symbol: "molt_ws_send_obj",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_recv",
-        symbol: "molt_ws_recv",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_close",
-        symbol: "molt_ws_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ws_drop",
-        symbol: "molt_ws_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_submit",
-        symbol: "molt_thread_submit",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_spawn",
-        symbol: "molt_thread_spawn",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_spawn_shared",
-        symbol: "molt_thread_spawn_shared",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_join",
-        symbol: "molt_thread_join",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_is_alive",
-        symbol: "molt_thread_is_alive",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_ident",
-        symbol: "molt_thread_ident",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_native_id",
-        symbol: "molt_thread_native_id",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_current_ident",
-        symbol: "molt_thread_current_ident",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_current_native_id",
-        symbol: "molt_thread_current_native_id",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_drop",
-        symbol: "molt_thread_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_stack_size_get",
-        symbol: "molt_thread_stack_size_get",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_stack_size_set",
-        symbol: "molt_thread_stack_size_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_set_main",
-        symbol: "molt_thread_registry_set_main",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_register",
-        symbol: "molt_thread_registry_register",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_forget",
-        symbol: "molt_thread_registry_forget",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_snapshot",
-        symbol: "molt_thread_registry_snapshot",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_current",
-        symbol: "molt_thread_registry_current",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_registry_active_count",
-        symbol: "molt_thread_registry_active_count",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_thread_poll",
-        symbol: "molt_thread_poll",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_lock_new",
-        symbol: "molt_lock_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_lock_acquire",
-        symbol: "molt_lock_acquire",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_lock_release",
-        symbol: "molt_lock_release",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_lock_locked",
-        symbol: "molt_lock_locked",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_lock_drop",
-        symbol: "molt_lock_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_new",
-        symbol: "molt_rlock_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_acquire",
-        symbol: "molt_rlock_acquire",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_release",
-        symbol: "molt_rlock_release",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_locked",
-        symbol: "molt_rlock_locked",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_is_owned",
-        symbol: "molt_rlock_is_owned",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_release_save",
-        symbol: "molt_rlock_release_save",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_acquire_restore",
-        symbol: "molt_rlock_acquire_restore",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_rlock_drop",
-        symbol: "molt_rlock_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_condition_new",
-        symbol: "molt_condition_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_condition_wait",
-        symbol: "molt_condition_wait",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_condition_wait_for",
-        symbol: "molt_condition_wait_for",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_condition_notify",
-        symbol: "molt_condition_notify",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_condition_drop",
-        symbol: "molt_condition_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_event_new",
-        symbol: "molt_event_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_event_set",
-        symbol: "molt_event_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_event_clear",
-        symbol: "molt_event_clear",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_event_is_set",
-        symbol: "molt_event_is_set",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_event_wait",
-        symbol: "molt_event_wait",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_event_drop",
-        symbol: "molt_event_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_semaphore_new",
-        symbol: "molt_semaphore_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_semaphore_acquire",
-        symbol: "molt_semaphore_acquire",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_semaphore_release",
-        symbol: "molt_semaphore_release",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_semaphore_drop",
-        symbol: "molt_semaphore_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_new",
-        symbol: "molt_barrier_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_wait",
-        symbol: "molt_barrier_wait",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_abort",
-        symbol: "molt_barrier_abort",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_reset",
-        symbol: "molt_barrier_reset",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_parties",
-        symbol: "molt_barrier_parties",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_n_waiting",
-        symbol: "molt_barrier_n_waiting",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_broken",
-        symbol: "molt_barrier_broken",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_barrier_drop",
-        symbol: "molt_barrier_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_local_new",
-        symbol: "molt_local_new",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_local_get_dict",
-        symbol: "molt_local_get_dict",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_local_drop",
-        symbol: "molt_local_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_new",
-        symbol: "molt_queue_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_lifo_new",
-        symbol: "molt_queue_lifo_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_priority_new",
-        symbol: "molt_queue_priority_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_qsize",
-        symbol: "molt_queue_qsize",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_empty",
-        symbol: "molt_queue_empty",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_full",
-        symbol: "molt_queue_full",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_put",
-        symbol: "molt_queue_put",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_get",
-        symbol: "molt_queue_get",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_task_done",
-        symbol: "molt_queue_task_done",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_join",
-        symbol: "molt_queue_join",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_queue_drop",
-        symbol: "molt_queue_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_zipfile_crc32",
-        symbol: "molt_zipfile_crc32",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_logging_percent_style_format",
-        symbol: "molt_logging_percent_style_format",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_logging_runtime_ready",
-        symbol: "molt_logging_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_wsgiref_runtime_ready",
-        symbol: "molt_wsgiref_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_zoneinfo_runtime_ready",
-        symbol: "molt_zoneinfo_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_zipapp_runtime_ready",
-        symbol: "molt_zipapp_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_zlib_runtime_ready",
-        symbol: "molt_zlib_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_xmlrpc_runtime_ready",
-        symbol: "molt_xmlrpc_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_csv_runtime_ready",
-        symbol: "molt_csv_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_datetime_runtime_ready",
-        symbol: "molt_datetime_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_tokenize_runtime_ready",
-        symbol: "molt_tokenize_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_tomllib_runtime_ready",
-        symbol: "molt_tomllib_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_runtime_ready",
-        symbol: "molt_trace_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_unicodedata_runtime_ready",
-        symbol: "molt_unicodedata_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_subprocess_runtime_ready",
-        symbol: "molt_subprocess_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_symtable_runtime_ready",
-        symbol: "molt_symtable_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_import_smoke_runtime_ready",
-        symbol: "molt_import_smoke_runtime_ready",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_process_spawn",
-        symbol: "molt_process_spawn",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_process_wait_future",
-        symbol: "molt_process_wait_future",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_poll",
-        symbol: "molt_process_poll",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_pid",
-        symbol: "molt_process_pid",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_returncode",
-        symbol: "molt_process_returncode",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_kill",
-        symbol: "molt_process_kill",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_terminate",
-        symbol: "molt_process_terminate",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_stdin",
-        symbol: "molt_process_stdin",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_stdout",
-        symbol: "molt_process_stdout",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_stderr",
-        symbol: "molt_process_stderr",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_process_drop",
-        symbol: "molt_process_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_new",
-        symbol: "molt_stream_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_clone",
-        symbol: "molt_stream_clone",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_send_obj",
-        symbol: "molt_stream_send_obj",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_recv",
-        symbol: "molt_stream_recv",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_close",
-        symbol: "molt_stream_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_drop",
-        symbol: "molt_stream_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_reader_new",
-        symbol: "molt_stream_reader_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_reader_read",
-        symbol: "molt_stream_reader_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_reader_readline",
-        symbol: "molt_stream_reader_readline",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_reader_at_eof",
-        symbol: "molt_stream_reader_at_eof",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_stream_reader_drop",
-        symbol: "molt_stream_reader_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_new",
-        symbol: "molt_socket_reader_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_read",
-        symbol: "molt_socket_reader_read",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_readline",
-        symbol: "molt_socket_reader_readline",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_readline_limit",
-        symbol: "molt_socket_reader_readline_limit",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_at_eof",
-        symbol: "molt_socket_reader_at_eof",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_reader_drop",
-        symbol: "molt_socket_reader_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_db_query_obj",
-        symbol: "molt_db_query_obj",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_db_exec_obj",
-        symbol: "molt_db_exec_obj",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_msgpack_parse_scalar_obj",
-        symbol: "molt_msgpack_parse_scalar_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_cbor_parse_scalar_obj",
-        symbol: "molt_cbor_parse_scalar_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_json_parse_scalar_obj",
-        symbol: "molt_json_parse_scalar_obj",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_new",
-        symbol: "molt_socket_new",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_close",
-        symbol: "molt_socket_close",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_drop",
-        symbol: "molt_socket_drop",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_clone",
-        symbol: "molt_socket_clone",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_fileno",
-        symbol: "molt_socket_fileno",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_gettimeout",
-        symbol: "molt_socket_gettimeout",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_settimeout",
-        symbol: "molt_socket_settimeout",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_setblocking",
-        symbol: "molt_socket_setblocking",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getblocking",
-        symbol: "molt_socket_getblocking",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_bind",
-        symbol: "molt_socket_bind",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_listen",
-        symbol: "molt_socket_listen",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_accept",
-        symbol: "molt_socket_accept",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_connect",
-        symbol: "molt_socket_connect",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_connect_ex",
-        symbol: "molt_socket_connect_ex",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recv",
-        symbol: "molt_socket_recv",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recv_into",
-        symbol: "molt_socket_recv_into",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recvfrom_into",
-        symbol: "molt_socket_recvfrom_into",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_send",
-        symbol: "molt_socket_send",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_sendall",
-        symbol: "molt_socket_sendall",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_sendto",
-        symbol: "molt_socket_sendto",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recvfrom",
-        symbol: "molt_socket_recvfrom",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_sendmsg",
-        symbol: "molt_socket_sendmsg",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recvmsg",
-        symbol: "molt_socket_recvmsg",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_recvmsg_into",
-        symbol: "molt_socket_recvmsg_into",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_shutdown",
-        symbol: "molt_socket_shutdown",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getsockname",
-        symbol: "molt_socket_getsockname",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getpeername",
-        symbol: "molt_socket_getpeername",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_setsockopt",
-        symbol: "molt_socket_setsockopt",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getsockopt",
-        symbol: "molt_socket_getsockopt",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_detach",
-        symbol: "molt_socket_detach",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socketpair",
-        symbol: "molt_socketpair",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getaddrinfo",
-        symbol: "molt_socket_getaddrinfo",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getnameinfo",
-        symbol: "molt_socket_getnameinfo",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_gethostname",
-        symbol: "molt_socket_gethostname",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_gethostbyname",
-        symbol: "molt_socket_gethostbyname",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_gethostbyaddr",
-        symbol: "molt_socket_gethostbyaddr",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getfqdn",
-        symbol: "molt_socket_getfqdn",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getservbyname",
-        symbol: "molt_socket_getservbyname",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_getservbyport",
-        symbol: "molt_socket_getservbyport",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_inet_pton",
-        symbol: "molt_socket_inet_pton",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_inet_ntop",
-        symbol: "molt_socket_inet_ntop",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_constants",
-        symbol: "molt_socket_constants",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_socket_has_ipv6",
-        symbol: "molt_socket_has_ipv6",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_compile_builtin",
-        symbol: "molt_compile_builtin",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_code_new",
-        symbol: "molt_code_new",
-        arity: 8,
-    },
-    IntrinsicSpec {
-        name: "molt_code_slots_init",
-        symbol: "molt_code_slots_init",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_code_slot_set",
-        symbol: "molt_code_slot_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_module_new",
-        symbol: "molt_module_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_module_import",
-        symbol: "molt_module_import",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_runpy_run_module",
-        symbol: "molt_runpy_run_module",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_runpy_run_path",
-        symbol: "molt_runpy_run_path",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_runpy_resolve_path",
-        symbol: "molt_runpy_resolve_path",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_uuid_getnode",
-        symbol: "molt_uuid_getnode",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_uuid_uuid4_bytes",
-        symbol: "molt_uuid_uuid4_bytes",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_uuid_uuid1_bytes",
-        symbol: "molt_uuid_uuid1_bytes",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_uuid_uuid3_bytes",
-        symbol: "molt_uuid_uuid3_bytes",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_uuid_uuid5_bytes",
-        symbol: "molt_uuid_uuid5_bytes",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_source_loader_payload",
-        symbol: "molt_importlib_source_loader_payload",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_extension_loader_payload",
-        symbol: "molt_importlib_extension_loader_payload",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_sourceless_loader_payload",
-        symbol: "molt_importlib_sourceless_loader_payload",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_source_exec_payload",
-        symbol: "molt_importlib_source_exec_payload",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_zip_source_exec_payload",
-        symbol: "molt_importlib_zip_source_exec_payload",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_read_file",
-        symbol: "molt_importlib_read_file",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_restricted_source",
-        symbol: "molt_importlib_exec_restricted_source",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_extension",
-        symbol: "molt_importlib_exec_extension",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_sourceless",
-        symbol: "molt_importlib_exec_sourceless",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_module_spec_is_package",
-        symbol: "molt_importlib_module_spec_is_package",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_cache_from_source",
-        symbol: "molt_importlib_cache_from_source",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_find_in_path",
-        symbol: "molt_importlib_find_in_path",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_find_in_path_package_context",
-        symbol: "molt_importlib_find_in_path_package_context",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_find_spec_payload",
-        symbol: "molt_importlib_find_spec_payload",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_bootstrap_payload",
-        symbol: "molt_importlib_bootstrap_payload",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_runtime_state_payload",
-        symbol: "molt_importlib_runtime_state_payload",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_search_paths",
-        symbol: "molt_importlib_search_paths",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_namespace_paths",
-        symbol: "molt_importlib_namespace_paths",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_path_payload",
-        symbol: "molt_importlib_resources_path_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_package_payload",
-        symbol: "molt_importlib_resources_package_payload",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_as_file_enter",
-        symbol: "molt_importlib_resources_as_file_enter",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_as_file_exit",
-        symbol: "molt_importlib_resources_as_file_exit",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_module_name",
-        symbol: "molt_importlib_resources_module_name",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_loader_reader",
-        symbol: "molt_importlib_resources_loader_reader",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_files_traversable",
-        symbol: "molt_importlib_resources_reader_files_traversable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_roots",
-        symbol: "molt_importlib_resources_reader_roots",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_contents",
-        symbol: "molt_importlib_resources_reader_contents",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_resource_path",
-        symbol: "molt_importlib_resources_reader_resource_path",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_is_resource",
-        symbol: "molt_importlib_resources_reader_is_resource",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_open_resource_bytes",
-        symbol: "molt_importlib_resources_reader_open_resource_bytes",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_child_names",
-        symbol: "molt_importlib_resources_reader_child_names",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_exists",
-        symbol: "molt_importlib_resources_reader_exists",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_resources_reader_is_dir",
-        symbol: "molt_importlib_resources_reader_is_dir",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_linecache_loader_get_source",
-        symbol: "molt_linecache_loader_get_source",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_metadata_dist_paths",
-        symbol: "molt_importlib_metadata_dist_paths",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_metadata_entry_points_payload",
-        symbol: "molt_importlib_metadata_entry_points_payload",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_metadata_entry_points_select_payload",
-        symbol: "molt_importlib_metadata_entry_points_select_payload",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_metadata_normalize_name",
-        symbol: "molt_importlib_metadata_normalize_name",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_metadata_payload",
-        symbol: "molt_importlib_metadata_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_spec_from_file_location_payload",
-        symbol: "molt_importlib_spec_from_file_location_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_bootstrap",
-        symbol: "molt_copyreg_bootstrap",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_pickle",
-        symbol: "molt_copyreg_pickle",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_pickle_encode_protocol0",
-        symbol: "molt_pickle_encode_protocol0",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_pickle_dumps_protocol01",
-        symbol: "molt_pickle_dumps_protocol01",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_pickle_loads_protocol01",
-        symbol: "molt_pickle_loads_protocol01",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_pickle_dumps_core",
-        symbol: "molt_pickle_dumps_core",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_pickle_loads_core",
-        symbol: "molt_pickle_loads_core",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_constructor",
-        symbol: "molt_copyreg_constructor",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_add_extension",
-        symbol: "molt_copyreg_add_extension",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_remove_extension",
-        symbol: "molt_copyreg_remove_extension",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_copyreg_clear_extension_cache",
-        symbol: "molt_copyreg_clear_extension_cache",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_module_cache_set",
-        symbol: "molt_module_cache_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_exception_active",
-        symbol: "molt_exception_active",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_exception_last",
-        symbol: "molt_exception_last",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_exception_pending",
-        symbol: "molt_exception_pending",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_exception_clear",
-        symbol: "molt_exception_clear",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_collect",
-        symbol: "molt_gc_collect",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_enable",
-        symbol: "molt_gc_enable",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_disable",
-        symbol: "molt_gc_disable",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_isenabled",
-        symbol: "molt_gc_isenabled",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_set_threshold",
-        symbol: "molt_gc_set_threshold",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_get_threshold",
-        symbol: "molt_gc_get_threshold",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_set_debug",
-        symbol: "molt_gc_set_debug",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_get_debug",
-        symbol: "molt_gc_get_debug",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_gc_get_count",
-        symbol: "molt_gc_get_count",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_source_line",
-        symbol: "molt_traceback_source_line",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_infer_col_offsets",
-        symbol: "molt_traceback_infer_col_offsets",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_caret_line",
-        symbol: "molt_traceback_format_caret_line",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_exception_only",
-        symbol: "molt_traceback_format_exception_only",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_exception",
-        symbol: "molt_traceback_format_exception",
-        arity: 5,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_tb",
-        symbol: "molt_traceback_format_tb",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_format_stack",
-        symbol: "molt_traceback_format_stack",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_extract_tb",
-        symbol: "molt_traceback_extract_tb",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_exception_components",
-        symbol: "molt_traceback_exception_components",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_exception_chain_payload",
-        symbol: "molt_traceback_exception_chain_payload",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_exception_suppress_context",
-        symbol: "molt_traceback_exception_suppress_context",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_traceback_payload",
-        symbol: "molt_traceback_payload",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_getargv",
-        symbol: "molt_getargv",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_getframe",
-        symbol: "molt_getframe",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_getrecursionlimit",
-        symbol: "molt_getrecursionlimit",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_setrecursionlimit",
-        symbol: "molt_setrecursionlimit",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_executable",
-        symbol: "molt_sys_executable",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncgen_hooks_get",
-        symbol: "molt_asyncgen_hooks_get",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncgen_hooks_set",
-        symbol: "molt_asyncgen_hooks_set",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncgen_locals",
-        symbol: "molt_asyncgen_locals",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_gen_locals",
-        symbol: "molt_gen_locals",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ast_parse",
-        symbol: "molt_ast_parse",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_ast_walk",
-        symbol: "molt_ast_walk",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_ast_get_docstring",
-        symbol: "molt_ast_get_docstring",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_cleandoc",
-        symbol: "molt_inspect_cleandoc",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_currentframe",
-        symbol: "molt_inspect_currentframe",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_getdoc",
-        symbol: "molt_inspect_getdoc",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_isfunction",
-        symbol: "molt_inspect_isfunction",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_isclass",
-        symbol: "molt_inspect_isclass",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_ismodule",
-        symbol: "molt_inspect_ismodule",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_iscoroutine",
-        symbol: "molt_inspect_iscoroutine",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_iscoroutinefunction",
-        symbol: "molt_inspect_iscoroutinefunction",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_isasyncgenfunction",
-        symbol: "molt_inspect_isasyncgenfunction",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_isgeneratorfunction",
-        symbol: "molt_inspect_isgeneratorfunction",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_isawaitable",
-        symbol: "molt_inspect_isawaitable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_getgeneratorstate",
-        symbol: "molt_inspect_getgeneratorstate",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_getasyncgenstate",
-        symbol: "molt_inspect_getasyncgenstate",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_getcoroutinestate",
-        symbol: "molt_inspect_getcoroutinestate",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_inspect_signature_data",
-        symbol: "molt_inspect_signature_data",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_function_set_builtin",
-        symbol: "molt_function_set_builtin",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_class_new",
-        symbol: "molt_class_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_make_dataclass",
-        symbol: "molt_dataclasses_make_dataclass",
-        arity: 7,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_is_dataclass",
-        symbol: "molt_dataclasses_is_dataclass",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_fields",
-        symbol: "molt_dataclasses_fields",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_asdict",
-        symbol: "molt_dataclasses_asdict",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_astuple",
-        symbol: "molt_dataclasses_astuple",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_replace",
-        symbol: "molt_dataclasses_replace",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_class_set_base",
-        symbol: "molt_class_set_base",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_class_apply_set_name",
-        symbol: "molt_class_apply_set_name",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_classmethod_new",
-        symbol: "molt_classmethod_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_staticmethod_new",
-        symbol: "molt_staticmethod_new",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_property_new",
-        symbol: "molt_property_new",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_generic_alias_new",
-        symbol: "molt_generic_alias_new",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_typing_type_param",
-        symbol: "molt_typing_type_param",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_set_version_info",
-        symbol: "molt_sys_set_version_info",
-        arity: 6,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_version_info",
-        symbol: "molt_sys_version_info",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_version",
-        symbol: "molt_sys_version",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_platform",
-        symbol: "molt_sys_platform",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_path",
-        symbol: "molt_sys_bootstrap_path",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_pythonpath",
-        symbol: "molt_sys_bootstrap_pythonpath",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_module_roots",
-        symbol: "molt_sys_bootstrap_module_roots",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_pwd",
-        symbol: "molt_sys_bootstrap_pwd",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_include_cwd",
-        symbol: "molt_sys_bootstrap_include_cwd",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_stdlib_root",
-        symbol: "molt_sys_bootstrap_stdlib_root",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_bootstrap_payload",
-        symbol: "molt_sys_bootstrap_payload",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_stdin",
-        symbol: "molt_sys_stdin",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_stdout",
-        symbol: "molt_sys_stdout",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_stderr",
-        symbol: "molt_sys_stderr",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_sys_getfilesystemencodeerrors",
-        symbol: "molt_sys_getfilesystemencodeerrors",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_enter_slot",
-        symbol: "molt_trace_enter_slot",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_exit",
-        symbol: "molt_trace_exit",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_set_line",
-        symbol: "molt_trace_set_line",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_add",
-        symbol: "molt_operator_add",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_mul",
-        symbol: "molt_operator_mul",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_eq",
-        symbol: "molt_operator_eq",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_index",
-        symbol: "molt_operator_index",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_itemgetter",
-        symbol: "molt_operator_itemgetter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_attrgetter",
-        symbol: "molt_operator_attrgetter",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_operator_methodcaller",
-        symbol: "molt_operator_methodcaller",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_kwd_mark",
-        symbol: "molt_itertools_kwd_mark",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_chain",
-        symbol: "molt_itertools_chain",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_chain_from_iterable",
-        symbol: "molt_itertools_chain_from_iterable",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_islice",
-        symbol: "molt_itertools_islice",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_repeat",
-        symbol: "molt_itertools_repeat",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_count",
-        symbol: "molt_itertools_count",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_cycle",
-        symbol: "molt_itertools_cycle",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_accumulate",
-        symbol: "molt_itertools_accumulate",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_pairwise",
-        symbol: "molt_itertools_pairwise",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_product",
-        symbol: "molt_itertools_product",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_permutations",
-        symbol: "molt_itertools_permutations",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_combinations",
-        symbol: "molt_itertools_combinations",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_groupby",
-        symbol: "molt_itertools_groupby",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_itertools_tee",
-        symbol: "molt_itertools_tee",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_kwd_mark",
-        symbol: "molt_functools_kwd_mark",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_update_wrapper",
-        symbol: "molt_functools_update_wrapper",
-        arity: 4,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_wraps",
-        symbol: "molt_functools_wraps",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_cmp_to_key",
-        symbol: "molt_functools_cmp_to_key",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_total_ordering",
-        symbol: "molt_functools_total_ordering",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_partial",
-        symbol: "molt_functools_partial",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_reduce",
-        symbol: "molt_functools_reduce",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_functools_lru_cache",
-        symbol: "molt_functools_lru_cache",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_keyword_lists",
-        symbol: "molt_keyword_lists",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_keyword_iskeyword",
-        symbol: "molt_keyword_iskeyword",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_keyword_issoftkeyword",
-        symbol: "molt_keyword_issoftkeyword",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_future_features",
-        symbol: "molt_future_features",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_types_bootstrap",
-        symbol: "molt_types_bootstrap",
-        arity: 0,
-    },
-    IntrinsicSpec {
-        name: "molt_stdlib_probe",
-        symbol: "molt_stdlib_probe",
-        arity: 0,
-    },
+    IntrinsicSpec { name: "molt_capabilities_trusted", symbol: "molt_capabilities_trusted", arity: 0 },
+    IntrinsicSpec { name: "molt_capabilities_has", symbol: "molt_capabilities_has", arity: 1 },
+    IntrinsicSpec { name: "molt_capabilities_require", symbol: "molt_capabilities_require", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_register", symbol: "molt_weakref_register", arity: 3 },
+    IntrinsicSpec { name: "molt_weakref_get", symbol: "molt_weakref_get", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_peek", symbol: "molt_weakref_peek", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_drop", symbol: "molt_weakref_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_collect", symbol: "molt_weakref_collect", arity: 0 },
+    IntrinsicSpec { name: "molt_weakref_find_nocallback", symbol: "molt_weakref_find_nocallback", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_refs", symbol: "molt_weakref_refs", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_count", symbol: "molt_weakref_count", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_finalize_track", symbol: "molt_weakref_finalize_track", arity: 1 },
+    IntrinsicSpec { name: "molt_weakref_finalize_untrack", symbol: "molt_weakref_finalize_untrack", arity: 1 },
+    IntrinsicSpec { name: "molt_weakkeydict_set", symbol: "molt_weakkeydict_set", arity: 5 },
+    IntrinsicSpec { name: "molt_weakkeydict_get", symbol: "molt_weakkeydict_get", arity: 3 },
+    IntrinsicSpec { name: "molt_weakkeydict_del", symbol: "molt_weakkeydict_del", arity: 3 },
+    IntrinsicSpec { name: "molt_weakkeydict_contains", symbol: "molt_weakkeydict_contains", arity: 3 },
+    IntrinsicSpec { name: "molt_weakkeydict_len", symbol: "molt_weakkeydict_len", arity: 1 },
+    IntrinsicSpec { name: "molt_weakkeydict_items", symbol: "molt_weakkeydict_items", arity: 1 },
+    IntrinsicSpec { name: "molt_weakkeydict_keyrefs", symbol: "molt_weakkeydict_keyrefs", arity: 1 },
+    IntrinsicSpec { name: "molt_weakkeydict_popitem", symbol: "molt_weakkeydict_popitem", arity: 1 },
+    IntrinsicSpec { name: "molt_weakkeydict_clear", symbol: "molt_weakkeydict_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_weakvaluedict_set", symbol: "molt_weakvaluedict_set", arity: 4 },
+    IntrinsicSpec { name: "molt_weakvaluedict_get", symbol: "molt_weakvaluedict_get", arity: 3 },
+    IntrinsicSpec { name: "molt_weakvaluedict_del", symbol: "molt_weakvaluedict_del", arity: 3 },
+    IntrinsicSpec { name: "molt_weakvaluedict_contains", symbol: "molt_weakvaluedict_contains", arity: 3 },
+    IntrinsicSpec { name: "molt_weakvaluedict_len", symbol: "molt_weakvaluedict_len", arity: 1 },
+    IntrinsicSpec { name: "molt_weakvaluedict_items", symbol: "molt_weakvaluedict_items", arity: 1 },
+    IntrinsicSpec { name: "molt_weakvaluedict_valuerefs", symbol: "molt_weakvaluedict_valuerefs", arity: 1 },
+    IntrinsicSpec { name: "molt_weakvaluedict_popitem", symbol: "molt_weakvaluedict_popitem", arity: 1 },
+    IntrinsicSpec { name: "molt_weakvaluedict_clear", symbol: "molt_weakvaluedict_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_weakset_add", symbol: "molt_weakset_add", arity: 4 },
+    IntrinsicSpec { name: "molt_weakset_discard", symbol: "molt_weakset_discard", arity: 3 },
+    IntrinsicSpec { name: "molt_weakset_remove", symbol: "molt_weakset_remove", arity: 3 },
+    IntrinsicSpec { name: "molt_weakset_pop", symbol: "molt_weakset_pop", arity: 1 },
+    IntrinsicSpec { name: "molt_weakset_contains", symbol: "molt_weakset_contains", arity: 3 },
+    IntrinsicSpec { name: "molt_weakset_len", symbol: "molt_weakset_len", arity: 1 },
+    IntrinsicSpec { name: "molt_weakset_items", symbol: "molt_weakset_items", arity: 1 },
+    IntrinsicSpec { name: "molt_weakset_clear", symbol: "molt_weakset_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_bootstrap", symbol: "molt_abc_bootstrap", arity: 0 },
+    IntrinsicSpec { name: "molt_collections_abc_runtime_types", symbol: "molt_collections_abc_runtime_types", arity: 0 },
+    IntrinsicSpec { name: "molt_abc_get_cache_token", symbol: "molt_abc_get_cache_token", arity: 0 },
+    IntrinsicSpec { name: "molt_abc_init", symbol: "molt_abc_init", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_register", symbol: "molt_abc_register", arity: 2 },
+    IntrinsicSpec { name: "molt_abc_instancecheck", symbol: "molt_abc_instancecheck", arity: 2 },
+    IntrinsicSpec { name: "molt_abc_subclasscheck", symbol: "molt_abc_subclasscheck", arity: 2 },
+    IntrinsicSpec { name: "molt_abc_get_dump", symbol: "molt_abc_get_dump", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_reset_registry", symbol: "molt_abc_reset_registry", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_reset_caches", symbol: "molt_abc_reset_caches", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_update_abstractmethods", symbol: "molt_abc_update_abstractmethods", arity: 1 },
+    IntrinsicSpec { name: "molt_enum_init_member", symbol: "molt_enum_init_member", arity: 3 },
+    IntrinsicSpec { name: "molt_re_literal_matches", symbol: "molt_re_literal_matches", arity: 3 },
+    IntrinsicSpec { name: "molt_re_literal_advance", symbol: "molt_re_literal_advance", arity: 5 },
+    IntrinsicSpec { name: "molt_re_any_advance", symbol: "molt_re_any_advance", arity: 4 },
+    IntrinsicSpec { name: "molt_re_char_in_range", symbol: "molt_re_char_in_range", arity: 4 },
+    IntrinsicSpec { name: "molt_re_category_matches", symbol: "molt_re_category_matches", arity: 3 },
+    IntrinsicSpec { name: "molt_re_anchor_matches", symbol: "molt_re_anchor_matches", arity: 6 },
+    IntrinsicSpec { name: "molt_re_group_is_set", symbol: "molt_re_group_is_set", arity: 2 },
+    IntrinsicSpec { name: "molt_re_backref_advance", symbol: "molt_re_backref_advance", arity: 5 },
+    IntrinsicSpec { name: "molt_re_backref_group_advance", symbol: "molt_re_backref_group_advance", arity: 5 },
+    IntrinsicSpec { name: "molt_re_apply_scoped_flags", symbol: "molt_re_apply_scoped_flags", arity: 3 },
+    IntrinsicSpec { name: "molt_re_group_capture", symbol: "molt_re_group_capture", arity: 4 },
+    IntrinsicSpec { name: "molt_re_charclass_matches", symbol: "molt_re_charclass_matches", arity: 6 },
+    IntrinsicSpec { name: "molt_re_charclass_advance", symbol: "molt_re_charclass_advance", arity: 8 },
+    IntrinsicSpec { name: "molt_re_group_values", symbol: "molt_re_group_values", arity: 2 },
+    IntrinsicSpec { name: "molt_re_expand_replacement", symbol: "molt_re_expand_replacement", arity: 2 },
+    IntrinsicSpec { name: "molt_shlex_quote", symbol: "molt_shlex_quote", arity: 1 },
+    IntrinsicSpec { name: "molt_shlex_split", symbol: "molt_shlex_split", arity: 2 },
+    IntrinsicSpec { name: "molt_shlex_split_ex", symbol: "molt_shlex_split_ex", arity: 7 },
+    IntrinsicSpec { name: "molt_shlex_join", symbol: "molt_shlex_join", arity: 1 },
+    IntrinsicSpec { name: "molt_fnmatch", symbol: "molt_fnmatch", arity: 2 },
+    IntrinsicSpec { name: "molt_fnmatchcase", symbol: "molt_fnmatchcase", arity: 2 },
+    IntrinsicSpec { name: "molt_fnmatch_filter", symbol: "molt_fnmatch_filter", arity: 3 },
+    IntrinsicSpec { name: "molt_fnmatch_translate", symbol: "molt_fnmatch_translate", arity: 1 },
+    IntrinsicSpec { name: "molt_pkgutil_iter_modules", symbol: "molt_pkgutil_iter_modules", arity: 2 },
+    IntrinsicSpec { name: "molt_pkgutil_walk_packages", symbol: "molt_pkgutil_walk_packages", arity: 2 },
+    IntrinsicSpec { name: "molt_site_help0", symbol: "molt_site_help0", arity: 0 },
+    IntrinsicSpec { name: "molt_site_help1", symbol: "molt_site_help1", arity: 1 },
+    IntrinsicSpec { name: "molt_site_credits", symbol: "molt_site_credits", arity: 0 },
+    IntrinsicSpec { name: "molt_site_license", symbol: "molt_site_license", arity: 0 },
+    IntrinsicSpec { name: "molt_site_copyright", symbol: "molt_site_copyright", arity: 0 },
+    IntrinsicSpec { name: "molt_shutil_copyfile", symbol: "molt_shutil_copyfile", arity: 2 },
+    IntrinsicSpec { name: "molt_shutil_which", symbol: "molt_shutil_which", arity: 2 },
+    IntrinsicSpec { name: "molt_py_compile_compile", symbol: "molt_py_compile_compile", arity: 2 },
+    IntrinsicSpec { name: "molt_compileall_compile_file", symbol: "molt_compileall_compile_file", arity: 1 },
+    IntrinsicSpec { name: "molt_compileall_compile_dir", symbol: "molt_compileall_compile_dir", arity: 2 },
+    IntrinsicSpec { name: "molt_compileall_compile_path", symbol: "molt_compileall_compile_path", arity: 3 },
+    IntrinsicSpec { name: "molt_stat_constants", symbol: "molt_stat_constants", arity: 0 },
+    IntrinsicSpec { name: "molt_stat_ifmt", symbol: "molt_stat_ifmt", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_imode", symbol: "molt_stat_imode", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_isdir", symbol: "molt_stat_isdir", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_isreg", symbol: "molt_stat_isreg", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_ischr", symbol: "molt_stat_ischr", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_isblk", symbol: "molt_stat_isblk", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_isfifo", symbol: "molt_stat_isfifo", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_islnk", symbol: "molt_stat_islnk", arity: 1 },
+    IntrinsicSpec { name: "molt_stat_issock", symbol: "molt_stat_issock", arity: 1 },
+    IntrinsicSpec { name: "molt_textwrap_wrap", symbol: "molt_textwrap_wrap", arity: 2 },
+    IntrinsicSpec { name: "molt_textwrap_fill", symbol: "molt_textwrap_fill", arity: 2 },
+    IntrinsicSpec { name: "molt_textwrap_indent", symbol: "molt_textwrap_indent", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_quote", symbol: "molt_urllib_quote", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_quote_plus", symbol: "molt_urllib_quote_plus", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_unquote", symbol: "molt_urllib_unquote", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_unquote_plus", symbol: "molt_urllib_unquote_plus", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_parse_qsl", symbol: "molt_urllib_parse_qsl", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_parse_qs", symbol: "molt_urllib_parse_qs", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_urlencode", symbol: "molt_urllib_urlencode", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_urlsplit", symbol: "molt_urllib_urlsplit", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_urlparse", symbol: "molt_urllib_urlparse", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_urlunsplit", symbol: "molt_urllib_urlunsplit", arity: 5 },
+    IntrinsicSpec { name: "molt_urllib_urlunparse", symbol: "molt_urllib_urlunparse", arity: 6 },
+    IntrinsicSpec { name: "molt_urllib_urldefrag", symbol: "molt_urllib_urldefrag", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_urljoin", symbol: "molt_urllib_urljoin", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_error_urlerror_init", symbol: "molt_urllib_error_urlerror_init", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_error_urlerror_str", symbol: "molt_urllib_error_urlerror_str", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_error_httperror_init", symbol: "molt_urllib_error_httperror_init", arity: 6 },
+    IntrinsicSpec { name: "molt_urllib_error_httperror_str", symbol: "molt_urllib_error_httperror_str", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_error_content_too_short_init", symbol: "molt_urllib_error_content_too_short_init", arity: 3 },
+    IntrinsicSpec { name: "molt_urllib_request_request_init", symbol: "molt_urllib_request_request_init", arity: 5 },
+    IntrinsicSpec { name: "molt_urllib_request_opener_init", symbol: "molt_urllib_request_opener_init", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_add_handler", symbol: "molt_urllib_request_add_handler", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_request_open", symbol: "molt_urllib_request_open", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_request_process_http_error", symbol: "molt_urllib_request_process_http_error", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_request_response_read", symbol: "molt_urllib_request_response_read", arity: 2 },
+    IntrinsicSpec { name: "molt_urllib_request_response_close", symbol: "molt_urllib_request_response_close", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_response_drop", symbol: "molt_urllib_request_response_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_response_geturl", symbol: "molt_urllib_request_response_geturl", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_response_getcode", symbol: "molt_urllib_request_response_getcode", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_response_getreason", symbol: "molt_urllib_request_response_getreason", arity: 1 },
+    IntrinsicSpec { name: "molt_urllib_request_response_getheaders", symbol: "molt_urllib_request_response_getheaders", arity: 1 },
+    IntrinsicSpec { name: "molt_http_cookiejar_new", symbol: "molt_http_cookiejar_new", arity: 0 },
+    IntrinsicSpec { name: "molt_http_cookiejar_len", symbol: "molt_http_cookiejar_len", arity: 1 },
+    IntrinsicSpec { name: "molt_http_cookiejar_clear", symbol: "molt_http_cookiejar_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_http_cookiejar_extract", symbol: "molt_http_cookiejar_extract", arity: 3 },
+    IntrinsicSpec { name: "molt_http_cookiejar_header_for_url", symbol: "molt_http_cookiejar_header_for_url", arity: 2 },
+    IntrinsicSpec { name: "molt_ctypes_require_ffi", symbol: "molt_ctypes_require_ffi", arity: 0 },
+    IntrinsicSpec { name: "molt_ctypes_coerce_value", symbol: "molt_ctypes_coerce_value", arity: 2 },
+    IntrinsicSpec { name: "molt_ctypes_default_value", symbol: "molt_ctypes_default_value", arity: 1 },
+    IntrinsicSpec { name: "molt_ctypes_sizeof", symbol: "molt_ctypes_sizeof", arity: 1 },
+    IntrinsicSpec { name: "molt_http_client_execute", symbol: "molt_http_client_execute", arity: 7 },
+    IntrinsicSpec { name: "molt_http_client_response_read", symbol: "molt_http_client_response_read", arity: 2 },
+    IntrinsicSpec { name: "molt_http_client_response_close", symbol: "molt_http_client_response_close", arity: 1 },
+    IntrinsicSpec { name: "molt_http_client_response_drop", symbol: "molt_http_client_response_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_http_client_response_getstatus", symbol: "molt_http_client_response_getstatus", arity: 1 },
+    IntrinsicSpec { name: "molt_http_client_response_getreason", symbol: "molt_http_client_response_getreason", arity: 1 },
+    IntrinsicSpec { name: "molt_http_client_response_getheader", symbol: "molt_http_client_response_getheader", arity: 3 },
+    IntrinsicSpec { name: "molt_http_client_response_getheaders", symbol: "molt_http_client_response_getheaders", arity: 1 },
+    IntrinsicSpec { name: "molt_socketserver_register", symbol: "molt_socketserver_register", arity: 1 },
+    IntrinsicSpec { name: "molt_socketserver_unregister", symbol: "molt_socketserver_unregister", arity: 1 },
+    IntrinsicSpec { name: "molt_socketserver_dispatch_begin", symbol: "molt_socketserver_dispatch_begin", arity: 2 },
+    IntrinsicSpec { name: "molt_socketserver_dispatch_poll", symbol: "molt_socketserver_dispatch_poll", arity: 2 },
+    IntrinsicSpec { name: "molt_socketserver_dispatch_cancel", symbol: "molt_socketserver_dispatch_cancel", arity: 2 },
+    IntrinsicSpec { name: "molt_socketserver_get_request_poll", symbol: "molt_socketserver_get_request_poll", arity: 1 },
+    IntrinsicSpec { name: "molt_socketserver_set_response", symbol: "molt_socketserver_set_response", arity: 3 },
+    IntrinsicSpec { name: "molt_socketserver_serve_forever", symbol: "molt_socketserver_serve_forever", arity: 2 },
+    IntrinsicSpec { name: "molt_socketserver_handle_request", symbol: "molt_socketserver_handle_request", arity: 1 },
+    IntrinsicSpec { name: "molt_socketserver_shutdown", symbol: "molt_socketserver_shutdown", arity: 1 },
+    IntrinsicSpec { name: "molt_http_server_read_request", symbol: "molt_http_server_read_request", arity: 1 },
+    IntrinsicSpec { name: "molt_http_server_compute_close_connection", symbol: "molt_http_server_compute_close_connection", arity: 1 },
+    IntrinsicSpec { name: "molt_http_server_handle_one_request", symbol: "molt_http_server_handle_one_request", arity: 1 },
+    IntrinsicSpec { name: "molt_http_server_send_response", symbol: "molt_http_server_send_response", arity: 3 },
+    IntrinsicSpec { name: "molt_http_server_send_response_only", symbol: "molt_http_server_send_response_only", arity: 3 },
+    IntrinsicSpec { name: "molt_http_server_send_header", symbol: "molt_http_server_send_header", arity: 3 },
+    IntrinsicSpec { name: "molt_http_server_end_headers", symbol: "molt_http_server_end_headers", arity: 1 },
+    IntrinsicSpec { name: "molt_http_server_send_error", symbol: "molt_http_server_send_error", arity: 3 },
+    IntrinsicSpec { name: "molt_http_server_version_string", symbol: "molt_http_server_version_string", arity: 2 },
+    IntrinsicSpec { name: "molt_http_server_date_time_string", symbol: "molt_http_server_date_time_string", arity: 1 },
+    IntrinsicSpec { name: "molt_context_null", symbol: "molt_context_null", arity: 1 },
+    IntrinsicSpec { name: "molt_context_closing", symbol: "molt_context_closing", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_closing", symbol: "molt_contextlib_closing", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_aclosing_enter", symbol: "molt_contextlib_aclosing_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_aclosing_exit", symbol: "molt_contextlib_aclosing_exit", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_abstract_enter", symbol: "molt_contextlib_abstract_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_abstract_aenter", symbol: "molt_contextlib_abstract_aenter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_abstract_subclasshook", symbol: "molt_contextlib_abstract_subclasshook", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_abstract_async_subclasshook", symbol: "molt_contextlib_abstract_async_subclasshook", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_contextdecorator_call", symbol: "molt_contextlib_contextdecorator_call", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_chdir_enter", symbol: "molt_contextlib_chdir_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_chdir_exit", symbol: "molt_contextlib_chdir_exit", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_cm_new", symbol: "molt_contextlib_asyncgen_cm_new", arity: 3 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_cm_drop", symbol: "molt_contextlib_asyncgen_cm_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_cm_aenter", symbol: "molt_contextlib_asyncgen_cm_aenter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_cm_aexit", symbol: "molt_contextlib_asyncgen_cm_aexit", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_generator_enter", symbol: "molt_contextlib_generator_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_generator_exit", symbol: "molt_contextlib_generator_exit", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_enter", symbol: "molt_contextlib_asyncgen_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_asyncgen_exit", symbol: "molt_contextlib_asyncgen_exit", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_suppress_match", symbol: "molt_contextlib_suppress_match", arity: 2 },
+    IntrinsicSpec { name: "molt_contextlib_redirect_enter", symbol: "molt_contextlib_redirect_enter", arity: 3 },
+    IntrinsicSpec { name: "molt_contextlib_redirect_exit", symbol: "molt_contextlib_redirect_exit", arity: 3 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_new", symbol: "molt_contextlib_exitstack_new", arity: 0 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_drop", symbol: "molt_contextlib_exitstack_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_push", symbol: "molt_contextlib_exitstack_push", arity: 2 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_push_callback", symbol: "molt_contextlib_exitstack_push_callback", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_pop", symbol: "molt_contextlib_exitstack_pop", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_pop_all", symbol: "molt_contextlib_exitstack_pop_all", arity: 1 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_enter_context", symbol: "molt_contextlib_exitstack_enter_context", arity: 2 },
+    IntrinsicSpec { name: "molt_contextlib_exitstack_exit", symbol: "molt_contextlib_exitstack_exit", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_async_exitstack_push_callback", symbol: "molt_contextlib_async_exitstack_push_callback", arity: 4 },
+    IntrinsicSpec { name: "molt_contextlib_async_exitstack_push_exit", symbol: "molt_contextlib_async_exitstack_push_exit", arity: 2 },
+    IntrinsicSpec { name: "molt_contextlib_async_exitstack_enter_context", symbol: "molt_contextlib_async_exitstack_enter_context", arity: 2 },
+    IntrinsicSpec { name: "molt_contextlib_async_exitstack_exit", symbol: "molt_contextlib_async_exitstack_exit", arity: 4 },
+    IntrinsicSpec { name: "molt_email_message_new", symbol: "molt_email_message_new", arity: 0 },
+    IntrinsicSpec { name: "molt_email_message_from_bytes", symbol: "molt_email_message_from_bytes", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_set", symbol: "molt_email_message_set", arity: 3 },
+    IntrinsicSpec { name: "molt_email_message_get", symbol: "molt_email_message_get", arity: 2 },
+    IntrinsicSpec { name: "molt_email_message_set_content", symbol: "molt_email_message_set_content", arity: 2 },
+    IntrinsicSpec { name: "molt_email_message_add_alternative", symbol: "molt_email_message_add_alternative", arity: 3 },
+    IntrinsicSpec { name: "molt_email_message_add_attachment", symbol: "molt_email_message_add_attachment", arity: 5 },
+    IntrinsicSpec { name: "molt_email_message_is_multipart", symbol: "molt_email_message_is_multipart", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_payload", symbol: "molt_email_message_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_content", symbol: "molt_email_message_content", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_content_type", symbol: "molt_email_message_content_type", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_filename", symbol: "molt_email_message_filename", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_as_string", symbol: "molt_email_message_as_string", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_items", symbol: "molt_email_message_items", arity: 1 },
+    IntrinsicSpec { name: "molt_email_message_drop", symbol: "molt_email_message_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_email_utils_make_msgid", symbol: "molt_email_utils_make_msgid", arity: 1 },
+    IntrinsicSpec { name: "molt_email_utils_getaddresses", symbol: "molt_email_utils_getaddresses", arity: 1 },
+    IntrinsicSpec { name: "molt_email_utils_parsedate_tz", symbol: "molt_email_utils_parsedate_tz", arity: 1 },
+    IntrinsicSpec { name: "molt_email_utils_format_datetime", symbol: "molt_email_utils_format_datetime", arity: 1 },
+    IntrinsicSpec { name: "molt_email_utils_parsedate_to_datetime", symbol: "molt_email_utils_parsedate_to_datetime", arity: 1 },
+    IntrinsicSpec { name: "molt_email_policy_new", symbol: "molt_email_policy_new", arity: 2 },
+    IntrinsicSpec { name: "molt_email_header_encode_word", symbol: "molt_email_header_encode_word", arity: 2 },
+    IntrinsicSpec { name: "molt_email_address_addr_spec", symbol: "molt_email_address_addr_spec", arity: 2 },
+    IntrinsicSpec { name: "molt_email_address_format", symbol: "molt_email_address_format", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncgen_shutdown", symbol: "molt_asyncgen_shutdown", arity: 0 },
+    IntrinsicSpec { name: "molt_block_on", symbol: "molt_block_on", arity: 1 },
+    IntrinsicSpec { name: "molt_chan_new", symbol: "molt_chan_new", arity: 1 },
+    IntrinsicSpec { name: "molt_chan_send", symbol: "molt_chan_send", arity: 2 },
+    IntrinsicSpec { name: "molt_chan_recv", symbol: "molt_chan_recv", arity: 1 },
+    IntrinsicSpec { name: "molt_chan_try_send", symbol: "molt_chan_try_send", arity: 2 },
+    IntrinsicSpec { name: "molt_chan_try_recv", symbol: "molt_chan_try_recv", arity: 1 },
+    IntrinsicSpec { name: "molt_chan_send_blocking", symbol: "molt_chan_send_blocking", arity: 2 },
+    IntrinsicSpec { name: "molt_chan_recv_blocking", symbol: "molt_chan_recv_blocking", arity: 1 },
+    IntrinsicSpec { name: "molt_chan_drop", symbol: "molt_chan_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_pending", symbol: "molt_pending", arity: 0 },
+    IntrinsicSpec { name: "molt_spawn", symbol: "molt_spawn", arity: 1 },
+    IntrinsicSpec { name: "molt_async_sleep", symbol: "molt_async_sleep_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_wait_for_new", symbol: "molt_asyncio_wait_for_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_wait_new", symbol: "molt_asyncio_wait_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_gather_new", symbol: "molt_asyncio_gather_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_cancel_pending", symbol: "molt_asyncio_cancel_pending", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_ready_batch_run", symbol: "molt_asyncio_ready_batch_run", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_ready_queue_drain", symbol: "molt_asyncio_ready_queue_drain", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_waiters_notify", symbol: "molt_asyncio_waiters_notify", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_waiters_notify_exception", symbol: "molt_asyncio_waiters_notify_exception", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_waiters_remove", symbol: "molt_asyncio_waiters_remove", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_barrier_release", symbol: "molt_asyncio_barrier_release", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_condition_wait_for_step", symbol: "molt_asyncio_condition_wait_for_step", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_future_transfer", symbol: "molt_asyncio_future_transfer", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_event_waiters_cleanup", symbol: "molt_asyncio_event_waiters_cleanup", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_set", symbol: "molt_asyncio_task_registry_set", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_get", symbol: "molt_asyncio_task_registry_get", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_contains", symbol: "molt_asyncio_task_registry_contains", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_current", symbol: "molt_asyncio_task_registry_current", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_current_for_loop", symbol: "molt_asyncio_task_registry_current_for_loop", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_pop", symbol: "molt_asyncio_task_registry_pop", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_move", symbol: "molt_asyncio_task_registry_move", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_values", symbol: "molt_asyncio_task_registry_values", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_live", symbol: "molt_asyncio_task_registry_live", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_registry_live_set", symbol: "molt_asyncio_task_registry_live_set", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_event_waiters_register", symbol: "molt_asyncio_event_waiters_register", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_event_waiters_unregister", symbol: "molt_asyncio_event_waiters_unregister", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_event_waiters_cleanup_token", symbol: "molt_asyncio_event_waiters_cleanup_token", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_child_watcher_add", symbol: "molt_asyncio_child_watcher_add", arity: 4 },
+    IntrinsicSpec { name: "molt_asyncio_child_watcher_remove", symbol: "molt_asyncio_child_watcher_remove", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_child_watcher_clear", symbol: "molt_asyncio_child_watcher_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_child_watcher_pop", symbol: "molt_asyncio_child_watcher_pop", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_require_ssl_transport_support", symbol: "molt_asyncio_require_ssl_transport_support", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_ssl_transport_orchestrate", symbol: "molt_asyncio_ssl_transport_orchestrate", arity: 4 },
+    IntrinsicSpec { name: "molt_asyncio_tls_client_connect_new", symbol: "molt_asyncio_tls_client_connect_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_tls_client_from_fd_new", symbol: "molt_asyncio_tls_client_from_fd_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_tls_server_payload", symbol: "molt_asyncio_tls_server_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_tls_server_from_fd_new", symbol: "molt_asyncio_tls_server_from_fd_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_require_unix_socket_support", symbol: "molt_asyncio_require_unix_socket_support", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_require_child_watcher_support", symbol: "molt_asyncio_require_child_watcher_support", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_running_loop_get", symbol: "molt_asyncio_running_loop_get", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_running_loop_set", symbol: "molt_asyncio_running_loop_set", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_event_loop_get", symbol: "molt_asyncio_event_loop_get", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_event_loop_get_current", symbol: "molt_asyncio_event_loop_get_current", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_event_loop_set", symbol: "molt_asyncio_event_loop_set", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_event_loop_policy_get", symbol: "molt_asyncio_event_loop_policy_get", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncio_event_loop_policy_set", symbol: "molt_asyncio_event_loop_policy_set", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_taskgroup_on_task_done", symbol: "molt_asyncio_taskgroup_on_task_done", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_taskgroup_request_cancel", symbol: "molt_asyncio_taskgroup_request_cancel", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_tasks_add_done_callback", symbol: "molt_asyncio_tasks_add_done_callback", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_task_cancel_apply", symbol: "molt_asyncio_task_cancel_apply", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_task_uncancel_apply", symbol: "molt_asyncio_task_uncancel_apply", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_future_invoke_callbacks", symbol: "molt_asyncio_future_invoke_callbacks", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_event_set_waiters", symbol: "molt_asyncio_event_set_waiters", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_loop_enqueue_handle", symbol: "molt_asyncio_loop_enqueue_handle", arity: 4 },
+    IntrinsicSpec { name: "molt_asyncio_timer_handle_new", symbol: "molt_asyncio_timer_handle_new", arity: 6 },
+    IntrinsicSpec { name: "molt_asyncio_timer_schedule", symbol: "molt_asyncio_timer_schedule", arity: 6 },
+    IntrinsicSpec { name: "molt_asyncio_timer_handle_cancel", symbol: "molt_asyncio_timer_handle_cancel", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_fd_watcher_new", symbol: "molt_asyncio_fd_watcher_new", arity: 5 },
+    IntrinsicSpec { name: "molt_asyncio_fd_watcher_register", symbol: "molt_asyncio_fd_watcher_register", arity: 6 },
+    IntrinsicSpec { name: "molt_asyncio_fd_watcher_unregister", symbol: "molt_asyncio_fd_watcher_unregister", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_subprocess_stdio_normalize", symbol: "molt_asyncio_subprocess_stdio_normalize", arity: 11 },
+    IntrinsicSpec { name: "molt_asyncio_server_accept_loop_new", symbol: "molt_asyncio_server_accept_loop_new", arity: 6 },
+    IntrinsicSpec { name: "molt_asyncio_ready_runner_new", symbol: "molt_asyncio_ready_runner_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_stream_reader_read_new", symbol: "molt_asyncio_stream_reader_read_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_stream_reader_readline_new", symbol: "molt_asyncio_stream_reader_readline_new", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_stream_send_all_new", symbol: "molt_asyncio_stream_send_all_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_stream_buffer_snapshot", symbol: "molt_asyncio_stream_buffer_snapshot", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_stream_buffer_consume", symbol: "molt_asyncio_stream_buffer_consume", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_socket_reader_read_new", symbol: "molt_asyncio_socket_reader_read_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_socket_reader_readline_new", symbol: "molt_asyncio_socket_reader_readline_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_sock_recv_new", symbol: "molt_asyncio_sock_recv_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_sock_connect_new", symbol: "molt_asyncio_sock_connect_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_sock_accept_new", symbol: "molt_asyncio_sock_accept_new", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncio_sock_recv_into_new", symbol: "molt_asyncio_sock_recv_into_new", arity: 4 },
+    IntrinsicSpec { name: "molt_asyncio_sock_sendall_new", symbol: "molt_asyncio_sock_sendall_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_sock_recvfrom_new", symbol: "molt_asyncio_sock_recvfrom_new", arity: 3 },
+    IntrinsicSpec { name: "molt_asyncio_sock_recvfrom_into_new", symbol: "molt_asyncio_sock_recvfrom_into_new", arity: 4 },
+    IntrinsicSpec { name: "molt_asyncio_sock_sendto_new", symbol: "molt_asyncio_sock_sendto_new", arity: 4 },
+    IntrinsicSpec { name: "molt_time_monotonic", symbol: "molt_time_monotonic", arity: 0 },
+    IntrinsicSpec { name: "molt_time_monotonic_ns", symbol: "molt_time_monotonic_ns", arity: 0 },
+    IntrinsicSpec { name: "molt_time_perf_counter", symbol: "molt_time_perf_counter", arity: 0 },
+    IntrinsicSpec { name: "molt_time_perf_counter_ns", symbol: "molt_time_perf_counter_ns", arity: 0 },
+    IntrinsicSpec { name: "molt_time_time", symbol: "molt_time_time", arity: 0 },
+    IntrinsicSpec { name: "molt_time_time_ns", symbol: "molt_time_time_ns", arity: 0 },
+    IntrinsicSpec { name: "molt_time_process_time", symbol: "molt_time_process_time", arity: 0 },
+    IntrinsicSpec { name: "molt_time_process_time_ns", symbol: "molt_time_process_time_ns", arity: 0 },
+    IntrinsicSpec { name: "molt_time_localtime", symbol: "molt_time_localtime", arity: 1 },
+    IntrinsicSpec { name: "molt_time_gmtime", symbol: "molt_time_gmtime", arity: 1 },
+    IntrinsicSpec { name: "molt_time_strftime", symbol: "molt_time_strftime", arity: 2 },
+    IntrinsicSpec { name: "molt_time_timezone", symbol: "molt_time_timezone", arity: 0 },
+    IntrinsicSpec { name: "molt_time_daylight", symbol: "molt_time_daylight", arity: 0 },
+    IntrinsicSpec { name: "molt_time_altzone", symbol: "molt_time_altzone", arity: 0 },
+    IntrinsicSpec { name: "molt_time_tzname", symbol: "molt_time_tzname", arity: 0 },
+    IntrinsicSpec { name: "molt_time_asctime", symbol: "molt_time_asctime", arity: 1 },
+    IntrinsicSpec { name: "molt_time_mktime", symbol: "molt_time_mktime", arity: 1 },
+    IntrinsicSpec { name: "molt_time_timegm", symbol: "molt_time_timegm", arity: 1 },
+    IntrinsicSpec { name: "molt_time_get_clock_info", symbol: "molt_time_get_clock_info", arity: 1 },
+    IntrinsicSpec { name: "molt_heapq_heapify", symbol: "molt_heapq_heapify", arity: 1 },
+    IntrinsicSpec { name: "molt_heapq_heappush", symbol: "molt_heapq_heappush", arity: 2 },
+    IntrinsicSpec { name: "molt_heapq_heappop", symbol: "molt_heapq_heappop", arity: 1 },
+    IntrinsicSpec { name: "molt_heapq_heapreplace", symbol: "molt_heapq_heapreplace", arity: 2 },
+    IntrinsicSpec { name: "molt_heapq_heappushpop", symbol: "molt_heapq_heappushpop", arity: 2 },
+    IntrinsicSpec { name: "molt_math_log", symbol: "molt_math_log", arity: 1 },
+    IntrinsicSpec { name: "molt_math_log2", symbol: "molt_math_log2", arity: 1 },
+    IntrinsicSpec { name: "molt_math_log10", symbol: "molt_math_log10", arity: 1 },
+    IntrinsicSpec { name: "molt_math_log1p", symbol: "molt_math_log1p", arity: 1 },
+    IntrinsicSpec { name: "molt_math_exp", symbol: "molt_math_exp", arity: 1 },
+    IntrinsicSpec { name: "molt_math_expm1", symbol: "molt_math_expm1", arity: 1 },
+    IntrinsicSpec { name: "molt_math_fma", symbol: "molt_math_fma", arity: 3 },
+    IntrinsicSpec { name: "molt_math_sin", symbol: "molt_math_sin", arity: 1 },
+    IntrinsicSpec { name: "molt_math_cos", symbol: "molt_math_cos", arity: 1 },
+    IntrinsicSpec { name: "molt_math_acos", symbol: "molt_math_acos", arity: 1 },
+    IntrinsicSpec { name: "molt_math_lgamma", symbol: "molt_math_lgamma", arity: 1 },
+    IntrinsicSpec { name: "molt_math_gamma", symbol: "molt_math_gamma", arity: 1 },
+    IntrinsicSpec { name: "molt_math_erf", symbol: "molt_math_erf", arity: 1 },
+    IntrinsicSpec { name: "molt_math_erfc", symbol: "molt_math_erfc", arity: 1 },
+    IntrinsicSpec { name: "molt_math_isfinite", symbol: "molt_math_isfinite", arity: 1 },
+    IntrinsicSpec { name: "molt_math_isinf", symbol: "molt_math_isinf", arity: 1 },
+    IntrinsicSpec { name: "molt_math_isnan", symbol: "molt_math_isnan", arity: 1 },
+    IntrinsicSpec { name: "molt_math_fabs", symbol: "molt_math_fabs", arity: 1 },
+    IntrinsicSpec { name: "molt_math_copysign", symbol: "molt_math_copysign", arity: 2 },
+    IntrinsicSpec { name: "molt_math_sqrt", symbol: "molt_math_sqrt", arity: 1 },
+    IntrinsicSpec { name: "molt_math_floor", symbol: "molt_math_floor", arity: 1 },
+    IntrinsicSpec { name: "molt_math_ceil", symbol: "molt_math_ceil", arity: 1 },
+    IntrinsicSpec { name: "molt_math_trunc", symbol: "molt_math_trunc", arity: 1 },
+    IntrinsicSpec { name: "molt_math_fmod", symbol: "molt_math_fmod", arity: 2 },
+    IntrinsicSpec { name: "molt_math_modf", symbol: "molt_math_modf", arity: 1 },
+    IntrinsicSpec { name: "molt_math_frexp", symbol: "molt_math_frexp", arity: 1 },
+    IntrinsicSpec { name: "molt_math_ldexp", symbol: "molt_math_ldexp", arity: 2 },
+    IntrinsicSpec { name: "molt_math_isclose", symbol: "molt_math_isclose", arity: 4 },
+    IntrinsicSpec { name: "molt_math_prod", symbol: "molt_math_prod", arity: 2 },
+    IntrinsicSpec { name: "molt_math_fsum", symbol: "molt_math_fsum", arity: 1 },
+    IntrinsicSpec { name: "molt_math_gcd", symbol: "molt_math_gcd", arity: 1 },
+    IntrinsicSpec { name: "molt_math_lcm", symbol: "molt_math_lcm", arity: 1 },
+    IntrinsicSpec { name: "molt_math_factorial", symbol: "molt_math_factorial", arity: 1 },
+    IntrinsicSpec { name: "molt_math_comb", symbol: "molt_math_comb", arity: 2 },
+    IntrinsicSpec { name: "molt_math_perm", symbol: "molt_math_perm", arity: 2 },
+    IntrinsicSpec { name: "molt_math_degrees", symbol: "molt_math_degrees", arity: 1 },
+    IntrinsicSpec { name: "molt_math_radians", symbol: "molt_math_radians", arity: 1 },
+    IntrinsicSpec { name: "molt_math_hypot", symbol: "molt_math_hypot", arity: 1 },
+    IntrinsicSpec { name: "molt_math_dist", symbol: "molt_math_dist", arity: 2 },
+    IntrinsicSpec { name: "molt_math_isqrt", symbol: "molt_math_isqrt", arity: 1 },
+    IntrinsicSpec { name: "molt_math_nextafter", symbol: "molt_math_nextafter", arity: 2 },
+    IntrinsicSpec { name: "molt_math_ulp", symbol: "molt_math_ulp", arity: 1 },
+    IntrinsicSpec { name: "molt_math_remainder", symbol: "molt_math_remainder", arity: 2 },
+    IntrinsicSpec { name: "molt_math_tan", symbol: "molt_math_tan", arity: 1 },
+    IntrinsicSpec { name: "molt_math_asin", symbol: "molt_math_asin", arity: 1 },
+    IntrinsicSpec { name: "molt_math_atan", symbol: "molt_math_atan", arity: 1 },
+    IntrinsicSpec { name: "molt_math_atan2", symbol: "molt_math_atan2", arity: 2 },
+    IntrinsicSpec { name: "molt_math_sinh", symbol: "molt_math_sinh", arity: 1 },
+    IntrinsicSpec { name: "molt_math_cosh", symbol: "molt_math_cosh", arity: 1 },
+    IntrinsicSpec { name: "molt_math_tanh", symbol: "molt_math_tanh", arity: 1 },
+    IntrinsicSpec { name: "molt_math_asinh", symbol: "molt_math_asinh", arity: 1 },
+    IntrinsicSpec { name: "molt_math_acosh", symbol: "molt_math_acosh", arity: 1 },
+    IntrinsicSpec { name: "molt_math_atanh", symbol: "molt_math_atanh", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_mean", symbol: "molt_statistics_mean", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_fmean", symbol: "molt_statistics_fmean", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_stdev", symbol: "molt_statistics_stdev", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_variance", symbol: "molt_statistics_variance", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_pvariance", symbol: "molt_statistics_pvariance", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_pstdev", symbol: "molt_statistics_pstdev", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_median", symbol: "molt_statistics_median", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_median_low", symbol: "molt_statistics_median_low", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_median_high", symbol: "molt_statistics_median_high", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_median_grouped", symbol: "molt_statistics_median_grouped", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_mode", symbol: "molt_statistics_mode", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_multimode", symbol: "molt_statistics_multimode", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_quantiles", symbol: "molt_statistics_quantiles", arity: 3 },
+    IntrinsicSpec { name: "molt_statistics_harmonic_mean", symbol: "molt_statistics_harmonic_mean", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_geometric_mean", symbol: "molt_statistics_geometric_mean", arity: 1 },
+    IntrinsicSpec { name: "molt_statistics_covariance", symbol: "molt_statistics_covariance", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_correlation", symbol: "molt_statistics_correlation", arity: 2 },
+    IntrinsicSpec { name: "molt_statistics_linear_regression", symbol: "molt_statistics_linear_regression", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_context_new", symbol: "molt_decimal_context_new", arity: 0 },
+    IntrinsicSpec { name: "molt_decimal_context_get_current", symbol: "molt_decimal_context_get_current", arity: 0 },
+    IntrinsicSpec { name: "molt_decimal_context_set_current", symbol: "molt_decimal_context_set_current", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_copy", symbol: "molt_decimal_context_copy", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_drop", symbol: "molt_decimal_context_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_get_prec", symbol: "molt_decimal_context_get_prec", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_set_prec", symbol: "molt_decimal_context_set_prec", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_context_get_rounding", symbol: "molt_decimal_context_get_rounding", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_set_rounding", symbol: "molt_decimal_context_set_rounding", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_context_clear_flags", symbol: "molt_decimal_context_clear_flags", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_context_get_flag", symbol: "molt_decimal_context_get_flag", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_context_set_flag", symbol: "molt_decimal_context_set_flag", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_context_get_trap", symbol: "molt_decimal_context_get_trap", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_context_set_trap", symbol: "molt_decimal_context_set_trap", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_from_str", symbol: "molt_decimal_from_str", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_from_int", symbol: "molt_decimal_from_int", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_clone", symbol: "molt_decimal_clone", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_drop", symbol: "molt_decimal_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_to_string", symbol: "molt_decimal_to_string", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_as_tuple", symbol: "molt_decimal_as_tuple", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_to_float", symbol: "molt_decimal_to_float", arity: 1 },
+    IntrinsicSpec { name: "molt_decimal_div", symbol: "molt_decimal_div", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_quantize", symbol: "molt_decimal_quantize", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_compare", symbol: "molt_decimal_compare", arity: 3 },
+    IntrinsicSpec { name: "molt_decimal_compare_total", symbol: "molt_decimal_compare_total", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_normalize", symbol: "molt_decimal_normalize", arity: 2 },
+    IntrinsicSpec { name: "molt_decimal_exp", symbol: "molt_decimal_exp", arity: 2 },
+    IntrinsicSpec { name: "molt_hash_new", symbol: "molt_hash_new", arity: 3 },
+    IntrinsicSpec { name: "molt_hash_update", symbol: "molt_hash_update", arity: 2 },
+    IntrinsicSpec { name: "molt_hash_copy", symbol: "molt_hash_copy", arity: 1 },
+    IntrinsicSpec { name: "molt_hash_digest", symbol: "molt_hash_digest", arity: 2 },
+    IntrinsicSpec { name: "molt_hash_drop", symbol: "molt_hash_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_hmac_new", symbol: "molt_hmac_new", arity: 4 },
+    IntrinsicSpec { name: "molt_hmac_update", symbol: "molt_hmac_update", arity: 2 },
+    IntrinsicSpec { name: "molt_hmac_copy", symbol: "molt_hmac_copy", arity: 1 },
+    IntrinsicSpec { name: "molt_hmac_digest", symbol: "molt_hmac_digest", arity: 1 },
+    IntrinsicSpec { name: "molt_hmac_drop", symbol: "molt_hmac_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_compare_digest", symbol: "molt_compare_digest", arity: 2 },
+    IntrinsicSpec { name: "molt_pbkdf2_hmac", symbol: "molt_pbkdf2_hmac", arity: 5 },
+    IntrinsicSpec { name: "molt_scrypt", symbol: "molt_scrypt", arity: 7 },
+    IntrinsicSpec { name: "molt_os_dup", symbol: "molt_os_dup", arity: 1 },
+    IntrinsicSpec { name: "molt_os_close", symbol: "molt_os_close", arity: 1 },
+    IntrinsicSpec { name: "molt_os_read", symbol: "molt_os_read", arity: 2 },
+    IntrinsicSpec { name: "molt_os_write", symbol: "molt_os_write", arity: 2 },
+    IntrinsicSpec { name: "molt_os_pipe", symbol: "molt_os_pipe", arity: 0 },
+    IntrinsicSpec { name: "molt_os_get_inheritable", symbol: "molt_os_get_inheritable", arity: 1 },
+    IntrinsicSpec { name: "molt_os_set_inheritable", symbol: "molt_os_set_inheritable", arity: 2 },
+    IntrinsicSpec { name: "molt_os_urandom", symbol: "molt_os_urandom", arity: 1 },
+    IntrinsicSpec { name: "molt_os_name", symbol: "molt_os_name", arity: 0 },
+    IntrinsicSpec { name: "molt_os_fsencode", symbol: "molt_os_fsencode", arity: 1 },
+    IntrinsicSpec { name: "molt_getcwd", symbol: "molt_getcwd", arity: 0 },
+    IntrinsicSpec { name: "molt_getpid", symbol: "molt_getpid", arity: 0 },
+    IntrinsicSpec { name: "molt_signal_raise", symbol: "molt_signal_raise", arity: 1 },
+    IntrinsicSpec { name: "molt_env_get", symbol: "molt_env_get", arity: 2 },
+    IntrinsicSpec { name: "molt_env_snapshot", symbol: "molt_env_snapshot", arity: 0 },
+    IntrinsicSpec { name: "molt_env_set", symbol: "molt_env_set", arity: 2 },
+    IntrinsicSpec { name: "molt_env_unset", symbol: "molt_env_unset", arity: 1 },
+    IntrinsicSpec { name: "molt_env_len", symbol: "molt_env_len", arity: 0 },
+    IntrinsicSpec { name: "molt_env_contains", symbol: "molt_env_contains", arity: 1 },
+    IntrinsicSpec { name: "molt_env_popitem", symbol: "molt_env_popitem", arity: 0 },
+    IntrinsicSpec { name: "molt_env_clear", symbol: "molt_env_clear", arity: 0 },
+    IntrinsicSpec { name: "molt_env_putenv", symbol: "molt_env_putenv", arity: 2 },
+    IntrinsicSpec { name: "molt_env_unsetenv", symbol: "molt_env_unsetenv", arity: 1 },
+    IntrinsicSpec { name: "molt_locale_setlocale", symbol: "molt_locale_setlocale", arity: 2 },
+    IntrinsicSpec { name: "molt_locale_getpreferredencoding", symbol: "molt_locale_getpreferredencoding", arity: 1 },
+    IntrinsicSpec { name: "molt_locale_getlocale", symbol: "molt_locale_getlocale", arity: 1 },
+    IntrinsicSpec { name: "molt_gettext_gettext", symbol: "molt_gettext_gettext", arity: 1 },
+    IntrinsicSpec { name: "molt_gettext_ngettext", symbol: "molt_gettext_ngettext", arity: 3 },
+    IntrinsicSpec { name: "molt_errno_constants", symbol: "molt_errno_constants", arity: 0 },
+    IntrinsicSpec { name: "molt_path_exists", symbol: "molt_path_exists", arity: 1 },
+    IntrinsicSpec { name: "molt_path_isdir", symbol: "molt_path_isdir", arity: 1 },
+    IntrinsicSpec { name: "molt_path_isfile", symbol: "molt_path_isfile", arity: 1 },
+    IntrinsicSpec { name: "molt_path_islink", symbol: "molt_path_islink", arity: 1 },
+    IntrinsicSpec { name: "molt_path_readlink", symbol: "molt_path_readlink", arity: 1 },
+    IntrinsicSpec { name: "molt_path_symlink", symbol: "molt_path_symlink", arity: 3 },
+    IntrinsicSpec { name: "molt_path_listdir", symbol: "molt_path_listdir", arity: 1 },
+    IntrinsicSpec { name: "molt_path_mkdir", symbol: "molt_path_mkdir", arity: 1 },
+    IntrinsicSpec { name: "molt_path_chmod", symbol: "molt_path_chmod", arity: 2 },
+    IntrinsicSpec { name: "molt_path_unlink", symbol: "molt_path_unlink", arity: 1 },
+    IntrinsicSpec { name: "molt_path_rmdir", symbol: "molt_path_rmdir", arity: 1 },
+    IntrinsicSpec { name: "molt_path_join", symbol: "molt_path_join", arity: 2 },
+    IntrinsicSpec { name: "molt_path_join_many", symbol: "molt_path_join_many", arity: 2 },
+    IntrinsicSpec { name: "molt_path_isabs", symbol: "molt_path_isabs", arity: 1 },
+    IntrinsicSpec { name: "molt_path_dirname", symbol: "molt_path_dirname", arity: 1 },
+    IntrinsicSpec { name: "molt_path_basename", symbol: "molt_path_basename", arity: 1 },
+    IntrinsicSpec { name: "molt_path_name", symbol: "molt_path_name", arity: 1 },
+    IntrinsicSpec { name: "molt_path_split", symbol: "molt_path_split", arity: 1 },
+    IntrinsicSpec { name: "molt_path_splitext", symbol: "molt_path_splitext", arity: 1 },
+    IntrinsicSpec { name: "molt_path_suffix", symbol: "molt_path_suffix", arity: 1 },
+    IntrinsicSpec { name: "molt_path_stem", symbol: "molt_path_stem", arity: 1 },
+    IntrinsicSpec { name: "molt_path_suffixes", symbol: "molt_path_suffixes", arity: 1 },
+    IntrinsicSpec { name: "molt_path_normpath", symbol: "molt_path_normpath", arity: 1 },
+    IntrinsicSpec { name: "molt_path_abspath", symbol: "molt_path_abspath", arity: 1 },
+    IntrinsicSpec { name: "molt_path_resolve", symbol: "molt_path_resolve", arity: 2 },
+    IntrinsicSpec { name: "molt_path_as_uri", symbol: "molt_path_as_uri", arity: 1 },
+    IntrinsicSpec { name: "molt_path_relpath", symbol: "molt_path_relpath", arity: 2 },
+    IntrinsicSpec { name: "molt_path_expandvars", symbol: "molt_path_expandvars", arity: 1 },
+    IntrinsicSpec { name: "molt_path_expandvars_env", symbol: "molt_path_expandvars_env", arity: 2 },
+    IntrinsicSpec { name: "molt_path_makedirs", symbol: "molt_path_makedirs", arity: 2 },
+    IntrinsicSpec { name: "molt_path_parts", symbol: "molt_path_parts", arity: 1 },
+    IntrinsicSpec { name: "molt_path_splitroot", symbol: "molt_path_splitroot", arity: 1 },
+    IntrinsicSpec { name: "molt_path_parents", symbol: "molt_path_parents", arity: 1 },
+    IntrinsicSpec { name: "molt_path_compare", symbol: "molt_path_compare", arity: 2 },
+    IntrinsicSpec { name: "molt_path_relative_to", symbol: "molt_path_relative_to", arity: 2 },
+    IntrinsicSpec { name: "molt_path_relative_to_many", symbol: "molt_path_relative_to_many", arity: 3 },
+    IntrinsicSpec { name: "molt_path_with_name", symbol: "molt_path_with_name", arity: 2 },
+    IntrinsicSpec { name: "molt_path_with_suffix", symbol: "molt_path_with_suffix", arity: 2 },
+    IntrinsicSpec { name: "molt_path_with_stem", symbol: "molt_path_with_stem", arity: 2 },
+    IntrinsicSpec { name: "molt_path_is_relative_to", symbol: "molt_path_is_relative_to", arity: 3 },
+    IntrinsicSpec { name: "molt_path_expanduser", symbol: "molt_path_expanduser", arity: 1 },
+    IntrinsicSpec { name: "molt_path_match", symbol: "molt_path_match", arity: 2 },
+    IntrinsicSpec { name: "molt_path_glob", symbol: "molt_path_glob", arity: 2 },
+    IntrinsicSpec { name: "molt_glob_has_magic", symbol: "molt_glob_has_magic", arity: 1 },
+    IntrinsicSpec { name: "molt_glob_escape", symbol: "molt_glob_escape", arity: 1 },
+    IntrinsicSpec { name: "molt_glob_translate", symbol: "molt_glob_translate", arity: 4 },
+    IntrinsicSpec { name: "molt_glob", symbol: "molt_glob", arity: 5 },
+    IntrinsicSpec { name: "molt_io_class", symbol: "molt_io_class", arity: 1 },
+    IntrinsicSpec { name: "molt_file_open", symbol: "molt_file_open", arity: 2 },
+    IntrinsicSpec { name: "molt_file_open_ex", symbol: "molt_file_open_ex", arity: 8 },
+    IntrinsicSpec { name: "molt_file_read", symbol: "molt_file_read", arity: 2 },
+    IntrinsicSpec { name: "molt_file_readline", symbol: "molt_file_readline", arity: 2 },
+    IntrinsicSpec { name: "molt_file_readlines", symbol: "molt_file_readlines", arity: 2 },
+    IntrinsicSpec { name: "molt_file_read1", symbol: "molt_file_read1", arity: 2 },
+    IntrinsicSpec { name: "molt_file_readall", symbol: "molt_file_readall", arity: 1 },
+    IntrinsicSpec { name: "molt_file_readinto", symbol: "molt_file_readinto", arity: 2 },
+    IntrinsicSpec { name: "molt_file_readinto1", symbol: "molt_file_readinto1", arity: 2 },
+    IntrinsicSpec { name: "molt_file_peek", symbol: "molt_file_peek", arity: 2 },
+    IntrinsicSpec { name: "molt_file_getvalue", symbol: "molt_file_getvalue", arity: 1 },
+    IntrinsicSpec { name: "molt_file_getbuffer", symbol: "molt_file_getbuffer", arity: 1 },
+    IntrinsicSpec { name: "molt_file_detach", symbol: "molt_file_detach", arity: 1 },
+    IntrinsicSpec { name: "molt_file_reconfigure", symbol: "molt_file_reconfigure", arity: 6 },
+    IntrinsicSpec { name: "molt_file_seek", symbol: "molt_file_seek", arity: 3 },
+    IntrinsicSpec { name: "molt_file_tell", symbol: "molt_file_tell", arity: 1 },
+    IntrinsicSpec { name: "molt_file_fileno", symbol: "molt_file_fileno", arity: 1 },
+    IntrinsicSpec { name: "molt_file_truncate", symbol: "molt_file_truncate", arity: 2 },
+    IntrinsicSpec { name: "molt_file_readable", symbol: "molt_file_readable", arity: 1 },
+    IntrinsicSpec { name: "molt_file_writable", symbol: "molt_file_writable", arity: 1 },
+    IntrinsicSpec { name: "molt_file_seekable", symbol: "molt_file_seekable", arity: 1 },
+    IntrinsicSpec { name: "molt_file_isatty", symbol: "molt_file_isatty", arity: 1 },
+    IntrinsicSpec { name: "molt_file_iter", symbol: "molt_file_iter", arity: 1 },
+    IntrinsicSpec { name: "molt_file_next", symbol: "molt_file_next", arity: 1 },
+    IntrinsicSpec { name: "molt_file_enter", symbol: "molt_file_enter", arity: 1 },
+    IntrinsicSpec { name: "molt_file_exit", symbol: "molt_file_exit", arity: 2 },
+    IntrinsicSpec { name: "molt_file_exit_method", symbol: "molt_file_exit_method", arity: 2 },
+    IntrinsicSpec { name: "molt_file_write", symbol: "molt_file_write", arity: 2 },
+    IntrinsicSpec { name: "molt_file_writelines", symbol: "molt_file_writelines", arity: 2 },
+    IntrinsicSpec { name: "molt_file_flush", symbol: "molt_file_flush", arity: 1 },
+    IntrinsicSpec { name: "molt_file_close", symbol: "molt_file_close", arity: 1 },
+    IntrinsicSpec { name: "molt_file_io_new", symbol: "molt_file_io_new", arity: 5 },
+    IntrinsicSpec { name: "molt_file_io_init", symbol: "molt_file_io_init", arity: 5 },
+    IntrinsicSpec { name: "molt_buffered_new", symbol: "molt_buffered_new", arity: 3 },
+    IntrinsicSpec { name: "molt_buffered_init", symbol: "molt_buffered_init", arity: 3 },
+    IntrinsicSpec { name: "molt_text_io_wrapper_new", symbol: "molt_text_io_wrapper_new", arity: 7 },
+    IntrinsicSpec { name: "molt_text_io_wrapper_init", symbol: "molt_text_io_wrapper_init", arity: 7 },
+    IntrinsicSpec { name: "molt_bytesio_new", symbol: "molt_bytesio_new", arity: 2 },
+    IntrinsicSpec { name: "molt_bytesio_init", symbol: "molt_bytesio_init", arity: 2 },
+    IntrinsicSpec { name: "molt_stringio_new", symbol: "molt_stringio_new", arity: 3 },
+    IntrinsicSpec { name: "molt_stringio_init", symbol: "molt_stringio_init", arity: 3 },
+    IntrinsicSpec { name: "molt_repr_from_obj", symbol: "molt_repr_from_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_string_capitalize", symbol: "molt_string_capitalize", arity: 1 },
+    IntrinsicSpec { name: "molt_codecs_decode", symbol: "molt_codecs_decode", arity: 3 },
+    IntrinsicSpec { name: "molt_codecs_encode", symbol: "molt_codecs_encode", arity: 3 },
+    IntrinsicSpec { name: "molt_codecs_lookup_name", symbol: "molt_codecs_lookup_name", arity: 1 },
+    IntrinsicSpec { name: "molt_encodings_aliases_map", symbol: "molt_encodings_aliases_map", arity: 0 },
+    IntrinsicSpec { name: "molt_struct_pack", symbol: "molt_struct_pack", arity: 2 },
+    IntrinsicSpec { name: "molt_struct_unpack", symbol: "molt_struct_unpack", arity: 2 },
+    IntrinsicSpec { name: "molt_struct_calcsize", symbol: "molt_struct_calcsize", arity: 1 },
+    IntrinsicSpec { name: "molt_struct_pack_into", symbol: "molt_struct_pack_into", arity: 3 },
+    IntrinsicSpec { name: "molt_struct_unpack_from", symbol: "molt_struct_unpack_from", arity: 3 },
+    IntrinsicSpec { name: "molt_struct_iter_unpack", symbol: "molt_struct_iter_unpack", arity: 2 },
+    IntrinsicSpec { name: "molt_deflate_raw", symbol: "molt_deflate_raw", arity: 2 },
+    IntrinsicSpec { name: "molt_inflate_raw", symbol: "molt_inflate_raw", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_new", symbol: "molt_cancel_token_new", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_clone", symbol: "molt_cancel_token_clone", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_drop", symbol: "molt_cancel_token_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_cancel", symbol: "molt_cancel_token_cancel", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_is_cancelled", symbol: "molt_cancel_token_is_cancelled", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_set_current", symbol: "molt_cancel_token_set_current", arity: 1 },
+    IntrinsicSpec { name: "molt_cancel_token_get_current", symbol: "molt_cancel_token_get_current", arity: 0 },
+    IntrinsicSpec { name: "molt_future_cancel", symbol: "molt_future_cancel", arity: 1 },
+    IntrinsicSpec { name: "molt_future_cancel_msg", symbol: "molt_future_cancel_msg", arity: 2 },
+    IntrinsicSpec { name: "molt_future_cancel_clear", symbol: "molt_future_cancel_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_promise_new", symbol: "molt_promise_new", arity: 0 },
+    IntrinsicSpec { name: "molt_promise_set_result", symbol: "molt_promise_set_result", arity: 2 },
+    IntrinsicSpec { name: "molt_promise_set_exception", symbol: "molt_promise_set_exception", arity: 2 },
+    IntrinsicSpec { name: "molt_task_register_token_owned", symbol: "molt_task_register_token_owned", arity: 2 },
+    IntrinsicSpec { name: "molt_io_wait", symbol: "molt_io_wait", arity: 1 },
+    IntrinsicSpec { name: "molt_io_wait_new", symbol: "molt_io_wait_new", arity: 3 },
+    IntrinsicSpec { name: "molt_select_select", symbol: "molt_select_select", arity: 4 },
+    IntrinsicSpec { name: "molt_select_selector_new", symbol: "molt_select_selector_new", arity: 1 },
+    IntrinsicSpec { name: "molt_select_selector_fileno", symbol: "molt_select_selector_fileno", arity: 1 },
+    IntrinsicSpec { name: "molt_select_selector_register", symbol: "molt_select_selector_register", arity: 3 },
+    IntrinsicSpec { name: "molt_select_selector_unregister", symbol: "molt_select_selector_unregister", arity: 2 },
+    IntrinsicSpec { name: "molt_select_selector_modify", symbol: "molt_select_selector_modify", arity: 3 },
+    IntrinsicSpec { name: "molt_select_selector_poll", symbol: "molt_select_selector_poll", arity: 2 },
+    IntrinsicSpec { name: "molt_select_selector_close", symbol: "molt_select_selector_close", arity: 1 },
+    IntrinsicSpec { name: "molt_select_selector_drop", symbol: "molt_select_selector_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_ws_wait_new", symbol: "molt_ws_wait_new", arity: 3 },
+    IntrinsicSpec { name: "molt_ws_pair_obj", symbol: "molt_ws_pair_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_ws_connect_obj", symbol: "molt_ws_connect_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_ws_send_obj", symbol: "molt_ws_send_obj", arity: 2 },
+    IntrinsicSpec { name: "molt_ws_recv", symbol: "molt_ws_recv", arity: 1 },
+    IntrinsicSpec { name: "molt_ws_close", symbol: "molt_ws_close", arity: 1 },
+    IntrinsicSpec { name: "molt_ws_drop", symbol: "molt_ws_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_submit", symbol: "molt_thread_submit", arity: 3 },
+    IntrinsicSpec { name: "molt_thread_spawn", symbol: "molt_thread_spawn", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_spawn_shared", symbol: "molt_thread_spawn_shared", arity: 4 },
+    IntrinsicSpec { name: "molt_thread_join", symbol: "molt_thread_join", arity: 2 },
+    IntrinsicSpec { name: "molt_thread_is_alive", symbol: "molt_thread_is_alive", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_ident", symbol: "molt_thread_ident", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_native_id", symbol: "molt_thread_native_id", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_current_ident", symbol: "molt_thread_current_ident", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_current_native_id", symbol: "molt_thread_current_native_id", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_drop", symbol: "molt_thread_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_stack_size_get", symbol: "molt_thread_stack_size_get", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_stack_size_set", symbol: "molt_thread_stack_size_set", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_registry_set_main", symbol: "molt_thread_registry_set_main", arity: 2 },
+    IntrinsicSpec { name: "molt_thread_registry_register", symbol: "molt_thread_registry_register", arity: 4 },
+    IntrinsicSpec { name: "molt_thread_registry_forget", symbol: "molt_thread_registry_forget", arity: 1 },
+    IntrinsicSpec { name: "molt_thread_registry_snapshot", symbol: "molt_thread_registry_snapshot", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_registry_current", symbol: "molt_thread_registry_current", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_registry_active_count", symbol: "molt_thread_registry_active_count", arity: 0 },
+    IntrinsicSpec { name: "molt_thread_poll", symbol: "molt_thread_poll", arity: 1 },
+    IntrinsicSpec { name: "molt_lock_new", symbol: "molt_lock_new", arity: 0 },
+    IntrinsicSpec { name: "molt_lock_acquire", symbol: "molt_lock_acquire", arity: 3 },
+    IntrinsicSpec { name: "molt_lock_release", symbol: "molt_lock_release", arity: 1 },
+    IntrinsicSpec { name: "molt_lock_locked", symbol: "molt_lock_locked", arity: 1 },
+    IntrinsicSpec { name: "molt_lock_drop", symbol: "molt_lock_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_rlock_new", symbol: "molt_rlock_new", arity: 0 },
+    IntrinsicSpec { name: "molt_rlock_acquire", symbol: "molt_rlock_acquire", arity: 3 },
+    IntrinsicSpec { name: "molt_rlock_release", symbol: "molt_rlock_release", arity: 1 },
+    IntrinsicSpec { name: "molt_rlock_locked", symbol: "molt_rlock_locked", arity: 1 },
+    IntrinsicSpec { name: "molt_rlock_is_owned", symbol: "molt_rlock_is_owned", arity: 1 },
+    IntrinsicSpec { name: "molt_rlock_release_save", symbol: "molt_rlock_release_save", arity: 1 },
+    IntrinsicSpec { name: "molt_rlock_acquire_restore", symbol: "molt_rlock_acquire_restore", arity: 2 },
+    IntrinsicSpec { name: "molt_rlock_drop", symbol: "molt_rlock_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_condition_new", symbol: "molt_condition_new", arity: 0 },
+    IntrinsicSpec { name: "molt_condition_wait", symbol: "molt_condition_wait", arity: 2 },
+    IntrinsicSpec { name: "molt_condition_wait_for", symbol: "molt_condition_wait_for", arity: 3 },
+    IntrinsicSpec { name: "molt_condition_notify", symbol: "molt_condition_notify", arity: 2 },
+    IntrinsicSpec { name: "molt_condition_drop", symbol: "molt_condition_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_event_new", symbol: "molt_event_new", arity: 0 },
+    IntrinsicSpec { name: "molt_event_set", symbol: "molt_event_set", arity: 1 },
+    IntrinsicSpec { name: "molt_event_clear", symbol: "molt_event_clear", arity: 1 },
+    IntrinsicSpec { name: "molt_event_is_set", symbol: "molt_event_is_set", arity: 1 },
+    IntrinsicSpec { name: "molt_event_wait", symbol: "molt_event_wait", arity: 2 },
+    IntrinsicSpec { name: "molt_event_drop", symbol: "molt_event_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_semaphore_new", symbol: "molt_semaphore_new", arity: 2 },
+    IntrinsicSpec { name: "molt_semaphore_acquire", symbol: "molt_semaphore_acquire", arity: 3 },
+    IntrinsicSpec { name: "molt_semaphore_release", symbol: "molt_semaphore_release", arity: 2 },
+    IntrinsicSpec { name: "molt_semaphore_drop", symbol: "molt_semaphore_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_new", symbol: "molt_barrier_new", arity: 2 },
+    IntrinsicSpec { name: "molt_barrier_wait", symbol: "molt_barrier_wait", arity: 2 },
+    IntrinsicSpec { name: "molt_barrier_abort", symbol: "molt_barrier_abort", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_reset", symbol: "molt_barrier_reset", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_parties", symbol: "molt_barrier_parties", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_n_waiting", symbol: "molt_barrier_n_waiting", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_broken", symbol: "molt_barrier_broken", arity: 1 },
+    IntrinsicSpec { name: "molt_barrier_drop", symbol: "molt_barrier_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_local_new", symbol: "molt_local_new", arity: 0 },
+    IntrinsicSpec { name: "molt_local_get_dict", symbol: "molt_local_get_dict", arity: 1 },
+    IntrinsicSpec { name: "molt_local_drop", symbol: "molt_local_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_new", symbol: "molt_queue_new", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_lifo_new", symbol: "molt_queue_lifo_new", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_priority_new", symbol: "molt_queue_priority_new", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_qsize", symbol: "molt_queue_qsize", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_empty", symbol: "molt_queue_empty", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_full", symbol: "molt_queue_full", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_put", symbol: "molt_queue_put", arity: 4 },
+    IntrinsicSpec { name: "molt_queue_get", symbol: "molt_queue_get", arity: 4 },
+    IntrinsicSpec { name: "molt_queue_task_done", symbol: "molt_queue_task_done", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_join", symbol: "molt_queue_join", arity: 1 },
+    IntrinsicSpec { name: "molt_queue_drop", symbol: "molt_queue_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_zipfile_crc32", symbol: "molt_zipfile_crc32", arity: 1 },
+    IntrinsicSpec { name: "molt_logging_percent_style_format", symbol: "molt_logging_percent_style_format", arity: 2 },
+    IntrinsicSpec { name: "molt_logging_runtime_ready", symbol: "molt_logging_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_wsgiref_runtime_ready", symbol: "molt_wsgiref_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_zoneinfo_runtime_ready", symbol: "molt_zoneinfo_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_zipapp_runtime_ready", symbol: "molt_zipapp_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_zlib_runtime_ready", symbol: "molt_zlib_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_xmlrpc_runtime_ready", symbol: "molt_xmlrpc_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_csv_runtime_ready", symbol: "molt_csv_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_datetime_runtime_ready", symbol: "molt_datetime_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_tokenize_runtime_ready", symbol: "molt_tokenize_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_tomllib_runtime_ready", symbol: "molt_tomllib_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_trace_runtime_ready", symbol: "molt_trace_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_unicodedata_runtime_ready", symbol: "molt_unicodedata_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_subprocess_runtime_ready", symbol: "molt_subprocess_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_symtable_runtime_ready", symbol: "molt_symtable_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_import_smoke_runtime_ready", symbol: "molt_import_smoke_runtime_ready", arity: 0 },
+    IntrinsicSpec { name: "molt_process_spawn", symbol: "molt_process_spawn", arity: 6 },
+    IntrinsicSpec { name: "molt_process_wait_future", symbol: "molt_process_wait_future", arity: 1 },
+    IntrinsicSpec { name: "molt_process_poll", symbol: "molt_process_poll", arity: 1 },
+    IntrinsicSpec { name: "molt_process_pid", symbol: "molt_process_pid", arity: 1 },
+    IntrinsicSpec { name: "molt_process_returncode", symbol: "molt_process_returncode", arity: 1 },
+    IntrinsicSpec { name: "molt_process_kill", symbol: "molt_process_kill", arity: 1 },
+    IntrinsicSpec { name: "molt_process_terminate", symbol: "molt_process_terminate", arity: 1 },
+    IntrinsicSpec { name: "molt_process_stdin", symbol: "molt_process_stdin", arity: 1 },
+    IntrinsicSpec { name: "molt_process_stdout", symbol: "molt_process_stdout", arity: 1 },
+    IntrinsicSpec { name: "molt_process_stderr", symbol: "molt_process_stderr", arity: 1 },
+    IntrinsicSpec { name: "molt_process_drop", symbol: "molt_process_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_new", symbol: "molt_stream_new", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_clone", symbol: "molt_stream_clone", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_send_obj", symbol: "molt_stream_send_obj", arity: 2 },
+    IntrinsicSpec { name: "molt_stream_recv", symbol: "molt_stream_recv", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_close", symbol: "molt_stream_close", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_drop", symbol: "molt_stream_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_reader_new", symbol: "molt_stream_reader_new", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_reader_read", symbol: "molt_stream_reader_read", arity: 2 },
+    IntrinsicSpec { name: "molt_stream_reader_readline", symbol: "molt_stream_reader_readline", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_reader_at_eof", symbol: "molt_stream_reader_at_eof", arity: 1 },
+    IntrinsicSpec { name: "molt_stream_reader_drop", symbol: "molt_stream_reader_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_reader_new", symbol: "molt_socket_reader_new", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_reader_read", symbol: "molt_socket_reader_read", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_reader_readline", symbol: "molt_socket_reader_readline", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_reader_readline_limit", symbol: "molt_socket_reader_readline_limit", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_reader_at_eof", symbol: "molt_socket_reader_at_eof", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_reader_drop", symbol: "molt_socket_reader_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_db_query_obj", symbol: "molt_db_query_obj", arity: 2 },
+    IntrinsicSpec { name: "molt_db_exec_obj", symbol: "molt_db_exec_obj", arity: 2 },
+    IntrinsicSpec { name: "molt_msgpack_parse_scalar_obj", symbol: "molt_msgpack_parse_scalar_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_cbor_parse_scalar_obj", symbol: "molt_cbor_parse_scalar_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_json_parse_scalar_obj", symbol: "molt_json_parse_scalar_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_new", symbol: "molt_socket_new", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_close", symbol: "molt_socket_close", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_drop", symbol: "molt_socket_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_clone", symbol: "molt_socket_clone", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_fileno", symbol: "molt_socket_fileno", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_gettimeout", symbol: "molt_socket_gettimeout", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_settimeout", symbol: "molt_socket_settimeout", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_setblocking", symbol: "molt_socket_setblocking", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_getblocking", symbol: "molt_socket_getblocking", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_bind", symbol: "molt_socket_bind", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_listen", symbol: "molt_socket_listen", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_accept", symbol: "molt_socket_accept", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_connect", symbol: "molt_socket_connect", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_connect_ex", symbol: "molt_socket_connect_ex", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_recv", symbol: "molt_socket_recv", arity: 3 },
+    IntrinsicSpec { name: "molt_socket_recv_into", symbol: "molt_socket_recv_into", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_recvfrom_into", symbol: "molt_socket_recvfrom_into", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_send", symbol: "molt_socket_send", arity: 3 },
+    IntrinsicSpec { name: "molt_socket_sendall", symbol: "molt_socket_sendall", arity: 3 },
+    IntrinsicSpec { name: "molt_socket_sendto", symbol: "molt_socket_sendto", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_recvfrom", symbol: "molt_socket_recvfrom", arity: 3 },
+    IntrinsicSpec { name: "molt_socket_sendmsg", symbol: "molt_socket_sendmsg", arity: 5 },
+    IntrinsicSpec { name: "molt_socket_recvmsg", symbol: "molt_socket_recvmsg", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_recvmsg_into", symbol: "molt_socket_recvmsg_into", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_shutdown", symbol: "molt_socket_shutdown", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_getsockname", symbol: "molt_socket_getsockname", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_getpeername", symbol: "molt_socket_getpeername", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_setsockopt", symbol: "molt_socket_setsockopt", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_getsockopt", symbol: "molt_socket_getsockopt", arity: 4 },
+    IntrinsicSpec { name: "molt_socket_detach", symbol: "molt_socket_detach", arity: 1 },
+    IntrinsicSpec { name: "molt_socketpair", symbol: "molt_socketpair", arity: 3 },
+    IntrinsicSpec { name: "molt_socket_getaddrinfo", symbol: "molt_socket_getaddrinfo", arity: 6 },
+    IntrinsicSpec { name: "molt_socket_getnameinfo", symbol: "molt_socket_getnameinfo", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_gethostname", symbol: "molt_socket_gethostname", arity: 0 },
+    IntrinsicSpec { name: "molt_socket_gethostbyname", symbol: "molt_socket_gethostbyname", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_gethostbyaddr", symbol: "molt_socket_gethostbyaddr", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_getfqdn", symbol: "molt_socket_getfqdn", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_getservbyname", symbol: "molt_socket_getservbyname", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_getservbyport", symbol: "molt_socket_getservbyport", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_inet_pton", symbol: "molt_socket_inet_pton", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_inet_ntop", symbol: "molt_socket_inet_ntop", arity: 2 },
+    IntrinsicSpec { name: "molt_socket_htons", symbol: "molt_socket_htons", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_ntohs", symbol: "molt_socket_ntohs", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_htonl", symbol: "molt_socket_htonl", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_ntohl", symbol: "molt_socket_ntohl", arity: 1 },
+    IntrinsicSpec { name: "molt_socket_constants", symbol: "molt_socket_constants", arity: 0 },
+    IntrinsicSpec { name: "molt_socket_has_ipv6", symbol: "molt_socket_has_ipv6", arity: 0 },
+    IntrinsicSpec { name: "molt_compile_builtin", symbol: "molt_compile_builtin", arity: 6 },
+    IntrinsicSpec { name: "molt_input_builtin", symbol: "molt_input_builtin", arity: 1 },
+    IntrinsicSpec { name: "molt_globals_builtin", symbol: "molt_globals_builtin", arity: 0 },
+    IntrinsicSpec { name: "molt_locals_builtin", symbol: "molt_locals_builtin", arity: 0 },
+    IntrinsicSpec { name: "molt_code_new", symbol: "molt_code_new", arity: 8 },
+    IntrinsicSpec { name: "molt_code_slots_init", symbol: "molt_code_slots_init", arity: 1 },
+    IntrinsicSpec { name: "molt_code_slot_set", symbol: "molt_code_slot_set", arity: 2 },
+    IntrinsicSpec { name: "molt_module_new", symbol: "molt_module_new", arity: 1 },
+    IntrinsicSpec { name: "molt_module_import", symbol: "molt_module_import", arity: 1 },
+    IntrinsicSpec { name: "molt_runpy_run_module", symbol: "molt_runpy_run_module", arity: 4 },
+    IntrinsicSpec { name: "molt_runpy_run_path", symbol: "molt_runpy_run_path", arity: 3 },
+    IntrinsicSpec { name: "molt_runpy_resolve_path", symbol: "molt_runpy_resolve_path", arity: 2 },
+    IntrinsicSpec { name: "molt_uuid_getnode", symbol: "molt_uuid_getnode", arity: 0 },
+    IntrinsicSpec { name: "molt_uuid_uuid4_bytes", symbol: "molt_uuid_uuid4_bytes", arity: 0 },
+    IntrinsicSpec { name: "molt_uuid_uuid1_bytes", symbol: "molt_uuid_uuid1_bytes", arity: 2 },
+    IntrinsicSpec { name: "molt_uuid_uuid3_bytes", symbol: "molt_uuid_uuid3_bytes", arity: 2 },
+    IntrinsicSpec { name: "molt_uuid_uuid5_bytes", symbol: "molt_uuid_uuid5_bytes", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_source_loader_payload", symbol: "molt_importlib_source_loader_payload", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_extension_loader_payload", symbol: "molt_importlib_extension_loader_payload", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_sourceless_loader_payload", symbol: "molt_importlib_sourceless_loader_payload", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_source_exec_payload", symbol: "molt_importlib_source_exec_payload", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_zip_source_exec_payload", symbol: "molt_importlib_zip_source_exec_payload", arity: 4 },
+    IntrinsicSpec { name: "molt_importlib_read_file", symbol: "molt_importlib_read_file", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_exec_restricted_source", symbol: "molt_importlib_exec_restricted_source", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_exec_extension", symbol: "molt_importlib_exec_extension", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_exec_sourceless", symbol: "molt_importlib_exec_sourceless", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_module_spec_is_package", symbol: "molt_importlib_module_spec_is_package", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_cache_from_source", symbol: "molt_importlib_cache_from_source", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_find_in_path", symbol: "molt_importlib_find_in_path", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_find_in_path_package_context", symbol: "molt_importlib_find_in_path_package_context", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_find_spec_payload", symbol: "molt_importlib_find_spec_payload", arity: 7 },
+    IntrinsicSpec { name: "molt_importlib_bootstrap_payload", symbol: "molt_importlib_bootstrap_payload", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_runtime_state_payload", symbol: "molt_importlib_runtime_state_payload", arity: 0 },
+    IntrinsicSpec { name: "molt_importlib_search_paths", symbol: "molt_importlib_search_paths", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_namespace_paths", symbol: "molt_importlib_namespace_paths", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_resources_path_payload", symbol: "molt_importlib_resources_path_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_resources_package_payload", symbol: "molt_importlib_resources_package_payload", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_resources_as_file_enter", symbol: "molt_importlib_resources_as_file_enter", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_as_file_exit", symbol: "molt_importlib_resources_as_file_exit", arity: 3 },
+    IntrinsicSpec { name: "molt_importlib_resources_module_name", symbol: "molt_importlib_resources_module_name", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_loader_reader", symbol: "molt_importlib_resources_loader_reader", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_files_traversable", symbol: "molt_importlib_resources_reader_files_traversable", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_roots", symbol: "molt_importlib_resources_reader_roots", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_contents", symbol: "molt_importlib_resources_reader_contents", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_resource_path", symbol: "molt_importlib_resources_reader_resource_path", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_is_resource", symbol: "molt_importlib_resources_reader_is_resource", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_open_resource_bytes", symbol: "molt_importlib_resources_reader_open_resource_bytes", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_child_names", symbol: "molt_importlib_resources_reader_child_names", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_exists", symbol: "molt_importlib_resources_reader_exists", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_resources_reader_is_dir", symbol: "molt_importlib_resources_reader_is_dir", arity: 2 },
+    IntrinsicSpec { name: "molt_linecache_loader_get_source", symbol: "molt_linecache_loader_get_source", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_metadata_dist_paths", symbol: "molt_importlib_metadata_dist_paths", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_metadata_entry_points_payload", symbol: "molt_importlib_metadata_entry_points_payload", arity: 2 },
+    IntrinsicSpec { name: "molt_importlib_metadata_entry_points_select_payload", symbol: "molt_importlib_metadata_entry_points_select_payload", arity: 4 },
+    IntrinsicSpec { name: "molt_importlib_metadata_normalize_name", symbol: "molt_importlib_metadata_normalize_name", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_metadata_payload", symbol: "molt_importlib_metadata_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_importlib_spec_from_file_location_payload", symbol: "molt_importlib_spec_from_file_location_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_copyreg_bootstrap", symbol: "molt_copyreg_bootstrap", arity: 0 },
+    IntrinsicSpec { name: "molt_copyreg_pickle", symbol: "molt_copyreg_pickle", arity: 3 },
+    IntrinsicSpec { name: "molt_pickle_encode_protocol0", symbol: "molt_pickle_encode_protocol0", arity: 1 },
+    IntrinsicSpec { name: "molt_pickle_dumps_protocol01", symbol: "molt_pickle_dumps_protocol01", arity: 2 },
+    IntrinsicSpec { name: "molt_pickle_loads_protocol01", symbol: "molt_pickle_loads_protocol01", arity: 1 },
+    IntrinsicSpec { name: "molt_pickle_dumps_core", symbol: "molt_pickle_dumps_core", arity: 6 },
+    IntrinsicSpec { name: "molt_pickle_loads_core", symbol: "molt_pickle_loads_core", arity: 7 },
+    IntrinsicSpec { name: "molt_copyreg_constructor", symbol: "molt_copyreg_constructor", arity: 1 },
+    IntrinsicSpec { name: "molt_copyreg_add_extension", symbol: "molt_copyreg_add_extension", arity: 3 },
+    IntrinsicSpec { name: "molt_copyreg_remove_extension", symbol: "molt_copyreg_remove_extension", arity: 3 },
+    IntrinsicSpec { name: "molt_copyreg_clear_extension_cache", symbol: "molt_copyreg_clear_extension_cache", arity: 0 },
+    IntrinsicSpec { name: "molt_module_cache_set", symbol: "molt_module_cache_set", arity: 2 },
+    IntrinsicSpec { name: "molt_exception_active", symbol: "molt_exception_active", arity: 0 },
+    IntrinsicSpec { name: "molt_exception_last", symbol: "molt_exception_last", arity: 0 },
+    IntrinsicSpec { name: "molt_exception_pending", symbol: "molt_exception_pending", arity: 0 },
+    IntrinsicSpec { name: "molt_exception_clear", symbol: "molt_exception_clear", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_collect", symbol: "molt_gc_collect", arity: 1 },
+    IntrinsicSpec { name: "molt_gc_enable", symbol: "molt_gc_enable", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_disable", symbol: "molt_gc_disable", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_isenabled", symbol: "molt_gc_isenabled", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_set_threshold", symbol: "molt_gc_set_threshold", arity: 3 },
+    IntrinsicSpec { name: "molt_gc_get_threshold", symbol: "molt_gc_get_threshold", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_set_debug", symbol: "molt_gc_set_debug", arity: 1 },
+    IntrinsicSpec { name: "molt_gc_get_debug", symbol: "molt_gc_get_debug", arity: 0 },
+    IntrinsicSpec { name: "molt_gc_get_count", symbol: "molt_gc_get_count", arity: 0 },
+    IntrinsicSpec { name: "molt_traceback_source_line", symbol: "molt_traceback_source_line", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_infer_col_offsets", symbol: "molt_traceback_infer_col_offsets", arity: 1 },
+    IntrinsicSpec { name: "molt_traceback_format_caret_line", symbol: "molt_traceback_format_caret_line", arity: 3 },
+    IntrinsicSpec { name: "molt_traceback_format_exception_only", symbol: "molt_traceback_format_exception_only", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_format_exception", symbol: "molt_traceback_format_exception", arity: 5 },
+    IntrinsicSpec { name: "molt_traceback_format_tb", symbol: "molt_traceback_format_tb", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_format_stack", symbol: "molt_traceback_format_stack", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_extract_tb", symbol: "molt_traceback_extract_tb", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_exception_components", symbol: "molt_traceback_exception_components", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_exception_chain_payload", symbol: "molt_traceback_exception_chain_payload", arity: 2 },
+    IntrinsicSpec { name: "molt_traceback_exception_suppress_context", symbol: "molt_traceback_exception_suppress_context", arity: 1 },
+    IntrinsicSpec { name: "molt_traceback_payload", symbol: "molt_traceback_payload", arity: 2 },
+    IntrinsicSpec { name: "molt_getargv", symbol: "molt_getargv", arity: 0 },
+    IntrinsicSpec { name: "molt_getframe", symbol: "molt_getframe", arity: 1 },
+    IntrinsicSpec { name: "molt_getrecursionlimit", symbol: "molt_getrecursionlimit", arity: 0 },
+    IntrinsicSpec { name: "molt_setrecursionlimit", symbol: "molt_setrecursionlimit", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_executable", symbol: "molt_sys_executable", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncgen_hooks_get", symbol: "molt_asyncgen_hooks_get", arity: 0 },
+    IntrinsicSpec { name: "molt_asyncgen_hooks_set", symbol: "molt_asyncgen_hooks_set", arity: 2 },
+    IntrinsicSpec { name: "molt_asyncgen_locals", symbol: "molt_asyncgen_locals", arity: 1 },
+    IntrinsicSpec { name: "molt_gen_locals", symbol: "molt_gen_locals", arity: 1 },
+    IntrinsicSpec { name: "molt_ast_parse", symbol: "molt_ast_parse", arity: 6 },
+    IntrinsicSpec { name: "molt_ast_walk", symbol: "molt_ast_walk", arity: 1 },
+    IntrinsicSpec { name: "molt_ast_get_docstring", symbol: "molt_ast_get_docstring", arity: 2 },
+    IntrinsicSpec { name: "molt_inspect_cleandoc", symbol: "molt_inspect_cleandoc", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_currentframe", symbol: "molt_inspect_currentframe", arity: 0 },
+    IntrinsicSpec { name: "molt_inspect_getdoc", symbol: "molt_inspect_getdoc", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_isfunction", symbol: "molt_inspect_isfunction", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_isclass", symbol: "molt_inspect_isclass", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_ismodule", symbol: "molt_inspect_ismodule", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_iscoroutine", symbol: "molt_inspect_iscoroutine", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_iscoroutinefunction", symbol: "molt_inspect_iscoroutinefunction", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_isasyncgenfunction", symbol: "molt_inspect_isasyncgenfunction", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_isgeneratorfunction", symbol: "molt_inspect_isgeneratorfunction", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_isawaitable", symbol: "molt_inspect_isawaitable", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_getgeneratorstate", symbol: "molt_inspect_getgeneratorstate", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_getasyncgenstate", symbol: "molt_inspect_getasyncgenstate", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_getcoroutinestate", symbol: "molt_inspect_getcoroutinestate", arity: 1 },
+    IntrinsicSpec { name: "molt_inspect_signature_data", symbol: "molt_inspect_signature_data", arity: 1 },
+    IntrinsicSpec { name: "molt_function_set_builtin", symbol: "molt_function_set_builtin", arity: 1 },
+    IntrinsicSpec { name: "molt_class_new", symbol: "molt_class_new", arity: 1 },
+    IntrinsicSpec { name: "molt_dataclasses_make_dataclass", symbol: "molt_dataclasses_make_dataclass", arity: 7 },
+    IntrinsicSpec { name: "molt_dataclasses_is_dataclass", symbol: "molt_dataclasses_is_dataclass", arity: 1 },
+    IntrinsicSpec { name: "molt_dataclasses_fields", symbol: "molt_dataclasses_fields", arity: 2 },
+    IntrinsicSpec { name: "molt_dataclasses_asdict", symbol: "molt_dataclasses_asdict", arity: 3 },
+    IntrinsicSpec { name: "molt_dataclasses_astuple", symbol: "molt_dataclasses_astuple", arity: 3 },
+    IntrinsicSpec { name: "molt_dataclasses_replace", symbol: "molt_dataclasses_replace", arity: 4 },
+    IntrinsicSpec { name: "molt_class_set_base", symbol: "molt_class_set_base", arity: 2 },
+    IntrinsicSpec { name: "molt_class_apply_set_name", symbol: "molt_class_apply_set_name", arity: 1 },
+    IntrinsicSpec { name: "molt_classmethod_new", symbol: "molt_classmethod_new", arity: 1 },
+    IntrinsicSpec { name: "molt_staticmethod_new", symbol: "molt_staticmethod_new", arity: 1 },
+    IntrinsicSpec { name: "molt_property_new", symbol: "molt_property_new", arity: 3 },
+    IntrinsicSpec { name: "molt_generic_alias_new", symbol: "molt_generic_alias_new", arity: 2 },
+    IntrinsicSpec { name: "molt_typing_type_param", symbol: "molt_typing_type_param", arity: 2 },
+    IntrinsicSpec { name: "molt_sys_set_version_info", symbol: "molt_sys_set_version_info", arity: 6 },
+    IntrinsicSpec { name: "molt_sys_version_info", symbol: "molt_sys_version_info", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_version", symbol: "molt_sys_version", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_platform", symbol: "molt_sys_platform", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_path", symbol: "molt_sys_bootstrap_path", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_pythonpath", symbol: "molt_sys_bootstrap_pythonpath", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_module_roots", symbol: "molt_sys_bootstrap_module_roots", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_pwd", symbol: "molt_sys_bootstrap_pwd", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_include_cwd", symbol: "molt_sys_bootstrap_include_cwd", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_stdlib_root", symbol: "molt_sys_bootstrap_stdlib_root", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_bootstrap_payload", symbol: "molt_sys_bootstrap_payload", arity: 1 },
+    IntrinsicSpec { name: "molt_is_string_obj", symbol: "molt_is_string_obj", arity: 1 },
+    IntrinsicSpec { name: "molt_sys_stdin", symbol: "molt_sys_stdin", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_stdout", symbol: "molt_sys_stdout", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_stderr", symbol: "molt_sys_stderr", arity: 0 },
+    IntrinsicSpec { name: "molt_sys_getfilesystemencodeerrors", symbol: "molt_sys_getfilesystemencodeerrors", arity: 0 },
+    IntrinsicSpec { name: "molt_trace_enter_slot", symbol: "molt_trace_enter_slot", arity: 1 },
+    IntrinsicSpec { name: "molt_trace_exit", symbol: "molt_trace_exit", arity: 0 },
+    IntrinsicSpec { name: "molt_trace_set_line", symbol: "molt_trace_set_line", arity: 1 },
+    IntrinsicSpec { name: "molt_operator_add", symbol: "molt_operator_add", arity: 2 },
+    IntrinsicSpec { name: "molt_operator_mul", symbol: "molt_operator_mul", arity: 2 },
+    IntrinsicSpec { name: "molt_operator_eq", symbol: "molt_operator_eq", arity: 2 },
+    IntrinsicSpec { name: "molt_operator_index", symbol: "molt_operator_index", arity: 1 },
+    IntrinsicSpec { name: "molt_operator_itemgetter", symbol: "molt_operator_itemgetter", arity: 1 },
+    IntrinsicSpec { name: "molt_operator_attrgetter", symbol: "molt_operator_attrgetter", arity: 1 },
+    IntrinsicSpec { name: "molt_operator_methodcaller", symbol: "molt_operator_methodcaller", arity: 3 },
+    IntrinsicSpec { name: "molt_itertools_kwd_mark", symbol: "molt_itertools_kwd_mark", arity: 0 },
+    IntrinsicSpec { name: "molt_itertools_chain", symbol: "molt_itertools_chain", arity: 1 },
+    IntrinsicSpec { name: "molt_itertools_chain_from_iterable", symbol: "molt_itertools_chain_from_iterable", arity: 1 },
+    IntrinsicSpec { name: "molt_itertools_islice", symbol: "molt_itertools_islice", arity: 4 },
+    IntrinsicSpec { name: "molt_itertools_repeat", symbol: "molt_itertools_repeat", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_count", symbol: "molt_itertools_count", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_cycle", symbol: "molt_itertools_cycle", arity: 1 },
+    IntrinsicSpec { name: "molt_itertools_accumulate", symbol: "molt_itertools_accumulate", arity: 3 },
+    IntrinsicSpec { name: "molt_itertools_pairwise", symbol: "molt_itertools_pairwise", arity: 1 },
+    IntrinsicSpec { name: "molt_itertools_product", symbol: "molt_itertools_product", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_permutations", symbol: "molt_itertools_permutations", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_combinations", symbol: "molt_itertools_combinations", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_groupby", symbol: "molt_itertools_groupby", arity: 2 },
+    IntrinsicSpec { name: "molt_itertools_tee", symbol: "molt_itertools_tee", arity: 2 },
+    IntrinsicSpec { name: "molt_functools_kwd_mark", symbol: "molt_functools_kwd_mark", arity: 0 },
+    IntrinsicSpec { name: "molt_functools_update_wrapper", symbol: "molt_functools_update_wrapper", arity: 4 },
+    IntrinsicSpec { name: "molt_functools_wraps", symbol: "molt_functools_wraps", arity: 3 },
+    IntrinsicSpec { name: "molt_functools_cmp_to_key", symbol: "molt_functools_cmp_to_key", arity: 1 },
+    IntrinsicSpec { name: "molt_functools_total_ordering", symbol: "molt_functools_total_ordering", arity: 1 },
+    IntrinsicSpec { name: "molt_functools_partial", symbol: "molt_functools_partial", arity: 3 },
+    IntrinsicSpec { name: "molt_functools_reduce", symbol: "molt_functools_reduce", arity: 3 },
+    IntrinsicSpec { name: "molt_functools_lru_cache", symbol: "molt_functools_lru_cache", arity: 2 },
+    IntrinsicSpec { name: "molt_keyword_lists", symbol: "molt_keyword_lists", arity: 0 },
+    IntrinsicSpec { name: "molt_keyword_iskeyword", symbol: "molt_keyword_iskeyword", arity: 1 },
+    IntrinsicSpec { name: "molt_keyword_issoftkeyword", symbol: "molt_keyword_issoftkeyword", arity: 1 },
+    IntrinsicSpec { name: "molt_future_features", symbol: "molt_future_features", arity: 0 },
+    IntrinsicSpec { name: "molt_types_bootstrap", symbol: "molt_types_bootstrap", arity: 0 },
+    IntrinsicSpec { name: "molt_stdlib_probe", symbol: "molt_stdlib_probe", arity: 0 },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_capabilities_trusted" => {
-            Some(crate::molt_capabilities_trusted as *const () as usize as u64)
-        }
+        "molt_capabilities_trusted" => Some(crate::molt_capabilities_trusted as *const () as usize as u64),
         "molt_capabilities_has" => Some(crate::molt_capabilities_has as *const () as usize as u64),
-        "molt_capabilities_require" => {
-            Some(crate::molt_capabilities_require as *const () as usize as u64)
-        }
+        "molt_capabilities_require" => Some(crate::molt_capabilities_require as *const () as usize as u64),
         "molt_weakref_register" => Some(crate::molt_weakref_register as *const () as usize as u64),
         "molt_weakref_get" => Some(crate::molt_weakref_get as *const () as usize as u64),
         "molt_weakref_peek" => Some(crate::molt_weakref_peek as *const () as usize as u64),
         "molt_weakref_drop" => Some(crate::molt_weakref_drop as *const () as usize as u64),
         "molt_weakref_collect" => Some(crate::molt_weakref_collect as *const () as usize as u64),
-        "molt_weakref_find_nocallback" => {
-            Some(crate::molt_weakref_find_nocallback as *const () as usize as u64)
-        }
+        "molt_weakref_find_nocallback" => Some(crate::molt_weakref_find_nocallback as *const () as usize as u64),
         "molt_weakref_refs" => Some(crate::molt_weakref_refs as *const () as usize as u64),
         "molt_weakref_count" => Some(crate::molt_weakref_count as *const () as usize as u64),
-        "molt_weakref_finalize_track" => {
-            Some(crate::molt_weakref_finalize_track as *const () as usize as u64)
-        }
-        "molt_weakref_finalize_untrack" => {
-            Some(crate::molt_weakref_finalize_untrack as *const () as usize as u64)
-        }
+        "molt_weakref_finalize_track" => Some(crate::molt_weakref_finalize_track as *const () as usize as u64),
+        "molt_weakref_finalize_untrack" => Some(crate::molt_weakref_finalize_untrack as *const () as usize as u64),
         "molt_weakkeydict_set" => Some(crate::molt_weakkeydict_set as *const () as usize as u64),
         "molt_weakkeydict_get" => Some(crate::molt_weakkeydict_get as *const () as usize as u64),
         "molt_weakkeydict_del" => Some(crate::molt_weakkeydict_del as *const () as usize as u64),
-        "molt_weakkeydict_contains" => {
-            Some(crate::molt_weakkeydict_contains as *const () as usize as u64)
-        }
+        "molt_weakkeydict_contains" => Some(crate::molt_weakkeydict_contains as *const () as usize as u64),
         "molt_weakkeydict_len" => Some(crate::molt_weakkeydict_len as *const () as usize as u64),
-        "molt_weakkeydict_items" => {
-            Some(crate::molt_weakkeydict_items as *const () as usize as u64)
-        }
-        "molt_weakkeydict_keyrefs" => {
-            Some(crate::molt_weakkeydict_keyrefs as *const () as usize as u64)
-        }
-        "molt_weakkeydict_popitem" => {
-            Some(crate::molt_weakkeydict_popitem as *const () as usize as u64)
-        }
-        "molt_weakkeydict_clear" => {
-            Some(crate::molt_weakkeydict_clear as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_set" => {
-            Some(crate::molt_weakvaluedict_set as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_get" => {
-            Some(crate::molt_weakvaluedict_get as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_del" => {
-            Some(crate::molt_weakvaluedict_del as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_contains" => {
-            Some(crate::molt_weakvaluedict_contains as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_len" => {
-            Some(crate::molt_weakvaluedict_len as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_items" => {
-            Some(crate::molt_weakvaluedict_items as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_valuerefs" => {
-            Some(crate::molt_weakvaluedict_valuerefs as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_popitem" => {
-            Some(crate::molt_weakvaluedict_popitem as *const () as usize as u64)
-        }
-        "molt_weakvaluedict_clear" => {
-            Some(crate::molt_weakvaluedict_clear as *const () as usize as u64)
-        }
+        "molt_weakkeydict_items" => Some(crate::molt_weakkeydict_items as *const () as usize as u64),
+        "molt_weakkeydict_keyrefs" => Some(crate::molt_weakkeydict_keyrefs as *const () as usize as u64),
+        "molt_weakkeydict_popitem" => Some(crate::molt_weakkeydict_popitem as *const () as usize as u64),
+        "molt_weakkeydict_clear" => Some(crate::molt_weakkeydict_clear as *const () as usize as u64),
+        "molt_weakvaluedict_set" => Some(crate::molt_weakvaluedict_set as *const () as usize as u64),
+        "molt_weakvaluedict_get" => Some(crate::molt_weakvaluedict_get as *const () as usize as u64),
+        "molt_weakvaluedict_del" => Some(crate::molt_weakvaluedict_del as *const () as usize as u64),
+        "molt_weakvaluedict_contains" => Some(crate::molt_weakvaluedict_contains as *const () as usize as u64),
+        "molt_weakvaluedict_len" => Some(crate::molt_weakvaluedict_len as *const () as usize as u64),
+        "molt_weakvaluedict_items" => Some(crate::molt_weakvaluedict_items as *const () as usize as u64),
+        "molt_weakvaluedict_valuerefs" => Some(crate::molt_weakvaluedict_valuerefs as *const () as usize as u64),
+        "molt_weakvaluedict_popitem" => Some(crate::molt_weakvaluedict_popitem as *const () as usize as u64),
+        "molt_weakvaluedict_clear" => Some(crate::molt_weakvaluedict_clear as *const () as usize as u64),
         "molt_weakset_add" => Some(crate::molt_weakset_add as *const () as usize as u64),
         "molt_weakset_discard" => Some(crate::molt_weakset_discard as *const () as usize as u64),
         "molt_weakset_remove" => Some(crate::molt_weakset_remove as *const () as usize as u64),
@@ -4879,64 +1022,32 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_weakset_items" => Some(crate::molt_weakset_items as *const () as usize as u64),
         "molt_weakset_clear" => Some(crate::molt_weakset_clear as *const () as usize as u64),
         "molt_abc_bootstrap" => Some(crate::molt_abc_bootstrap as *const () as usize as u64),
-        "molt_collections_abc_runtime_types" => {
-            Some(crate::molt_collections_abc_runtime_types as *const () as usize as u64)
-        }
-        "molt_abc_get_cache_token" => {
-            Some(crate::molt_abc_get_cache_token as *const () as usize as u64)
-        }
+        "molt_collections_abc_runtime_types" => Some(crate::molt_collections_abc_runtime_types as *const () as usize as u64),
+        "molt_abc_get_cache_token" => Some(crate::molt_abc_get_cache_token as *const () as usize as u64),
         "molt_abc_init" => Some(crate::molt_abc_init as *const () as usize as u64),
         "molt_abc_register" => Some(crate::molt_abc_register as *const () as usize as u64),
-        "molt_abc_instancecheck" => {
-            Some(crate::molt_abc_instancecheck as *const () as usize as u64)
-        }
-        "molt_abc_subclasscheck" => {
-            Some(crate::molt_abc_subclasscheck as *const () as usize as u64)
-        }
+        "molt_abc_instancecheck" => Some(crate::molt_abc_instancecheck as *const () as usize as u64),
+        "molt_abc_subclasscheck" => Some(crate::molt_abc_subclasscheck as *const () as usize as u64),
         "molt_abc_get_dump" => Some(crate::molt_abc_get_dump as *const () as usize as u64),
-        "molt_abc_reset_registry" => {
-            Some(crate::molt_abc_reset_registry as *const () as usize as u64)
-        }
+        "molt_abc_reset_registry" => Some(crate::molt_abc_reset_registry as *const () as usize as u64),
         "molt_abc_reset_caches" => Some(crate::molt_abc_reset_caches as *const () as usize as u64),
-        "molt_abc_update_abstractmethods" => {
-            Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64)
-        }
+        "molt_abc_update_abstractmethods" => Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64),
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
-        "molt_re_literal_matches" => {
-            Some(crate::molt_re_literal_matches as *const () as usize as u64)
-        }
-        "molt_re_literal_advance" => {
-            Some(crate::molt_re_literal_advance as *const () as usize as u64)
-        }
+        "molt_re_literal_matches" => Some(crate::molt_re_literal_matches as *const () as usize as u64),
+        "molt_re_literal_advance" => Some(crate::molt_re_literal_advance as *const () as usize as u64),
         "molt_re_any_advance" => Some(crate::molt_re_any_advance as *const () as usize as u64),
         "molt_re_char_in_range" => Some(crate::molt_re_char_in_range as *const () as usize as u64),
-        "molt_re_category_matches" => {
-            Some(crate::molt_re_category_matches as *const () as usize as u64)
-        }
-        "molt_re_anchor_matches" => {
-            Some(crate::molt_re_anchor_matches as *const () as usize as u64)
-        }
+        "molt_re_category_matches" => Some(crate::molt_re_category_matches as *const () as usize as u64),
+        "molt_re_anchor_matches" => Some(crate::molt_re_anchor_matches as *const () as usize as u64),
         "molt_re_group_is_set" => Some(crate::molt_re_group_is_set as *const () as usize as u64),
-        "molt_re_backref_advance" => {
-            Some(crate::molt_re_backref_advance as *const () as usize as u64)
-        }
-        "molt_re_backref_group_advance" => {
-            Some(crate::molt_re_backref_group_advance as *const () as usize as u64)
-        }
-        "molt_re_apply_scoped_flags" => {
-            Some(crate::molt_re_apply_scoped_flags as *const () as usize as u64)
-        }
+        "molt_re_backref_advance" => Some(crate::molt_re_backref_advance as *const () as usize as u64),
+        "molt_re_backref_group_advance" => Some(crate::molt_re_backref_group_advance as *const () as usize as u64),
+        "molt_re_apply_scoped_flags" => Some(crate::molt_re_apply_scoped_flags as *const () as usize as u64),
         "molt_re_group_capture" => Some(crate::molt_re_group_capture as *const () as usize as u64),
-        "molt_re_charclass_matches" => {
-            Some(crate::molt_re_charclass_matches as *const () as usize as u64)
-        }
-        "molt_re_charclass_advance" => {
-            Some(crate::molt_re_charclass_advance as *const () as usize as u64)
-        }
+        "molt_re_charclass_matches" => Some(crate::molt_re_charclass_matches as *const () as usize as u64),
+        "molt_re_charclass_advance" => Some(crate::molt_re_charclass_advance as *const () as usize as u64),
         "molt_re_group_values" => Some(crate::molt_re_group_values as *const () as usize as u64),
-        "molt_re_expand_replacement" => {
-            Some(crate::molt_re_expand_replacement as *const () as usize as u64)
-        }
+        "molt_re_expand_replacement" => Some(crate::molt_re_expand_replacement as *const () as usize as u64),
         "molt_shlex_quote" => Some(crate::molt_shlex_quote as *const () as usize as u64),
         "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
         "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
@@ -4944,29 +1055,20 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_fnmatch" => Some(crate::molt_fnmatch as *const () as usize as u64),
         "molt_fnmatchcase" => Some(crate::molt_fnmatchcase as *const () as usize as u64),
         "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
-        "molt_fnmatch_translate" => {
-            Some(crate::molt_fnmatch_translate as *const () as usize as u64)
-        }
-        "molt_pkgutil_iter_modules" => {
-            Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64)
-        }
-        "molt_pkgutil_walk_packages" => {
-            Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64)
-        }
+        "molt_fnmatch_translate" => Some(crate::molt_fnmatch_translate as *const () as usize as u64),
+        "molt_pkgutil_iter_modules" => Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64),
+        "molt_pkgutil_walk_packages" => Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64),
+        "molt_site_help0" => Some(crate::molt_site_help0 as *const () as usize as u64),
+        "molt_site_help1" => Some(crate::molt_site_help1 as *const () as usize as u64),
+        "molt_site_credits" => Some(crate::molt_site_credits as *const () as usize as u64),
+        "molt_site_license" => Some(crate::molt_site_license as *const () as usize as u64),
+        "molt_site_copyright" => Some(crate::molt_site_copyright as *const () as usize as u64),
         "molt_shutil_copyfile" => Some(crate::molt_shutil_copyfile as *const () as usize as u64),
         "molt_shutil_which" => Some(crate::molt_shutil_which as *const () as usize as u64),
-        "molt_py_compile_compile" => {
-            Some(crate::molt_py_compile_compile as *const () as usize as u64)
-        }
-        "molt_compileall_compile_file" => {
-            Some(crate::molt_compileall_compile_file as *const () as usize as u64)
-        }
-        "molt_compileall_compile_dir" => {
-            Some(crate::molt_compileall_compile_dir as *const () as usize as u64)
-        }
-        "molt_compileall_compile_path" => {
-            Some(crate::molt_compileall_compile_path as *const () as usize as u64)
-        }
+        "molt_py_compile_compile" => Some(crate::molt_py_compile_compile as *const () as usize as u64),
+        "molt_compileall_compile_file" => Some(crate::molt_compileall_compile_file as *const () as usize as u64),
+        "molt_compileall_compile_dir" => Some(crate::molt_compileall_compile_dir as *const () as usize as u64),
+        "molt_compileall_compile_path" => Some(crate::molt_compileall_compile_path as *const () as usize as u64),
         "molt_stat_constants" => Some(crate::molt_stat_constants as *const () as usize as u64),
         "molt_stat_ifmt" => Some(crate::molt_stat_ifmt as *const () as usize as u64),
         "molt_stat_imode" => Some(crate::molt_stat_imode as *const () as usize as u64),
@@ -4981,623 +1083,229 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_textwrap_fill" => Some(crate::molt_textwrap_fill as *const () as usize as u64),
         "molt_textwrap_indent" => Some(crate::molt_textwrap_indent as *const () as usize as u64),
         "molt_urllib_quote" => Some(crate::molt_urllib_quote as *const () as usize as u64),
-        "molt_urllib_quote_plus" => {
-            Some(crate::molt_urllib_quote_plus as *const () as usize as u64)
-        }
+        "molt_urllib_quote_plus" => Some(crate::molt_urllib_quote_plus as *const () as usize as u64),
         "molt_urllib_unquote" => Some(crate::molt_urllib_unquote as *const () as usize as u64),
-        "molt_urllib_unquote_plus" => {
-            Some(crate::molt_urllib_unquote_plus as *const () as usize as u64)
-        }
+        "molt_urllib_unquote_plus" => Some(crate::molt_urllib_unquote_plus as *const () as usize as u64),
         "molt_urllib_parse_qsl" => Some(crate::molt_urllib_parse_qsl as *const () as usize as u64),
         "molt_urllib_parse_qs" => Some(crate::molt_urllib_parse_qs as *const () as usize as u64),
         "molt_urllib_urlencode" => Some(crate::molt_urllib_urlencode as *const () as usize as u64),
         "molt_urllib_urlsplit" => Some(crate::molt_urllib_urlsplit as *const () as usize as u64),
         "molt_urllib_urlparse" => Some(crate::molt_urllib_urlparse as *const () as usize as u64),
-        "molt_urllib_urlunsplit" => {
-            Some(crate::molt_urllib_urlunsplit as *const () as usize as u64)
-        }
-        "molt_urllib_urlunparse" => {
-            Some(crate::molt_urllib_urlunparse as *const () as usize as u64)
-        }
+        "molt_urllib_urlunsplit" => Some(crate::molt_urllib_urlunsplit as *const () as usize as u64),
+        "molt_urllib_urlunparse" => Some(crate::molt_urllib_urlunparse as *const () as usize as u64),
         "molt_urllib_urldefrag" => Some(crate::molt_urllib_urldefrag as *const () as usize as u64),
         "molt_urllib_urljoin" => Some(crate::molt_urllib_urljoin as *const () as usize as u64),
-        "molt_urllib_error_urlerror_init" => {
-            Some(crate::molt_urllib_error_urlerror_init as *const () as usize as u64)
-        }
-        "molt_urllib_error_urlerror_str" => {
-            Some(crate::molt_urllib_error_urlerror_str as *const () as usize as u64)
-        }
-        "molt_urllib_error_httperror_init" => {
-            Some(crate::molt_urllib_error_httperror_init as *const () as usize as u64)
-        }
-        "molt_urllib_error_httperror_str" => {
-            Some(crate::molt_urllib_error_httperror_str as *const () as usize as u64)
-        }
-        "molt_urllib_error_content_too_short_init" => {
-            Some(crate::molt_urllib_error_content_too_short_init as *const () as usize as u64)
-        }
-        "molt_urllib_request_request_init" => {
-            Some(crate::molt_urllib_request_request_init as *const () as usize as u64)
-        }
-        "molt_urllib_request_opener_init" => {
-            Some(crate::molt_urllib_request_opener_init as *const () as usize as u64)
-        }
-        "molt_urllib_request_add_handler" => {
-            Some(crate::molt_urllib_request_add_handler as *const () as usize as u64)
-        }
-        "molt_urllib_request_open" => {
-            Some(crate::molt_urllib_request_open as *const () as usize as u64)
-        }
-        "molt_urllib_request_process_http_error" => {
-            Some(crate::molt_urllib_request_process_http_error as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_read" => {
-            Some(crate::molt_urllib_request_response_read as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_close" => {
-            Some(crate::molt_urllib_request_response_close as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_drop" => {
-            Some(crate::molt_urllib_request_response_drop as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_geturl" => {
-            Some(crate::molt_urllib_request_response_geturl as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_getcode" => {
-            Some(crate::molt_urllib_request_response_getcode as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_getreason" => {
-            Some(crate::molt_urllib_request_response_getreason as *const () as usize as u64)
-        }
-        "molt_urllib_request_response_getheaders" => {
-            Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64)
-        }
-        "molt_http_cookiejar_new" => {
-            Some(crate::molt_http_cookiejar_new as *const () as usize as u64)
-        }
-        "molt_http_cookiejar_len" => {
-            Some(crate::molt_http_cookiejar_len as *const () as usize as u64)
-        }
-        "molt_http_cookiejar_clear" => {
-            Some(crate::molt_http_cookiejar_clear as *const () as usize as u64)
-        }
-        "molt_http_cookiejar_extract" => {
-            Some(crate::molt_http_cookiejar_extract as *const () as usize as u64)
-        }
-        "molt_http_cookiejar_header_for_url" => {
-            Some(crate::molt_http_cookiejar_header_for_url as *const () as usize as u64)
-        }
-        "molt_ctypes_require_ffi" => {
-            Some(crate::molt_ctypes_require_ffi as *const () as usize as u64)
-        }
-        "molt_ctypes_coerce_value" => {
-            Some(crate::molt_ctypes_coerce_value as *const () as usize as u64)
-        }
-        "molt_ctypes_default_value" => {
-            Some(crate::molt_ctypes_default_value as *const () as usize as u64)
-        }
+        "molt_urllib_error_urlerror_init" => Some(crate::molt_urllib_error_urlerror_init as *const () as usize as u64),
+        "molt_urllib_error_urlerror_str" => Some(crate::molt_urllib_error_urlerror_str as *const () as usize as u64),
+        "molt_urllib_error_httperror_init" => Some(crate::molt_urllib_error_httperror_init as *const () as usize as u64),
+        "molt_urllib_error_httperror_str" => Some(crate::molt_urllib_error_httperror_str as *const () as usize as u64),
+        "molt_urllib_error_content_too_short_init" => Some(crate::molt_urllib_error_content_too_short_init as *const () as usize as u64),
+        "molt_urllib_request_request_init" => Some(crate::molt_urllib_request_request_init as *const () as usize as u64),
+        "molt_urllib_request_opener_init" => Some(crate::molt_urllib_request_opener_init as *const () as usize as u64),
+        "molt_urllib_request_add_handler" => Some(crate::molt_urllib_request_add_handler as *const () as usize as u64),
+        "molt_urllib_request_open" => Some(crate::molt_urllib_request_open as *const () as usize as u64),
+        "molt_urllib_request_process_http_error" => Some(crate::molt_urllib_request_process_http_error as *const () as usize as u64),
+        "molt_urllib_request_response_read" => Some(crate::molt_urllib_request_response_read as *const () as usize as u64),
+        "molt_urllib_request_response_close" => Some(crate::molt_urllib_request_response_close as *const () as usize as u64),
+        "molt_urllib_request_response_drop" => Some(crate::molt_urllib_request_response_drop as *const () as usize as u64),
+        "molt_urllib_request_response_geturl" => Some(crate::molt_urllib_request_response_geturl as *const () as usize as u64),
+        "molt_urllib_request_response_getcode" => Some(crate::molt_urllib_request_response_getcode as *const () as usize as u64),
+        "molt_urllib_request_response_getreason" => Some(crate::molt_urllib_request_response_getreason as *const () as usize as u64),
+        "molt_urllib_request_response_getheaders" => Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64),
+        "molt_http_cookiejar_new" => Some(crate::molt_http_cookiejar_new as *const () as usize as u64),
+        "molt_http_cookiejar_len" => Some(crate::molt_http_cookiejar_len as *const () as usize as u64),
+        "molt_http_cookiejar_clear" => Some(crate::molt_http_cookiejar_clear as *const () as usize as u64),
+        "molt_http_cookiejar_extract" => Some(crate::molt_http_cookiejar_extract as *const () as usize as u64),
+        "molt_http_cookiejar_header_for_url" => Some(crate::molt_http_cookiejar_header_for_url as *const () as usize as u64),
+        "molt_ctypes_require_ffi" => Some(crate::molt_ctypes_require_ffi as *const () as usize as u64),
+        "molt_ctypes_coerce_value" => Some(crate::molt_ctypes_coerce_value as *const () as usize as u64),
+        "molt_ctypes_default_value" => Some(crate::molt_ctypes_default_value as *const () as usize as u64),
         "molt_ctypes_sizeof" => Some(crate::molt_ctypes_sizeof as *const () as usize as u64),
-        "molt_http_client_execute" => {
-            Some(crate::molt_http_client_execute as *const () as usize as u64)
-        }
-        "molt_http_client_response_read" => {
-            Some(crate::molt_http_client_response_read as *const () as usize as u64)
-        }
-        "molt_http_client_response_close" => {
-            Some(crate::molt_http_client_response_close as *const () as usize as u64)
-        }
-        "molt_http_client_response_drop" => {
-            Some(crate::molt_http_client_response_drop as *const () as usize as u64)
-        }
-        "molt_http_client_response_getstatus" => {
-            Some(crate::molt_http_client_response_getstatus as *const () as usize as u64)
-        }
-        "molt_http_client_response_getreason" => {
-            Some(crate::molt_http_client_response_getreason as *const () as usize as u64)
-        }
-        "molt_http_client_response_getheader" => {
-            Some(crate::molt_http_client_response_getheader as *const () as usize as u64)
-        }
-        "molt_http_client_response_getheaders" => {
-            Some(crate::molt_http_client_response_getheaders as *const () as usize as u64)
-        }
-        "molt_socketserver_register" => {
-            Some(crate::molt_socketserver_register as *const () as usize as u64)
-        }
-        "molt_socketserver_unregister" => {
-            Some(crate::molt_socketserver_unregister as *const () as usize as u64)
-        }
-        "molt_socketserver_dispatch_begin" => {
-            Some(crate::molt_socketserver_dispatch_begin as *const () as usize as u64)
-        }
-        "molt_socketserver_dispatch_poll" => {
-            Some(crate::molt_socketserver_dispatch_poll as *const () as usize as u64)
-        }
-        "molt_socketserver_dispatch_cancel" => {
-            Some(crate::molt_socketserver_dispatch_cancel as *const () as usize as u64)
-        }
-        "molt_socketserver_get_request_poll" => {
-            Some(crate::molt_socketserver_get_request_poll as *const () as usize as u64)
-        }
-        "molt_socketserver_set_response" => {
-            Some(crate::molt_socketserver_set_response as *const () as usize as u64)
-        }
-        "molt_socketserver_serve_forever" => {
-            Some(crate::molt_socketserver_serve_forever as *const () as usize as u64)
-        }
-        "molt_socketserver_handle_request" => {
-            Some(crate::molt_socketserver_handle_request as *const () as usize as u64)
-        }
-        "molt_socketserver_shutdown" => {
-            Some(crate::molt_socketserver_shutdown as *const () as usize as u64)
-        }
-        "molt_http_server_read_request" => {
-            Some(crate::molt_http_server_read_request as *const () as usize as u64)
-        }
-        "molt_http_server_compute_close_connection" => {
-            Some(crate::molt_http_server_compute_close_connection as *const () as usize as u64)
-        }
-        "molt_http_server_handle_one_request" => {
-            Some(crate::molt_http_server_handle_one_request as *const () as usize as u64)
-        }
-        "molt_http_server_send_response" => {
-            Some(crate::molt_http_server_send_response as *const () as usize as u64)
-        }
-        "molt_http_server_send_response_only" => {
-            Some(crate::molt_http_server_send_response_only as *const () as usize as u64)
-        }
-        "molt_http_server_send_header" => {
-            Some(crate::molt_http_server_send_header as *const () as usize as u64)
-        }
-        "molt_http_server_end_headers" => {
-            Some(crate::molt_http_server_end_headers as *const () as usize as u64)
-        }
-        "molt_http_server_send_error" => {
-            Some(crate::molt_http_server_send_error as *const () as usize as u64)
-        }
-        "molt_http_server_version_string" => {
-            Some(crate::molt_http_server_version_string as *const () as usize as u64)
-        }
-        "molt_http_server_date_time_string" => {
-            Some(crate::molt_http_server_date_time_string as *const () as usize as u64)
-        }
+        "molt_http_client_execute" => Some(crate::molt_http_client_execute as *const () as usize as u64),
+        "molt_http_client_response_read" => Some(crate::molt_http_client_response_read as *const () as usize as u64),
+        "molt_http_client_response_close" => Some(crate::molt_http_client_response_close as *const () as usize as u64),
+        "molt_http_client_response_drop" => Some(crate::molt_http_client_response_drop as *const () as usize as u64),
+        "molt_http_client_response_getstatus" => Some(crate::molt_http_client_response_getstatus as *const () as usize as u64),
+        "molt_http_client_response_getreason" => Some(crate::molt_http_client_response_getreason as *const () as usize as u64),
+        "molt_http_client_response_getheader" => Some(crate::molt_http_client_response_getheader as *const () as usize as u64),
+        "molt_http_client_response_getheaders" => Some(crate::molt_http_client_response_getheaders as *const () as usize as u64),
+        "molt_socketserver_register" => Some(crate::molt_socketserver_register as *const () as usize as u64),
+        "molt_socketserver_unregister" => Some(crate::molt_socketserver_unregister as *const () as usize as u64),
+        "molt_socketserver_dispatch_begin" => Some(crate::molt_socketserver_dispatch_begin as *const () as usize as u64),
+        "molt_socketserver_dispatch_poll" => Some(crate::molt_socketserver_dispatch_poll as *const () as usize as u64),
+        "molt_socketserver_dispatch_cancel" => Some(crate::molt_socketserver_dispatch_cancel as *const () as usize as u64),
+        "molt_socketserver_get_request_poll" => Some(crate::molt_socketserver_get_request_poll as *const () as usize as u64),
+        "molt_socketserver_set_response" => Some(crate::molt_socketserver_set_response as *const () as usize as u64),
+        "molt_socketserver_serve_forever" => Some(crate::molt_socketserver_serve_forever as *const () as usize as u64),
+        "molt_socketserver_handle_request" => Some(crate::molt_socketserver_handle_request as *const () as usize as u64),
+        "molt_socketserver_shutdown" => Some(crate::molt_socketserver_shutdown as *const () as usize as u64),
+        "molt_http_server_read_request" => Some(crate::molt_http_server_read_request as *const () as usize as u64),
+        "molt_http_server_compute_close_connection" => Some(crate::molt_http_server_compute_close_connection as *const () as usize as u64),
+        "molt_http_server_handle_one_request" => Some(crate::molt_http_server_handle_one_request as *const () as usize as u64),
+        "molt_http_server_send_response" => Some(crate::molt_http_server_send_response as *const () as usize as u64),
+        "molt_http_server_send_response_only" => Some(crate::molt_http_server_send_response_only as *const () as usize as u64),
+        "molt_http_server_send_header" => Some(crate::molt_http_server_send_header as *const () as usize as u64),
+        "molt_http_server_end_headers" => Some(crate::molt_http_server_end_headers as *const () as usize as u64),
+        "molt_http_server_send_error" => Some(crate::molt_http_server_send_error as *const () as usize as u64),
+        "molt_http_server_version_string" => Some(crate::molt_http_server_version_string as *const () as usize as u64),
+        "molt_http_server_date_time_string" => Some(crate::molt_http_server_date_time_string as *const () as usize as u64),
         "molt_context_null" => Some(crate::molt_context_null as *const () as usize as u64),
         "molt_context_closing" => Some(crate::molt_context_closing as *const () as usize as u64),
-        "molt_contextlib_closing" => {
-            Some(crate::molt_contextlib_closing as *const () as usize as u64)
-        }
-        "molt_contextlib_aclosing_enter" => {
-            Some(crate::molt_contextlib_aclosing_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_aclosing_exit" => {
-            Some(crate::molt_contextlib_aclosing_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_abstract_enter" => {
-            Some(crate::molt_contextlib_abstract_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_abstract_aenter" => {
-            Some(crate::molt_contextlib_abstract_aenter as *const () as usize as u64)
-        }
-        "molt_contextlib_abstract_subclasshook" => {
-            Some(crate::molt_contextlib_abstract_subclasshook as *const () as usize as u64)
-        }
-        "molt_contextlib_abstract_async_subclasshook" => {
-            Some(crate::molt_contextlib_abstract_async_subclasshook as *const () as usize as u64)
-        }
-        "molt_contextlib_contextdecorator_call" => {
-            Some(crate::molt_contextlib_contextdecorator_call as *const () as usize as u64)
-        }
-        "molt_contextlib_chdir_enter" => {
-            Some(crate::molt_contextlib_chdir_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_chdir_exit" => {
-            Some(crate::molt_contextlib_chdir_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_cm_new" => {
-            Some(crate::molt_contextlib_asyncgen_cm_new as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_cm_drop" => {
-            Some(crate::molt_contextlib_asyncgen_cm_drop as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_cm_aenter" => {
-            Some(crate::molt_contextlib_asyncgen_cm_aenter as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_cm_aexit" => {
-            Some(crate::molt_contextlib_asyncgen_cm_aexit as *const () as usize as u64)
-        }
-        "molt_contextlib_generator_enter" => {
-            Some(crate::molt_contextlib_generator_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_generator_exit" => {
-            Some(crate::molt_contextlib_generator_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_enter" => {
-            Some(crate::molt_contextlib_asyncgen_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_asyncgen_exit" => {
-            Some(crate::molt_contextlib_asyncgen_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_suppress_match" => {
-            Some(crate::molt_contextlib_suppress_match as *const () as usize as u64)
-        }
-        "molt_contextlib_redirect_enter" => {
-            Some(crate::molt_contextlib_redirect_enter as *const () as usize as u64)
-        }
-        "molt_contextlib_redirect_exit" => {
-            Some(crate::molt_contextlib_redirect_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_new" => {
-            Some(crate::molt_contextlib_exitstack_new as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_drop" => {
-            Some(crate::molt_contextlib_exitstack_drop as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_push" => {
-            Some(crate::molt_contextlib_exitstack_push as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_push_callback" => {
-            Some(crate::molt_contextlib_exitstack_push_callback as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_pop" => {
-            Some(crate::molt_contextlib_exitstack_pop as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_pop_all" => {
-            Some(crate::molt_contextlib_exitstack_pop_all as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_enter_context" => {
-            Some(crate::molt_contextlib_exitstack_enter_context as *const () as usize as u64)
-        }
-        "molt_contextlib_exitstack_exit" => {
-            Some(crate::molt_contextlib_exitstack_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_async_exitstack_push_callback" => {
-            Some(crate::molt_contextlib_async_exitstack_push_callback as *const () as usize as u64)
-        }
-        "molt_contextlib_async_exitstack_push_exit" => {
-            Some(crate::molt_contextlib_async_exitstack_push_exit as *const () as usize as u64)
-        }
-        "molt_contextlib_async_exitstack_enter_context" => {
-            Some(crate::molt_contextlib_async_exitstack_enter_context as *const () as usize as u64)
-        }
-        "molt_contextlib_async_exitstack_exit" => {
-            Some(crate::molt_contextlib_async_exitstack_exit as *const () as usize as u64)
-        }
-        "molt_email_message_new" => {
-            Some(crate::molt_email_message_new as *const () as usize as u64)
-        }
-        "molt_email_message_from_bytes" => {
-            Some(crate::molt_email_message_from_bytes as *const () as usize as u64)
-        }
-        "molt_email_message_set" => {
-            Some(crate::molt_email_message_set as *const () as usize as u64)
-        }
-        "molt_email_message_get" => {
-            Some(crate::molt_email_message_get as *const () as usize as u64)
-        }
-        "molt_email_message_set_content" => {
-            Some(crate::molt_email_message_set_content as *const () as usize as u64)
-        }
-        "molt_email_message_add_alternative" => {
-            Some(crate::molt_email_message_add_alternative as *const () as usize as u64)
-        }
-        "molt_email_message_add_attachment" => {
-            Some(crate::molt_email_message_add_attachment as *const () as usize as u64)
-        }
-        "molt_email_message_is_multipart" => {
-            Some(crate::molt_email_message_is_multipart as *const () as usize as u64)
-        }
-        "molt_email_message_payload" => {
-            Some(crate::molt_email_message_payload as *const () as usize as u64)
-        }
-        "molt_email_message_content" => {
-            Some(crate::molt_email_message_content as *const () as usize as u64)
-        }
-        "molt_email_message_content_type" => {
-            Some(crate::molt_email_message_content_type as *const () as usize as u64)
-        }
-        "molt_email_message_filename" => {
-            Some(crate::molt_email_message_filename as *const () as usize as u64)
-        }
-        "molt_email_message_as_string" => {
-            Some(crate::molt_email_message_as_string as *const () as usize as u64)
-        }
-        "molt_email_message_items" => {
-            Some(crate::molt_email_message_items as *const () as usize as u64)
-        }
-        "molt_email_message_drop" => {
-            Some(crate::molt_email_message_drop as *const () as usize as u64)
-        }
-        "molt_email_utils_make_msgid" => {
-            Some(crate::molt_email_utils_make_msgid as *const () as usize as u64)
-        }
-        "molt_email_utils_getaddresses" => {
-            Some(crate::molt_email_utils_getaddresses as *const () as usize as u64)
-        }
-        "molt_email_utils_parsedate_tz" => {
-            Some(crate::molt_email_utils_parsedate_tz as *const () as usize as u64)
-        }
-        "molt_email_utils_format_datetime" => {
-            Some(crate::molt_email_utils_format_datetime as *const () as usize as u64)
-        }
-        "molt_email_utils_parsedate_to_datetime" => {
-            Some(crate::molt_email_utils_parsedate_to_datetime as *const () as usize as u64)
-        }
+        "molt_contextlib_closing" => Some(crate::molt_contextlib_closing as *const () as usize as u64),
+        "molt_contextlib_aclosing_enter" => Some(crate::molt_contextlib_aclosing_enter as *const () as usize as u64),
+        "molt_contextlib_aclosing_exit" => Some(crate::molt_contextlib_aclosing_exit as *const () as usize as u64),
+        "molt_contextlib_abstract_enter" => Some(crate::molt_contextlib_abstract_enter as *const () as usize as u64),
+        "molt_contextlib_abstract_aenter" => Some(crate::molt_contextlib_abstract_aenter as *const () as usize as u64),
+        "molt_contextlib_abstract_subclasshook" => Some(crate::molt_contextlib_abstract_subclasshook as *const () as usize as u64),
+        "molt_contextlib_abstract_async_subclasshook" => Some(crate::molt_contextlib_abstract_async_subclasshook as *const () as usize as u64),
+        "molt_contextlib_contextdecorator_call" => Some(crate::molt_contextlib_contextdecorator_call as *const () as usize as u64),
+        "molt_contextlib_chdir_enter" => Some(crate::molt_contextlib_chdir_enter as *const () as usize as u64),
+        "molt_contextlib_chdir_exit" => Some(crate::molt_contextlib_chdir_exit as *const () as usize as u64),
+        "molt_contextlib_asyncgen_cm_new" => Some(crate::molt_contextlib_asyncgen_cm_new as *const () as usize as u64),
+        "molt_contextlib_asyncgen_cm_drop" => Some(crate::molt_contextlib_asyncgen_cm_drop as *const () as usize as u64),
+        "molt_contextlib_asyncgen_cm_aenter" => Some(crate::molt_contextlib_asyncgen_cm_aenter as *const () as usize as u64),
+        "molt_contextlib_asyncgen_cm_aexit" => Some(crate::molt_contextlib_asyncgen_cm_aexit as *const () as usize as u64),
+        "molt_contextlib_generator_enter" => Some(crate::molt_contextlib_generator_enter as *const () as usize as u64),
+        "molt_contextlib_generator_exit" => Some(crate::molt_contextlib_generator_exit as *const () as usize as u64),
+        "molt_contextlib_asyncgen_enter" => Some(crate::molt_contextlib_asyncgen_enter as *const () as usize as u64),
+        "molt_contextlib_asyncgen_exit" => Some(crate::molt_contextlib_asyncgen_exit as *const () as usize as u64),
+        "molt_contextlib_suppress_match" => Some(crate::molt_contextlib_suppress_match as *const () as usize as u64),
+        "molt_contextlib_redirect_enter" => Some(crate::molt_contextlib_redirect_enter as *const () as usize as u64),
+        "molt_contextlib_redirect_exit" => Some(crate::molt_contextlib_redirect_exit as *const () as usize as u64),
+        "molt_contextlib_exitstack_new" => Some(crate::molt_contextlib_exitstack_new as *const () as usize as u64),
+        "molt_contextlib_exitstack_drop" => Some(crate::molt_contextlib_exitstack_drop as *const () as usize as u64),
+        "molt_contextlib_exitstack_push" => Some(crate::molt_contextlib_exitstack_push as *const () as usize as u64),
+        "molt_contextlib_exitstack_push_callback" => Some(crate::molt_contextlib_exitstack_push_callback as *const () as usize as u64),
+        "molt_contextlib_exitstack_pop" => Some(crate::molt_contextlib_exitstack_pop as *const () as usize as u64),
+        "molt_contextlib_exitstack_pop_all" => Some(crate::molt_contextlib_exitstack_pop_all as *const () as usize as u64),
+        "molt_contextlib_exitstack_enter_context" => Some(crate::molt_contextlib_exitstack_enter_context as *const () as usize as u64),
+        "molt_contextlib_exitstack_exit" => Some(crate::molt_contextlib_exitstack_exit as *const () as usize as u64),
+        "molt_contextlib_async_exitstack_push_callback" => Some(crate::molt_contextlib_async_exitstack_push_callback as *const () as usize as u64),
+        "molt_contextlib_async_exitstack_push_exit" => Some(crate::molt_contextlib_async_exitstack_push_exit as *const () as usize as u64),
+        "molt_contextlib_async_exitstack_enter_context" => Some(crate::molt_contextlib_async_exitstack_enter_context as *const () as usize as u64),
+        "molt_contextlib_async_exitstack_exit" => Some(crate::molt_contextlib_async_exitstack_exit as *const () as usize as u64),
+        "molt_email_message_new" => Some(crate::molt_email_message_new as *const () as usize as u64),
+        "molt_email_message_from_bytes" => Some(crate::molt_email_message_from_bytes as *const () as usize as u64),
+        "molt_email_message_set" => Some(crate::molt_email_message_set as *const () as usize as u64),
+        "molt_email_message_get" => Some(crate::molt_email_message_get as *const () as usize as u64),
+        "molt_email_message_set_content" => Some(crate::molt_email_message_set_content as *const () as usize as u64),
+        "molt_email_message_add_alternative" => Some(crate::molt_email_message_add_alternative as *const () as usize as u64),
+        "molt_email_message_add_attachment" => Some(crate::molt_email_message_add_attachment as *const () as usize as u64),
+        "molt_email_message_is_multipart" => Some(crate::molt_email_message_is_multipart as *const () as usize as u64),
+        "molt_email_message_payload" => Some(crate::molt_email_message_payload as *const () as usize as u64),
+        "molt_email_message_content" => Some(crate::molt_email_message_content as *const () as usize as u64),
+        "molt_email_message_content_type" => Some(crate::molt_email_message_content_type as *const () as usize as u64),
+        "molt_email_message_filename" => Some(crate::molt_email_message_filename as *const () as usize as u64),
+        "molt_email_message_as_string" => Some(crate::molt_email_message_as_string as *const () as usize as u64),
+        "molt_email_message_items" => Some(crate::molt_email_message_items as *const () as usize as u64),
+        "molt_email_message_drop" => Some(crate::molt_email_message_drop as *const () as usize as u64),
+        "molt_email_utils_make_msgid" => Some(crate::molt_email_utils_make_msgid as *const () as usize as u64),
+        "molt_email_utils_getaddresses" => Some(crate::molt_email_utils_getaddresses as *const () as usize as u64),
+        "molt_email_utils_parsedate_tz" => Some(crate::molt_email_utils_parsedate_tz as *const () as usize as u64),
+        "molt_email_utils_format_datetime" => Some(crate::molt_email_utils_format_datetime as *const () as usize as u64),
+        "molt_email_utils_parsedate_to_datetime" => Some(crate::molt_email_utils_parsedate_to_datetime as *const () as usize as u64),
         "molt_email_policy_new" => Some(crate::molt_email_policy_new as *const () as usize as u64),
-        "molt_email_header_encode_word" => {
-            Some(crate::molt_email_header_encode_word as *const () as usize as u64)
-        }
-        "molt_email_address_addr_spec" => {
-            Some(crate::molt_email_address_addr_spec as *const () as usize as u64)
-        }
-        "molt_email_address_format" => {
-            Some(crate::molt_email_address_format as *const () as usize as u64)
-        }
-        "molt_asyncgen_shutdown" => {
-            Some(crate::molt_asyncgen_shutdown as *const () as usize as u64)
-        }
+        "molt_email_header_encode_word" => Some(crate::molt_email_header_encode_word as *const () as usize as u64),
+        "molt_email_address_addr_spec" => Some(crate::molt_email_address_addr_spec as *const () as usize as u64),
+        "molt_email_address_format" => Some(crate::molt_email_address_format as *const () as usize as u64),
+        "molt_asyncgen_shutdown" => Some(crate::molt_asyncgen_shutdown as *const () as usize as u64),
         "molt_block_on" => Some(crate::molt_block_on as *const () as usize as u64),
         "molt_chan_new" => Some(crate::molt_chan_new as *const () as usize as u64),
         "molt_chan_send" => Some(crate::molt_chan_send as *const () as usize as u64),
         "molt_chan_recv" => Some(crate::molt_chan_recv as *const () as usize as u64),
         "molt_chan_try_send" => Some(crate::molt_chan_try_send as *const () as usize as u64),
         "molt_chan_try_recv" => Some(crate::molt_chan_try_recv as *const () as usize as u64),
-        "molt_chan_send_blocking" => {
-            Some(crate::molt_chan_send_blocking as *const () as usize as u64)
-        }
-        "molt_chan_recv_blocking" => {
-            Some(crate::molt_chan_recv_blocking as *const () as usize as u64)
-        }
+        "molt_chan_send_blocking" => Some(crate::molt_chan_send_blocking as *const () as usize as u64),
+        "molt_chan_recv_blocking" => Some(crate::molt_chan_recv_blocking as *const () as usize as u64),
         "molt_chan_drop" => Some(crate::molt_chan_drop as *const () as usize as u64),
         "molt_pending" => Some(crate::molt_pending as *const () as usize as u64),
         "molt_spawn" => Some(crate::molt_spawn as *const () as usize as u64),
         "molt_async_sleep_new" => Some(crate::molt_async_sleep_new as *const () as usize as u64),
-        "molt_asyncio_wait_for_new" => {
-            Some(crate::molt_asyncio_wait_for_new as *const () as usize as u64)
-        }
+        "molt_asyncio_wait_for_new" => Some(crate::molt_asyncio_wait_for_new as *const () as usize as u64),
         "molt_asyncio_wait_new" => Some(crate::molt_asyncio_wait_new as *const () as usize as u64),
-        "molt_asyncio_gather_new" => {
-            Some(crate::molt_asyncio_gather_new as *const () as usize as u64)
-        }
-        "molt_asyncio_cancel_pending" => {
-            Some(crate::molt_asyncio_cancel_pending as *const () as usize as u64)
-        }
-        "molt_asyncio_ready_batch_run" => {
-            Some(crate::molt_asyncio_ready_batch_run as *const () as usize as u64)
-        }
-        "molt_asyncio_ready_queue_drain" => {
-            Some(crate::molt_asyncio_ready_queue_drain as *const () as usize as u64)
-        }
-        "molt_asyncio_waiters_notify" => {
-            Some(crate::molt_asyncio_waiters_notify as *const () as usize as u64)
-        }
-        "molt_asyncio_waiters_notify_exception" => {
-            Some(crate::molt_asyncio_waiters_notify_exception as *const () as usize as u64)
-        }
-        "molt_asyncio_waiters_remove" => {
-            Some(crate::molt_asyncio_waiters_remove as *const () as usize as u64)
-        }
-        "molt_asyncio_barrier_release" => {
-            Some(crate::molt_asyncio_barrier_release as *const () as usize as u64)
-        }
-        "molt_asyncio_condition_wait_for_step" => {
-            Some(crate::molt_asyncio_condition_wait_for_step as *const () as usize as u64)
-        }
-        "molt_asyncio_future_transfer" => {
-            Some(crate::molt_asyncio_future_transfer as *const () as usize as u64)
-        }
-        "molt_asyncio_event_waiters_cleanup" => {
-            Some(crate::molt_asyncio_event_waiters_cleanup as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_set" => {
-            Some(crate::molt_asyncio_task_registry_set as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_get" => {
-            Some(crate::molt_asyncio_task_registry_get as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_contains" => {
-            Some(crate::molt_asyncio_task_registry_contains as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_current" => {
-            Some(crate::molt_asyncio_task_registry_current as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_current_for_loop" => {
-            Some(crate::molt_asyncio_task_registry_current_for_loop as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_pop" => {
-            Some(crate::molt_asyncio_task_registry_pop as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_move" => {
-            Some(crate::molt_asyncio_task_registry_move as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_values" => {
-            Some(crate::molt_asyncio_task_registry_values as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_live" => {
-            Some(crate::molt_asyncio_task_registry_live as *const () as usize as u64)
-        }
-        "molt_asyncio_task_registry_live_set" => {
-            Some(crate::molt_asyncio_task_registry_live_set as *const () as usize as u64)
-        }
-        "molt_asyncio_event_waiters_register" => {
-            Some(crate::molt_asyncio_event_waiters_register as *const () as usize as u64)
-        }
-        "molt_asyncio_event_waiters_unregister" => {
-            Some(crate::molt_asyncio_event_waiters_unregister as *const () as usize as u64)
-        }
-        "molt_asyncio_event_waiters_cleanup_token" => {
-            Some(crate::molt_asyncio_event_waiters_cleanup_token as *const () as usize as u64)
-        }
-        "molt_asyncio_child_watcher_add" => {
-            Some(crate::molt_asyncio_child_watcher_add as *const () as usize as u64)
-        }
-        "molt_asyncio_child_watcher_remove" => {
-            Some(crate::molt_asyncio_child_watcher_remove as *const () as usize as u64)
-        }
-        "molt_asyncio_child_watcher_clear" => {
-            Some(crate::molt_asyncio_child_watcher_clear as *const () as usize as u64)
-        }
-        "molt_asyncio_child_watcher_pop" => {
-            Some(crate::molt_asyncio_child_watcher_pop as *const () as usize as u64)
-        }
-        "molt_asyncio_require_ssl_transport_support" => {
-            Some(crate::molt_asyncio_require_ssl_transport_support as *const () as usize as u64)
-        }
-        "molt_asyncio_ssl_transport_orchestrate" => {
-            Some(crate::molt_asyncio_ssl_transport_orchestrate as *const () as usize as u64)
-        }
-        "molt_asyncio_tls_client_connect_new" => {
-            Some(crate::molt_asyncio_tls_client_connect_new as *const () as usize as u64)
-        }
-        "molt_asyncio_tls_client_from_fd_new" => {
-            Some(crate::molt_asyncio_tls_client_from_fd_new as *const () as usize as u64)
-        }
-        "molt_asyncio_tls_server_payload" => {
-            Some(crate::molt_asyncio_tls_server_payload as *const () as usize as u64)
-        }
-        "molt_asyncio_tls_server_from_fd_new" => {
-            Some(crate::molt_asyncio_tls_server_from_fd_new as *const () as usize as u64)
-        }
-        "molt_asyncio_require_unix_socket_support" => {
-            Some(crate::molt_asyncio_require_unix_socket_support as *const () as usize as u64)
-        }
-        "molt_asyncio_require_child_watcher_support" => {
-            Some(crate::molt_asyncio_require_child_watcher_support as *const () as usize as u64)
-        }
-        "molt_asyncio_running_loop_get" => {
-            Some(crate::molt_asyncio_running_loop_get as *const () as usize as u64)
-        }
-        "molt_asyncio_running_loop_set" => {
-            Some(crate::molt_asyncio_running_loop_set as *const () as usize as u64)
-        }
-        "molt_asyncio_event_loop_get" => {
-            Some(crate::molt_asyncio_event_loop_get as *const () as usize as u64)
-        }
-        "molt_asyncio_event_loop_get_current" => {
-            Some(crate::molt_asyncio_event_loop_get_current as *const () as usize as u64)
-        }
-        "molt_asyncio_event_loop_set" => {
-            Some(crate::molt_asyncio_event_loop_set as *const () as usize as u64)
-        }
-        "molt_asyncio_event_loop_policy_get" => {
-            Some(crate::molt_asyncio_event_loop_policy_get as *const () as usize as u64)
-        }
-        "molt_asyncio_event_loop_policy_set" => {
-            Some(crate::molt_asyncio_event_loop_policy_set as *const () as usize as u64)
-        }
-        "molt_asyncio_taskgroup_on_task_done" => {
-            Some(crate::molt_asyncio_taskgroup_on_task_done as *const () as usize as u64)
-        }
-        "molt_asyncio_taskgroup_request_cancel" => {
-            Some(crate::molt_asyncio_taskgroup_request_cancel as *const () as usize as u64)
-        }
-        "molt_asyncio_tasks_add_done_callback" => {
-            Some(crate::molt_asyncio_tasks_add_done_callback as *const () as usize as u64)
-        }
-        "molt_asyncio_task_cancel_apply" => {
-            Some(crate::molt_asyncio_task_cancel_apply as *const () as usize as u64)
-        }
-        "molt_asyncio_task_uncancel_apply" => {
-            Some(crate::molt_asyncio_task_uncancel_apply as *const () as usize as u64)
-        }
-        "molt_asyncio_future_invoke_callbacks" => {
-            Some(crate::molt_asyncio_future_invoke_callbacks as *const () as usize as u64)
-        }
-        "molt_asyncio_event_set_waiters" => {
-            Some(crate::molt_asyncio_event_set_waiters as *const () as usize as u64)
-        }
-        "molt_asyncio_loop_enqueue_handle" => {
-            Some(crate::molt_asyncio_loop_enqueue_handle as *const () as usize as u64)
-        }
-        "molt_asyncio_timer_handle_new" => {
-            Some(crate::molt_asyncio_timer_handle_new as *const () as usize as u64)
-        }
-        "molt_asyncio_timer_schedule" => {
-            Some(crate::molt_asyncio_timer_schedule as *const () as usize as u64)
-        }
-        "molt_asyncio_timer_handle_cancel" => {
-            Some(crate::molt_asyncio_timer_handle_cancel as *const () as usize as u64)
-        }
-        "molt_asyncio_fd_watcher_new" => {
-            Some(crate::molt_asyncio_fd_watcher_new as *const () as usize as u64)
-        }
-        "molt_asyncio_fd_watcher_register" => {
-            Some(crate::molt_asyncio_fd_watcher_register as *const () as usize as u64)
-        }
-        "molt_asyncio_fd_watcher_unregister" => {
-            Some(crate::molt_asyncio_fd_watcher_unregister as *const () as usize as u64)
-        }
-        "molt_asyncio_subprocess_stdio_normalize" => {
-            Some(crate::molt_asyncio_subprocess_stdio_normalize as *const () as usize as u64)
-        }
-        "molt_asyncio_server_accept_loop_new" => {
-            Some(crate::molt_asyncio_server_accept_loop_new as *const () as usize as u64)
-        }
-        "molt_asyncio_ready_runner_new" => {
-            Some(crate::molt_asyncio_ready_runner_new as *const () as usize as u64)
-        }
-        "molt_asyncio_stream_reader_read_new" => {
-            Some(crate::molt_asyncio_stream_reader_read_new as *const () as usize as u64)
-        }
-        "molt_asyncio_stream_reader_readline_new" => {
-            Some(crate::molt_asyncio_stream_reader_readline_new as *const () as usize as u64)
-        }
-        "molt_asyncio_stream_send_all_new" => {
-            Some(crate::molt_asyncio_stream_send_all_new as *const () as usize as u64)
-        }
-        "molt_asyncio_stream_buffer_snapshot" => {
-            Some(crate::molt_asyncio_stream_buffer_snapshot as *const () as usize as u64)
-        }
-        "molt_asyncio_stream_buffer_consume" => {
-            Some(crate::molt_asyncio_stream_buffer_consume as *const () as usize as u64)
-        }
-        "molt_asyncio_socket_reader_read_new" => {
-            Some(crate::molt_asyncio_socket_reader_read_new as *const () as usize as u64)
-        }
-        "molt_asyncio_socket_reader_readline_new" => {
-            Some(crate::molt_asyncio_socket_reader_readline_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_recv_new" => {
-            Some(crate::molt_asyncio_sock_recv_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_connect_new" => {
-            Some(crate::molt_asyncio_sock_connect_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_accept_new" => {
-            Some(crate::molt_asyncio_sock_accept_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_recv_into_new" => {
-            Some(crate::molt_asyncio_sock_recv_into_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_sendall_new" => {
-            Some(crate::molt_asyncio_sock_sendall_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_recvfrom_new" => {
-            Some(crate::molt_asyncio_sock_recvfrom_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_recvfrom_into_new" => {
-            Some(crate::molt_asyncio_sock_recvfrom_into_new as *const () as usize as u64)
-        }
-        "molt_asyncio_sock_sendto_new" => {
-            Some(crate::molt_asyncio_sock_sendto_new as *const () as usize as u64)
-        }
+        "molt_asyncio_gather_new" => Some(crate::molt_asyncio_gather_new as *const () as usize as u64),
+        "molt_asyncio_cancel_pending" => Some(crate::molt_asyncio_cancel_pending as *const () as usize as u64),
+        "molt_asyncio_ready_batch_run" => Some(crate::molt_asyncio_ready_batch_run as *const () as usize as u64),
+        "molt_asyncio_ready_queue_drain" => Some(crate::molt_asyncio_ready_queue_drain as *const () as usize as u64),
+        "molt_asyncio_waiters_notify" => Some(crate::molt_asyncio_waiters_notify as *const () as usize as u64),
+        "molt_asyncio_waiters_notify_exception" => Some(crate::molt_asyncio_waiters_notify_exception as *const () as usize as u64),
+        "molt_asyncio_waiters_remove" => Some(crate::molt_asyncio_waiters_remove as *const () as usize as u64),
+        "molt_asyncio_barrier_release" => Some(crate::molt_asyncio_barrier_release as *const () as usize as u64),
+        "molt_asyncio_condition_wait_for_step" => Some(crate::molt_asyncio_condition_wait_for_step as *const () as usize as u64),
+        "molt_asyncio_future_transfer" => Some(crate::molt_asyncio_future_transfer as *const () as usize as u64),
+        "molt_asyncio_event_waiters_cleanup" => Some(crate::molt_asyncio_event_waiters_cleanup as *const () as usize as u64),
+        "molt_asyncio_task_registry_set" => Some(crate::molt_asyncio_task_registry_set as *const () as usize as u64),
+        "molt_asyncio_task_registry_get" => Some(crate::molt_asyncio_task_registry_get as *const () as usize as u64),
+        "molt_asyncio_task_registry_contains" => Some(crate::molt_asyncio_task_registry_contains as *const () as usize as u64),
+        "molt_asyncio_task_registry_current" => Some(crate::molt_asyncio_task_registry_current as *const () as usize as u64),
+        "molt_asyncio_task_registry_current_for_loop" => Some(crate::molt_asyncio_task_registry_current_for_loop as *const () as usize as u64),
+        "molt_asyncio_task_registry_pop" => Some(crate::molt_asyncio_task_registry_pop as *const () as usize as u64),
+        "molt_asyncio_task_registry_move" => Some(crate::molt_asyncio_task_registry_move as *const () as usize as u64),
+        "molt_asyncio_task_registry_values" => Some(crate::molt_asyncio_task_registry_values as *const () as usize as u64),
+        "molt_asyncio_task_registry_live" => Some(crate::molt_asyncio_task_registry_live as *const () as usize as u64),
+        "molt_asyncio_task_registry_live_set" => Some(crate::molt_asyncio_task_registry_live_set as *const () as usize as u64),
+        "molt_asyncio_event_waiters_register" => Some(crate::molt_asyncio_event_waiters_register as *const () as usize as u64),
+        "molt_asyncio_event_waiters_unregister" => Some(crate::molt_asyncio_event_waiters_unregister as *const () as usize as u64),
+        "molt_asyncio_event_waiters_cleanup_token" => Some(crate::molt_asyncio_event_waiters_cleanup_token as *const () as usize as u64),
+        "molt_asyncio_child_watcher_add" => Some(crate::molt_asyncio_child_watcher_add as *const () as usize as u64),
+        "molt_asyncio_child_watcher_remove" => Some(crate::molt_asyncio_child_watcher_remove as *const () as usize as u64),
+        "molt_asyncio_child_watcher_clear" => Some(crate::molt_asyncio_child_watcher_clear as *const () as usize as u64),
+        "molt_asyncio_child_watcher_pop" => Some(crate::molt_asyncio_child_watcher_pop as *const () as usize as u64),
+        "molt_asyncio_require_ssl_transport_support" => Some(crate::molt_asyncio_require_ssl_transport_support as *const () as usize as u64),
+        "molt_asyncio_ssl_transport_orchestrate" => Some(crate::molt_asyncio_ssl_transport_orchestrate as *const () as usize as u64),
+        "molt_asyncio_tls_client_connect_new" => Some(crate::molt_asyncio_tls_client_connect_new as *const () as usize as u64),
+        "molt_asyncio_tls_client_from_fd_new" => Some(crate::molt_asyncio_tls_client_from_fd_new as *const () as usize as u64),
+        "molt_asyncio_tls_server_payload" => Some(crate::molt_asyncio_tls_server_payload as *const () as usize as u64),
+        "molt_asyncio_tls_server_from_fd_new" => Some(crate::molt_asyncio_tls_server_from_fd_new as *const () as usize as u64),
+        "molt_asyncio_require_unix_socket_support" => Some(crate::molt_asyncio_require_unix_socket_support as *const () as usize as u64),
+        "molt_asyncio_require_child_watcher_support" => Some(crate::molt_asyncio_require_child_watcher_support as *const () as usize as u64),
+        "molt_asyncio_running_loop_get" => Some(crate::molt_asyncio_running_loop_get as *const () as usize as u64),
+        "molt_asyncio_running_loop_set" => Some(crate::molt_asyncio_running_loop_set as *const () as usize as u64),
+        "molt_asyncio_event_loop_get" => Some(crate::molt_asyncio_event_loop_get as *const () as usize as u64),
+        "molt_asyncio_event_loop_get_current" => Some(crate::molt_asyncio_event_loop_get_current as *const () as usize as u64),
+        "molt_asyncio_event_loop_set" => Some(crate::molt_asyncio_event_loop_set as *const () as usize as u64),
+        "molt_asyncio_event_loop_policy_get" => Some(crate::molt_asyncio_event_loop_policy_get as *const () as usize as u64),
+        "molt_asyncio_event_loop_policy_set" => Some(crate::molt_asyncio_event_loop_policy_set as *const () as usize as u64),
+        "molt_asyncio_taskgroup_on_task_done" => Some(crate::molt_asyncio_taskgroup_on_task_done as *const () as usize as u64),
+        "molt_asyncio_taskgroup_request_cancel" => Some(crate::molt_asyncio_taskgroup_request_cancel as *const () as usize as u64),
+        "molt_asyncio_tasks_add_done_callback" => Some(crate::molt_asyncio_tasks_add_done_callback as *const () as usize as u64),
+        "molt_asyncio_task_cancel_apply" => Some(crate::molt_asyncio_task_cancel_apply as *const () as usize as u64),
+        "molt_asyncio_task_uncancel_apply" => Some(crate::molt_asyncio_task_uncancel_apply as *const () as usize as u64),
+        "molt_asyncio_future_invoke_callbacks" => Some(crate::molt_asyncio_future_invoke_callbacks as *const () as usize as u64),
+        "molt_asyncio_event_set_waiters" => Some(crate::molt_asyncio_event_set_waiters as *const () as usize as u64),
+        "molt_asyncio_loop_enqueue_handle" => Some(crate::molt_asyncio_loop_enqueue_handle as *const () as usize as u64),
+        "molt_asyncio_timer_handle_new" => Some(crate::molt_asyncio_timer_handle_new as *const () as usize as u64),
+        "molt_asyncio_timer_schedule" => Some(crate::molt_asyncio_timer_schedule as *const () as usize as u64),
+        "molt_asyncio_timer_handle_cancel" => Some(crate::molt_asyncio_timer_handle_cancel as *const () as usize as u64),
+        "molt_asyncio_fd_watcher_new" => Some(crate::molt_asyncio_fd_watcher_new as *const () as usize as u64),
+        "molt_asyncio_fd_watcher_register" => Some(crate::molt_asyncio_fd_watcher_register as *const () as usize as u64),
+        "molt_asyncio_fd_watcher_unregister" => Some(crate::molt_asyncio_fd_watcher_unregister as *const () as usize as u64),
+        "molt_asyncio_subprocess_stdio_normalize" => Some(crate::molt_asyncio_subprocess_stdio_normalize as *const () as usize as u64),
+        "molt_asyncio_server_accept_loop_new" => Some(crate::molt_asyncio_server_accept_loop_new as *const () as usize as u64),
+        "molt_asyncio_ready_runner_new" => Some(crate::molt_asyncio_ready_runner_new as *const () as usize as u64),
+        "molt_asyncio_stream_reader_read_new" => Some(crate::molt_asyncio_stream_reader_read_new as *const () as usize as u64),
+        "molt_asyncio_stream_reader_readline_new" => Some(crate::molt_asyncio_stream_reader_readline_new as *const () as usize as u64),
+        "molt_asyncio_stream_send_all_new" => Some(crate::molt_asyncio_stream_send_all_new as *const () as usize as u64),
+        "molt_asyncio_stream_buffer_snapshot" => Some(crate::molt_asyncio_stream_buffer_snapshot as *const () as usize as u64),
+        "molt_asyncio_stream_buffer_consume" => Some(crate::molt_asyncio_stream_buffer_consume as *const () as usize as u64),
+        "molt_asyncio_socket_reader_read_new" => Some(crate::molt_asyncio_socket_reader_read_new as *const () as usize as u64),
+        "molt_asyncio_socket_reader_readline_new" => Some(crate::molt_asyncio_socket_reader_readline_new as *const () as usize as u64),
+        "molt_asyncio_sock_recv_new" => Some(crate::molt_asyncio_sock_recv_new as *const () as usize as u64),
+        "molt_asyncio_sock_connect_new" => Some(crate::molt_asyncio_sock_connect_new as *const () as usize as u64),
+        "molt_asyncio_sock_accept_new" => Some(crate::molt_asyncio_sock_accept_new as *const () as usize as u64),
+        "molt_asyncio_sock_recv_into_new" => Some(crate::molt_asyncio_sock_recv_into_new as *const () as usize as u64),
+        "molt_asyncio_sock_sendall_new" => Some(crate::molt_asyncio_sock_sendall_new as *const () as usize as u64),
+        "molt_asyncio_sock_recvfrom_new" => Some(crate::molt_asyncio_sock_recvfrom_new as *const () as usize as u64),
+        "molt_asyncio_sock_recvfrom_into_new" => Some(crate::molt_asyncio_sock_recvfrom_into_new as *const () as usize as u64),
+        "molt_asyncio_sock_sendto_new" => Some(crate::molt_asyncio_sock_sendto_new as *const () as usize as u64),
         "molt_time_monotonic" => Some(crate::molt_time_monotonic as *const () as usize as u64),
-        "molt_time_monotonic_ns" => {
-            Some(crate::molt_time_monotonic_ns as *const () as usize as u64)
-        }
-        "molt_time_perf_counter" => {
-            Some(crate::molt_time_perf_counter as *const () as usize as u64)
-        }
-        "molt_time_perf_counter_ns" => {
-            Some(crate::molt_time_perf_counter_ns as *const () as usize as u64)
-        }
+        "molt_time_monotonic_ns" => Some(crate::molt_time_monotonic_ns as *const () as usize as u64),
+        "molt_time_perf_counter" => Some(crate::molt_time_perf_counter as *const () as usize as u64),
+        "molt_time_perf_counter_ns" => Some(crate::molt_time_perf_counter_ns as *const () as usize as u64),
         "molt_time_time" => Some(crate::molt_time_time as *const () as usize as u64),
         "molt_time_time_ns" => Some(crate::molt_time_time_ns as *const () as usize as u64),
-        "molt_time_process_time" => {
-            Some(crate::molt_time_process_time as *const () as usize as u64)
-        }
-        "molt_time_process_time_ns" => {
-            Some(crate::molt_time_process_time_ns as *const () as usize as u64)
-        }
+        "molt_time_process_time" => Some(crate::molt_time_process_time as *const () as usize as u64),
+        "molt_time_process_time_ns" => Some(crate::molt_time_process_time_ns as *const () as usize as u64),
         "molt_time_localtime" => Some(crate::molt_time_localtime as *const () as usize as u64),
         "molt_time_gmtime" => Some(crate::molt_time_gmtime as *const () as usize as u64),
         "molt_time_strftime" => Some(crate::molt_time_strftime as *const () as usize as u64),
@@ -5608,18 +1316,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_time_asctime" => Some(crate::molt_time_asctime as *const () as usize as u64),
         "molt_time_mktime" => Some(crate::molt_time_mktime as *const () as usize as u64),
         "molt_time_timegm" => Some(crate::molt_time_timegm as *const () as usize as u64),
-        "molt_time_get_clock_info" => {
-            Some(crate::molt_time_get_clock_info as *const () as usize as u64)
-        }
+        "molt_time_get_clock_info" => Some(crate::molt_time_get_clock_info as *const () as usize as u64),
         "molt_heapq_heapify" => Some(crate::molt_heapq_heapify as *const () as usize as u64),
         "molt_heapq_heappush" => Some(crate::molt_heapq_heappush as *const () as usize as u64),
         "molt_heapq_heappop" => Some(crate::molt_heapq_heappop as *const () as usize as u64),
-        "molt_heapq_heapreplace" => {
-            Some(crate::molt_heapq_heapreplace as *const () as usize as u64)
-        }
-        "molt_heapq_heappushpop" => {
-            Some(crate::molt_heapq_heappushpop as *const () as usize as u64)
-        }
+        "molt_heapq_heapreplace" => Some(crate::molt_heapq_heapreplace as *const () as usize as u64),
+        "molt_heapq_heappushpop" => Some(crate::molt_heapq_heappushpop as *const () as usize as u64),
         "molt_math_log" => Some(crate::molt_math_log as *const () as usize as u64),
         "molt_math_log2" => Some(crate::molt_math_log2 as *const () as usize as u64),
         "molt_math_log10" => Some(crate::molt_math_log10 as *const () as usize as u64),
@@ -5676,109 +1378,47 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_statistics_mean" => Some(crate::molt_statistics_mean as *const () as usize as u64),
         "molt_statistics_fmean" => Some(crate::molt_statistics_fmean as *const () as usize as u64),
         "molt_statistics_stdev" => Some(crate::molt_statistics_stdev as *const () as usize as u64),
-        "molt_statistics_variance" => {
-            Some(crate::molt_statistics_variance as *const () as usize as u64)
-        }
-        "molt_statistics_pvariance" => {
-            Some(crate::molt_statistics_pvariance as *const () as usize as u64)
-        }
-        "molt_statistics_pstdev" => {
-            Some(crate::molt_statistics_pstdev as *const () as usize as u64)
-        }
-        "molt_statistics_median" => {
-            Some(crate::molt_statistics_median as *const () as usize as u64)
-        }
-        "molt_statistics_median_low" => {
-            Some(crate::molt_statistics_median_low as *const () as usize as u64)
-        }
-        "molt_statistics_median_high" => {
-            Some(crate::molt_statistics_median_high as *const () as usize as u64)
-        }
-        "molt_statistics_median_grouped" => {
-            Some(crate::molt_statistics_median_grouped as *const () as usize as u64)
-        }
+        "molt_statistics_variance" => Some(crate::molt_statistics_variance as *const () as usize as u64),
+        "molt_statistics_pvariance" => Some(crate::molt_statistics_pvariance as *const () as usize as u64),
+        "molt_statistics_pstdev" => Some(crate::molt_statistics_pstdev as *const () as usize as u64),
+        "molt_statistics_median" => Some(crate::molt_statistics_median as *const () as usize as u64),
+        "molt_statistics_median_low" => Some(crate::molt_statistics_median_low as *const () as usize as u64),
+        "molt_statistics_median_high" => Some(crate::molt_statistics_median_high as *const () as usize as u64),
+        "molt_statistics_median_grouped" => Some(crate::molt_statistics_median_grouped as *const () as usize as u64),
         "molt_statistics_mode" => Some(crate::molt_statistics_mode as *const () as usize as u64),
-        "molt_statistics_multimode" => {
-            Some(crate::molt_statistics_multimode as *const () as usize as u64)
-        }
-        "molt_statistics_quantiles" => {
-            Some(crate::molt_statistics_quantiles as *const () as usize as u64)
-        }
-        "molt_statistics_harmonic_mean" => {
-            Some(crate::molt_statistics_harmonic_mean as *const () as usize as u64)
-        }
-        "molt_statistics_geometric_mean" => {
-            Some(crate::molt_statistics_geometric_mean as *const () as usize as u64)
-        }
-        "molt_statistics_covariance" => {
-            Some(crate::molt_statistics_covariance as *const () as usize as u64)
-        }
-        "molt_statistics_correlation" => {
-            Some(crate::molt_statistics_correlation as *const () as usize as u64)
-        }
-        "molt_statistics_linear_regression" => {
-            Some(crate::molt_statistics_linear_regression as *const () as usize as u64)
-        }
-        "molt_decimal_context_new" => {
-            Some(crate::molt_decimal_context_new as *const () as usize as u64)
-        }
-        "molt_decimal_context_get_current" => {
-            Some(crate::molt_decimal_context_get_current as *const () as usize as u64)
-        }
-        "molt_decimal_context_set_current" => {
-            Some(crate::molt_decimal_context_set_current as *const () as usize as u64)
-        }
-        "molt_decimal_context_copy" => {
-            Some(crate::molt_decimal_context_copy as *const () as usize as u64)
-        }
-        "molt_decimal_context_drop" => {
-            Some(crate::molt_decimal_context_drop as *const () as usize as u64)
-        }
-        "molt_decimal_context_get_prec" => {
-            Some(crate::molt_decimal_context_get_prec as *const () as usize as u64)
-        }
-        "molt_decimal_context_set_prec" => {
-            Some(crate::molt_decimal_context_set_prec as *const () as usize as u64)
-        }
-        "molt_decimal_context_get_rounding" => {
-            Some(crate::molt_decimal_context_get_rounding as *const () as usize as u64)
-        }
-        "molt_decimal_context_set_rounding" => {
-            Some(crate::molt_decimal_context_set_rounding as *const () as usize as u64)
-        }
-        "molt_decimal_context_clear_flags" => {
-            Some(crate::molt_decimal_context_clear_flags as *const () as usize as u64)
-        }
-        "molt_decimal_context_get_flag" => {
-            Some(crate::molt_decimal_context_get_flag as *const () as usize as u64)
-        }
-        "molt_decimal_context_set_flag" => {
-            Some(crate::molt_decimal_context_set_flag as *const () as usize as u64)
-        }
-        "molt_decimal_context_get_trap" => {
-            Some(crate::molt_decimal_context_get_trap as *const () as usize as u64)
-        }
-        "molt_decimal_context_set_trap" => {
-            Some(crate::molt_decimal_context_set_trap as *const () as usize as u64)
-        }
+        "molt_statistics_multimode" => Some(crate::molt_statistics_multimode as *const () as usize as u64),
+        "molt_statistics_quantiles" => Some(crate::molt_statistics_quantiles as *const () as usize as u64),
+        "molt_statistics_harmonic_mean" => Some(crate::molt_statistics_harmonic_mean as *const () as usize as u64),
+        "molt_statistics_geometric_mean" => Some(crate::molt_statistics_geometric_mean as *const () as usize as u64),
+        "molt_statistics_covariance" => Some(crate::molt_statistics_covariance as *const () as usize as u64),
+        "molt_statistics_correlation" => Some(crate::molt_statistics_correlation as *const () as usize as u64),
+        "molt_statistics_linear_regression" => Some(crate::molt_statistics_linear_regression as *const () as usize as u64),
+        "molt_decimal_context_new" => Some(crate::molt_decimal_context_new as *const () as usize as u64),
+        "molt_decimal_context_get_current" => Some(crate::molt_decimal_context_get_current as *const () as usize as u64),
+        "molt_decimal_context_set_current" => Some(crate::molt_decimal_context_set_current as *const () as usize as u64),
+        "molt_decimal_context_copy" => Some(crate::molt_decimal_context_copy as *const () as usize as u64),
+        "molt_decimal_context_drop" => Some(crate::molt_decimal_context_drop as *const () as usize as u64),
+        "molt_decimal_context_get_prec" => Some(crate::molt_decimal_context_get_prec as *const () as usize as u64),
+        "molt_decimal_context_set_prec" => Some(crate::molt_decimal_context_set_prec as *const () as usize as u64),
+        "molt_decimal_context_get_rounding" => Some(crate::molt_decimal_context_get_rounding as *const () as usize as u64),
+        "molt_decimal_context_set_rounding" => Some(crate::molt_decimal_context_set_rounding as *const () as usize as u64),
+        "molt_decimal_context_clear_flags" => Some(crate::molt_decimal_context_clear_flags as *const () as usize as u64),
+        "molt_decimal_context_get_flag" => Some(crate::molt_decimal_context_get_flag as *const () as usize as u64),
+        "molt_decimal_context_set_flag" => Some(crate::molt_decimal_context_set_flag as *const () as usize as u64),
+        "molt_decimal_context_get_trap" => Some(crate::molt_decimal_context_get_trap as *const () as usize as u64),
+        "molt_decimal_context_set_trap" => Some(crate::molt_decimal_context_set_trap as *const () as usize as u64),
         "molt_decimal_from_str" => Some(crate::molt_decimal_from_str as *const () as usize as u64),
         "molt_decimal_from_int" => Some(crate::molt_decimal_from_int as *const () as usize as u64),
         "molt_decimal_clone" => Some(crate::molt_decimal_clone as *const () as usize as u64),
         "molt_decimal_drop" => Some(crate::molt_decimal_drop as *const () as usize as u64),
-        "molt_decimal_to_string" => {
-            Some(crate::molt_decimal_to_string as *const () as usize as u64)
-        }
+        "molt_decimal_to_string" => Some(crate::molt_decimal_to_string as *const () as usize as u64),
         "molt_decimal_as_tuple" => Some(crate::molt_decimal_as_tuple as *const () as usize as u64),
         "molt_decimal_to_float" => Some(crate::molt_decimal_to_float as *const () as usize as u64),
         "molt_decimal_div" => Some(crate::molt_decimal_div as *const () as usize as u64),
         "molt_decimal_quantize" => Some(crate::molt_decimal_quantize as *const () as usize as u64),
         "molt_decimal_compare" => Some(crate::molt_decimal_compare as *const () as usize as u64),
-        "molt_decimal_compare_total" => {
-            Some(crate::molt_decimal_compare_total as *const () as usize as u64)
-        }
-        "molt_decimal_normalize" => {
-            Some(crate::molt_decimal_normalize as *const () as usize as u64)
-        }
+        "molt_decimal_compare_total" => Some(crate::molt_decimal_compare_total as *const () as usize as u64),
+        "molt_decimal_normalize" => Some(crate::molt_decimal_normalize as *const () as usize as u64),
         "molt_decimal_exp" => Some(crate::molt_decimal_exp as *const () as usize as u64),
         "molt_hash_new" => Some(crate::molt_hash_new as *const () as usize as u64),
         "molt_hash_update" => Some(crate::molt_hash_update as *const () as usize as u64),
@@ -5798,12 +1438,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_read" => Some(crate::molt_os_read as *const () as usize as u64),
         "molt_os_write" => Some(crate::molt_os_write as *const () as usize as u64),
         "molt_os_pipe" => Some(crate::molt_os_pipe as *const () as usize as u64),
-        "molt_os_get_inheritable" => {
-            Some(crate::molt_os_get_inheritable as *const () as usize as u64)
-        }
-        "molt_os_set_inheritable" => {
-            Some(crate::molt_os_set_inheritable as *const () as usize as u64)
-        }
+        "molt_os_get_inheritable" => Some(crate::molt_os_get_inheritable as *const () as usize as u64),
+        "molt_os_set_inheritable" => Some(crate::molt_os_set_inheritable as *const () as usize as u64),
         "molt_os_urandom" => Some(crate::molt_os_urandom as *const () as usize as u64),
         "molt_os_name" => Some(crate::molt_os_name as *const () as usize as u64),
         "molt_os_fsencode" => Some(crate::molt_os_fsencode as *const () as usize as u64),
@@ -5821,9 +1457,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_env_putenv" => Some(crate::molt_env_putenv as *const () as usize as u64),
         "molt_env_unsetenv" => Some(crate::molt_env_unsetenv as *const () as usize as u64),
         "molt_locale_setlocale" => Some(crate::molt_locale_setlocale as *const () as usize as u64),
-        "molt_locale_getpreferredencoding" => {
-            Some(crate::molt_locale_getpreferredencoding as *const () as usize as u64)
-        }
+        "molt_locale_getpreferredencoding" => Some(crate::molt_locale_getpreferredencoding as *const () as usize as u64),
         "molt_locale_getlocale" => Some(crate::molt_locale_getlocale as *const () as usize as u64),
         "molt_gettext_gettext" => Some(crate::molt_gettext_gettext as *const () as usize as u64),
         "molt_gettext_ngettext" => Some(crate::molt_gettext_ngettext as *const () as usize as u64),
@@ -5856,24 +1490,18 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_as_uri" => Some(crate::molt_path_as_uri as *const () as usize as u64),
         "molt_path_relpath" => Some(crate::molt_path_relpath as *const () as usize as u64),
         "molt_path_expandvars" => Some(crate::molt_path_expandvars as *const () as usize as u64),
-        "molt_path_expandvars_env" => {
-            Some(crate::molt_path_expandvars_env as *const () as usize as u64)
-        }
+        "molt_path_expandvars_env" => Some(crate::molt_path_expandvars_env as *const () as usize as u64),
         "molt_path_makedirs" => Some(crate::molt_path_makedirs as *const () as usize as u64),
         "molt_path_parts" => Some(crate::molt_path_parts as *const () as usize as u64),
         "molt_path_splitroot" => Some(crate::molt_path_splitroot as *const () as usize as u64),
         "molt_path_parents" => Some(crate::molt_path_parents as *const () as usize as u64),
         "molt_path_compare" => Some(crate::molt_path_compare as *const () as usize as u64),
         "molt_path_relative_to" => Some(crate::molt_path_relative_to as *const () as usize as u64),
-        "molt_path_relative_to_many" => {
-            Some(crate::molt_path_relative_to_many as *const () as usize as u64)
-        }
+        "molt_path_relative_to_many" => Some(crate::molt_path_relative_to_many as *const () as usize as u64),
         "molt_path_with_name" => Some(crate::molt_path_with_name as *const () as usize as u64),
         "molt_path_with_suffix" => Some(crate::molt_path_with_suffix as *const () as usize as u64),
         "molt_path_with_stem" => Some(crate::molt_path_with_stem as *const () as usize as u64),
-        "molt_path_is_relative_to" => {
-            Some(crate::molt_path_is_relative_to as *const () as usize as u64)
-        }
+        "molt_path_is_relative_to" => Some(crate::molt_path_is_relative_to as *const () as usize as u64),
         "molt_path_expanduser" => Some(crate::molt_path_expanduser as *const () as usize as u64),
         "molt_path_match" => Some(crate::molt_path_match as *const () as usize as u64),
         "molt_path_glob" => Some(crate::molt_path_glob as *const () as usize as u64),
@@ -5917,103 +1545,51 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_file_io_init" => Some(crate::molt_file_io_init as *const () as usize as u64),
         "molt_buffered_new" => Some(crate::molt_buffered_new as *const () as usize as u64),
         "molt_buffered_init" => Some(crate::molt_buffered_init as *const () as usize as u64),
-        "molt_text_io_wrapper_new" => {
-            Some(crate::molt_text_io_wrapper_new as *const () as usize as u64)
-        }
-        "molt_text_io_wrapper_init" => {
-            Some(crate::molt_text_io_wrapper_init as *const () as usize as u64)
-        }
+        "molt_text_io_wrapper_new" => Some(crate::molt_text_io_wrapper_new as *const () as usize as u64),
+        "molt_text_io_wrapper_init" => Some(crate::molt_text_io_wrapper_init as *const () as usize as u64),
         "molt_bytesio_new" => Some(crate::molt_bytesio_new as *const () as usize as u64),
         "molt_bytesio_init" => Some(crate::molt_bytesio_init as *const () as usize as u64),
         "molt_stringio_new" => Some(crate::molt_stringio_new as *const () as usize as u64),
         "molt_stringio_init" => Some(crate::molt_stringio_init as *const () as usize as u64),
         "molt_repr_from_obj" => Some(crate::molt_repr_from_obj as *const () as usize as u64),
-        "molt_string_capitalize" => {
-            Some(crate::molt_string_capitalize as *const () as usize as u64)
-        }
+        "molt_string_capitalize" => Some(crate::molt_string_capitalize as *const () as usize as u64),
         "molt_codecs_decode" => Some(crate::molt_codecs_decode as *const () as usize as u64),
         "molt_codecs_encode" => Some(crate::molt_codecs_encode as *const () as usize as u64),
-        "molt_codecs_lookup_name" => {
-            Some(crate::molt_codecs_lookup_name as *const () as usize as u64)
-        }
-        "molt_encodings_aliases_map" => {
-            Some(crate::molt_encodings_aliases_map as *const () as usize as u64)
-        }
+        "molt_codecs_lookup_name" => Some(crate::molt_codecs_lookup_name as *const () as usize as u64),
+        "molt_encodings_aliases_map" => Some(crate::molt_encodings_aliases_map as *const () as usize as u64),
         "molt_struct_pack" => Some(crate::molt_struct_pack as *const () as usize as u64),
         "molt_struct_unpack" => Some(crate::molt_struct_unpack as *const () as usize as u64),
         "molt_struct_calcsize" => Some(crate::molt_struct_calcsize as *const () as usize as u64),
         "molt_struct_pack_into" => Some(crate::molt_struct_pack_into as *const () as usize as u64),
-        "molt_struct_unpack_from" => {
-            Some(crate::molt_struct_unpack_from as *const () as usize as u64)
-        }
-        "molt_struct_iter_unpack" => {
-            Some(crate::molt_struct_iter_unpack as *const () as usize as u64)
-        }
+        "molt_struct_unpack_from" => Some(crate::molt_struct_unpack_from as *const () as usize as u64),
+        "molt_struct_iter_unpack" => Some(crate::molt_struct_iter_unpack as *const () as usize as u64),
         "molt_deflate_raw" => Some(crate::molt_deflate_raw as *const () as usize as u64),
         "molt_inflate_raw" => Some(crate::molt_inflate_raw as *const () as usize as u64),
         "molt_cancel_token_new" => Some(crate::molt_cancel_token_new as *const () as usize as u64),
-        "molt_cancel_token_clone" => {
-            Some(crate::molt_cancel_token_clone as *const () as usize as u64)
-        }
-        "molt_cancel_token_drop" => {
-            Some(crate::molt_cancel_token_drop as *const () as usize as u64)
-        }
-        "molt_cancel_token_cancel" => {
-            Some(crate::molt_cancel_token_cancel as *const () as usize as u64)
-        }
-        "molt_cancel_token_is_cancelled" => {
-            Some(crate::molt_cancel_token_is_cancelled as *const () as usize as u64)
-        }
-        "molt_cancel_token_set_current" => {
-            Some(crate::molt_cancel_token_set_current as *const () as usize as u64)
-        }
-        "molt_cancel_token_get_current" => {
-            Some(crate::molt_cancel_token_get_current as *const () as usize as u64)
-        }
+        "molt_cancel_token_clone" => Some(crate::molt_cancel_token_clone as *const () as usize as u64),
+        "molt_cancel_token_drop" => Some(crate::molt_cancel_token_drop as *const () as usize as u64),
+        "molt_cancel_token_cancel" => Some(crate::molt_cancel_token_cancel as *const () as usize as u64),
+        "molt_cancel_token_is_cancelled" => Some(crate::molt_cancel_token_is_cancelled as *const () as usize as u64),
+        "molt_cancel_token_set_current" => Some(crate::molt_cancel_token_set_current as *const () as usize as u64),
+        "molt_cancel_token_get_current" => Some(crate::molt_cancel_token_get_current as *const () as usize as u64),
         "molt_future_cancel" => Some(crate::molt_future_cancel as *const () as usize as u64),
-        "molt_future_cancel_msg" => {
-            Some(crate::molt_future_cancel_msg as *const () as usize as u64)
-        }
-        "molt_future_cancel_clear" => {
-            Some(crate::molt_future_cancel_clear as *const () as usize as u64)
-        }
+        "molt_future_cancel_msg" => Some(crate::molt_future_cancel_msg as *const () as usize as u64),
+        "molt_future_cancel_clear" => Some(crate::molt_future_cancel_clear as *const () as usize as u64),
         "molt_promise_new" => Some(crate::molt_promise_new as *const () as usize as u64),
-        "molt_promise_set_result" => {
-            Some(crate::molt_promise_set_result as *const () as usize as u64)
-        }
-        "molt_promise_set_exception" => {
-            Some(crate::molt_promise_set_exception as *const () as usize as u64)
-        }
-        "molt_task_register_token_owned" => {
-            Some(crate::molt_task_register_token_owned as *const () as usize as u64)
-        }
+        "molt_promise_set_result" => Some(crate::molt_promise_set_result as *const () as usize as u64),
+        "molt_promise_set_exception" => Some(crate::molt_promise_set_exception as *const () as usize as u64),
+        "molt_task_register_token_owned" => Some(crate::molt_task_register_token_owned as *const () as usize as u64),
         "molt_io_wait" => Some(crate::molt_io_wait as *const () as usize as u64),
         "molt_io_wait_new" => Some(crate::molt_io_wait_new as *const () as usize as u64),
         "molt_select_select" => Some(crate::molt_select_select as *const () as usize as u64),
-        "molt_select_selector_new" => {
-            Some(crate::molt_select_selector_new as *const () as usize as u64)
-        }
-        "molt_select_selector_fileno" => {
-            Some(crate::molt_select_selector_fileno as *const () as usize as u64)
-        }
-        "molt_select_selector_register" => {
-            Some(crate::molt_select_selector_register as *const () as usize as u64)
-        }
-        "molt_select_selector_unregister" => {
-            Some(crate::molt_select_selector_unregister as *const () as usize as u64)
-        }
-        "molt_select_selector_modify" => {
-            Some(crate::molt_select_selector_modify as *const () as usize as u64)
-        }
-        "molt_select_selector_poll" => {
-            Some(crate::molt_select_selector_poll as *const () as usize as u64)
-        }
-        "molt_select_selector_close" => {
-            Some(crate::molt_select_selector_close as *const () as usize as u64)
-        }
-        "molt_select_selector_drop" => {
-            Some(crate::molt_select_selector_drop as *const () as usize as u64)
-        }
+        "molt_select_selector_new" => Some(crate::molt_select_selector_new as *const () as usize as u64),
+        "molt_select_selector_fileno" => Some(crate::molt_select_selector_fileno as *const () as usize as u64),
+        "molt_select_selector_register" => Some(crate::molt_select_selector_register as *const () as usize as u64),
+        "molt_select_selector_unregister" => Some(crate::molt_select_selector_unregister as *const () as usize as u64),
+        "molt_select_selector_modify" => Some(crate::molt_select_selector_modify as *const () as usize as u64),
+        "molt_select_selector_poll" => Some(crate::molt_select_selector_poll as *const () as usize as u64),
+        "molt_select_selector_close" => Some(crate::molt_select_selector_close as *const () as usize as u64),
+        "molt_select_selector_drop" => Some(crate::molt_select_selector_drop as *const () as usize as u64),
         "molt_ws_wait_new" => Some(crate::molt_ws_wait_new as *const () as usize as u64),
         "molt_ws_pair_obj" => Some(crate::molt_ws_pair_obj as *const () as usize as u64),
         "molt_ws_connect_obj" => Some(crate::molt_ws_connect_obj as *const () as usize as u64),
@@ -6023,44 +1599,22 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_ws_drop" => Some(crate::molt_ws_drop as *const () as usize as u64),
         "molt_thread_submit" => Some(crate::molt_thread_submit as *const () as usize as u64),
         "molt_thread_spawn" => Some(crate::molt_thread_spawn as *const () as usize as u64),
-        "molt_thread_spawn_shared" => {
-            Some(crate::molt_thread_spawn_shared as *const () as usize as u64)
-        }
+        "molt_thread_spawn_shared" => Some(crate::molt_thread_spawn_shared as *const () as usize as u64),
         "molt_thread_join" => Some(crate::molt_thread_join as *const () as usize as u64),
         "molt_thread_is_alive" => Some(crate::molt_thread_is_alive as *const () as usize as u64),
         "molt_thread_ident" => Some(crate::molt_thread_ident as *const () as usize as u64),
         "molt_thread_native_id" => Some(crate::molt_thread_native_id as *const () as usize as u64),
-        "molt_thread_current_ident" => {
-            Some(crate::molt_thread_current_ident as *const () as usize as u64)
-        }
-        "molt_thread_current_native_id" => {
-            Some(crate::molt_thread_current_native_id as *const () as usize as u64)
-        }
+        "molt_thread_current_ident" => Some(crate::molt_thread_current_ident as *const () as usize as u64),
+        "molt_thread_current_native_id" => Some(crate::molt_thread_current_native_id as *const () as usize as u64),
         "molt_thread_drop" => Some(crate::molt_thread_drop as *const () as usize as u64),
-        "molt_thread_stack_size_get" => {
-            Some(crate::molt_thread_stack_size_get as *const () as usize as u64)
-        }
-        "molt_thread_stack_size_set" => {
-            Some(crate::molt_thread_stack_size_set as *const () as usize as u64)
-        }
-        "molt_thread_registry_set_main" => {
-            Some(crate::molt_thread_registry_set_main as *const () as usize as u64)
-        }
-        "molt_thread_registry_register" => {
-            Some(crate::molt_thread_registry_register as *const () as usize as u64)
-        }
-        "molt_thread_registry_forget" => {
-            Some(crate::molt_thread_registry_forget as *const () as usize as u64)
-        }
-        "molt_thread_registry_snapshot" => {
-            Some(crate::molt_thread_registry_snapshot as *const () as usize as u64)
-        }
-        "molt_thread_registry_current" => {
-            Some(crate::molt_thread_registry_current as *const () as usize as u64)
-        }
-        "molt_thread_registry_active_count" => {
-            Some(crate::molt_thread_registry_active_count as *const () as usize as u64)
-        }
+        "molt_thread_stack_size_get" => Some(crate::molt_thread_stack_size_get as *const () as usize as u64),
+        "molt_thread_stack_size_set" => Some(crate::molt_thread_stack_size_set as *const () as usize as u64),
+        "molt_thread_registry_set_main" => Some(crate::molt_thread_registry_set_main as *const () as usize as u64),
+        "molt_thread_registry_register" => Some(crate::molt_thread_registry_register as *const () as usize as u64),
+        "molt_thread_registry_forget" => Some(crate::molt_thread_registry_forget as *const () as usize as u64),
+        "molt_thread_registry_snapshot" => Some(crate::molt_thread_registry_snapshot as *const () as usize as u64),
+        "molt_thread_registry_current" => Some(crate::molt_thread_registry_current as *const () as usize as u64),
+        "molt_thread_registry_active_count" => Some(crate::molt_thread_registry_active_count as *const () as usize as u64),
         "molt_thread_poll" => Some(crate::molt_thread_poll as *const () as usize as u64),
         "molt_lock_new" => Some(crate::molt_lock_new as *const () as usize as u64),
         "molt_lock_acquire" => Some(crate::molt_lock_acquire as *const () as usize as u64),
@@ -6072,18 +1626,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_rlock_release" => Some(crate::molt_rlock_release as *const () as usize as u64),
         "molt_rlock_locked" => Some(crate::molt_rlock_locked as *const () as usize as u64),
         "molt_rlock_is_owned" => Some(crate::molt_rlock_is_owned as *const () as usize as u64),
-        "molt_rlock_release_save" => {
-            Some(crate::molt_rlock_release_save as *const () as usize as u64)
-        }
-        "molt_rlock_acquire_restore" => {
-            Some(crate::molt_rlock_acquire_restore as *const () as usize as u64)
-        }
+        "molt_rlock_release_save" => Some(crate::molt_rlock_release_save as *const () as usize as u64),
+        "molt_rlock_acquire_restore" => Some(crate::molt_rlock_acquire_restore as *const () as usize as u64),
         "molt_rlock_drop" => Some(crate::molt_rlock_drop as *const () as usize as u64),
         "molt_condition_new" => Some(crate::molt_condition_new as *const () as usize as u64),
         "molt_condition_wait" => Some(crate::molt_condition_wait as *const () as usize as u64),
-        "molt_condition_wait_for" => {
-            Some(crate::molt_condition_wait_for as *const () as usize as u64)
-        }
+        "molt_condition_wait_for" => Some(crate::molt_condition_wait_for as *const () as usize as u64),
         "molt_condition_notify" => Some(crate::molt_condition_notify as *const () as usize as u64),
         "molt_condition_drop" => Some(crate::molt_condition_drop as *const () as usize as u64),
         "molt_event_new" => Some(crate::molt_event_new as *const () as usize as u64),
@@ -6093,21 +1641,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_event_wait" => Some(crate::molt_event_wait as *const () as usize as u64),
         "molt_event_drop" => Some(crate::molt_event_drop as *const () as usize as u64),
         "molt_semaphore_new" => Some(crate::molt_semaphore_new as *const () as usize as u64),
-        "molt_semaphore_acquire" => {
-            Some(crate::molt_semaphore_acquire as *const () as usize as u64)
-        }
-        "molt_semaphore_release" => {
-            Some(crate::molt_semaphore_release as *const () as usize as u64)
-        }
+        "molt_semaphore_acquire" => Some(crate::molt_semaphore_acquire as *const () as usize as u64),
+        "molt_semaphore_release" => Some(crate::molt_semaphore_release as *const () as usize as u64),
         "molt_semaphore_drop" => Some(crate::molt_semaphore_drop as *const () as usize as u64),
         "molt_barrier_new" => Some(crate::molt_barrier_new as *const () as usize as u64),
         "molt_barrier_wait" => Some(crate::molt_barrier_wait as *const () as usize as u64),
         "molt_barrier_abort" => Some(crate::molt_barrier_abort as *const () as usize as u64),
         "molt_barrier_reset" => Some(crate::molt_barrier_reset as *const () as usize as u64),
         "molt_barrier_parties" => Some(crate::molt_barrier_parties as *const () as usize as u64),
-        "molt_barrier_n_waiting" => {
-            Some(crate::molt_barrier_n_waiting as *const () as usize as u64)
-        }
+        "molt_barrier_n_waiting" => Some(crate::molt_barrier_n_waiting as *const () as usize as u64),
         "molt_barrier_broken" => Some(crate::molt_barrier_broken as *const () as usize as u64),
         "molt_barrier_drop" => Some(crate::molt_barrier_drop as *const () as usize as u64),
         "molt_local_new" => Some(crate::molt_local_new as *const () as usize as u64),
@@ -6115,9 +1657,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_local_drop" => Some(crate::molt_local_drop as *const () as usize as u64),
         "molt_queue_new" => Some(crate::molt_queue_new as *const () as usize as u64),
         "molt_queue_lifo_new" => Some(crate::molt_queue_lifo_new as *const () as usize as u64),
-        "molt_queue_priority_new" => {
-            Some(crate::molt_queue_priority_new as *const () as usize as u64)
-        }
+        "molt_queue_priority_new" => Some(crate::molt_queue_priority_new as *const () as usize as u64),
         "molt_queue_qsize" => Some(crate::molt_queue_qsize as *const () as usize as u64),
         "molt_queue_empty" => Some(crate::molt_queue_empty as *const () as usize as u64),
         "molt_queue_full" => Some(crate::molt_queue_full as *const () as usize as u64),
@@ -6127,67 +1667,29 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_queue_join" => Some(crate::molt_queue_join as *const () as usize as u64),
         "molt_queue_drop" => Some(crate::molt_queue_drop as *const () as usize as u64),
         "molt_zipfile_crc32" => Some(crate::molt_zipfile_crc32 as *const () as usize as u64),
-        "molt_logging_percent_style_format" => {
-            Some(crate::molt_logging_percent_style_format as *const () as usize as u64)
-        }
-        "molt_logging_runtime_ready" => {
-            Some(crate::molt_logging_runtime_ready as *const () as usize as u64)
-        }
-        "molt_wsgiref_runtime_ready" => {
-            Some(crate::molt_wsgiref_runtime_ready as *const () as usize as u64)
-        }
-        "molt_zoneinfo_runtime_ready" => {
-            Some(crate::molt_zoneinfo_runtime_ready as *const () as usize as u64)
-        }
-        "molt_zipapp_runtime_ready" => {
-            Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64)
-        }
-        "molt_zlib_runtime_ready" => {
-            Some(crate::molt_zlib_runtime_ready as *const () as usize as u64)
-        }
-        "molt_xmlrpc_runtime_ready" => {
-            Some(crate::molt_xmlrpc_runtime_ready as *const () as usize as u64)
-        }
-        "molt_csv_runtime_ready" => {
-            Some(crate::molt_csv_runtime_ready as *const () as usize as u64)
-        }
-        "molt_datetime_runtime_ready" => {
-            Some(crate::molt_datetime_runtime_ready as *const () as usize as u64)
-        }
-        "molt_tokenize_runtime_ready" => {
-            Some(crate::molt_tokenize_runtime_ready as *const () as usize as u64)
-        }
-        "molt_tomllib_runtime_ready" => {
-            Some(crate::molt_tomllib_runtime_ready as *const () as usize as u64)
-        }
-        "molt_trace_runtime_ready" => {
-            Some(crate::molt_trace_runtime_ready as *const () as usize as u64)
-        }
-        "molt_unicodedata_runtime_ready" => {
-            Some(crate::molt_unicodedata_runtime_ready as *const () as usize as u64)
-        }
-        "molt_subprocess_runtime_ready" => {
-            Some(crate::molt_subprocess_runtime_ready as *const () as usize as u64)
-        }
-        "molt_symtable_runtime_ready" => {
-            Some(crate::molt_symtable_runtime_ready as *const () as usize as u64)
-        }
-        "molt_import_smoke_runtime_ready" => {
-            Some(crate::molt_import_smoke_runtime_ready as *const () as usize as u64)
-        }
+        "molt_logging_percent_style_format" => Some(crate::molt_logging_percent_style_format as *const () as usize as u64),
+        "molt_logging_runtime_ready" => Some(crate::molt_logging_runtime_ready as *const () as usize as u64),
+        "molt_wsgiref_runtime_ready" => Some(crate::molt_wsgiref_runtime_ready as *const () as usize as u64),
+        "molt_zoneinfo_runtime_ready" => Some(crate::molt_zoneinfo_runtime_ready as *const () as usize as u64),
+        "molt_zipapp_runtime_ready" => Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64),
+        "molt_zlib_runtime_ready" => Some(crate::molt_zlib_runtime_ready as *const () as usize as u64),
+        "molt_xmlrpc_runtime_ready" => Some(crate::molt_xmlrpc_runtime_ready as *const () as usize as u64),
+        "molt_csv_runtime_ready" => Some(crate::molt_csv_runtime_ready as *const () as usize as u64),
+        "molt_datetime_runtime_ready" => Some(crate::molt_datetime_runtime_ready as *const () as usize as u64),
+        "molt_tokenize_runtime_ready" => Some(crate::molt_tokenize_runtime_ready as *const () as usize as u64),
+        "molt_tomllib_runtime_ready" => Some(crate::molt_tomllib_runtime_ready as *const () as usize as u64),
+        "molt_trace_runtime_ready" => Some(crate::molt_trace_runtime_ready as *const () as usize as u64),
+        "molt_unicodedata_runtime_ready" => Some(crate::molt_unicodedata_runtime_ready as *const () as usize as u64),
+        "molt_subprocess_runtime_ready" => Some(crate::molt_subprocess_runtime_ready as *const () as usize as u64),
+        "molt_symtable_runtime_ready" => Some(crate::molt_symtable_runtime_ready as *const () as usize as u64),
+        "molt_import_smoke_runtime_ready" => Some(crate::molt_import_smoke_runtime_ready as *const () as usize as u64),
         "molt_process_spawn" => Some(crate::molt_process_spawn as *const () as usize as u64),
-        "molt_process_wait_future" => {
-            Some(crate::molt_process_wait_future as *const () as usize as u64)
-        }
+        "molt_process_wait_future" => Some(crate::molt_process_wait_future as *const () as usize as u64),
         "molt_process_poll" => Some(crate::molt_process_poll as *const () as usize as u64),
         "molt_process_pid" => Some(crate::molt_process_pid as *const () as usize as u64),
-        "molt_process_returncode" => {
-            Some(crate::molt_process_returncode as *const () as usize as u64)
-        }
+        "molt_process_returncode" => Some(crate::molt_process_returncode as *const () as usize as u64),
         "molt_process_kill" => Some(crate::molt_process_kill as *const () as usize as u64),
-        "molt_process_terminate" => {
-            Some(crate::molt_process_terminate as *const () as usize as u64)
-        }
+        "molt_process_terminate" => Some(crate::molt_process_terminate as *const () as usize as u64),
         "molt_process_stdin" => Some(crate::molt_process_stdin as *const () as usize as u64),
         "molt_process_stdout" => Some(crate::molt_process_stdout as *const () as usize as u64),
         "molt_process_stderr" => Some(crate::molt_process_stderr as *const () as usize as u64),
@@ -6198,130 +1700,73 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_stream_recv" => Some(crate::molt_stream_recv as *const () as usize as u64),
         "molt_stream_close" => Some(crate::molt_stream_close as *const () as usize as u64),
         "molt_stream_drop" => Some(crate::molt_stream_drop as *const () as usize as u64),
-        "molt_stream_reader_new" => {
-            Some(crate::molt_stream_reader_new as *const () as usize as u64)
-        }
-        "molt_stream_reader_read" => {
-            Some(crate::molt_stream_reader_read as *const () as usize as u64)
-        }
-        "molt_stream_reader_readline" => {
-            Some(crate::molt_stream_reader_readline as *const () as usize as u64)
-        }
-        "molt_stream_reader_at_eof" => {
-            Some(crate::molt_stream_reader_at_eof as *const () as usize as u64)
-        }
-        "molt_stream_reader_drop" => {
-            Some(crate::molt_stream_reader_drop as *const () as usize as u64)
-        }
-        "molt_socket_reader_new" => {
-            Some(crate::molt_socket_reader_new as *const () as usize as u64)
-        }
-        "molt_socket_reader_read" => {
-            Some(crate::molt_socket_reader_read as *const () as usize as u64)
-        }
-        "molt_socket_reader_readline" => {
-            Some(crate::molt_socket_reader_readline as *const () as usize as u64)
-        }
-        "molt_socket_reader_readline_limit" => {
-            Some(crate::molt_socket_reader_readline_limit as *const () as usize as u64)
-        }
-        "molt_socket_reader_at_eof" => {
-            Some(crate::molt_socket_reader_at_eof as *const () as usize as u64)
-        }
-        "molt_socket_reader_drop" => {
-            Some(crate::molt_socket_reader_drop as *const () as usize as u64)
-        }
+        "molt_stream_reader_new" => Some(crate::molt_stream_reader_new as *const () as usize as u64),
+        "molt_stream_reader_read" => Some(crate::molt_stream_reader_read as *const () as usize as u64),
+        "molt_stream_reader_readline" => Some(crate::molt_stream_reader_readline as *const () as usize as u64),
+        "molt_stream_reader_at_eof" => Some(crate::molt_stream_reader_at_eof as *const () as usize as u64),
+        "molt_stream_reader_drop" => Some(crate::molt_stream_reader_drop as *const () as usize as u64),
+        "molt_socket_reader_new" => Some(crate::molt_socket_reader_new as *const () as usize as u64),
+        "molt_socket_reader_read" => Some(crate::molt_socket_reader_read as *const () as usize as u64),
+        "molt_socket_reader_readline" => Some(crate::molt_socket_reader_readline as *const () as usize as u64),
+        "molt_socket_reader_readline_limit" => Some(crate::molt_socket_reader_readline_limit as *const () as usize as u64),
+        "molt_socket_reader_at_eof" => Some(crate::molt_socket_reader_at_eof as *const () as usize as u64),
+        "molt_socket_reader_drop" => Some(crate::molt_socket_reader_drop as *const () as usize as u64),
         "molt_db_query_obj" => Some(crate::molt_db_query_obj as *const () as usize as u64),
         "molt_db_exec_obj" => Some(crate::molt_db_exec_obj as *const () as usize as u64),
-        "molt_msgpack_parse_scalar_obj" => {
-            Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64)
-        }
-        "molt_cbor_parse_scalar_obj" => {
-            Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64)
-        }
-        "molt_json_parse_scalar_obj" => {
-            Some(crate::molt_json_parse_scalar_obj as *const () as usize as u64)
-        }
+        "molt_msgpack_parse_scalar_obj" => Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64),
+        "molt_cbor_parse_scalar_obj" => Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64),
+        "molt_json_parse_scalar_obj" => Some(crate::molt_json_parse_scalar_obj as *const () as usize as u64),
         "molt_socket_new" => Some(crate::molt_socket_new as *const () as usize as u64),
         "molt_socket_close" => Some(crate::molt_socket_close as *const () as usize as u64),
         "molt_socket_drop" => Some(crate::molt_socket_drop as *const () as usize as u64),
         "molt_socket_clone" => Some(crate::molt_socket_clone as *const () as usize as u64),
         "molt_socket_fileno" => Some(crate::molt_socket_fileno as *const () as usize as u64),
-        "molt_socket_gettimeout" => {
-            Some(crate::molt_socket_gettimeout as *const () as usize as u64)
-        }
-        "molt_socket_settimeout" => {
-            Some(crate::molt_socket_settimeout as *const () as usize as u64)
-        }
-        "molt_socket_setblocking" => {
-            Some(crate::molt_socket_setblocking as *const () as usize as u64)
-        }
-        "molt_socket_getblocking" => {
-            Some(crate::molt_socket_getblocking as *const () as usize as u64)
-        }
+        "molt_socket_gettimeout" => Some(crate::molt_socket_gettimeout as *const () as usize as u64),
+        "molt_socket_settimeout" => Some(crate::molt_socket_settimeout as *const () as usize as u64),
+        "molt_socket_setblocking" => Some(crate::molt_socket_setblocking as *const () as usize as u64),
+        "molt_socket_getblocking" => Some(crate::molt_socket_getblocking as *const () as usize as u64),
         "molt_socket_bind" => Some(crate::molt_socket_bind as *const () as usize as u64),
         "molt_socket_listen" => Some(crate::molt_socket_listen as *const () as usize as u64),
         "molt_socket_accept" => Some(crate::molt_socket_accept as *const () as usize as u64),
         "molt_socket_connect" => Some(crate::molt_socket_connect as *const () as usize as u64),
-        "molt_socket_connect_ex" => {
-            Some(crate::molt_socket_connect_ex as *const () as usize as u64)
-        }
+        "molt_socket_connect_ex" => Some(crate::molt_socket_connect_ex as *const () as usize as u64),
         "molt_socket_recv" => Some(crate::molt_socket_recv as *const () as usize as u64),
         "molt_socket_recv_into" => Some(crate::molt_socket_recv_into as *const () as usize as u64),
-        "molt_socket_recvfrom_into" => {
-            Some(crate::molt_socket_recvfrom_into as *const () as usize as u64)
-        }
+        "molt_socket_recvfrom_into" => Some(crate::molt_socket_recvfrom_into as *const () as usize as u64),
         "molt_socket_send" => Some(crate::molt_socket_send as *const () as usize as u64),
         "molt_socket_sendall" => Some(crate::molt_socket_sendall as *const () as usize as u64),
         "molt_socket_sendto" => Some(crate::molt_socket_sendto as *const () as usize as u64),
         "molt_socket_recvfrom" => Some(crate::molt_socket_recvfrom as *const () as usize as u64),
         "molt_socket_sendmsg" => Some(crate::molt_socket_sendmsg as *const () as usize as u64),
         "molt_socket_recvmsg" => Some(crate::molt_socket_recvmsg as *const () as usize as u64),
-        "molt_socket_recvmsg_into" => {
-            Some(crate::molt_socket_recvmsg_into as *const () as usize as u64)
-        }
+        "molt_socket_recvmsg_into" => Some(crate::molt_socket_recvmsg_into as *const () as usize as u64),
         "molt_socket_shutdown" => Some(crate::molt_socket_shutdown as *const () as usize as u64),
-        "molt_socket_getsockname" => {
-            Some(crate::molt_socket_getsockname as *const () as usize as u64)
-        }
-        "molt_socket_getpeername" => {
-            Some(crate::molt_socket_getpeername as *const () as usize as u64)
-        }
-        "molt_socket_setsockopt" => {
-            Some(crate::molt_socket_setsockopt as *const () as usize as u64)
-        }
-        "molt_socket_getsockopt" => {
-            Some(crate::molt_socket_getsockopt as *const () as usize as u64)
-        }
+        "molt_socket_getsockname" => Some(crate::molt_socket_getsockname as *const () as usize as u64),
+        "molt_socket_getpeername" => Some(crate::molt_socket_getpeername as *const () as usize as u64),
+        "molt_socket_setsockopt" => Some(crate::molt_socket_setsockopt as *const () as usize as u64),
+        "molt_socket_getsockopt" => Some(crate::molt_socket_getsockopt as *const () as usize as u64),
         "molt_socket_detach" => Some(crate::molt_socket_detach as *const () as usize as u64),
         "molt_socketpair" => Some(crate::molt_socketpair as *const () as usize as u64),
-        "molt_socket_getaddrinfo" => {
-            Some(crate::molt_socket_getaddrinfo as *const () as usize as u64)
-        }
-        "molt_socket_getnameinfo" => {
-            Some(crate::molt_socket_getnameinfo as *const () as usize as u64)
-        }
-        "molt_socket_gethostname" => {
-            Some(crate::molt_socket_gethostname as *const () as usize as u64)
-        }
-        "molt_socket_gethostbyname" => {
-            Some(crate::molt_socket_gethostbyname as *const () as usize as u64)
-        }
-        "molt_socket_gethostbyaddr" => {
-            Some(crate::molt_socket_gethostbyaddr as *const () as usize as u64)
-        }
+        "molt_socket_getaddrinfo" => Some(crate::molt_socket_getaddrinfo as *const () as usize as u64),
+        "molt_socket_getnameinfo" => Some(crate::molt_socket_getnameinfo as *const () as usize as u64),
+        "molt_socket_gethostname" => Some(crate::molt_socket_gethostname as *const () as usize as u64),
+        "molt_socket_gethostbyname" => Some(crate::molt_socket_gethostbyname as *const () as usize as u64),
+        "molt_socket_gethostbyaddr" => Some(crate::molt_socket_gethostbyaddr as *const () as usize as u64),
         "molt_socket_getfqdn" => Some(crate::molt_socket_getfqdn as *const () as usize as u64),
-        "molt_socket_getservbyname" => {
-            Some(crate::molt_socket_getservbyname as *const () as usize as u64)
-        }
-        "molt_socket_getservbyport" => {
-            Some(crate::molt_socket_getservbyport as *const () as usize as u64)
-        }
+        "molt_socket_getservbyname" => Some(crate::molt_socket_getservbyname as *const () as usize as u64),
+        "molt_socket_getservbyport" => Some(crate::molt_socket_getservbyport as *const () as usize as u64),
         "molt_socket_inet_pton" => Some(crate::molt_socket_inet_pton as *const () as usize as u64),
         "molt_socket_inet_ntop" => Some(crate::molt_socket_inet_ntop as *const () as usize as u64),
+        "molt_socket_htons" => Some(crate::molt_socket_htons as *const () as usize as u64),
+        "molt_socket_ntohs" => Some(crate::molt_socket_ntohs as *const () as usize as u64),
+        "molt_socket_htonl" => Some(crate::molt_socket_htonl as *const () as usize as u64),
+        "molt_socket_ntohl" => Some(crate::molt_socket_ntohl as *const () as usize as u64),
         "molt_socket_constants" => Some(crate::molt_socket_constants as *const () as usize as u64),
         "molt_socket_has_ipv6" => Some(crate::molt_socket_has_ipv6 as *const () as usize as u64),
         "molt_compile_builtin" => Some(crate::molt_compile_builtin as *const () as usize as u64),
+        "molt_input_builtin" => Some(crate::molt_input_builtin as *const () as usize as u64),
+        "molt_globals_builtin" => Some(crate::molt_globals_builtin as *const () as usize as u64),
+        "molt_locals_builtin" => Some(crate::molt_locals_builtin as *const () as usize as u64),
         "molt_code_new" => Some(crate::molt_code_new as *const () as usize as u64),
         "molt_code_slots_init" => Some(crate::molt_code_slots_init as *const () as usize as u64),
         "molt_code_slot_set" => Some(crate::molt_code_slot_set as *const () as usize as u64),
@@ -6329,171 +1774,67 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_module_import" => Some(crate::molt_module_import as *const () as usize as u64),
         "molt_runpy_run_module" => Some(crate::molt_runpy_run_module as *const () as usize as u64),
         "molt_runpy_run_path" => Some(crate::molt_runpy_run_path as *const () as usize as u64),
-        "molt_runpy_resolve_path" => {
-            Some(crate::molt_runpy_resolve_path as *const () as usize as u64)
-        }
+        "molt_runpy_resolve_path" => Some(crate::molt_runpy_resolve_path as *const () as usize as u64),
         "molt_uuid_getnode" => Some(crate::molt_uuid_getnode as *const () as usize as u64),
         "molt_uuid_uuid4_bytes" => Some(crate::molt_uuid_uuid4_bytes as *const () as usize as u64),
         "molt_uuid_uuid1_bytes" => Some(crate::molt_uuid_uuid1_bytes as *const () as usize as u64),
         "molt_uuid_uuid3_bytes" => Some(crate::molt_uuid_uuid3_bytes as *const () as usize as u64),
         "molt_uuid_uuid5_bytes" => Some(crate::molt_uuid_uuid5_bytes as *const () as usize as u64),
-        "molt_importlib_source_loader_payload" => {
-            Some(crate::molt_importlib_source_loader_payload as *const () as usize as u64)
-        }
-        "molt_importlib_extension_loader_payload" => {
-            Some(crate::molt_importlib_extension_loader_payload as *const () as usize as u64)
-        }
-        "molt_importlib_sourceless_loader_payload" => {
-            Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64)
-        }
-        "molt_importlib_source_exec_payload" => {
-            Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64)
-        }
-        "molt_importlib_zip_source_exec_payload" => {
-            Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64)
-        }
-        "molt_importlib_read_file" => {
-            Some(crate::molt_importlib_read_file as *const () as usize as u64)
-        }
-        "molt_importlib_exec_restricted_source" => {
-            Some(crate::molt_importlib_exec_restricted_source as *const () as usize as u64)
-        }
-        "molt_importlib_exec_extension" => {
-            Some(crate::molt_importlib_exec_extension as *const () as usize as u64)
-        }
-        "molt_importlib_exec_sourceless" => {
-            Some(crate::molt_importlib_exec_sourceless as *const () as usize as u64)
-        }
-        "molt_importlib_module_spec_is_package" => {
-            Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64)
-        }
-        "molt_importlib_cache_from_source" => {
-            Some(crate::molt_importlib_cache_from_source as *const () as usize as u64)
-        }
-        "molt_importlib_find_in_path" => {
-            Some(crate::molt_importlib_find_in_path as *const () as usize as u64)
-        }
-        "molt_importlib_find_in_path_package_context" => {
-            Some(crate::molt_importlib_find_in_path_package_context as *const () as usize as u64)
-        }
-        "molt_importlib_find_spec_payload" => {
-            Some(crate::molt_importlib_find_spec_payload as *const () as usize as u64)
-        }
-        "molt_importlib_bootstrap_payload" => {
-            Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64)
-        }
-        "molt_importlib_runtime_state_payload" => {
-            Some(crate::molt_importlib_runtime_state_payload as *const () as usize as u64)
-        }
-        "molt_importlib_search_paths" => {
-            Some(crate::molt_importlib_search_paths as *const () as usize as u64)
-        }
-        "molt_importlib_namespace_paths" => {
-            Some(crate::molt_importlib_namespace_paths as *const () as usize as u64)
-        }
-        "molt_importlib_resources_path_payload" => {
-            Some(crate::molt_importlib_resources_path_payload as *const () as usize as u64)
-        }
-        "molt_importlib_resources_package_payload" => {
-            Some(crate::molt_importlib_resources_package_payload as *const () as usize as u64)
-        }
-        "molt_importlib_resources_as_file_enter" => {
-            Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64)
-        }
-        "molt_importlib_resources_as_file_exit" => {
-            Some(crate::molt_importlib_resources_as_file_exit as *const () as usize as u64)
-        }
-        "molt_importlib_resources_module_name" => {
-            Some(crate::molt_importlib_resources_module_name as *const () as usize as u64)
-        }
-        "molt_importlib_resources_loader_reader" => {
-            Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_files_traversable" => Some(
-            crate::molt_importlib_resources_reader_files_traversable as *const () as usize as u64,
-        ),
-        "molt_importlib_resources_reader_roots" => {
-            Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_contents" => {
-            Some(crate::molt_importlib_resources_reader_contents as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_resource_path" => {
-            Some(crate::molt_importlib_resources_reader_resource_path as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_is_resource" => {
-            Some(crate::molt_importlib_resources_reader_is_resource as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_open_resource_bytes" => Some(
-            crate::molt_importlib_resources_reader_open_resource_bytes as *const () as usize as u64,
-        ),
-        "molt_importlib_resources_reader_child_names" => {
-            Some(crate::molt_importlib_resources_reader_child_names as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_exists" => {
-            Some(crate::molt_importlib_resources_reader_exists as *const () as usize as u64)
-        }
-        "molt_importlib_resources_reader_is_dir" => {
-            Some(crate::molt_importlib_resources_reader_is_dir as *const () as usize as u64)
-        }
-        "molt_linecache_loader_get_source" => {
-            Some(crate::molt_linecache_loader_get_source as *const () as usize as u64)
-        }
-        "molt_importlib_metadata_dist_paths" => {
-            Some(crate::molt_importlib_metadata_dist_paths as *const () as usize as u64)
-        }
-        "molt_importlib_metadata_entry_points_payload" => {
-            Some(crate::molt_importlib_metadata_entry_points_payload as *const () as usize as u64)
-        }
-        "molt_importlib_metadata_entry_points_select_payload" => Some(
-            crate::molt_importlib_metadata_entry_points_select_payload as *const () as usize as u64,
-        ),
-        "molt_importlib_metadata_normalize_name" => {
-            Some(crate::molt_importlib_metadata_normalize_name as *const () as usize as u64)
-        }
-        "molt_importlib_metadata_payload" => {
-            Some(crate::molt_importlib_metadata_payload as *const () as usize as u64)
-        }
-        "molt_importlib_spec_from_file_location_payload" => {
-            Some(crate::molt_importlib_spec_from_file_location_payload as *const () as usize as u64)
-        }
-        "molt_copyreg_bootstrap" => {
-            Some(crate::molt_copyreg_bootstrap as *const () as usize as u64)
-        }
+        "molt_importlib_source_loader_payload" => Some(crate::molt_importlib_source_loader_payload as *const () as usize as u64),
+        "molt_importlib_extension_loader_payload" => Some(crate::molt_importlib_extension_loader_payload as *const () as usize as u64),
+        "molt_importlib_sourceless_loader_payload" => Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64),
+        "molt_importlib_source_exec_payload" => Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64),
+        "molt_importlib_zip_source_exec_payload" => Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64),
+        "molt_importlib_read_file" => Some(crate::molt_importlib_read_file as *const () as usize as u64),
+        "molt_importlib_exec_restricted_source" => Some(crate::molt_importlib_exec_restricted_source as *const () as usize as u64),
+        "molt_importlib_exec_extension" => Some(crate::molt_importlib_exec_extension as *const () as usize as u64),
+        "molt_importlib_exec_sourceless" => Some(crate::molt_importlib_exec_sourceless as *const () as usize as u64),
+        "molt_importlib_module_spec_is_package" => Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64),
+        "molt_importlib_cache_from_source" => Some(crate::molt_importlib_cache_from_source as *const () as usize as u64),
+        "molt_importlib_find_in_path" => Some(crate::molt_importlib_find_in_path as *const () as usize as u64),
+        "molt_importlib_find_in_path_package_context" => Some(crate::molt_importlib_find_in_path_package_context as *const () as usize as u64),
+        "molt_importlib_find_spec_payload" => Some(crate::molt_importlib_find_spec_payload as *const () as usize as u64),
+        "molt_importlib_bootstrap_payload" => Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64),
+        "molt_importlib_runtime_state_payload" => Some(crate::molt_importlib_runtime_state_payload as *const () as usize as u64),
+        "molt_importlib_search_paths" => Some(crate::molt_importlib_search_paths as *const () as usize as u64),
+        "molt_importlib_namespace_paths" => Some(crate::molt_importlib_namespace_paths as *const () as usize as u64),
+        "molt_importlib_resources_path_payload" => Some(crate::molt_importlib_resources_path_payload as *const () as usize as u64),
+        "molt_importlib_resources_package_payload" => Some(crate::molt_importlib_resources_package_payload as *const () as usize as u64),
+        "molt_importlib_resources_as_file_enter" => Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64),
+        "molt_importlib_resources_as_file_exit" => Some(crate::molt_importlib_resources_as_file_exit as *const () as usize as u64),
+        "molt_importlib_resources_module_name" => Some(crate::molt_importlib_resources_module_name as *const () as usize as u64),
+        "molt_importlib_resources_loader_reader" => Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64),
+        "molt_importlib_resources_reader_files_traversable" => Some(crate::molt_importlib_resources_reader_files_traversable as *const () as usize as u64),
+        "molt_importlib_resources_reader_roots" => Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64),
+        "molt_importlib_resources_reader_contents" => Some(crate::molt_importlib_resources_reader_contents as *const () as usize as u64),
+        "molt_importlib_resources_reader_resource_path" => Some(crate::molt_importlib_resources_reader_resource_path as *const () as usize as u64),
+        "molt_importlib_resources_reader_is_resource" => Some(crate::molt_importlib_resources_reader_is_resource as *const () as usize as u64),
+        "molt_importlib_resources_reader_open_resource_bytes" => Some(crate::molt_importlib_resources_reader_open_resource_bytes as *const () as usize as u64),
+        "molt_importlib_resources_reader_child_names" => Some(crate::molt_importlib_resources_reader_child_names as *const () as usize as u64),
+        "molt_importlib_resources_reader_exists" => Some(crate::molt_importlib_resources_reader_exists as *const () as usize as u64),
+        "molt_importlib_resources_reader_is_dir" => Some(crate::molt_importlib_resources_reader_is_dir as *const () as usize as u64),
+        "molt_linecache_loader_get_source" => Some(crate::molt_linecache_loader_get_source as *const () as usize as u64),
+        "molt_importlib_metadata_dist_paths" => Some(crate::molt_importlib_metadata_dist_paths as *const () as usize as u64),
+        "molt_importlib_metadata_entry_points_payload" => Some(crate::molt_importlib_metadata_entry_points_payload as *const () as usize as u64),
+        "molt_importlib_metadata_entry_points_select_payload" => Some(crate::molt_importlib_metadata_entry_points_select_payload as *const () as usize as u64),
+        "molt_importlib_metadata_normalize_name" => Some(crate::molt_importlib_metadata_normalize_name as *const () as usize as u64),
+        "molt_importlib_metadata_payload" => Some(crate::molt_importlib_metadata_payload as *const () as usize as u64),
+        "molt_importlib_spec_from_file_location_payload" => Some(crate::molt_importlib_spec_from_file_location_payload as *const () as usize as u64),
+        "molt_copyreg_bootstrap" => Some(crate::molt_copyreg_bootstrap as *const () as usize as u64),
         "molt_copyreg_pickle" => Some(crate::molt_copyreg_pickle as *const () as usize as u64),
-        "molt_pickle_encode_protocol0" => {
-            Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64)
-        }
-        "molt_pickle_dumps_protocol01" => {
-            Some(crate::molt_pickle_dumps_protocol01 as *const () as usize as u64)
-        }
-        "molt_pickle_loads_protocol01" => {
-            Some(crate::molt_pickle_loads_protocol01 as *const () as usize as u64)
-        }
-        "molt_pickle_dumps_core" => {
-            Some(crate::molt_pickle_dumps_core as *const () as usize as u64)
-        }
-        "molt_pickle_loads_core" => {
-            Some(crate::molt_pickle_loads_core as *const () as usize as u64)
-        }
-        "molt_copyreg_constructor" => {
-            Some(crate::molt_copyreg_constructor as *const () as usize as u64)
-        }
-        "molt_copyreg_add_extension" => {
-            Some(crate::molt_copyreg_add_extension as *const () as usize as u64)
-        }
-        "molt_copyreg_remove_extension" => {
-            Some(crate::molt_copyreg_remove_extension as *const () as usize as u64)
-        }
-        "molt_copyreg_clear_extension_cache" => {
-            Some(crate::molt_copyreg_clear_extension_cache as *const () as usize as u64)
-        }
+        "molt_pickle_encode_protocol0" => Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64),
+        "molt_pickle_dumps_protocol01" => Some(crate::molt_pickle_dumps_protocol01 as *const () as usize as u64),
+        "molt_pickle_loads_protocol01" => Some(crate::molt_pickle_loads_protocol01 as *const () as usize as u64),
+        "molt_pickle_dumps_core" => Some(crate::molt_pickle_dumps_core as *const () as usize as u64),
+        "molt_pickle_loads_core" => Some(crate::molt_pickle_loads_core as *const () as usize as u64),
+        "molt_copyreg_constructor" => Some(crate::molt_copyreg_constructor as *const () as usize as u64),
+        "molt_copyreg_add_extension" => Some(crate::molt_copyreg_add_extension as *const () as usize as u64),
+        "molt_copyreg_remove_extension" => Some(crate::molt_copyreg_remove_extension as *const () as usize as u64),
+        "molt_copyreg_clear_extension_cache" => Some(crate::molt_copyreg_clear_extension_cache as *const () as usize as u64),
         "molt_module_cache_set" => Some(crate::molt_module_cache_set as *const () as usize as u64),
         "molt_exception_active" => Some(crate::molt_exception_active as *const () as usize as u64),
         "molt_exception_last" => Some(crate::molt_exception_last as *const () as usize as u64),
-        "molt_exception_pending" => {
-            Some(crate::molt_exception_pending as *const () as usize as u64)
-        }
+        "molt_exception_pending" => Some(crate::molt_exception_pending as *const () as usize as u64),
         "molt_exception_clear" => Some(crate::molt_exception_clear as *const () as usize as u64),
         "molt_gc_collect" => Some(crate::molt_gc_collect as *const () as usize as u64),
         "molt_gc_enable" => Some(crate::molt_gc_enable as *const () as usize as u64),
@@ -6504,169 +1845,76 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_gc_set_debug" => Some(crate::molt_gc_set_debug as *const () as usize as u64),
         "molt_gc_get_debug" => Some(crate::molt_gc_get_debug as *const () as usize as u64),
         "molt_gc_get_count" => Some(crate::molt_gc_get_count as *const () as usize as u64),
-        "molt_traceback_source_line" => {
-            Some(crate::molt_traceback_source_line as *const () as usize as u64)
-        }
-        "molt_traceback_infer_col_offsets" => {
-            Some(crate::molt_traceback_infer_col_offsets as *const () as usize as u64)
-        }
-        "molt_traceback_format_caret_line" => {
-            Some(crate::molt_traceback_format_caret_line as *const () as usize as u64)
-        }
-        "molt_traceback_format_exception_only" => {
-            Some(crate::molt_traceback_format_exception_only as *const () as usize as u64)
-        }
-        "molt_traceback_format_exception" => {
-            Some(crate::molt_traceback_format_exception as *const () as usize as u64)
-        }
-        "molt_traceback_format_tb" => {
-            Some(crate::molt_traceback_format_tb as *const () as usize as u64)
-        }
-        "molt_traceback_format_stack" => {
-            Some(crate::molt_traceback_format_stack as *const () as usize as u64)
-        }
-        "molt_traceback_extract_tb" => {
-            Some(crate::molt_traceback_extract_tb as *const () as usize as u64)
-        }
-        "molt_traceback_exception_components" => {
-            Some(crate::molt_traceback_exception_components as *const () as usize as u64)
-        }
-        "molt_traceback_exception_chain_payload" => {
-            Some(crate::molt_traceback_exception_chain_payload as *const () as usize as u64)
-        }
-        "molt_traceback_exception_suppress_context" => {
-            Some(crate::molt_traceback_exception_suppress_context as *const () as usize as u64)
-        }
-        "molt_traceback_payload" => {
-            Some(crate::molt_traceback_payload as *const () as usize as u64)
-        }
+        "molt_traceback_source_line" => Some(crate::molt_traceback_source_line as *const () as usize as u64),
+        "molt_traceback_infer_col_offsets" => Some(crate::molt_traceback_infer_col_offsets as *const () as usize as u64),
+        "molt_traceback_format_caret_line" => Some(crate::molt_traceback_format_caret_line as *const () as usize as u64),
+        "molt_traceback_format_exception_only" => Some(crate::molt_traceback_format_exception_only as *const () as usize as u64),
+        "molt_traceback_format_exception" => Some(crate::molt_traceback_format_exception as *const () as usize as u64),
+        "molt_traceback_format_tb" => Some(crate::molt_traceback_format_tb as *const () as usize as u64),
+        "molt_traceback_format_stack" => Some(crate::molt_traceback_format_stack as *const () as usize as u64),
+        "molt_traceback_extract_tb" => Some(crate::molt_traceback_extract_tb as *const () as usize as u64),
+        "molt_traceback_exception_components" => Some(crate::molt_traceback_exception_components as *const () as usize as u64),
+        "molt_traceback_exception_chain_payload" => Some(crate::molt_traceback_exception_chain_payload as *const () as usize as u64),
+        "molt_traceback_exception_suppress_context" => Some(crate::molt_traceback_exception_suppress_context as *const () as usize as u64),
+        "molt_traceback_payload" => Some(crate::molt_traceback_payload as *const () as usize as u64),
         "molt_getargv" => Some(crate::molt_getargv as *const () as usize as u64),
         "molt_getframe" => Some(crate::molt_getframe as *const () as usize as u64),
-        "molt_getrecursionlimit" => {
-            Some(crate::molt_getrecursionlimit as *const () as usize as u64)
-        }
-        "molt_setrecursionlimit" => {
-            Some(crate::molt_setrecursionlimit as *const () as usize as u64)
-        }
+        "molt_getrecursionlimit" => Some(crate::molt_getrecursionlimit as *const () as usize as u64),
+        "molt_setrecursionlimit" => Some(crate::molt_setrecursionlimit as *const () as usize as u64),
         "molt_sys_executable" => Some(crate::molt_sys_executable as *const () as usize as u64),
-        "molt_asyncgen_hooks_get" => {
-            Some(crate::molt_asyncgen_hooks_get as *const () as usize as u64)
-        }
-        "molt_asyncgen_hooks_set" => {
-            Some(crate::molt_asyncgen_hooks_set as *const () as usize as u64)
-        }
+        "molt_asyncgen_hooks_get" => Some(crate::molt_asyncgen_hooks_get as *const () as usize as u64),
+        "molt_asyncgen_hooks_set" => Some(crate::molt_asyncgen_hooks_set as *const () as usize as u64),
         "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const () as usize as u64),
         "molt_gen_locals" => Some(crate::molt_gen_locals as *const () as usize as u64),
         "molt_ast_parse" => Some(crate::molt_ast_parse as *const () as usize as u64),
         "molt_ast_walk" => Some(crate::molt_ast_walk as *const () as usize as u64),
-        "molt_ast_get_docstring" => {
-            Some(crate::molt_ast_get_docstring as *const () as usize as u64)
-        }
+        "molt_ast_get_docstring" => Some(crate::molt_ast_get_docstring as *const () as usize as u64),
         "molt_inspect_cleandoc" => Some(crate::molt_inspect_cleandoc as *const () as usize as u64),
-        "molt_inspect_currentframe" => {
-            Some(crate::molt_inspect_currentframe as *const () as usize as u64)
-        }
+        "molt_inspect_currentframe" => Some(crate::molt_inspect_currentframe as *const () as usize as u64),
         "molt_inspect_getdoc" => Some(crate::molt_inspect_getdoc as *const () as usize as u64),
-        "molt_inspect_isfunction" => {
-            Some(crate::molt_inspect_isfunction as *const () as usize as u64)
-        }
+        "molt_inspect_isfunction" => Some(crate::molt_inspect_isfunction as *const () as usize as u64),
         "molt_inspect_isclass" => Some(crate::molt_inspect_isclass as *const () as usize as u64),
         "molt_inspect_ismodule" => Some(crate::molt_inspect_ismodule as *const () as usize as u64),
-        "molt_inspect_iscoroutine" => {
-            Some(crate::molt_inspect_iscoroutine as *const () as usize as u64)
-        }
-        "molt_inspect_iscoroutinefunction" => {
-            Some(crate::molt_inspect_iscoroutinefunction as *const () as usize as u64)
-        }
-        "molt_inspect_isasyncgenfunction" => {
-            Some(crate::molt_inspect_isasyncgenfunction as *const () as usize as u64)
-        }
-        "molt_inspect_isgeneratorfunction" => {
-            Some(crate::molt_inspect_isgeneratorfunction as *const () as usize as u64)
-        }
-        "molt_inspect_isawaitable" => {
-            Some(crate::molt_inspect_isawaitable as *const () as usize as u64)
-        }
-        "molt_inspect_getgeneratorstate" => {
-            Some(crate::molt_inspect_getgeneratorstate as *const () as usize as u64)
-        }
-        "molt_inspect_getasyncgenstate" => {
-            Some(crate::molt_inspect_getasyncgenstate as *const () as usize as u64)
-        }
-        "molt_inspect_getcoroutinestate" => {
-            Some(crate::molt_inspect_getcoroutinestate as *const () as usize as u64)
-        }
-        "molt_inspect_signature_data" => {
-            Some(crate::molt_inspect_signature_data as *const () as usize as u64)
-        }
-        "molt_function_set_builtin" => {
-            Some(crate::molt_function_set_builtin as *const () as usize as u64)
-        }
+        "molt_inspect_iscoroutine" => Some(crate::molt_inspect_iscoroutine as *const () as usize as u64),
+        "molt_inspect_iscoroutinefunction" => Some(crate::molt_inspect_iscoroutinefunction as *const () as usize as u64),
+        "molt_inspect_isasyncgenfunction" => Some(crate::molt_inspect_isasyncgenfunction as *const () as usize as u64),
+        "molt_inspect_isgeneratorfunction" => Some(crate::molt_inspect_isgeneratorfunction as *const () as usize as u64),
+        "molt_inspect_isawaitable" => Some(crate::molt_inspect_isawaitable as *const () as usize as u64),
+        "molt_inspect_getgeneratorstate" => Some(crate::molt_inspect_getgeneratorstate as *const () as usize as u64),
+        "molt_inspect_getasyncgenstate" => Some(crate::molt_inspect_getasyncgenstate as *const () as usize as u64),
+        "molt_inspect_getcoroutinestate" => Some(crate::molt_inspect_getcoroutinestate as *const () as usize as u64),
+        "molt_inspect_signature_data" => Some(crate::molt_inspect_signature_data as *const () as usize as u64),
+        "molt_function_set_builtin" => Some(crate::molt_function_set_builtin as *const () as usize as u64),
         "molt_class_new" => Some(crate::molt_class_new as *const () as usize as u64),
-        "molt_dataclasses_make_dataclass" => {
-            Some(crate::molt_dataclasses_make_dataclass as *const () as usize as u64)
-        }
-        "molt_dataclasses_is_dataclass" => {
-            Some(crate::molt_dataclasses_is_dataclass as *const () as usize as u64)
-        }
-        "molt_dataclasses_fields" => {
-            Some(crate::molt_dataclasses_fields as *const () as usize as u64)
-        }
-        "molt_dataclasses_asdict" => {
-            Some(crate::molt_dataclasses_asdict as *const () as usize as u64)
-        }
-        "molt_dataclasses_astuple" => {
-            Some(crate::molt_dataclasses_astuple as *const () as usize as u64)
-        }
-        "molt_dataclasses_replace" => {
-            Some(crate::molt_dataclasses_replace as *const () as usize as u64)
-        }
+        "molt_dataclasses_make_dataclass" => Some(crate::molt_dataclasses_make_dataclass as *const () as usize as u64),
+        "molt_dataclasses_is_dataclass" => Some(crate::molt_dataclasses_is_dataclass as *const () as usize as u64),
+        "molt_dataclasses_fields" => Some(crate::molt_dataclasses_fields as *const () as usize as u64),
+        "molt_dataclasses_asdict" => Some(crate::molt_dataclasses_asdict as *const () as usize as u64),
+        "molt_dataclasses_astuple" => Some(crate::molt_dataclasses_astuple as *const () as usize as u64),
+        "molt_dataclasses_replace" => Some(crate::molt_dataclasses_replace as *const () as usize as u64),
         "molt_class_set_base" => Some(crate::molt_class_set_base as *const () as usize as u64),
-        "molt_class_apply_set_name" => {
-            Some(crate::molt_class_apply_set_name as *const () as usize as u64)
-        }
+        "molt_class_apply_set_name" => Some(crate::molt_class_apply_set_name as *const () as usize as u64),
         "molt_classmethod_new" => Some(crate::molt_classmethod_new as *const () as usize as u64),
         "molt_staticmethod_new" => Some(crate::molt_staticmethod_new as *const () as usize as u64),
         "molt_property_new" => Some(crate::molt_property_new as *const () as usize as u64),
-        "molt_generic_alias_new" => {
-            Some(crate::molt_generic_alias_new as *const () as usize as u64)
-        }
-        "molt_typing_type_param" => {
-            Some(crate::molt_typing_type_param as *const () as usize as u64)
-        }
-        "molt_sys_set_version_info" => {
-            Some(crate::molt_sys_set_version_info as *const () as usize as u64)
-        }
+        "molt_generic_alias_new" => Some(crate::molt_generic_alias_new as *const () as usize as u64),
+        "molt_typing_type_param" => Some(crate::molt_typing_type_param as *const () as usize as u64),
+        "molt_sys_set_version_info" => Some(crate::molt_sys_set_version_info as *const () as usize as u64),
         "molt_sys_version_info" => Some(crate::molt_sys_version_info as *const () as usize as u64),
         "molt_sys_version" => Some(crate::molt_sys_version as *const () as usize as u64),
         "molt_sys_platform" => Some(crate::molt_sys_platform as *const () as usize as u64),
-        "molt_sys_bootstrap_path" => {
-            Some(crate::molt_sys_bootstrap_path as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_pythonpath" => {
-            Some(crate::molt_sys_bootstrap_pythonpath as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_module_roots" => {
-            Some(crate::molt_sys_bootstrap_module_roots as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_pwd" => {
-            Some(crate::molt_sys_bootstrap_pwd as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_include_cwd" => {
-            Some(crate::molt_sys_bootstrap_include_cwd as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_stdlib_root" => {
-            Some(crate::molt_sys_bootstrap_stdlib_root as *const () as usize as u64)
-        }
-        "molt_sys_bootstrap_payload" => {
-            Some(crate::molt_sys_bootstrap_payload as *const () as usize as u64)
-        }
+        "molt_sys_bootstrap_path" => Some(crate::molt_sys_bootstrap_path as *const () as usize as u64),
+        "molt_sys_bootstrap_pythonpath" => Some(crate::molt_sys_bootstrap_pythonpath as *const () as usize as u64),
+        "molt_sys_bootstrap_module_roots" => Some(crate::molt_sys_bootstrap_module_roots as *const () as usize as u64),
+        "molt_sys_bootstrap_pwd" => Some(crate::molt_sys_bootstrap_pwd as *const () as usize as u64),
+        "molt_sys_bootstrap_include_cwd" => Some(crate::molt_sys_bootstrap_include_cwd as *const () as usize as u64),
+        "molt_sys_bootstrap_stdlib_root" => Some(crate::molt_sys_bootstrap_stdlib_root as *const () as usize as u64),
+        "molt_sys_bootstrap_payload" => Some(crate::molt_sys_bootstrap_payload as *const () as usize as u64),
+        "molt_is_string_obj" => Some(crate::molt_is_string_obj as *const () as usize as u64),
         "molt_sys_stdin" => Some(crate::molt_sys_stdin as *const () as usize as u64),
         "molt_sys_stdout" => Some(crate::molt_sys_stdout as *const () as usize as u64),
         "molt_sys_stderr" => Some(crate::molt_sys_stderr as *const () as usize as u64),
-        "molt_sys_getfilesystemencodeerrors" => {
-            Some(crate::molt_sys_getfilesystemencodeerrors as *const () as usize as u64)
-        }
+        "molt_sys_getfilesystemencodeerrors" => Some(crate::molt_sys_getfilesystemencodeerrors as *const () as usize as u64),
         "molt_trace_enter_slot" => Some(crate::molt_trace_enter_slot as *const () as usize as u64),
         "molt_trace_exit" => Some(crate::molt_trace_exit as *const () as usize as u64),
         "molt_trace_set_line" => Some(crate::molt_trace_set_line as *const () as usize as u64),
@@ -6674,72 +1922,34 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_operator_mul" => Some(crate::molt_operator_mul as *const () as usize as u64),
         "molt_operator_eq" => Some(crate::molt_operator_eq as *const () as usize as u64),
         "molt_operator_index" => Some(crate::molt_operator_index as *const () as usize as u64),
-        "molt_operator_itemgetter" => {
-            Some(crate::molt_operator_itemgetter as *const () as usize as u64)
-        }
-        "molt_operator_attrgetter" => {
-            Some(crate::molt_operator_attrgetter as *const () as usize as u64)
-        }
-        "molt_operator_methodcaller" => {
-            Some(crate::molt_operator_methodcaller as *const () as usize as u64)
-        }
-        "molt_itertools_kwd_mark" => {
-            Some(crate::molt_itertools_kwd_mark as *const () as usize as u64)
-        }
+        "molt_operator_itemgetter" => Some(crate::molt_operator_itemgetter as *const () as usize as u64),
+        "molt_operator_attrgetter" => Some(crate::molt_operator_attrgetter as *const () as usize as u64),
+        "molt_operator_methodcaller" => Some(crate::molt_operator_methodcaller as *const () as usize as u64),
+        "molt_itertools_kwd_mark" => Some(crate::molt_itertools_kwd_mark as *const () as usize as u64),
         "molt_itertools_chain" => Some(crate::molt_itertools_chain as *const () as usize as u64),
-        "molt_itertools_chain_from_iterable" => {
-            Some(crate::molt_itertools_chain_from_iterable as *const () as usize as u64)
-        }
+        "molt_itertools_chain_from_iterable" => Some(crate::molt_itertools_chain_from_iterable as *const () as usize as u64),
         "molt_itertools_islice" => Some(crate::molt_itertools_islice as *const () as usize as u64),
         "molt_itertools_repeat" => Some(crate::molt_itertools_repeat as *const () as usize as u64),
         "molt_itertools_count" => Some(crate::molt_itertools_count as *const () as usize as u64),
         "molt_itertools_cycle" => Some(crate::molt_itertools_cycle as *const () as usize as u64),
-        "molt_itertools_accumulate" => {
-            Some(crate::molt_itertools_accumulate as *const () as usize as u64)
-        }
-        "molt_itertools_pairwise" => {
-            Some(crate::molt_itertools_pairwise as *const () as usize as u64)
-        }
-        "molt_itertools_product" => {
-            Some(crate::molt_itertools_product as *const () as usize as u64)
-        }
-        "molt_itertools_permutations" => {
-            Some(crate::molt_itertools_permutations as *const () as usize as u64)
-        }
-        "molt_itertools_combinations" => {
-            Some(crate::molt_itertools_combinations as *const () as usize as u64)
-        }
-        "molt_itertools_groupby" => {
-            Some(crate::molt_itertools_groupby as *const () as usize as u64)
-        }
+        "molt_itertools_accumulate" => Some(crate::molt_itertools_accumulate as *const () as usize as u64),
+        "molt_itertools_pairwise" => Some(crate::molt_itertools_pairwise as *const () as usize as u64),
+        "molt_itertools_product" => Some(crate::molt_itertools_product as *const () as usize as u64),
+        "molt_itertools_permutations" => Some(crate::molt_itertools_permutations as *const () as usize as u64),
+        "molt_itertools_combinations" => Some(crate::molt_itertools_combinations as *const () as usize as u64),
+        "molt_itertools_groupby" => Some(crate::molt_itertools_groupby as *const () as usize as u64),
         "molt_itertools_tee" => Some(crate::molt_itertools_tee as *const () as usize as u64),
-        "molt_functools_kwd_mark" => {
-            Some(crate::molt_functools_kwd_mark as *const () as usize as u64)
-        }
-        "molt_functools_update_wrapper" => {
-            Some(crate::molt_functools_update_wrapper as *const () as usize as u64)
-        }
+        "molt_functools_kwd_mark" => Some(crate::molt_functools_kwd_mark as *const () as usize as u64),
+        "molt_functools_update_wrapper" => Some(crate::molt_functools_update_wrapper as *const () as usize as u64),
         "molt_functools_wraps" => Some(crate::molt_functools_wraps as *const () as usize as u64),
-        "molt_functools_cmp_to_key" => {
-            Some(crate::molt_functools_cmp_to_key as *const () as usize as u64)
-        }
-        "molt_functools_total_ordering" => {
-            Some(crate::molt_functools_total_ordering as *const () as usize as u64)
-        }
-        "molt_functools_partial" => {
-            Some(crate::molt_functools_partial as *const () as usize as u64)
-        }
+        "molt_functools_cmp_to_key" => Some(crate::molt_functools_cmp_to_key as *const () as usize as u64),
+        "molt_functools_total_ordering" => Some(crate::molt_functools_total_ordering as *const () as usize as u64),
+        "molt_functools_partial" => Some(crate::molt_functools_partial as *const () as usize as u64),
         "molt_functools_reduce" => Some(crate::molt_functools_reduce as *const () as usize as u64),
-        "molt_functools_lru_cache" => {
-            Some(crate::molt_functools_lru_cache as *const () as usize as u64)
-        }
+        "molt_functools_lru_cache" => Some(crate::molt_functools_lru_cache as *const () as usize as u64),
         "molt_keyword_lists" => Some(crate::molt_keyword_lists as *const () as usize as u64),
-        "molt_keyword_iskeyword" => {
-            Some(crate::molt_keyword_iskeyword as *const () as usize as u64)
-        }
-        "molt_keyword_issoftkeyword" => {
-            Some(crate::molt_keyword_issoftkeyword as *const () as usize as u64)
-        }
+        "molt_keyword_iskeyword" => Some(crate::molt_keyword_iskeyword as *const () as usize as u64),
+        "molt_keyword_issoftkeyword" => Some(crate::molt_keyword_issoftkeyword as *const () as usize as u64),
         "molt_future_features" => Some(crate::molt_future_features as *const () as usize as u64),
         "molt_types_bootstrap" => Some(crate::molt_types_bootstrap as *const () as usize as u64),
         "molt_stdlib_probe" => Some(crate::molt_stdlib_probe as *const () as usize as u64),
