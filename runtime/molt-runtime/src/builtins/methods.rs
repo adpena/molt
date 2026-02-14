@@ -25,6 +25,11 @@ pub(crate) fn builtin_func_bits_with_default(
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
+            unsafe {
+                // Cached builtin callables are runtime singletons; treat them as immortal so
+                // refcount churn in compiled code cannot free them out from under the caches.
+                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            }
             if default_kind != 0 {
                 let bits = MoltObject::from_int(default_kind).bits();
                 unsafe {
@@ -1075,12 +1080,57 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_object_init),
             1,
         )),
-        "__init_subclass__" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.object_init_subclass,
-            fn_addr!(molt_object_init_subclass),
-            1,
-        )),
+        "__init_subclass__" => {
+            if matches!(
+                std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                Some("1")
+            ) {
+                let slot = &runtime_state(_py).method_cache.object_init_subclass;
+                let existing = slot.load(std::sync::atomic::Ordering::Acquire);
+                eprintln!(
+                    "molt object.__init_subclass__ slot_ptr={:p} existing_bits=0x{:x} fn_obj=0x{:x} fn_type_init=0x{:x}",
+                    slot,
+                    existing,
+                    fn_addr!(molt_object_init_subclass),
+                    fn_addr!(molt_type_init),
+                );
+            }
+            let bits = builtin_func_bits(
+                _py,
+                &runtime_state(_py).method_cache.object_init_subclass,
+                fn_addr!(molt_object_init_subclass),
+                1,
+            );
+            if matches!(
+                std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                Some("1")
+            ) {
+                if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                    if unsafe { object_type_id(ptr) } == TYPE_ID_FUNCTION {
+                        unsafe {
+                            eprintln!(
+                                "molt object.__init_subclass__ func_bits=0x{:x} stored_fn_ptr=0x{:x} stored_arity={}",
+                                bits,
+                                function_fn_ptr(ptr),
+                                function_arity(ptr),
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "molt object.__init_subclass__ func_bits=0x{:x} type_id={}",
+                            bits,
+                            unsafe { object_type_id(ptr) },
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "molt object.__init_subclass__ func_bits=0x{:x} (immediate)",
+                        bits
+                    );
+                }
+            }
+            Some(bits)
+        }
         "__setattr__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.object_setattr,

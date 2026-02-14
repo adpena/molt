@@ -7,9 +7,12 @@ compiled code without introducing dynamic indirection.
 from __future__ import annotations
 
 import sys as _sys
-import types as _types  # noqa: F401
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+# During builtins bootstrap we cannot rely on `globals()` / `locals()` being present
+# yet (we are defining them). Use the module object dict via `sys.modules`.
+_NS = _sys.modules[__name__].__dict__
 
 TYPE_CHECKING = False
 
@@ -33,10 +36,23 @@ Any = object()
 Callable = _TypingAlias()
 Optional = _TypingAlias()
 
-_MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", globals())
-_MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", globals())
-_MOLT_PROPERTY_NEW = _require_intrinsic("molt_property_new", globals())
-_MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
+_MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", _NS)
+_MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", _NS)
+_MOLT_PROPERTY_NEW = _require_intrinsic("molt_property_new", _NS)
+_MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", _NS)
+
+# Provide `builtins.globals` / `builtins.locals` early during bootstrap. Other stdlib
+# modules may import `builtins` during their own initialization and expect these to
+# exist (CPython parity).
+globals = _require_intrinsic("molt_globals_builtin", _NS)
+locals = _require_intrinsic("molt_locals_builtin", _NS)
+try:
+    globals.__text_signature__ = "()"  # type: ignore[attr-defined]
+    locals.__text_signature__ = "()"  # type: ignore[attr-defined]
+except Exception as _exc:  # noqa: BLE001
+    raise RuntimeError(
+        "builtins.globals/locals missing __text_signature__ support for inspect.signature parity"
+    ) from _exc
 
 
 def _molt_descriptor_types():
@@ -50,6 +66,10 @@ def _molt_descriptor_types():
 
 
 classmethod, staticmethod, property = _molt_descriptor_types()
+if classmethod is object or staticmethod is object or property is object:
+    raise RuntimeError(
+        "descriptor intrinsics unresolved: expected classmethod/staticmethod/property types"
+    )
 
 
 def _resolve_import_name(name: str, globals_obj, level: int) -> str:
@@ -260,7 +280,7 @@ if TYPE_CHECKING:
 
 
 def _require_builtin_intrinsic(name: str) -> Any:
-    return _require_intrinsic(name, globals())
+    return _require_intrinsic(name, _NS)
 
 
 def compile(
@@ -270,7 +290,10 @@ def compile(
     flags: int = 0,
     dont_inherit: bool = False,
     optimize: int = -1,
+    *,
+    _feature_version: int = -1,
 ):
+    del _feature_version
     intrinsic = _require_builtin_intrinsic("molt_compile_builtin")
     return intrinsic(source, filename, mode, flags, dont_inherit, optimize)
 
@@ -292,21 +315,16 @@ def exec(source, globals=None, locals=None, *, closure=None):
     raise _dynamic_execution_unavailable("exec")
 
 
-def _molt_globals_builtin():
-    frame = _molt_getframe(1)
-    if frame is None:
-        return {}
-    return frame.f_globals
+def input(prompt: object = "", /) -> str:
+    intrinsic = _require_builtin_intrinsic("molt_input_builtin")
+    return intrinsic(prompt)
 
 
-def _molt_locals_builtin():
-    # TODO(compat, owner:stdlib, milestone:TL2, priority:P1, status:partial): expose
-    # full caller local-variable payload for alias-call paths once regular frame
-    # f_locals snapshots are complete across all lowered function shapes.
-    frame = _molt_getframe(1)
-    if frame is None:
-        return {}
-    return frame.f_locals
+def breakpoint(*args: object, **kws: object) -> object:
+    hook = getattr(_sys, "breakpointhook", None)
+    if hook is None:
+        raise RuntimeError("sys.breakpointhook unavailable")
+    return hook(*args, **kws)
 
 
 # TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): implement eval/exec builtins with runtime-lowered sandboxing rules beyond fail-fast errors.
@@ -326,6 +344,9 @@ __all__ = [
     "abs",
     "divmod",
     "compile",
+    "open",
+    "input",
+    "breakpoint",
     "eval",
     "exec",
     "__import__",
@@ -376,6 +397,11 @@ __all__ = [
     "classmethod",
     "staticmethod",
     "print",
+    # Tooling/interactive builtins (site-like conveniences).
+    "help",
+    "credits",
+    "copyright",
+    "license",
     "vars",
     "Ellipsis",
     "NotImplemented",
@@ -469,6 +495,11 @@ oct = oct
 hex = hex
 abs = abs
 divmod = divmod
+open = open
+try:
+    open.__module__ = "_io"
+except Exception:
+    pass
 repr = repr
 format = format
 dir = dir
@@ -488,13 +519,15 @@ list = list
 tuple = tuple
 dict = dict
 float = float
-try:
-    complex = complex
-except NameError:
+_complex_type = _NS.get("complex")
+if not isinstance(_complex_type, type):
     try:
-        complex = type(0j)
-    except Exception:
-        pass
+        _complex_type = type(0j)
+    except Exception as _exc:
+        raise RuntimeError(
+            "builtins.complex requires runtime complex-type support"
+        ) from _exc
+complex = _complex_type
 int = int
 bool = bool
 round = round
@@ -517,9 +550,16 @@ delattr = delattr
 hasattr = hasattr
 super = super
 print = print
+
+# CPython exposes these via `site`, but compiled Molt binaries should have them
+# available without importing host Python. This is a Molt-native `_sitebuiltins`.
+import _sitebuiltins as _sitebuiltins  # noqa: PLC0415,E402
+
+help = _sitebuiltins.help
+credits = _sitebuiltins.credits
+copyright = _sitebuiltins.copyright
+license = _sitebuiltins.license
 vars = vars
-globals = _molt_globals_builtin
-locals = _molt_locals_builtin
 Ellipsis = ...
 # Avoid bootstrap-time global lookup of NotImplemented in runtimes where builtins
 # are still being initialized; rich-compare returns the singleton directly.
@@ -602,188 +642,63 @@ EncodingWarning = EncodingWarning
 
 WindowsError = OSError
 
-_molt_getargv = cast(
-    Callable[[], list[str]], _require_builtin_intrinsic("molt_getargv")
-)
-_molt_getframe = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_getframe")
-)
-_molt_trace_enter_slot = cast(
-    Callable[[int], object], _require_builtin_intrinsic("molt_trace_enter_slot")
-)
-_molt_trace_exit = cast(
-    Callable[[], object], _require_builtin_intrinsic("molt_trace_exit")
-)
-_molt_getrecursionlimit = cast(
-    Callable[[], int],
-    _require_builtin_intrinsic("molt_getrecursionlimit"),
-)
-_molt_setrecursionlimit = cast(
-    Callable[[int], None],
-    _require_builtin_intrinsic("molt_setrecursionlimit"),
-)
-_molt_sys_version_info = cast(
-    Callable[[], tuple[int, int, int, str, int]],
-    _require_builtin_intrinsic("molt_sys_version_info"),
-)
-_molt_sys_version = cast(
-    Callable[[], str], _require_builtin_intrinsic("molt_sys_version")
-)
-_molt_sys_stdin = cast(
-    Callable[[], object], _require_builtin_intrinsic("molt_sys_stdin")
-)
-_molt_sys_stdout = cast(
-    Callable[[], object], _require_builtin_intrinsic("molt_sys_stdout")
-)
-_molt_sys_stderr = cast(
-    Callable[[], object], _require_builtin_intrinsic("molt_sys_stderr")
-)
-_molt_exception_last = cast(
-    Callable[[], Optional[BaseException]],
-    _require_builtin_intrinsic("molt_exception_last"),
-)
-_molt_exception_active = cast(
-    Callable[[], Optional[BaseException]],
-    _require_builtin_intrinsic("molt_exception_active"),
-)
-_molt_asyncgen_hooks_get = cast(
-    Callable[[], object],
-    _require_builtin_intrinsic("molt_asyncgen_hooks_get"),
-)
-_molt_asyncgen_hooks_set = cast(
-    Callable[[object, object], object],
-    _require_builtin_intrinsic("molt_asyncgen_hooks_set"),
-)
-_molt_asyncgen_locals = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_asyncgen_locals"),
-)
-_molt_module_new = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_module_new")
-)
-_molt_function_set_builtin = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_function_set_builtin"),
-)
-_molt_class_new = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_class_new")
-)
-_molt_class_set_base = cast(
-    Callable[[object, object], object],
-    _require_builtin_intrinsic("molt_class_set_base"),
-)
-_molt_class_apply_set_name = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_class_apply_set_name"),
-)
-_molt_os_name = cast(Callable[[], str], _require_builtin_intrinsic("molt_os_name"))
-_molt_sys_platform = cast(
-    Callable[[], str], _require_builtin_intrinsic("molt_sys_platform")
-)
-_molt_time_monotonic = cast(
-    Callable[[], float], _require_builtin_intrinsic("molt_time_monotonic")
-)
-_molt_time_monotonic_ns = cast(
-    Callable[[], int], _require_builtin_intrinsic("molt_time_monotonic_ns")
-)
-_molt_time_time = cast(
-    Callable[[], float], _require_builtin_intrinsic("molt_time_time")
-)
-_molt_time_time_ns = cast(
-    Callable[[], int], _require_builtin_intrinsic("molt_time_time_ns")
-)
-_molt_getpid = cast(Callable[[], int], _require_builtin_intrinsic("molt_getpid"))
-_molt_getcwd = cast(Callable[[], str], _require_builtin_intrinsic("molt_getcwd"))
-_molt_env_get = cast(Callable[..., object], _require_builtin_intrinsic("molt_env_get"))
-_molt_env_snapshot = cast(
-    Callable[[], object], _require_builtin_intrinsic("molt_env_snapshot")
-)
-_molt_errno_constants = cast(
-    Callable[[], tuple[dict[str, int], dict[int, str]]],
-    _require_builtin_intrinsic("molt_errno_constants"),
-)
-_molt_path_exists = cast(
-    Callable[[object], bool],
-    _require_builtin_intrinsic("molt_path_exists"),
-)
-_molt_path_listdir = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_path_listdir"),
-)
-_molt_path_mkdir = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_path_mkdir"),
-)
-_molt_path_unlink = cast(
-    Callable[[object], None],
-    _require_builtin_intrinsic("molt_path_unlink"),
-)
-_molt_path_rmdir = cast(
-    Callable[[object], None],
-    _require_builtin_intrinsic("molt_path_rmdir"),
-)
-_molt_path_chmod = cast(
-    Callable[[object, object], None],
-    _require_builtin_intrinsic("molt_path_chmod"),
-)
-_molt_os_close = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_os_close")
-)
-_molt_os_dup = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_os_dup")
-)
-_molt_os_get_inheritable = cast(
-    Callable[[object], object],
-    _require_builtin_intrinsic("molt_os_get_inheritable"),
-)
-_molt_os_set_inheritable = cast(
-    Callable[[object, object], object],
-    _require_builtin_intrinsic("molt_os_set_inheritable"),
-)
-_molt_os_urandom = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_os_urandom")
-)
-_molt_math_log = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_log")
-)
-_molt_math_log2 = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_log2")
-)
-_molt_math_exp = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_exp")
-)
-_molt_math_sin = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_sin")
-)
-_molt_math_cos = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_cos")
-)
-_molt_math_acos = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_acos")
-)
-_molt_math_lgamma = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_math_lgamma")
-)
-_molt_struct_pack = cast(
-    Callable[[object, object], object], _require_builtin_intrinsic("molt_struct_pack")
-)
-_molt_struct_unpack = cast(
-    Callable[[object, object], object], _require_builtin_intrinsic("molt_struct_unpack")
-)
-_molt_struct_calcsize = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_struct_calcsize")
-)
-_molt_codecs_decode = cast(
-    Callable[[object, object, object], object],
-    _require_builtin_intrinsic("molt_codecs_decode"),
-)
-_molt_codecs_encode = cast(
-    Callable[[object, object, object], object],
-    _require_builtin_intrinsic("molt_codecs_encode"),
-)
-_molt_deflate_raw = cast(
-    Callable[[object, object], object], _require_builtin_intrinsic("molt_deflate_raw")
-)
-_molt_inflate_raw = cast(
-    Callable[[object], object], _require_builtin_intrinsic("molt_inflate_raw")
-)
+_molt_getargv = _require_builtin_intrinsic("molt_getargv")
+_molt_getframe = _require_builtin_intrinsic("molt_getframe")
+_molt_trace_enter_slot = _require_builtin_intrinsic("molt_trace_enter_slot")
+_molt_trace_exit = _require_builtin_intrinsic("molt_trace_exit")
+_molt_getrecursionlimit = _require_builtin_intrinsic("molt_getrecursionlimit")
+_molt_setrecursionlimit = _require_builtin_intrinsic("molt_setrecursionlimit")
+_molt_sys_version_info = _require_builtin_intrinsic("molt_sys_version_info")
+_molt_sys_version = _require_builtin_intrinsic("molt_sys_version")
+_molt_sys_stdin = _require_builtin_intrinsic("molt_sys_stdin")
+_molt_sys_stdout = _require_builtin_intrinsic("molt_sys_stdout")
+_molt_sys_stderr = _require_builtin_intrinsic("molt_sys_stderr")
+_molt_exception_last = _require_builtin_intrinsic("molt_exception_last")
+_molt_exception_active = _require_builtin_intrinsic("molt_exception_active")
+_molt_asyncgen_hooks_get = _require_builtin_intrinsic("molt_asyncgen_hooks_get")
+_molt_asyncgen_hooks_set = _require_builtin_intrinsic("molt_asyncgen_hooks_set")
+_molt_asyncgen_locals = _require_builtin_intrinsic("molt_asyncgen_locals")
+_molt_module_new = _require_builtin_intrinsic("molt_module_new")
+_molt_function_set_builtin = _require_builtin_intrinsic("molt_function_set_builtin")
+_molt_function_set_builtin(compile)
+_molt_function_set_builtin(input)
+_molt_function_set_builtin(breakpoint)
+_molt_class_new = _require_builtin_intrinsic("molt_class_new")
+_molt_class_set_base = _require_builtin_intrinsic("molt_class_set_base")
+_molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_name")
+_molt_os_name = _require_builtin_intrinsic("molt_os_name")
+_molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
+_molt_time_monotonic = _require_builtin_intrinsic("molt_time_monotonic")
+_molt_time_monotonic_ns = _require_builtin_intrinsic("molt_time_monotonic_ns")
+_molt_time_time = _require_builtin_intrinsic("molt_time_time")
+_molt_time_time_ns = _require_builtin_intrinsic("molt_time_time_ns")
+_molt_getpid = _require_builtin_intrinsic("molt_getpid")
+_molt_getcwd = _require_builtin_intrinsic("molt_getcwd")
+_molt_env_get = _require_builtin_intrinsic("molt_env_get")
+_molt_env_snapshot = _require_builtin_intrinsic("molt_env_snapshot")
+_molt_errno_constants = _require_builtin_intrinsic("molt_errno_constants")
+_molt_path_exists = _require_builtin_intrinsic("molt_path_exists")
+_molt_path_listdir = _require_builtin_intrinsic("molt_path_listdir")
+_molt_path_mkdir = _require_builtin_intrinsic("molt_path_mkdir")
+_molt_path_unlink = _require_builtin_intrinsic("molt_path_unlink")
+_molt_path_rmdir = _require_builtin_intrinsic("molt_path_rmdir")
+_molt_path_chmod = _require_builtin_intrinsic("molt_path_chmod")
+_molt_os_close = _require_builtin_intrinsic("molt_os_close")
+_molt_os_dup = _require_builtin_intrinsic("molt_os_dup")
+_molt_os_get_inheritable = _require_builtin_intrinsic("molt_os_get_inheritable")
+_molt_os_set_inheritable = _require_builtin_intrinsic("molt_os_set_inheritable")
+_molt_os_urandom = _require_builtin_intrinsic("molt_os_urandom")
+_molt_math_log = _require_builtin_intrinsic("molt_math_log")
+_molt_math_log2 = _require_builtin_intrinsic("molt_math_log2")
+_molt_math_exp = _require_builtin_intrinsic("molt_math_exp")
+_molt_math_sin = _require_builtin_intrinsic("molt_math_sin")
+_molt_math_cos = _require_builtin_intrinsic("molt_math_cos")
+_molt_math_acos = _require_builtin_intrinsic("molt_math_acos")
+_molt_math_lgamma = _require_builtin_intrinsic("molt_math_lgamma")
+_molt_struct_pack = _require_builtin_intrinsic("molt_struct_pack")
+_molt_struct_unpack = _require_builtin_intrinsic("molt_struct_unpack")
+_molt_struct_calcsize = _require_builtin_intrinsic("molt_struct_calcsize")
+_molt_codecs_decode = _require_builtin_intrinsic("molt_codecs_decode")
+_molt_codecs_encode = _require_builtin_intrinsic("molt_codecs_encode")
+_molt_deflate_raw = _require_builtin_intrinsic("molt_deflate_raw")
+_molt_inflate_raw = _require_builtin_intrinsic("molt_inflate_raw")

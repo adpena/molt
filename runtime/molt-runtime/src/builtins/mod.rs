@@ -28,6 +28,7 @@ pub(crate) mod numbers;
 pub(crate) mod operator;
 pub(crate) mod platform;
 pub(crate) mod select;
+pub(crate) mod sitebuiltins;
 pub(crate) mod strings;
 pub(crate) mod structs;
 pub(crate) mod type_ops;

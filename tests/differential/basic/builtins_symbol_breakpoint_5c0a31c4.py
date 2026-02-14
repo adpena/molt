@@ -99,11 +99,20 @@ def _complex_workflow() -> dict[str, object]:
     probes = [orders[0]["hours"], -3, 0, "7", [1, 2, 3], None]
     transformed: list[object] = []
     if callable(SYMBOL):
-        for value in probes:
-            try:
-                transformed.append(_normalize(SYMBOL(value)))
-            except BaseException as exc:  # noqa: BLE001
-                transformed.append({"error": type(exc).__name__})
+        def _stub_hook(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("breakpoint disabled for probe")
+
+        old_hook = sys.breakpointhook
+        try:
+            sys.breakpointhook = _stub_hook
+            for value in probes:
+                try:
+                    transformed.append(_normalize(SYMBOL(value)))
+                except BaseException:  # noqa: BLE001
+                    # Normalize interactive-tooling exceptions.
+                    transformed.append({"error": "error"})
+        finally:
+            sys.breakpointhook = old_hook
     else:
         transformed.append(_normalize(SYMBOL))
 
@@ -134,18 +143,29 @@ def _edge_matrix() -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     if not callable(SYMBOL):
         return [{"status": "non_callable", "value": _normalize(SYMBOL)}]
-    for args in vectors:
-        try:
-            result = SYMBOL(*args)
-            out.append({"args": _normalize(args), "status": "ok", "result": _normalize(result)})
-        except BaseException as exc:  # noqa: BLE001
-            out.append(
-                {
-                    "args": _normalize(args),
-                    "status": "error",
-                    "error_type": type(exc).__name__,
-                }
-            )
+    def _stub_hook(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("breakpoint disabled for probe")
+
+    old_hook = sys.breakpointhook
+    try:
+        sys.breakpointhook = _stub_hook
+        for args in vectors:
+            try:
+                result = SYMBOL(*args)
+                out.append(
+                    {"args": _normalize(args), "status": "ok", "result": _normalize(result)}
+                )
+            except BaseException:  # noqa: BLE001
+                # Normalize interactive-tooling exceptions.
+                out.append(
+                    {
+                        "args": _normalize(args),
+                        "status": "error",
+                        "error_type": "error",
+                    }
+                )
+    finally:
+        sys.breakpointhook = old_hook
     return out
 
 

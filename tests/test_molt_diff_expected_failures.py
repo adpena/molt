@@ -170,6 +170,26 @@ def test_rss_display_status_matches_absolute_and_repo_relative_paths() -> None:
     assert resolved == "pass"
 
 
+def test_rss_display_status_normalizes_raw_run_failed_without_lookup() -> None:
+    module = _load_diff_module()
+    entry = {
+        "file": "tests/differential/stdlib/zipimport_basic.py",
+        "status": "run_failed",
+    }
+    resolved = module._rss_display_status(entry, {})
+    assert resolved == "fail"
+
+
+def test_rss_display_status_normalizes_raw_ok_without_lookup() -> None:
+    module = _load_diff_module()
+    entry = {
+        "file": "tests/differential/stdlib/zipimport_basic.py",
+        "status": "ok",
+    }
+    resolved = module._rss_display_status(entry, {})
+    assert resolved == "pass"
+
+
 def test_stderr_traceback_mode_tolerates_frame_path_differences() -> None:
     module = _load_diff_module()
     cp_err = (

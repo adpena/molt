@@ -2528,7 +2528,19 @@ def _rss_display_status(
                 return resolved
     raw = entry.get("status")
     if isinstance(raw, str):
-        return raw
+        normalized = raw.strip().lower()
+        if normalized in {"ok", "build_only_ok", "pass"}:
+            return "pass"
+        if normalized in {"skip", "skipped"}:
+            return "skip"
+        if normalized == "oom":
+            return "oom"
+        # RSS event statuses are runtime/build telemetry details. If we cannot
+        # resolve a final diff status from status_by_path, present any
+        # non-pass/non-skip raw status as fail to avoid misleading artifacts
+        # like `run_failed` in otherwise green summaries.
+        if normalized:
+            return "fail"
     return ""
 
 

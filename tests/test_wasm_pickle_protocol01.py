@@ -51,5 +51,5 @@ def test_wasm_pickle_protocol01_roundtrip(tmp_path: Path) -> None:
     run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == (
-        "0 1 9 2 True 4 6 b'abc' bytearray\n" "1 1 9 2 True 4 6 b'abc' bytearray"
+        "0 1 9 2 True 4 6 b'abc' bytearray\n1 1 9 2 True 4 6 b'abc' bytearray"
     )

@@ -12375,6 +12375,23 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
                 return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
             }
+            if matches!(
+                std::env::var("MOLT_TRACE_TYPE_CALL").ok().as_deref(),
+                Some("1")
+            ) {
+                let class_name =
+                    string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr))).unwrap_or_default();
+                let builtins = builtin_classes(_py);
+                let kind = if cls_bits == builtins.type_obj {
+                    "builtins.type"
+                } else {
+                    "type"
+                };
+                eprintln!(
+                    "molt direct: type.__call__ invoked kind={} name={} cls_bits={} (no builder args forwarded)",
+                    kind, class_name, cls_bits
+                );
+            }
             call_class_init_with_args(_py, cls_ptr, &[])
         }
     })
@@ -12948,6 +12965,183 @@ pub extern "C" fn molt_print_builtin(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sys_name_bits = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
+        if obj_from_bits(sys_name_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys module name missing");
+        }
+        let sys_bits = molt_module_cache_get(sys_name_bits);
+        if obj_from_bits(sys_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys module unavailable");
+        }
+
+        let stdout_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+        let stdout_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, sys_bits);
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(stdout_bits).is_none() {
+            dec_ref_bits(_py, sys_bits);
+            return raise_exception::<_>(_py, "RuntimeError", "sys.stdout unavailable");
+        }
+
+        let prompt_str_bits = molt_str_from_obj(prompt_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, stdout_bits);
+            dec_ref_bits(_py, sys_bits);
+            return MoltObject::none().bits();
+        }
+
+        let mut stdout_is_handle = false;
+        if let Some(ptr) = obj_from_bits(stdout_bits).as_ptr() {
+            unsafe {
+                stdout_is_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            }
+        }
+
+        if stdout_is_handle {
+            let _ = molt_file_write(stdout_bits, prompt_str_bits);
+        } else {
+            let write_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let write_method_bits = molt_get_attr_name(stdout_bits, write_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+            let write_res_bits = unsafe { call_callable1(_py, write_method_bits, prompt_str_bits) };
+            dec_ref_bits(_py, write_method_bits);
+            dec_ref_bits(_py, write_res_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+        }
+
+        // Match CPython: flush stdout after writing the prompt.
+        if stdout_is_handle {
+            let _ = molt_file_flush(stdout_bits);
+        } else {
+            let missing = missing_bits(_py);
+            let flush_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let flush_bits = molt_getattr_builtin(stdout_bits, flush_name_bits, missing);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+            if flush_bits != missing {
+                let callable_bits = molt_is_callable(flush_bits);
+                let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
+                dec_ref_bits(_py, callable_bits);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, flush_bits);
+                    dec_ref_bits(_py, prompt_str_bits);
+                    dec_ref_bits(_py, stdout_bits);
+                    dec_ref_bits(_py, sys_bits);
+                    return MoltObject::none().bits();
+                }
+                if is_callable {
+                    let flush_res_bits = unsafe { call_callable0(_py, flush_bits) };
+                    dec_ref_bits(_py, flush_res_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, flush_bits);
+                        dec_ref_bits(_py, prompt_str_bits);
+                        dec_ref_bits(_py, stdout_bits);
+                        dec_ref_bits(_py, sys_bits);
+                        return MoltObject::none().bits();
+                    }
+                }
+                dec_ref_bits(_py, flush_bits);
+            }
+        }
+
+        dec_ref_bits(_py, prompt_str_bits);
+        dec_ref_bits(_py, stdout_bits);
+
+        let stdin_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.stdin_name, b"stdin");
+        let stdin_bits = molt_module_get_attr(sys_bits, stdin_name_bits);
+        dec_ref_bits(_py, sys_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(stdin_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys.stdin unavailable");
+        }
+
+        let mut stdin_is_handle = false;
+        if let Some(ptr) = obj_from_bits(stdin_bits).as_ptr() {
+            unsafe {
+                stdin_is_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            }
+        }
+        let line_bits = if stdin_is_handle {
+            molt_file_readline(stdin_bits, MoltObject::from_int(-1).bits())
+        } else {
+            let readline_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.readline_name,
+                b"readline",
+            );
+            let method_bits = molt_get_attr_name(stdin_bits, readline_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, stdin_bits);
+                return MoltObject::none().bits();
+            }
+            let out_bits = unsafe { call_callable0(_py, method_bits) };
+            dec_ref_bits(_py, method_bits);
+            out_bits
+        };
+        dec_ref_bits(_py, stdin_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        let Some(line_ptr) = obj_from_bits(line_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+        };
+        unsafe {
+            if object_type_id(line_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
+            if bytes.is_empty() {
+                dec_ref_bits(_py, line_bits);
+                return raise_exception::<_>(_py, "EOFError", "");
+            }
+            let mut end = bytes.len();
+            if bytes[end - 1] == b'\n' {
+                end -= 1;
+                if end > 0 && bytes[end - 1] == b'\r' {
+                    end -= 1;
+                }
+            } else if bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            if end == bytes.len() {
+                return line_bits;
+            }
+            let out_ptr = alloc_string(_py, &bytes[..end]);
+            dec_ref_bits(_py, line_bits);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { molt_super_new(type_bits, obj_bits) })
 }
@@ -13143,7 +13337,13 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                 }
             }
         }
-        MoltObject::none().bits()
+        let slice_bits = molt_slice_new(start_bits, end_bits, MoltObject::none().bits());
+        if obj_from_bits(slice_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let res_bits = molt_index(obj_bits, slice_bits);
+        dec_ref_bits(_py, slice_bits);
+        res_bits
     })
 }
 
@@ -25493,7 +25693,8 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                 }
                 if type_id == TYPE_ID_TYPE {
                     if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__") {
-                        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
+                        if let Some(call_bits) =
+                            class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
                         {
                             dec_ref_bits(_py, name_bits);
                             exception_stack_push();
@@ -25525,8 +25726,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     dec_ref_bits(_py, name_bits);
                 }
             }
+            let msg = if unsafe { object_type_id(ptr) } == TYPE_ID_TYPE {
+                let class_name =
+                    unsafe { string_obj_to_owned(obj_from_bits(class_name_bits(ptr))) }
+                        .unwrap_or_else(|| "object".to_string());
+                format!("type '{}' is not subscriptable", class_name)
+            } else {
+                format!("'{}' object is not subscriptable", type_name(_py, obj))
+            };
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        MoltObject::none().bits()
+        let msg = format!("'{}' object is not subscriptable", type_name(_py, obj));
+        raise_exception::<_>(_py, "TypeError", &msg)
     })
 }
 
@@ -26068,6 +26279,48 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
             }
         }
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let dict_obj = obj_from_bits(dict_bits);
+        let key_obj = obj_from_bits(key_bits);
+        if dict_obj.as_ptr().is_none() || key_obj.as_ptr().is_none() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let Some(container_ptr) = dict_obj.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, container_ptr) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("'{}' object does not support item assignment", type_name(_py, dict_obj)),
+                );
+            };
+            let Some(real_dict_ptr) = obj_from_bits(real_dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(real_dict_ptr) != TYPE_ID_DICT {
+                return MoltObject::none().bits();
+            }
+            let missing = missing_bits(_py);
+            if val_bits == missing {
+                let _ = dict_del_in_place(_py, real_dict_ptr, key_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return dict_bits;
+            }
+            dict_set_in_place(_py, real_dict_ptr, key_bits, val_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            dict_bits
+        }
     })
 }
 

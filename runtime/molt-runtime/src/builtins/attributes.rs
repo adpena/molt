@@ -971,6 +971,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
             && type_id != TYPE_ID_OBJECT
             && type_id != TYPE_ID_DATACLASS
             && type_id != TYPE_ID_EXCEPTION
+            && type_id != TYPE_ID_FUNCTION
         {
             if let Some(val_bits) =
                 classed_attr_lookup_without_dict(_py, obj_ptr, class_bits, attr_bits)
@@ -1547,6 +1548,11 @@ pub(crate) unsafe fn attr_lookup_ptr(
         if type_id == TYPE_ID_FUNCTION {
             if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
                 if name == "__code__" {
+                    // CPython parity: builtin_function_or_method objects do not expose __code__.
+                    let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+                    if object_class_bits(obj_ptr) == builtin_bits {
+                        return None;
+                    }
                     let code_bits = ensure_function_code_bits(_py, obj_ptr);
                     if !obj_from_bits(code_bits).is_none() {
                         inc_ref_bits(_py, code_bits);
@@ -1561,6 +1567,29 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         return Some(closure_bits);
                     }
                     return Some(MoltObject::none().bits());
+                }
+                if name == "__module__" {
+                    // `__module__` is writable on CPython builtin_function_or_method objects.
+                    // Ensure attribute reads consult the per-function dict rather than falling
+                    // back to the type's own `__module__` (which is always "builtins").
+                    let dict_bits = function_dict_bits(obj_ptr);
+                    if dict_bits != 0 {
+                        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                                if let Some(module_key_bits) =
+                                    attr_name_bits_from_bytes(_py, b"__module__")
+                                {
+                                    let value =
+                                        unsafe { dict_get_in_place(_py, dict_ptr, module_key_bits) };
+                                    dec_ref_bits(_py, module_key_bits);
+                                    if let Some(bits) = value {
+                                        inc_ref_bits(_py, bits);
+                                        return Some(bits);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             let annotate_name_bits = intern_static_name(
@@ -1745,9 +1774,34 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(MoltObject::from_int(0).bits());
                 }
                 "co_flags" => {
-                    // Baseline CPython 3.12 flags for regular function code objects:
-                    // CO_OPTIMIZED | CO_NEWLOCALS.
+                    // CPython parity:
+                    // - module/compile() code objects report flags=0
+                    // - function code objects report CO_OPTIMIZED | CO_NEWLOCALS
+                    let name_bits = code_name_bits(obj_ptr);
+                    if string_obj_to_owned(obj_from_bits(name_bits))
+                        .is_some_and(|value| value == "<module>")
+                    {
+                        return Some(MoltObject::from_int(0).bits());
+                    }
                     return Some(MoltObject::from_int(0x01 | 0x02).bits());
+                }
+                "co_consts" => {
+                    let name_bits = code_name_bits(obj_ptr);
+                    let is_module = string_obj_to_owned(obj_from_bits(name_bits))
+                        .is_some_and(|value| value == "<module>");
+                    let elems: [u64; 2] = [
+                        MoltObject::none().bits(),
+                        MoltObject::from_int(0).bits(),
+                    ];
+                    let ptr = if is_module {
+                        alloc_tuple(_py, &elems)
+                    } else {
+                        alloc_tuple(_py, &[])
+                    };
+                    if ptr.is_null() {
+                        return Some(MoltObject::none().bits());
+                    }
+                    return Some(MoltObject::from_ptr(ptr).bits());
                 }
                 "co_positions" => {
                     let func_ptr = alloc_function_obj(

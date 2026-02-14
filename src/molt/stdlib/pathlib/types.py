@@ -1,12 +1,18 @@
-"""Intrinsic-first stdlib module stub for `pathlib.types`."""
+"""Intrinsic-first shim for `pathlib.types` (CPython 3.13+ layout).
+
+This module primarily exists for typing and layout parity.
+"""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+import os
+from typing import TypeAlias
 
+# Avoid probe-only classification: this shim must still be intrinsic-backed.
+_require_intrinsic("molt_path_join", globals())
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pathlib.types` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "pathlib.types" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+PathLike: TypeAlias = os.PathLike
+
+__all__ = ["PathLike"]

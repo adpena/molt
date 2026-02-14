@@ -297,9 +297,9 @@ def _signature_bind_bound_method(sig: Signature, method_obj: Any) -> Signature:
 
 def signature(obj: Any) -> Signature:
     sig = getattr(obj, "__signature__", None)
+    if sig is not None and not isinstance(sig, Signature):
+        raise TypeError(f"unexpected object {sig!r} in __signature__ attribute")
     if isinstance(sig, Signature):
-        return sig
-    if sig is not None:
         return sig
     intrinsic_sig = _signature_from_intrinsic(obj)
     if intrinsic_sig is not None:
@@ -309,9 +309,15 @@ def signature(obj: Any) -> Signature:
         fn_sig = getattr(method_fn, "__signature__", None)
         if isinstance(fn_sig, Signature):
             return _signature_bind_bound_method(fn_sig, obj)
-        if fn_sig is not None:
+        if fn_sig is not None and not isinstance(fn_sig, str):
             return _signature_bind_bound_method(fn_sig, obj)
         intrinsic_fn_sig = _signature_from_intrinsic(method_fn)
         if intrinsic_fn_sig is not None:
             return _signature_bind_bound_method(intrinsic_fn_sig, obj)
-    raise TypeError("inspect.signature cannot introspect this object")
+    if not callable(obj):
+        raise TypeError(f"{obj!r} is not a callable object")
+    if isinstance(obj, type):
+        if obj is type:
+            raise ValueError(f"no signature found for builtin {obj!r}")
+        raise ValueError(f"no signature found for builtin type {obj!r}")
+    raise ValueError(f"no signature found for {obj!r}")

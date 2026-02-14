@@ -1,27 +1,24 @@
-"""Purpose: regress builtin name resolution for locals/__import__ and builtins exports."""
+"""Purpose: differential coverage for builtin name resolution (locals/globals/__import__)."""
 
-imp = __import__
-print(callable(imp))
-print(imp is __import__)
-print(imp("builtins").__name__)
-
-loc_fn = locals
-print(callable(loc_fn))
+import builtins
 
 
-def f():
-    alias = locals
-    d = alias()
-    print(isinstance(d, dict))
-    print(alias is __import__("builtins").locals)
+def snapshot_semantics() -> tuple[bool, bool]:
+    d = locals()
+    after = 1
+    # CPython: locals() returns a snapshot dict for function frames; it should not
+    # acquire later locals by mutation.
+    return ("after" in d, "after" in locals())
 
 
-f()
+def main() -> list[object]:
+    return [
+        locals is builtins.locals,
+        globals is builtins.globals,
+        __import__ is builtins.__import__,
+        __import__("builtins") is builtins,
+        snapshot_semantics(),
+    ]
 
-builtins = __import__("builtins")
 
-print(hasattr(builtins, "globals"))
-print(hasattr(builtins, "locals"))
-print(isinstance(builtins.globals(), dict))
-print("__name__" in builtins.globals())
-print(isinstance(builtins.locals(), dict))
+print(main())

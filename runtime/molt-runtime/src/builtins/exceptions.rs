@@ -3176,7 +3176,11 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
         0
     };
     FRAME_STACK.with(|stack| {
-        stack.borrow_mut().push(FrameEntry { code_bits, line });
+        stack.borrow_mut().push(FrameEntry {
+            code_bits,
+            line,
+            locals_bits: 0,
+        });
     });
 }
 
@@ -3195,8 +3199,55 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
             if entry.code_bits != 0 {
                 dec_ref_bits(_py, entry.code_bits);
             }
+            if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
+                dec_ref_bits(_py, entry.locals_bits);
+            }
         }
     });
+}
+
+pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
+    crate::gil_assert();
+    FRAME_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(entry) = stack.last_mut() else {
+            return;
+        };
+        // Replace and manage refcounts. 0 means "unset".
+        let prev = entry.locals_bits;
+        entry.locals_bits = 0;
+        if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+            inc_ref_bits(_py, dict_bits);
+            entry.locals_bits = dict_bits;
+        }
+        if prev != 0 && !obj_from_bits(prev).is_none() {
+            dec_ref_bits(_py, prev);
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let debug = std::env::var("MOLT_DEBUG_LOCALS").as_deref() == Ok("1");
+        if debug {
+            let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {
+                let stack = stack.borrow();
+                let depth = stack.len();
+                let (locals, code) = stack
+                    .last()
+                    .map(|e| (e.locals_bits, e.code_bits))
+                    .unwrap_or((0, 0));
+                (depth, locals, code)
+            });
+            eprintln!(
+                "molt debug locals frame_locals_set depth={} prev_locals=0x{:016x} code=0x{:016x} new=0x{:016x}",
+                depth, top_locals, top_code, dict_bits
+            );
+        }
+        frame_stack_set_locals_dict(_py, dict_bits);
+        MoltObject::from_bool(true).bits()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -3641,6 +3692,118 @@ pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
             }
         }
         MoltObject::none().bits()
+    })
+}
+
+fn empty_dict_bits(_py: &PyToken<'_>) -> u64 {
+    unsafe {
+        let ptr = alloc_dict_with_pairs(_py, &[]);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    }
+}
+
+unsafe fn code_is_molt_builtin(code_bits: u64) -> bool {
+    unsafe {
+        if code_bits == 0 {
+            return false;
+        }
+        let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+            return false;
+        };
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            return false;
+        }
+        let filename_bits = code_filename_bits(code_ptr);
+        string_obj_to_owned(obj_from_bits(filename_bits))
+            .is_some_and(|name| name == "<molt-builtin>")
+    }
+}
+
+fn top_user_frame_entry() -> Option<FrameEntry> {
+    FRAME_STACK.with(|stack| {
+        let stack = stack.borrow();
+        for entry in stack.iter().rev() {
+            unsafe {
+                if !code_is_molt_builtin(entry.code_bits) {
+                    return Some(*entry);
+                }
+            }
+        }
+        None
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_locals_builtin() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let debug = std::env::var("MOLT_DEBUG_LOCALS").as_deref() == Ok("1");
+        let entry = top_user_frame_entry();
+        if let Some(entry) = entry {
+            let bits = entry.locals_bits;
+            if bits != 0 && !obj_from_bits(bits).is_none() {
+                // CPython behavior: for function frames, `locals()` returns a snapshot dict,
+                // not the live backing store. (Module frames use f_locals == f_globals.)
+                unsafe {
+                    if !code_is_module(entry.code_bits) {
+                        return crate::molt_dict_copy(bits);
+                    }
+                }
+                inc_ref_bits(_py, bits);
+                return bits;
+            }
+        }
+        if debug {
+            let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {
+                let stack = stack.borrow();
+                let depth = stack.len();
+                let (locals, code) = stack
+                    .last()
+                    .map(|e| (e.locals_bits, e.code_bits))
+                    .unwrap_or((0, 0));
+                (depth, locals, code)
+            });
+            eprintln!(
+                "molt debug locals locals_builtin fallback depth={} locals=0x{:016x} code=0x{:016x}",
+                depth, top_locals, top_code
+            );
+        }
+        // Fallback: for module frames, CPython uses f_locals == f_globals.
+        if let Some(entry) = entry {
+            unsafe {
+                if let Some(field) = frame_globals_field_for_code(_py, entry.code_bits) {
+                    let bits = field.bits;
+                    if !field.owned && !obj_from_bits(bits).is_none() {
+                        inc_ref_bits(_py, bits);
+                    }
+                    return bits;
+                }
+            }
+        }
+        empty_dict_bits(_py)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_globals_builtin() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let entry = top_user_frame_entry();
+        let Some(entry) = entry else {
+            return empty_dict_bits(_py);
+        };
+        unsafe {
+            if let Some(field) = frame_globals_field_for_code(_py, entry.code_bits) {
+                let bits = field.bits;
+                if !field.owned && !obj_from_bits(bits).is_none() {
+                    inc_ref_bits(_py, bits);
+                }
+                return bits;
+            }
+        }
+        empty_dict_bits(_py)
     })
 }
 

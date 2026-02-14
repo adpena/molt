@@ -10,7 +10,6 @@ Summary
 
 Files touched (uncommitted)
 - CHECKPOINT.md
-- docs/AGENT_LOCKS.md
 - docs/spec/STATUS.md
 - ROADMAP.md
 - tools/wasm_link.py

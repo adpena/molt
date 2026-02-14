@@ -28,6 +28,10 @@ __all__ = [
     "inet_pton",
     "inet_ntoa",
     "inet_ntop",
+    "htons",
+    "ntohs",
+    "htonl",
+    "ntohl",
     "getdefaulttimeout",
     "setdefaulttimeout",
     "error",
@@ -104,6 +108,10 @@ _molt_socket_getservbyname = _require_intrinsic("molt_socket_getservbyname", glo
 _molt_socket_getservbyport = _require_intrinsic("molt_socket_getservbyport", globals())
 _molt_socket_inet_pton = _require_intrinsic("molt_socket_inet_pton", globals())
 _molt_socket_inet_ntop = _require_intrinsic("molt_socket_inet_ntop", globals())
+_molt_socket_htons = _require_intrinsic("molt_socket_htons", globals())
+_molt_socket_ntohs = _require_intrinsic("molt_socket_ntohs", globals())
+_molt_socket_htonl = _require_intrinsic("molt_socket_htonl", globals())
+_molt_socket_ntohl = _require_intrinsic("molt_socket_ntohl", globals())
 
 
 def _init_constants() -> dict[str, int]:
@@ -727,6 +735,22 @@ def inet_ntop(family: int, packed: bytes) -> str:
     return _require_socket_intrinsic(_molt_socket_inet_ntop, "inet_ntop")(
         int(family), packed
     )
+
+
+def htons(x: int) -> int:
+    return int(_require_socket_intrinsic(_molt_socket_htons, "htons")(x))
+
+
+def ntohs(x: int) -> int:
+    return int(_require_socket_intrinsic(_molt_socket_ntohs, "ntohs")(x))
+
+
+def htonl(x: int) -> int:
+    return int(_require_socket_intrinsic(_molt_socket_htonl, "htonl")(x))
+
+
+def ntohl(x: int) -> int:
+    return int(_require_socket_intrinsic(_molt_socket_ntohl, "ntohl")(x))
 
 
 def create_connection(

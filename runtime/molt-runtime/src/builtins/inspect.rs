@@ -428,6 +428,403 @@ fn signature_payload_from_code(
     Ok(Some(out))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextParamKind {
+    PositionalOrKeyword,
+    KeywordOnly,
+}
+
+enum TextDefaultValue {
+    None,
+    Bool(bool),
+    Ellipsis,
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+struct TextParamSpec {
+    name: String,
+    kind: TextParamKind,
+    default: Option<TextDefaultValue>,
+}
+
+#[derive(Default)]
+struct ParsedTextSignature {
+    params: Vec<TextParamSpec>,
+    vararg: Option<String>,
+    varkw: Option<String>,
+    posonly_cut: usize,
+}
+
+fn split_text_signature_tokens(payload: &str) -> Option<Vec<String>> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut depth: i64 = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in payload.chars() {
+        if let Some(active_quote) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            current.push(ch);
+            continue;
+        }
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth = (depth - 1).max(0);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let token = current.trim();
+                if !token.is_empty() {
+                    tokens.push(token.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    let tail = current.trim();
+    if !tail.is_empty() {
+        tokens.push(tail.to_string());
+    }
+    Some(tokens)
+}
+
+fn parse_text_default(value: &str) -> Option<TextDefaultValue> {
+    let trimmed = value.trim();
+    match trimmed {
+        "None" => return Some(TextDefaultValue::None),
+        "True" => return Some(TextDefaultValue::Bool(true)),
+        "False" => return Some(TextDefaultValue::Bool(false)),
+        "..." => return Some(TextDefaultValue::Ellipsis),
+        _ => {}
+    }
+
+    if let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return Some(TextDefaultValue::String(inner.to_string()));
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return Some(TextDefaultValue::String(inner.to_string()));
+    }
+
+    if trimmed.chars().any(|ch| matches!(ch, '.' | 'e' | 'E')) {
+        if let Ok(value) = trimmed.parse::<f64>() {
+            return Some(TextDefaultValue::Float(value));
+        }
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Some(TextDefaultValue::Int(value));
+    }
+    None
+}
+
+fn parse_text_signature(text: &str) -> Option<ParsedTextSignature> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len().saturating_sub(1)].trim();
+    if inner.is_empty() {
+        return Some(ParsedTextSignature::default());
+    }
+
+    let tokens = split_text_signature_tokens(inner)?;
+    let mut parsed = ParsedTextSignature::default();
+    let mut saw_posonly_marker = false;
+    let mut kwonly = false;
+    for token in tokens {
+        if token == "/" {
+            if saw_posonly_marker {
+                return None;
+            }
+            saw_posonly_marker = true;
+            parsed.posonly_cut = parsed.params.len();
+            continue;
+        }
+        if token == "*" {
+            kwonly = true;
+            continue;
+        }
+        if let Some(name) = token.strip_prefix("**") {
+            let normalized = name.trim();
+            if normalized.is_empty() {
+                return None;
+            }
+            parsed.varkw = Some(normalized.to_string());
+            continue;
+        }
+        if let Some(name) = token.strip_prefix('*') {
+            let normalized = name.trim();
+            if normalized.is_empty() {
+                return None;
+            }
+            parsed.vararg = Some(normalized.to_string());
+            kwonly = true;
+            continue;
+        }
+
+        let (name, default) = if let Some((head, tail)) = token.split_once('=') {
+            (head.trim(), parse_text_default(tail))
+        } else {
+            (token.trim(), None)
+        };
+        if name.is_empty() {
+            return None;
+        }
+        let kind = if kwonly {
+            TextParamKind::KeywordOnly
+        } else {
+            TextParamKind::PositionalOrKeyword
+        };
+        parsed.params.push(TextParamSpec {
+            name: name.to_string(),
+            kind,
+            default,
+        });
+    }
+    Some(parsed)
+}
+
+fn alloc_owned_string_bits(
+    _py: &crate::PyToken<'_>,
+    value: &str,
+    owned: &mut Vec<u64>,
+) -> Option<u64> {
+    let ptr = alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
+fn alloc_owned_tuple_bits(
+    _py: &crate::PyToken<'_>,
+    elems: &[u64],
+    owned: &mut Vec<u64>,
+) -> Option<u64> {
+    let bits = alloc_tuple_bits(_py, elems);
+    if obj_from_bits(bits).is_none() {
+        return None;
+    }
+    owned.push(bits);
+    Some(bits)
+}
+
+fn alloc_owned_dict_bits(
+    _py: &crate::PyToken<'_>,
+    pairs: &[u64],
+    owned: &mut Vec<u64>,
+) -> Option<u64> {
+    let ptr = alloc_dict_with_pairs(_py, pairs);
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
+fn default_value_bits(
+    _py: &crate::PyToken<'_>,
+    default: &TextDefaultValue,
+    owned: &mut Vec<u64>,
+) -> Option<u64> {
+    match default {
+        TextDefaultValue::None => Some(MoltObject::none().bits()),
+        TextDefaultValue::Bool(value) => Some(MoltObject::from_bool(*value).bits()),
+        TextDefaultValue::Ellipsis => {
+            let bits = crate::ellipsis_bits(_py);
+            if obj_from_bits(bits).is_none() {
+                None
+            } else {
+                Some(bits)
+            }
+        }
+        TextDefaultValue::Int(value) => Some(int_bits_from_i64(_py, *value)),
+        TextDefaultValue::Float(value) => Some(MoltObject::from_float(*value).bits()),
+        TextDefaultValue::String(value) => alloc_owned_string_bits(_py, value, owned),
+    }
+}
+
+fn signature_payload_from_text_signature(_py: &crate::PyToken<'_>, text: &str) -> Option<u64> {
+    let parsed = parse_text_signature(text)?;
+    let mut owned: Vec<u64> = Vec::new();
+
+    let positional_params: Vec<&TextParamSpec> = parsed
+        .params
+        .iter()
+        .filter(|param| param.kind == TextParamKind::PositionalOrKeyword)
+        .collect();
+    let kwonly_params: Vec<&TextParamSpec> = parsed
+        .params
+        .iter()
+        .filter(|param| param.kind == TextParamKind::KeywordOnly)
+        .collect();
+
+    let mut arg_name_bits: Vec<u64> = Vec::with_capacity(positional_params.len());
+    for param in &positional_params {
+        let Some(bits) = alloc_owned_string_bits(_py, &param.name, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        arg_name_bits.push(bits);
+    }
+    let mut kwonly_name_bits: Vec<u64> = Vec::with_capacity(kwonly_params.len());
+    for param in &kwonly_params {
+        let Some(bits) = alloc_owned_string_bits(_py, &param.name, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        kwonly_name_bits.push(bits);
+    }
+
+    let vararg_bits = if let Some(name) = parsed.vararg.as_deref() {
+        let Some(bits) = alloc_owned_string_bits(_py, name, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        bits
+    } else {
+        MoltObject::none().bits()
+    };
+    let varkw_bits = if let Some(name) = parsed.varkw.as_deref() {
+        let Some(bits) = alloc_owned_string_bits(_py, name, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        bits
+    } else {
+        MoltObject::none().bits()
+    };
+
+    let mut positional_defaults: Vec<Option<u64>> = Vec::with_capacity(positional_params.len());
+    for param in &positional_params {
+        let Some(default) = param.default.as_ref() else {
+            positional_defaults.push(None);
+            continue;
+        };
+        let Some(bits) = default_value_bits(_py, default, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        positional_defaults.push(Some(bits));
+    }
+    let mut defaults_bits_vec: Vec<u64> = Vec::new();
+    if let Some(default_start) = positional_defaults.iter().position(Option::is_some) {
+        if positional_defaults[default_start..]
+            .iter()
+            .any(Option::is_none)
+        {
+            dec_owned_bits(_py, &owned);
+            return None;
+        }
+        defaults_bits_vec.extend(
+            positional_defaults[default_start..]
+                .iter()
+                .filter_map(|value| *value),
+        );
+    }
+
+    let mut kwdefault_pairs: Vec<u64> = Vec::new();
+    for (index, param) in kwonly_params.iter().enumerate() {
+        let Some(default) = param.default.as_ref() else {
+            continue;
+        };
+        let Some(default_bits) = default_value_bits(_py, default, &mut owned) else {
+            dec_owned_bits(_py, &owned);
+            return None;
+        };
+        kwdefault_pairs.push(kwonly_name_bits[index]);
+        kwdefault_pairs.push(default_bits);
+    }
+
+    let Some(arg_names_bits) = alloc_owned_tuple_bits(_py, &arg_name_bits, &mut owned) else {
+        dec_owned_bits(_py, &owned);
+        return None;
+    };
+    let posonly = parsed.posonly_cut.min(positional_params.len()) as i64;
+    let Some(kwonly_names_bits) = alloc_owned_tuple_bits(_py, &kwonly_name_bits, &mut owned) else {
+        dec_owned_bits(_py, &owned);
+        return None;
+    };
+    let Some(defaults_bits) = alloc_owned_tuple_bits(_py, &defaults_bits_vec, &mut owned) else {
+        dec_owned_bits(_py, &owned);
+        return None;
+    };
+    let Some(kwdefaults_bits) = alloc_owned_dict_bits(_py, &kwdefault_pairs, &mut owned) else {
+        dec_owned_bits(_py, &owned);
+        return None;
+    };
+
+    let out = make_signature_payload(
+        _py,
+        arg_names_bits,
+        posonly,
+        kwonly_names_bits,
+        vararg_bits,
+        varkw_bits,
+        defaults_bits,
+        kwdefaults_bits,
+    );
+    dec_owned_bits(_py, &owned);
+    if obj_from_bits(out).is_none() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn signature_payload_from_text_attr(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    attr_name: &[u8],
+) -> Result<Option<u64>, u64> {
+    let Some(attr_bits) = get_attr_optional(_py, obj_bits, attr_name)? else {
+        return Ok(None);
+    };
+    if obj_from_bits(attr_bits).is_none() {
+        return Ok(None);
+    }
+    let Some(text) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
+        dec_ref_bits(_py, attr_bits);
+        return Ok(None);
+    };
+    dec_ref_bits(_py, attr_bits);
+    Ok(signature_payload_from_text_signature(_py, &text))
+}
+
 fn inspect_cleandoc_text(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -522,24 +919,30 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
             }
         }
 
-        let code_bits = match get_attr_optional(_py, obj_bits, b"__code__") {
+        let code_bits_opt = match get_attr_optional(_py, obj_bits, b"__code__") {
             Ok(value) => value,
             Err(err) => return err,
         };
-        let Some(code_bits) = code_bits else {
-            return MoltObject::none().bits();
-        };
-        if obj_from_bits(code_bits).is_none() {
-            return MoltObject::none().bits();
+        if let Some(code_bits) = code_bits_opt {
+            if !obj_from_bits(code_bits).is_none() {
+                let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => MoltObject::none().bits(),
+                    Err(err) => err,
+                };
+                dec_ref_bits(_py, code_bits);
+                if !obj_from_bits(out).is_none() {
+                    return out;
+                }
+            }
         }
 
-        let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
-            Ok(Some(bits)) => bits,
-            Ok(None) => MoltObject::none().bits(),
-            Err(err) => err,
-        };
-        dec_ref_bits(_py, code_bits);
-        out
+        let sig_from_text =
+            match signature_payload_from_text_attr(_py, obj_bits, b"__text_signature__") {
+                Ok(value) => value,
+                Err(err) => return err,
+            };
+        sig_from_text.unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 

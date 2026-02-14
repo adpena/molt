@@ -29,6 +29,17 @@ use crate::{
 };
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_is_string_obj(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        let is_string = obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
+        MoltObject::from_bool(is_string).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -43,6 +54,20 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
         let ptr = alloc_class_obj(_py, name_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
+        }
+        // `class` statements lowered via `molt_class_new` are only used on the
+        // static fast-path where the metaclass is known to be `type`. Ensure the
+        // new class object is an instance of `type` (CPython parity).
+        unsafe {
+            let builtins = builtin_classes(_py);
+            let old_bits = object_class_bits(ptr);
+            if old_bits != builtins.type_obj {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, ptr, builtins.type_obj);
+                inc_ref_bits(_py, builtins.type_obj);
+            }
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -687,6 +712,10 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_set_name = matches!(
+            std::env::var("MOLT_TRACE_SET_NAME").ok().as_deref(),
+            Some("1")
+        );
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "class must be a type object");
@@ -721,6 +750,22 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
                     continue;
                 };
                 if let Some(set_name) = attr_lookup_ptr_allow_missing(_py, val_ptr, set_name_bits) {
+                    if trace_set_name {
+                        let class_name = class_name_for_error(class_bits);
+                        let key = string_obj_to_owned(obj_from_bits(name_bits))
+                            .unwrap_or_else(|| "<non-str>".to_string());
+                        let val_type_id = object_type_id(val_ptr);
+                        let (set_name_type_id, set_name_type) =
+                            if let Some(ptr) = obj_from_bits(set_name).as_ptr() {
+                                (object_type_id(ptr), type_name(_py, obj_from_bits(set_name)))
+                            } else {
+                                (0, type_name(_py, obj_from_bits(set_name)))
+                            };
+                        eprintln!(
+                            "molt set_name: class={} key={} val_type_id={} set_name_type_id={} set_name_type={}",
+                            class_name, key, val_type_id, set_name_type_id, set_name_type,
+                        );
+                    }
                     let _ = call_callable2(_py, set_name, class_bits, name_bits);
                     dec_ref_bits(_py, set_name);
                 }

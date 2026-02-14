@@ -101,6 +101,13 @@ fn alloc_file_handle_with_state(
     if ptr.is_null() {
         return ptr;
     }
+    if class_bits != 0 {
+        // Ensure `type(handle)` and attribute resolution go through the intended IO wrapper class
+        // (TextIOWrapper / Buffered* / FileIO), rather than falling back to `object`.
+        unsafe {
+            object_set_class_bits(_py, ptr, class_bits);
+        }
+    }
     let handle = Box::new(MoltFileHandle {
         state,
         readable,
@@ -150,11 +157,12 @@ fn alloc_file_handle_with_state(
     ptr
 }
 
-fn file_handle_close_ptr(ptr: *mut u8) -> bool {
+pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
     if ptr.is_null() {
         return false;
     }
     unsafe {
+        let debug_close = std::env::var("MOLT_DEBUG_FILE_CLOSE").as_deref() == Ok("1");
         let handle_ptr = file_handle_ptr(ptr);
         if handle_ptr.is_null() {
             return false;
@@ -170,6 +178,12 @@ fn file_handle_close_ptr(ptr: *mut u8) -> bool {
         let backend_state = Arc::clone(&handle.state);
         let mut guard = backend_state.backend.lock().unwrap();
         let had_backend = guard.take().is_some();
+        if debug_close {
+            eprintln!(
+                "molt file_handle_close ptr=0x{:x} closefd={} owns_fd={} had_backend={}",
+                ptr as usize, handle.closefd, handle.owns_fd, had_backend
+            );
+        }
         #[cfg(windows)]
         if had_backend {
             let mut fd_guard = backend_state.crt_fd.lock().unwrap();
@@ -1041,6 +1055,12 @@ fn file_mode_to_flags(mode: &FileMode) -> i32 {
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::fd::FromRawFd;
     if fd < 0 {
+        return None;
+    }
+    // `File::from_raw_fd` will happily wrap an invalid fd; validate upfront so
+    // `open(fd)` matches CPython and raises immediately for EBADF.
+    let rc = unsafe { libc::fcntl(fd as libc::c_int, libc::F_GETFD) };
+    if rc < 0 {
         return None;
     }
     Some(unsafe { std::fs::File::from_raw_fd(fd as i32) })
@@ -3409,6 +3429,8 @@ fn open_impl(
         }
     }
 
+    let debug_open_fd = std::env::var("MOLT_DEBUG_OPEN_FD").as_deref() == Ok("1");
+
     let mode_obj = obj_from_bits(mode_bits);
     if mode_obj.is_none() {
         return raise_exception::<_>(
@@ -3508,8 +3530,15 @@ fn open_impl(
     let mut path_guard = BitsGuard { py: _py, bits: 0 };
     let mut path = None;
     let mut fd: Option<i64> = None;
+    let mut debug_fd_value: Option<i64> = None;
     let path_name_bits = if let Some(i) = to_i64(obj_from_bits(file_bits)) {
+        if i < 0 {
+            return raise_exception::<_>(_py, "ValueError", "negative file descriptor");
+        }
         fd = Some(i);
+        if debug_open_fd {
+            debug_fd_value = Some(i);
+        }
         let bits = MoltObject::from_int(i).bits();
         path_guard.bits = bits;
         bits
@@ -3719,6 +3748,12 @@ fn open_impl(
         if buffer_ptr.is_null() {
             return MoltObject::none().bits();
         }
+        if debug_fd_value == Some(0) && debug_open_fd {
+            eprintln!(
+                "molt open(fd=0) buffer_handle_ptr=0x{:x}",
+                buffer_ptr as usize
+            );
+        }
         MoltObject::from_ptr(buffer_ptr).bits()
     } else {
         0
@@ -3744,6 +3779,12 @@ fn open_impl(
         buffer_bits,
         0,
     );
+    if debug_fd_value == Some(0) && debug_open_fd && !ptr.is_null() {
+        eprintln!(
+            "molt open(fd=0) -> file_handle_ptr=0x{:x} closefd={}",
+            ptr as usize, closefd
+        );
+    }
     if buffer_bits != 0 {
         dec_ref_bits(_py, buffer_bits);
     }
