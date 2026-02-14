@@ -2924,10 +2924,10 @@ fn pickle_reduce_value(
     _py: &crate::PyToken<'_>,
     state: &mut PickleDumpState,
     obj_bits: u64,
-) -> Result<u64, u64> {
+) -> Result<Option<u64>, u64> {
     if let Some(dispatch_bits) = state.dispatch_table_bits {
         if let Some(reduced) = pickle_dispatch_reducer_from_table(_py, dispatch_bits, obj_bits)? {
-            return Ok(reduced);
+            return Ok(Some(reduced));
         }
     }
     if let Some(reduce_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce_ex__")? {
@@ -2942,7 +2942,7 @@ fn pickle_reduce_value(
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
-        return Ok(out_bits);
+        return Ok(Some(out_bits));
     }
     if let Some(reduce_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce__")? {
         let out_bits = unsafe { call_callable0(_py, reduce_bits) };
@@ -2950,11 +2950,9 @@ fn pickle_reduce_value(
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
-        return Ok(out_bits);
+        return Ok(Some(out_bits));
     }
-    let type_name = type_name(_py, obj_from_bits(obj_bits));
-    let message = format!("cannot pickle '{type_name}' object");
-    Err(raise_exception::<u64>(_py, "TypeError", &message))
+    Ok(None)
 }
 
 fn pickle_dump_items_from_iterable(
@@ -2962,10 +2960,14 @@ fn pickle_dump_items_from_iterable(
     state: &mut PickleDumpState,
     values_bits: u64,
     dict_items: bool,
+    iterator_error_prefix: &str,
 ) -> Result<(), u64> {
     let iter_bits = molt_iter(values_bits);
     if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
+        clear_exception(_py);
+        let value_type = type_name(_py, obj_from_bits(values_bits));
+        let msg = format!("{iterator_error_prefix}{value_type}");
+        return Err(pickle_raise(_py, &msg));
     }
     state.push(PICKLE_OP_MARK);
     loop {
@@ -2975,22 +2977,25 @@ fn pickle_dump_items_from_iterable(
         }
         if dict_items {
             let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-                return Err(pickle_raise(
+                return Err(raise_exception(
                     _py,
-                    "pickle reduce dictitems must be 2-tuples",
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
                 ));
             };
             if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
-                return Err(pickle_raise(
+                return Err(raise_exception(
                     _py,
-                    "pickle reduce dictitems must be 2-tuples",
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
                 ));
             }
             let fields = unsafe { seq_vec_ref(item_ptr) };
             if fields.len() != 2 {
-                return Err(pickle_raise(
+                return Err(raise_exception(
                     _py,
-                    "pickle reduce dictitems must be 2-tuples",
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
                 ));
             }
             pickle_dump_obj_binary(_py, state, fields[0], true)?;
@@ -3016,26 +3021,132 @@ fn pickle_dump_reduce_value(
     let Some(ptr) = obj_from_bits(reduce_bits).as_ptr() else {
         return Err(pickle_raise(
             _py,
-            "pickle reducer must return tuple or str-compatible global",
+            "__reduce__ must return a string or tuple",
         ));
     };
-    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(_py, "pickle reducer must return tuple"));
+    let reduce_type = unsafe { object_type_id(ptr) };
+    if reduce_type == TYPE_ID_STRING {
+        let Some(global_name) = string_obj_to_owned(obj_from_bits(reduce_bits)) else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(obj_bits) = obj_bits else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
+            dec_ref_bits(_py, module_bits);
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        dec_ref_bits(_py, module_bits);
+        let resolved_bits =
+            pickle_resolve_global_bits(_py, module_name.as_str(), global_name.as_str())?;
+        let matches = resolved_bits == obj_bits;
+        if !obj_from_bits(resolved_bits).is_none() {
+            dec_ref_bits(_py, resolved_bits);
+        }
+        if !matches {
+            let obj_type = type_name(_py, obj_from_bits(obj_bits));
+            let msg = format!(
+                "Can't pickle {obj_type}: it's not the same object as {}.{}",
+                module_name, global_name
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if state.protocol >= PICKLE_PROTO_4 {
+            pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
+            pickle_dump_unicode_binary(_py, state, global_name.as_str())?;
+            state.push(PICKLE_OP_STACK_GLOBAL);
+        } else {
+            pickle_emit_global_opcode(state, module_name.as_str(), global_name.as_str());
+        }
+        let _ = pickle_memo_store_if_absent(state, obj_bits);
+        return Ok(());
+    }
+    if reduce_type != TYPE_ID_TUPLE {
+        return Err(pickle_raise(
+            _py,
+            "__reduce__ must return a string or tuple",
+        ));
     }
     let fields = unsafe { seq_vec_ref(ptr) };
     if !(2..=6).contains(&fields.len()) {
         return Err(pickle_raise(
             _py,
-            "pickle reducer tuple must contain 2 to 6 items",
+            "tuple returned by __reduce__ must contain 2 through 6 elements",
         ));
     }
     let callable_bits = fields[0];
+    let callable_check = molt_is_callable(callable_bits);
+    if !is_truthy(_py, obj_from_bits(callable_check)) {
+        return Err(pickle_raise(
+            _py,
+            "first item of the tuple returned by __reduce__ must be callable",
+        ));
+    }
     let args_bits = fields[1];
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(pickle_raise(_py, "pickle reducer args must be tuple"));
+        return Err(pickle_raise(
+            _py,
+            "second item of the tuple returned by __reduce__ must be a tuple",
+        ));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(_py, "pickle reducer args must be tuple"));
+        return Err(pickle_raise(
+            _py,
+            "second item of the tuple returned by __reduce__ must be a tuple",
+        ));
+    }
+    if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
+        let iter_bits = molt_iter(fields[3]);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let value_type = type_name(_py, obj_from_bits(fields[3]));
+            let msg = format!(
+                "fourth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if !obj_from_bits(iter_bits).is_none() {
+            dec_ref_bits(_py, iter_bits);
+        }
+    }
+    if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
+        let iter_bits = molt_iter(fields[4]);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let value_type = type_name(_py, obj_from_bits(fields[4]));
+            let msg = format!(
+                "fifth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if !obj_from_bits(iter_bits).is_none() {
+            dec_ref_bits(_py, iter_bits);
+        }
+    }
+    if fields.len() >= 6 && !obj_from_bits(fields[5]).is_none() {
+        let setter_check = molt_is_callable(fields[5]);
+        if !is_truthy(_py, obj_from_bits(setter_check)) {
+            let value_type = type_name(_py, obj_from_bits(fields[5]));
+            let msg = format!(
+                "sixth element of the tuple returned by __reduce__ must be a function, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
     }
     pickle_dump_obj_binary(_py, state, callable_bits, true)?;
     pickle_dump_obj_binary(_py, state, args_bits, true)?;
@@ -3080,12 +3191,442 @@ fn pickle_dump_reduce_value(
         }
     }
     if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
-        pickle_dump_items_from_iterable(_py, state, fields[3], false)?;
+        pickle_dump_items_from_iterable(
+            _py,
+            state,
+            fields[3],
+            false,
+            "fourth element of the tuple returned by __reduce__ must be an iterator, not ",
+        )?;
     }
     if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
-        pickle_dump_items_from_iterable(_py, state, fields[4], true)?;
+        pickle_dump_items_from_iterable(
+            _py,
+            state,
+            fields[4],
+            true,
+            "fifth element of the tuple returned by __reduce__ must be an iterator, not ",
+        )?;
     }
     Ok(())
+}
+
+fn pickle_empty_tuple_bits(_py: &crate::PyToken<'_>) -> Result<u64, u64> {
+    let tuple_ptr = alloc_tuple(_py, &[]);
+    if tuple_ptr.is_null() {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(MoltObject::from_ptr(tuple_ptr).bits())
+    }
+}
+
+fn pickle_require_tuple_bits(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    context: &str,
+) -> Result<(), u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        let msg = format!("pickle.dumps: {context} must be tuple");
+        return Err(pickle_raise(_py, &msg));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        let msg = format!("pickle.dumps: {context} must be tuple");
+        return Err(pickle_raise(_py, &msg));
+    }
+    Ok(())
+}
+
+fn pickle_require_dict_bits(_py: &crate::PyToken<'_>, bits: u64, context: &str) -> Result<(), u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        let msg = format!("pickle.dumps: {context} must be dict");
+        return Err(pickle_raise(_py, &msg));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        let msg = format!("pickle.dumps: {context} must be dict");
+        return Err(pickle_raise(_py, &msg));
+    }
+    Ok(())
+}
+
+fn pickle_default_newobj_args(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> Result<(u64, Option<u64>), u64> {
+    if let Some(getnewargs_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs_ex__")? {
+        let out_bits = unsafe { call_callable0(_py, getnewargs_ex_bits) };
+        dec_ref_bits(_py, getnewargs_ex_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let Some(tuple_ptr) = obj_from_bits(out_bits).as_ptr() else {
+            if !obj_from_bits(out_bits).is_none() {
+                dec_ref_bits(_py, out_bits);
+            }
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        };
+        if unsafe { object_type_id(tuple_ptr) } != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, out_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        }
+        let fields = unsafe { seq_vec_ref(tuple_ptr).to_vec() };
+        if fields.len() != 2 {
+            dec_ref_bits(_py, out_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        }
+        let args_bits = fields[0];
+        let kwargs_bits = fields[1];
+        pickle_require_tuple_bits(_py, args_bits, "__getnewargs_ex__ args")?;
+        pickle_require_dict_bits(_py, kwargs_bits, "__getnewargs_ex__ kwargs")?;
+        inc_ref_bits(_py, args_bits);
+        inc_ref_bits(_py, kwargs_bits);
+        dec_ref_bits(_py, out_bits);
+        return Ok((args_bits, Some(kwargs_bits)));
+    }
+
+    if let Some(getnewargs_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs__")? {
+        let args_bits = unsafe { call_callable0(_py, getnewargs_bits) };
+        dec_ref_bits(_py, getnewargs_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        if let Err(err_bits) = pickle_require_tuple_bits(_py, args_bits, "__getnewargs__ value") {
+            if !obj_from_bits(args_bits).is_none() {
+                dec_ref_bits(_py, args_bits);
+            }
+            return Err(err_bits);
+        }
+        return Ok((args_bits, None));
+    }
+
+    Ok((pickle_empty_tuple_bits(_py)?, None))
+}
+
+fn pickle_dataclass_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, u64> {
+    let desc_ptr = unsafe { crate::dataclass_desc_ptr(ptr) };
+    if desc_ptr.is_null() {
+        return Ok(None);
+    }
+
+    if unsafe { (*desc_ptr).slots } {
+        let slot_state_ptr = alloc_dict_with_pairs(_py, &[]);
+        if slot_state_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let slot_state_bits = MoltObject::from_ptr(slot_state_ptr).bits();
+        let mut wrote_any = false;
+        let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+        let field_names = unsafe { &(*desc_ptr).field_names };
+        for (name, value_bits) in field_names.iter().zip(field_values.iter().copied()) {
+            let Some(name_bits) = alloc_string_bits(_py, name) else {
+                dec_ref_bits(_py, slot_state_bits);
+                return Err(MoltObject::none().bits());
+            };
+            unsafe {
+                crate::dict_set_in_place(_py, slot_state_ptr, name_bits, value_bits);
+            }
+            dec_ref_bits(_py, name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, slot_state_bits);
+                return Err(MoltObject::none().bits());
+            }
+            wrote_any = true;
+        }
+        if !wrote_any {
+            dec_ref_bits(_py, slot_state_bits);
+            return Ok(None);
+        }
+        let tuple_ptr = alloc_tuple(_py, &[MoltObject::none().bits(), slot_state_bits]);
+        dec_ref_bits(_py, slot_state_bits);
+        if tuple_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()));
+    }
+
+    if !unsafe { (*desc_ptr).slots } {
+        let dict_bits = unsafe { crate::dataclass_dict_bits(ptr) };
+        if dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
+                    if !unsafe { crate::dict_order(dict_ptr).is_empty() } {
+                        inc_ref_bits(_py, dict_bits);
+                        return Ok(Some(dict_bits));
+                    }
+                }
+            }
+        }
+    }
+
+    let state_ptr = alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+
+    let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+    let field_names = unsafe { &(*desc_ptr).field_names };
+    for (name, value_bits) in field_names.iter().zip(field_values.iter().copied()) {
+        let Some(name_bits) = alloc_string_bits(_py, name) else {
+            dec_ref_bits(_py, state_bits);
+            return Err(MoltObject::none().bits());
+        };
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        wrote_any = true;
+    }
+
+    let extra_bits = unsafe { crate::dataclass_dict_bits(ptr) };
+    if extra_bits != 0 {
+        if let Some(extra_ptr) = obj_from_bits(extra_bits).as_ptr() {
+            if unsafe { object_type_id(extra_ptr) } == TYPE_ID_DICT {
+                let pairs = unsafe { crate::dict_order(extra_ptr).to_vec() };
+                let mut idx = 0usize;
+                while idx + 1 < pairs.len() {
+                    unsafe {
+                        crate::dict_set_in_place(_py, state_ptr, pairs[idx], pairs[idx + 1]);
+                    }
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, state_bits);
+                        return Err(MoltObject::none().bits());
+                    }
+                    wrote_any = true;
+                    idx += 2;
+                }
+            }
+        }
+    }
+
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return Ok(None);
+    }
+    Ok(Some(state_bits))
+}
+
+fn pickle_object_slot_state_bits(
+    _py: &crate::PyToken<'_>,
+    ptr: *mut u8,
+) -> Result<Option<u64>, u64> {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
+        return Ok(None);
+    }
+
+    let class_dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+    let Some(class_dict_ptr) = obj_from_bits(class_dict_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(class_dict_ptr) } != TYPE_ID_DICT {
+        return Ok(None);
+    }
+
+    let Some(offsets_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__") else {
+        return Err(MoltObject::none().bits());
+    };
+    let offsets_bits = unsafe { dict_get_in_place(_py, class_dict_ptr, offsets_name_bits) };
+    dec_ref_bits(_py, offsets_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(offsets_bits) = offsets_bits else {
+        return Ok(None);
+    };
+    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(offsets_ptr) } != TYPE_ID_DICT {
+        return Ok(None);
+    }
+
+    let slot_state_ptr = alloc_dict_with_pairs(_py, &[]);
+    if slot_state_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let slot_state_bits = MoltObject::from_ptr(slot_state_ptr).bits();
+    let mut wrote_any = false;
+    let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        let name_bits = pairs[idx];
+        let offset_bits = pairs[idx + 1];
+        idx += 2;
+        let Some(offset) = to_i64(obj_from_bits(offset_bits)) else {
+            continue;
+        };
+        if offset < 0 {
+            continue;
+        }
+        let value_bits = unsafe { crate::object_field_get_ptr_raw(_py, ptr, offset as usize) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, slot_state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        if value_bits == missing_bits(_py) {
+            dec_ref_bits(_py, value_bits);
+            continue;
+        }
+        unsafe {
+            crate::dict_set_in_place(_py, slot_state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, value_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, slot_state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, slot_state_bits);
+        return Ok(None);
+    }
+    Ok(Some(slot_state_bits))
+}
+
+fn pickle_object_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, u64> {
+    let mut dict_state_bits: Option<u64> = None;
+    let dict_bits = unsafe { crate::instance_dict_bits(ptr) };
+    if dict_bits != 0 {
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+                && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+            {
+                inc_ref_bits(_py, dict_bits);
+                dict_state_bits = Some(dict_bits);
+            }
+        }
+    }
+
+    let slot_state_bits = pickle_object_slot_state_bits(_py, ptr)?;
+    let Some(slot_state_bits) = slot_state_bits else {
+        return Ok(dict_state_bits);
+    };
+
+    let dict_or_none_bits = dict_state_bits.unwrap_or(MoltObject::none().bits());
+    let tuple_ptr = alloc_tuple(_py, &[dict_or_none_bits, slot_state_bits]);
+    if let Some(bits) = dict_state_bits {
+        dec_ref_bits(_py, bits);
+    }
+    dec_ref_bits(_py, slot_state_bits);
+    if tuple_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()))
+}
+
+fn pickle_default_instance_state(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    ptr: *mut u8,
+    type_id: u32,
+) -> Result<Option<u64>, u64> {
+    if let Some(getstate_bits) = pickle_attr_optional(_py, obj_bits, b"__getstate__")? {
+        let state_bits = unsafe { call_callable0(_py, getstate_bits) };
+        dec_ref_bits(_py, getstate_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(state_bits));
+    }
+    if type_id == crate::TYPE_ID_DATACLASS {
+        return pickle_dataclass_state_bits(_py, ptr);
+    }
+    if type_id == crate::TYPE_ID_OBJECT {
+        return pickle_object_state_bits(_py, ptr);
+    }
+    Ok(None)
+}
+
+fn pickle_dump_default_instance(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+    ptr: *mut u8,
+    type_id: u32,
+) -> Result<bool, u64> {
+    if type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS {
+        return Ok(false);
+    }
+    let cls_bits = unsafe { object_class_bits(ptr) };
+    if cls_bits == 0 || obj_from_bits(cls_bits).as_ptr().is_none() {
+        return Ok(false);
+    }
+
+    let (args_bits, kwargs_bits) = pickle_default_newobj_args(_py, obj_bits)?;
+    let result = (|| -> Result<(), u64> {
+        let mut kwargs_effective = kwargs_bits;
+        if let Some(bits) = kwargs_effective {
+            let Some(dict_ptr) = obj_from_bits(bits).as_ptr() else {
+                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+            };
+            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+            }
+            if unsafe { crate::dict_order(dict_ptr).is_empty() } {
+                kwargs_effective = None;
+            }
+        }
+
+        if let Some(kwargs_bits) = kwargs_effective {
+            if state.protocol >= PICKLE_PROTO_4 {
+                pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+                pickle_dump_obj_binary(_py, state, args_bits, true)?;
+                pickle_dump_obj_binary(_py, state, kwargs_bits, true)?;
+                state.push(PICKLE_OP_NEWOBJ_EX);
+            } else {
+                pickle_emit_global_opcode(state, "copyreg", "__newobj_ex__");
+                pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+                pickle_dump_obj_binary(_py, state, args_bits, true)?;
+                pickle_dump_obj_binary(_py, state, kwargs_bits, true)?;
+                state.push(PICKLE_OP_TUPLE3);
+                state.push(PICKLE_OP_REDUCE);
+            }
+        } else {
+            pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+            pickle_dump_obj_binary(_py, state, args_bits, true)?;
+            state.push(PICKLE_OP_NEWOBJ);
+        }
+
+        let _ = pickle_memo_store_if_absent(state, obj_bits);
+        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr, type_id)? {
+            if !obj_from_bits(state_bits).is_none() {
+                pickle_dump_obj_binary(_py, state, state_bits, true)?;
+                state.push(PICKLE_OP_BUILD);
+            }
+            if !obj_from_bits(state_bits).is_none() {
+                dec_ref_bits(_py, state_bits);
+            }
+        }
+        Ok(())
+    })();
+
+    if !obj_from_bits(args_bits).is_none() {
+        dec_ref_bits(_py, args_bits);
+    }
+    if let Some(bits) = kwargs_bits {
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    result.map(|()| true)
 }
 
 fn pickle_dump_obj_binary(
@@ -3322,15 +3863,83 @@ fn pickle_dump_obj_binary(
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             return Ok(());
         }
-        let reduce_bits = pickle_reduce_value(_py, state, obj_bits)?;
-        let dumped = pickle_dump_reduce_value(_py, state, reduce_bits, Some(obj_bits));
-        if !obj_from_bits(reduce_bits).is_none() {
-            dec_ref_bits(_py, reduce_bits);
+        if let Some(reduce_bits) = pickle_reduce_value(_py, state, obj_bits)? {
+            let dumped = pickle_dump_reduce_value(_py, state, reduce_bits, Some(obj_bits));
+            if !obj_from_bits(reduce_bits).is_none() {
+                dec_ref_bits(_py, reduce_bits);
+            }
+            return dumped;
         }
-        dumped
+        if pickle_dump_default_instance(_py, state, obj_bits, ptr, type_id)? {
+            return Ok(());
+        }
+        let type_name = type_name(_py, obj_from_bits(obj_bits));
+        let message = format!("cannot pickle '{type_name}' object");
+        Err(raise_exception::<u64>(_py, "TypeError", &message))
     })();
     state.depth = state.depth.saturating_sub(1);
     result
+}
+
+fn pickle_apply_dict_state(
+    _py: &crate::PyToken<'_>,
+    inst_bits: u64,
+    dict_state_bits: u64,
+) -> Result<(), u64> {
+    if obj_from_bits(dict_state_bits).is_none() {
+        return Ok(());
+    }
+    let Some(state_ptr) = obj_from_bits(dict_state_bits).as_ptr() else {
+        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+    };
+    if unsafe { object_type_id(state_ptr) } != TYPE_ID_DICT {
+        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+    }
+    let Some(dict_name_bits) = attr_name_bits_from_bytes(_py, b"__dict__") else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let inst_dict_bits = molt_getattr_builtin(inst_bits, dict_name_bits, missing);
+    dec_ref_bits(_py, dict_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if inst_dict_bits == missing {
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: BUILD state requires __dict__",
+        ));
+    }
+    let Some(inst_dict_ptr) = obj_from_bits(inst_dict_bits).as_ptr() else {
+        if !obj_from_bits(inst_dict_bits).is_none() {
+            dec_ref_bits(_py, inst_dict_bits);
+        }
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: BUILD state requires __dict__",
+        ));
+    };
+    if unsafe { object_type_id(inst_dict_ptr) } != TYPE_ID_DICT {
+        dec_ref_bits(_py, inst_dict_bits);
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: BUILD state requires __dict__",
+        ));
+    }
+    let pairs = unsafe { crate::dict_order(state_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        unsafe {
+            crate::dict_set_in_place(_py, inst_dict_ptr, pairs[idx], pairs[idx + 1]);
+        }
+        if exception_pending(_py) {
+            dec_ref_bits(_py, inst_dict_bits);
+            return Err(MoltObject::none().bits());
+        }
+        idx += 2;
+    }
+    dec_ref_bits(_py, inst_dict_bits);
+    Ok(())
 }
 
 fn pickle_vm_item_to_bits(_py: &crate::PyToken<'_>, item: &PickleVmItem) -> Result<u64, u64> {
@@ -3604,25 +4213,7 @@ fn pickle_apply_build(
             }
         }
     }
-    if !obj_from_bits(dict_state_bits).is_none() {
-        let Some(dict_ptr) = obj_from_bits(dict_state_bits).as_ptr() else {
-            return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
-        };
-        if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-            return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
-        }
-        let pairs = unsafe { crate::dict_order(dict_ptr).to_vec() };
-        let mut idx = 0usize;
-        while idx + 1 < pairs.len() {
-            let key_bits = pairs[idx];
-            let value_bits = pairs[idx + 1];
-            let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            idx += 2;
-        }
-    }
+    pickle_apply_dict_state(_py, inst_bits, dict_state_bits)?;
     if let Some(slot_bits) = slot_state_bits {
         if !obj_from_bits(slot_bits).is_none() {
             let Some(slot_ptr) = obj_from_bits(slot_bits).as_ptr() else {

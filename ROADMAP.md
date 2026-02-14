@@ -68,6 +68,22 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - runtime-heavy wasm regression lane is green for this blocker tranche:
     `tests/test_wasm_runtime_heavy_regressions.py` now passes on
     asyncio/zipimport/smtplib targeted cases.
+  - native runtime-heavy cluster sweep is green (`119/119` pass) for
+    `_asyncio`/`smtplib`/`zipfile`/`zipimport` with `MOLT_DIFF_MEASURE_RSS=1`
+    and memory caps enabled.
+  - strict closure sweep for `re`/`pathlib`/`socket` is green (`102/102` pass)
+    with `MOLT_DIFF_MEASURE_RSS=1` and memory caps enabled.
+  - pickle closure tranche advanced for default class/dataclass graph semantics:
+    runtime now serializes class layout field state (`__molt_field_offsets__`)
+    and restores CPython-style `BUILD` ordering (`__dict__` + slot-state),
+    while preserving reducer/copyreg precedence before fallback instance
+    lowering.
+  - new pickle parity regressions are green in native + wasm lanes:
+    `tests/differential/stdlib/pickle_class_dataclass_roundtrip.py` and
+    `tests/test_wasm_pickle_class_dataclass_roundtrip.py`.
+  - checker strict-root coverage now includes `re` in
+    `CRITICAL_STRICT_IMPORT_ROOTS` with regression test coverage
+    (`tests/test_check_stdlib_intrinsics.py`).
   - runtime-heavy/data/metadata-email/tooling clusters remain intrinsic-partial and are the active burn-down queue.
 - Current snapshot: `intrinsic-backed=0`, `intrinsic-partial=873`,
   `probe-only=0`, `python-only=0`; strict gate keeps modules/submodules

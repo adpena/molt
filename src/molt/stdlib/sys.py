@@ -43,6 +43,7 @@ def _as_callable(value: object) -> Callable[..., object]:
 
 # Define early to avoid circular-import NameError during stdlib bootstrap.
 _MOLT_GETFRAME = _as_callable(_require_intrinsic("molt_getframe", globals()))
+_MOLT_IS_STRING_OBJ = _as_callable(_require_intrinsic("molt_is_string_obj", globals()))
 
 # Compiled runtimes are the host; avoid recursive sys -> importlib -> sys.
 
@@ -52,6 +53,8 @@ __all__ = [
     "platform",
     "version",
     "version_info",
+    "breakpointhook",
+    "__breakpointhook__",
     "path",
     "meta_path",
     "path_hooks",
@@ -139,6 +142,23 @@ def exit(code: object = None) -> None:
     raise SystemExit(code)
 
 
+def __breakpointhook__(*args: object, **kwargs: object) -> object:
+    """Default breakpoint hook.
+
+    CPython defaults to launching pdb; Molt compiled binaries do not ship an
+    interactive debugger by default, so this is a fail-fast stub. Tests patch
+    sys.breakpointhook to validate builtins.breakpoint dispatch.
+    """
+
+    del args, kwargs
+    raise RuntimeError(
+        "MOLT_COMPAT_ERROR: sys.breakpointhook is unavailable in compiled Molt binaries"
+    )
+
+
+breakpointhook = __breakpointhook__
+
+
 platform = _resolve_platform()
 version = _MOLT_SYS_VERSION()
 version_info = cast(tuple[object, ...], _MOLT_SYS_VERSION_INFO())
@@ -163,17 +183,23 @@ def _bootstrap_str_list(
         raise RuntimeError(f"{intrinsic_name} returned invalid value")
     out: list[str] = []
     for entry in value:
-        if not isinstance(entry, str):
-            raise RuntimeError(f"{intrinsic_name} returned invalid value")
-        out.append(entry)
+        if not _MOLT_IS_STRING_OBJ(entry):
+            entry_type = type(entry).__name__
+            raise RuntimeError(
+                f"{intrinsic_name} returned invalid value (expected str entry, got {entry_type})"
+            )
+        out.append(entry)  # type: ignore[arg-type]
     return out
 
 
 def _bootstrap_str(payload: dict[object, object], key: str, intrinsic_name: str) -> str:
     value = payload.get(key)
-    if not isinstance(value, str):
-        raise RuntimeError(f"{intrinsic_name} returned invalid value")
-    return value
+    if not _MOLT_IS_STRING_OBJ(value):
+        value_type = type(value).__name__
+        raise RuntimeError(
+            f"{intrinsic_name} returned invalid value (expected str, got {value_type})"
+        )
+    return value  # type: ignore[return-value]
 
 
 def _bootstrap_str_or_none(
@@ -182,9 +208,12 @@ def _bootstrap_str_or_none(
     value = payload.get(key)
     if value is None:
         return None
-    if not isinstance(value, str):
-        raise RuntimeError(f"{intrinsic_name} returned invalid value")
-    return value
+    if not _MOLT_IS_STRING_OBJ(value):
+        value_type = type(value).__name__
+        raise RuntimeError(
+            f"{intrinsic_name} returned invalid value (expected str|None, got {value_type})"
+        )
+    return value  # type: ignore[return-value]
 
 
 def _bootstrap_bool(

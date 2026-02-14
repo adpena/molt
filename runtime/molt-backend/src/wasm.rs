@@ -942,6 +942,9 @@ impl WasmBackend {
         add_import("recursion_guard_enter", 0, &mut self.import_ids);
         add_import("recursion_guard_exit", 8, &mut self.import_ids);
         add_import("trace_enter_slot", 2, &mut self.import_ids);
+        // Compiler-emitted: pin the current frame's locals dict so builtins.locals() can return
+        // a stable, alias-call-safe mapping without CPython-style fast-locals introspection.
+        add_import("frame_locals_set", 2, &mut self.import_ids);
         add_import("trace_set_line", 2, &mut self.import_ids);
         add_import("trace_exit", 0, &mut self.import_ids);
         add_import("code_slots_init", 2, &mut self.import_ids);
@@ -6885,6 +6888,13 @@ impl WasmBackend {
                         let line = op.value.unwrap_or(0);
                         func.instruction(&Instruction::I64Const(line));
                         emit_call(func, reloc_enabled, import_ids["trace_set_line"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "frame_locals_set" => {
+                        let args = op.args.as_ref().expect("frame_locals_set args missing");
+                        let dict_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(dict_bits));
+                        emit_call(func, reloc_enabled, import_ids["frame_locals_set"]);
                         func.instruction(&Instruction::Drop);
                     }
                     "builtin_func" => {

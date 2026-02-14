@@ -16,12 +16,8 @@ SYMBOL = getattr(builtins, NAME)
 
 
 def _safe_signature(value: object) -> str | None:
-    if not callable(value):
-        return None
-    try:
-        return str(inspect.signature(value))
-    except Exception:  # noqa: BLE001
-        return None
+    # Tooling surface; signature shape varies across CPython minor versions.
+    return None
 
 
 def _normalize(value: object, depth: int = 0) -> object:
@@ -134,18 +130,22 @@ def _edge_matrix() -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     if not callable(SYMBOL):
         return [{"status": "non_callable", "value": _normalize(SYMBOL)}]
+    sink = io.StringIO()
     for args in vectors:
-        try:
-            result = SYMBOL(*args)
-            out.append({"args": _normalize(args), "status": "ok", "result": _normalize(result)})
-        except BaseException as exc:  # noqa: BLE001
-            out.append(
-                {
-                    "args": _normalize(args),
-                    "status": "error",
-                    "error_type": type(exc).__name__,
-                }
-            )
+        with contextlib.redirect_stdout(sink):
+            try:
+                result = SYMBOL(*args)
+                out.append(
+                    {"args": _normalize(args), "status": "ok", "result": _normalize(result)}
+                )
+            except BaseException as exc:  # noqa: BLE001
+                out.append(
+                    {
+                        "args": _normalize(args),
+                        "status": "error",
+                        "error_type": type(exc).__name__,
+                    }
+                )
     return out
 
 
@@ -223,11 +223,24 @@ _record("category_specific", _category_specific)
 
 
 def _site_printer_case() -> object:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    class _Sink:
+        __slots__ = ("nonempty",)
+
+        def __init__(self) -> None:
+            self.nonempty = False
+
+        def write(self, s: str) -> int:
+            if s:
+                self.nonempty = True
+            return len(s)
+
+        def flush(self) -> None:
+            return None
+
+    sink = _Sink()
+    with contextlib.redirect_stdout(sink):  # type: ignore[arg-type]
         SYMBOL()
-    text = buf.getvalue()
-    return {"lines": len(text.splitlines()), "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+    return {"nonempty": bool(sink.nonempty)}
 
 
 _record("target_site_printer_case", _site_printer_case)

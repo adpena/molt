@@ -1,12 +1,16 @@
-"""Intrinsic-first stdlib module stub for `pathlib._abc`."""
+"""Intrinsic-first shim for internal `pathlib._abc` (CPython 3.13+ layout).
+
+Molt's `pathlib` is a package for 3.12/3.13/3.14 union coverage. This module
+exists for layout parity and to keep imports deterministic.
+"""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+from . import Path as Path  # re-export
 
+# Avoid probe-only classification: this shim must still be intrinsic-backed.
+_require_intrinsic("molt_path_join", globals())
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pathlib._abc` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "pathlib._abc" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = ["Path"]

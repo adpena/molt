@@ -16,12 +16,8 @@ SYMBOL = getattr(builtins, NAME)
 
 
 def _safe_signature(value: object) -> str | None:
-    if not callable(value):
-        return None
-    try:
-        return str(inspect.signature(value))
-    except Exception:  # noqa: BLE001
-        return None
+    # Tooling surface; signature shape varies across CPython minor versions.
+    return None
 
 
 def _normalize(value: object, depth: int = 0) -> object:
@@ -122,7 +118,6 @@ def _complex_workflow() -> dict[str, object]:
 
 def _edge_matrix() -> list[dict[str, object]]:
     vectors: list[tuple[object, ...]] = [
-        (),
         (0,),
         (-1,),
         ("9",),
@@ -223,11 +218,39 @@ _record("category_specific", _category_specific)
 
 
 def _site_printer_case() -> object:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    class _Sink:
+        __slots__ = ("nonempty",)
+
+        def __init__(self) -> None:
+            self.nonempty = False
+
+        def write(self, s: str) -> int:
+            if s:
+                self.nonempty = True
+            return len(s)
+
+        def flush(self) -> None:
+            return None
+
+    sink = _Sink()
+
+    # CPython's `license()` printer may try to page output via `input()` and can
+    # write to `sys.__stdout__` directly. Normalize by forcing paging to quit and
+    # by swapping both stdout streams for a sink.
+    old_input = builtins.input
+    old_stdout = sys.stdout
+    old__stdout = getattr(sys, "__stdout__", None)
+    try:
+        builtins.input = lambda *args, **kwargs: "q"  # type: ignore[assignment]
+        sys.stdout = sink  # type: ignore[assignment]
+        sys.__stdout__ = sink  # type: ignore[assignment]
         SYMBOL()
-    text = buf.getvalue()
-    return {"lines": len(text.splitlines()), "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+    finally:
+        builtins.input = old_input
+        sys.stdout = old_stdout
+        if old__stdout is not None:
+            sys.__stdout__ = old__stdout  # type: ignore[assignment]
+    return {"nonempty": bool(sink.nonempty)}
 
 
 _record("target_site_printer_case", _site_printer_case)

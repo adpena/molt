@@ -73,3 +73,7 @@ pub(crate) const BUILTIN_TAG_OBJECT: i64 = 100;
 pub(crate) const BUILTIN_TAG_TYPE: i64 = 101;
 pub(crate) const BUILTIN_TAG_BASE_EXCEPTION: i64 = 102;
 pub(crate) const BUILTIN_TAG_EXCEPTION: i64 = 103;
+pub(crate) const BUILTIN_TAG_CLASSMETHOD: i64 = 226;
+pub(crate) const BUILTIN_TAG_STATICMETHOD: i64 = 227;
+pub(crate) const BUILTIN_TAG_PROPERTY: i64 = 228;
+pub(crate) const BUILTIN_TAG_SUPER: i64 = 229;

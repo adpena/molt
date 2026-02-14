@@ -22,6 +22,78 @@ __all__ = [
     "dumps",
     "load",
     "loads",
+    "_Pickler",
+    "_Unpickler",
+    "MARK",
+    "STOP",
+    "POP",
+    "POP_MARK",
+    "DUP",
+    "FLOAT",
+    "INT",
+    "BININT",
+    "BININT1",
+    "LONG",
+    "BININT2",
+    "NONE",
+    "PERSID",
+    "BINPERSID",
+    "REDUCE",
+    "STRING",
+    "BINSTRING",
+    "SHORT_BINSTRING",
+    "UNICODE",
+    "BINUNICODE",
+    "APPEND",
+    "BUILD",
+    "GLOBAL",
+    "DICT",
+    "EMPTY_DICT",
+    "APPENDS",
+    "GET",
+    "BINGET",
+    "INST",
+    "LONG_BINGET",
+    "LIST",
+    "EMPTY_LIST",
+    "OBJ",
+    "PUT",
+    "BINPUT",
+    "LONG_BINPUT",
+    "SETITEM",
+    "TUPLE",
+    "EMPTY_TUPLE",
+    "SETITEMS",
+    "BINFLOAT",
+    "PROTO",
+    "NEWOBJ",
+    "EXT1",
+    "EXT2",
+    "EXT4",
+    "TUPLE1",
+    "TUPLE2",
+    "TUPLE3",
+    "NEWTRUE",
+    "NEWFALSE",
+    "LONG1",
+    "LONG4",
+    "SHORT_BINBYTES",
+    "BINBYTES",
+    "BINBYTES8",
+    "SHORT_BINUNICODE",
+    "BINUNICODE8",
+    "EMPTY_SET",
+    "ADDITEMS",
+    "FROZENSET",
+    "NEWOBJ_EX",
+    "STACK_GLOBAL",
+    "MEMOIZE",
+    "FRAME",
+    "BYTEARRAY8",
+    "NEXT_BUFFER",
+    "READONLY_BUFFER",
+    "TRUE",
+    "FALSE",
 ]
 
 _require_intrinsic("molt_stdlib_probe", globals())
@@ -60,6 +132,78 @@ class PickleBuffer:
 
 HIGHEST_PROTOCOL = 5
 DEFAULT_PROTOCOL = 4
+
+# pickle opcode constants (CPython-compatible exported surface).
+MARK = b"("
+STOP = b"."
+POP = b"0"
+POP_MARK = b"1"
+DUP = b"2"
+FLOAT = b"F"
+INT = b"I"
+BININT = b"J"
+BININT1 = b"K"
+LONG = b"L"
+BININT2 = b"M"
+NONE = b"N"
+PERSID = b"P"
+BINPERSID = b"Q"
+REDUCE = b"R"
+STRING = b"S"
+BINSTRING = b"T"
+SHORT_BINSTRING = b"U"
+UNICODE = b"V"
+BINUNICODE = b"X"
+APPEND = b"a"
+BUILD = b"b"
+GLOBAL = b"c"
+DICT = b"d"
+EMPTY_DICT = b"}"
+APPENDS = b"e"
+GET = b"g"
+BINGET = b"h"
+INST = b"i"
+LONG_BINGET = b"j"
+LIST = b"l"
+EMPTY_LIST = b"]"
+OBJ = b"o"
+PUT = b"p"
+BINPUT = b"q"
+LONG_BINPUT = b"r"
+SETITEM = b"s"
+TUPLE = b"t"
+EMPTY_TUPLE = b")"
+SETITEMS = b"u"
+BINFLOAT = b"G"
+PROTO = b"\x80"
+NEWOBJ = b"\x81"
+EXT1 = b"\x82"
+EXT2 = b"\x83"
+EXT4 = b"\x84"
+TUPLE1 = b"\x85"
+TUPLE2 = b"\x86"
+TUPLE3 = b"\x87"
+NEWTRUE = b"\x88"
+NEWFALSE = b"\x89"
+LONG1 = b"\x8a"
+LONG4 = b"\x8b"
+SHORT_BINUNICODE = b"\x8c"
+BINUNICODE8 = b"\x8d"
+BINBYTES8 = b"\x8e"
+EMPTY_SET = b"\x8f"
+ADDITEMS = b"\x90"
+FROZENSET = b"\x91"
+NEWOBJ_EX = b"\x92"
+STACK_GLOBAL = b"\x93"
+MEMOIZE = b"\x94"
+FRAME = b"\x95"
+BYTEARRAY8 = b"\x96"
+NEXT_BUFFER = b"\x97"
+READONLY_BUFFER = b"\x98"
+SHORT_BINBYTES = b"C"
+BINBYTES = b"B"
+TRUE = b"I01\n"
+FALSE = b"I00\n"
 
 
 def _normalize_protocol(protocol: int | None) -> int:
@@ -117,7 +261,7 @@ def load(
     fix_imports: bool = True,
     encoding: str = "ASCII",
     errors: str = "strict",
-    buffers=None,
+    buffers=(),
 ) -> Any:
     return Unpickler(
         file,
@@ -130,11 +274,12 @@ def load(
 
 def loads(
     data: bytes | bytearray | str,
+    /,
     *,
     fix_imports: bool = True,
     encoding: str = "ASCII",
     errors: str = "strict",
-    buffers=None,
+    buffers=(),
 ) -> Any:
     try:
         return _pickle_loads_core(
@@ -151,8 +296,6 @@ def loads(
 
 
 class Pickler:
-    dispatch_table = _copyreg.dispatch_table
-
     def __init__(
         self,
         file,
@@ -165,6 +308,8 @@ class Pickler:
         self.protocol = _normalize_protocol(protocol)
         self.fix_imports = bool(fix_imports)
         self.buffer_callback = buffer_callback
+        self.bin = 0 if self.protocol == 0 else 1
+        self.fast = 0
         self.memo: dict[int, Any] = {}
 
     def clear_memo(self) -> None:
@@ -174,6 +319,7 @@ class Pickler:
         return None
 
     def dump(self, obj: Any) -> None:
+        dispatch_table = getattr(self, "dispatch_table", _copyreg.dispatch_table)
         try:
             payload = _pickle_dumps_core(
                 obj,
@@ -181,7 +327,7 @@ class Pickler:
                 self.fix_imports,
                 self.persistent_id,
                 self.buffer_callback,
-                self.dispatch_table,
+                dispatch_table,
             )
         except RuntimeError as exc:
             raise PicklingError(str(exc)) from exc
@@ -196,7 +342,7 @@ class Unpickler:
         fix_imports: bool = True,
         encoding: str = "ASCII",
         errors: str = "strict",
-        buffers=None,
+        buffers=(),
     ) -> None:
         self._file = file
         self.fix_imports = bool(fix_imports)
@@ -241,6 +387,10 @@ def _load(file) -> Any:
 
 def _loads(data: bytes | bytearray | str) -> Any:
     return loads(data)
+
+
+_Pickler = Pickler
+_Unpickler = Unpickler
 
 
 def _test_roundtrip(obj: Any, protocol: int = DEFAULT_PROTOCOL) -> Any:

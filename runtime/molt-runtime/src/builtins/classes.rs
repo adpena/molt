@@ -5,15 +5,17 @@ use molt_obj_model::MoltObject;
 
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
-    BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE,
+    BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
+    BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
     RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
-    class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
-    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_set_class_bits,
-    object_type_id, runtime_state, runtime_state_for_gil, string_obj_to_owned,
+    TYPE_TAG_COMPLEX,
+    TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST,
+    TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR,
+    TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, class_break_cycles, class_bump_layout_version, class_dict_bits,
+    class_name_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits, intern_static_name,
+    molt_class_set_base, obj_from_bits, object_set_class_bits, object_type_id, runtime_state,
+    runtime_state_for_gil, string_obj_to_owned,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -73,6 +75,9 @@ pub(crate) struct BuiltinClasses {
     pub(crate) traceback: u64,
     pub(crate) module: u64,
     pub(crate) super_type: u64,
+    pub(crate) classmethod: u64,
+    pub(crate) staticmethod: u64,
+    pub(crate) property: u64,
     pub(crate) generic_alias: u64,
     pub(crate) union_type: u64,
 }
@@ -137,6 +142,9 @@ impl BuiltinClasses {
             self.traceback,
             self.module,
             self.super_type,
+            self.classmethod,
+            self.staticmethod,
+            self.property,
             self.generic_alias,
             self.union_type,
         ] {
@@ -165,6 +173,67 @@ fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(class_ptr).bits()
+}
+
+fn set_class_attr_string(_py: &PyToken<'_>, class_bits: u64, name: &[u8], value: &str) {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return;
+    };
+    let value_ptr = alloc_string(_py, value.as_bytes());
+    if value_ptr.is_null() {
+        dec_ref_bits(_py, name_bits);
+        return;
+    }
+    let value_bits = MoltObject::from_ptr(value_ptr).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, name_bits, value_bits);
+    }
+    dec_ref_bits(_py, name_bits);
+    dec_ref_bits(_py, value_bits);
+}
+
+fn set_class_attr_none(_py: &PyToken<'_>, class_bits: u64, name: &[u8]) {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return;
+    };
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits());
+    }
+    dec_ref_bits(_py, name_bits);
 }
 
 fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
@@ -316,6 +385,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let traceback = make_builtin_class(_py, "traceback");
     let module = make_builtin_class(_py, "module");
     let super_type = make_builtin_class(_py, "super");
+    let classmethod = make_builtin_class(_py, "classmethod");
+    let staticmethod = make_builtin_class(_py, "staticmethod");
+    let property = make_builtin_class(_py, "property");
     let generic_alias = make_builtin_class(_py, "GenericAlias");
     let union_type = make_builtin_class(_py, union_type_class_name());
 
@@ -376,6 +448,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             traceback,
             module,
             super_type,
+            classmethod,
+            staticmethod,
+            property,
             generic_alias,
             union_type,
         ] {
@@ -457,8 +532,86 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(traceback, object);
     let _ = molt_class_set_base(module, object);
     let _ = molt_class_set_base(super_type, object);
+    let _ = molt_class_set_base(classmethod, object);
+    let _ = molt_class_set_base(staticmethod, object);
+    let _ = molt_class_set_base(property, object);
     let _ = molt_class_set_base(generic_alias, object);
     let _ = molt_class_set_base(union_type, object);
+
+    for bits in [
+        object,
+        type_obj,
+        none_type,
+        not_implemented_type,
+        ellipsis_type,
+        base_exception,
+        exception,
+        base_exception_group,
+        exception_group,
+        int,
+        float,
+        complex,
+        bool,
+        str,
+        bytes,
+        bytearray,
+        list,
+        tuple,
+        dict,
+        dict_keys,
+        dict_items,
+        dict_values,
+        set,
+        frozenset,
+        range,
+        slice,
+        memoryview,
+        io_base,
+        raw_io_base,
+        buffered_io_base,
+        text_io_base,
+        file,
+        file_io,
+        buffered_reader,
+        buffered_writer,
+        buffered_random,
+        text_io_wrapper,
+        bytes_io,
+        string_io,
+        function,
+        coroutine,
+        generator,
+        async_generator,
+        iterator,
+        callable_iterator,
+        enumerate,
+        reversed,
+        zip,
+        map,
+        filter,
+        builtin_function_or_method,
+        code,
+        frame,
+        traceback,
+        module,
+        super_type,
+        classmethod,
+        staticmethod,
+        property,
+        generic_alias,
+        union_type,
+    ] {
+        set_class_attr_string(_py, bits, b"__module__", "builtins");
+    }
+    // CPython 3.12 defines `__text_signature__` on these types but sets it to None.
+    set_class_attr_none(_py, classmethod, b"__text_signature__");
+    set_class_attr_none(_py, staticmethod, b"__text_signature__");
+    set_class_attr_string(
+        _py,
+        property,
+        b"__text_signature__",
+        "(fget=None, fset=None, fdel=None, doc=None)",
+    );
 
     BuiltinClasses {
         object,
@@ -517,6 +670,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         traceback,
         module,
         super_type,
+        classmethod,
+        staticmethod,
+        property,
         generic_alias,
         union_type,
     }
@@ -617,6 +773,9 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.traceback,
             builtins.module,
             builtins.super_type,
+            builtins.classmethod,
+            builtins.staticmethod,
+            builtins.property,
             builtins.generic_alias,
             builtins.union_type,
         ] {
@@ -686,6 +845,9 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.traceback
         || bits == builtins.module
         || bits == builtins.super_type
+        || bits == builtins.classmethod
+        || bits == builtins.staticmethod
+        || bits == builtins.property
         || bits == builtins.generic_alias
         || bits == builtins.union_type
 }
@@ -713,6 +875,10 @@ pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {
         BUILTIN_TAG_TYPE => Some(builtins.type_obj),
         BUILTIN_TAG_BASE_EXCEPTION => Some(builtins.base_exception),
         BUILTIN_TAG_EXCEPTION => Some(builtins.exception),
+        BUILTIN_TAG_CLASSMETHOD => Some(builtins.classmethod),
+        BUILTIN_TAG_STATICMETHOD => Some(builtins.staticmethod),
+        BUILTIN_TAG_PROPERTY => Some(builtins.property),
+        BUILTIN_TAG_SUPER => Some(builtins.super_type),
         _ => None,
     }
 }
