@@ -1560,6 +1560,62 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     return None;
                 }
+                if name == "__text_signature__" {
+                    // CPython parity: builtin_function_or_method objects expose a read-only
+                    // `__text_signature__` string used by `inspect.signature`.
+                    let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+                    if object_class_bits(obj_ptr) == builtin_bits {
+                        let fn_ptr = function_fn_ptr(obj_ptr);
+                        let text_sig = match fn_ptr {
+                            v if v == fn_addr!(molt_abs_builtin) => Some("(x, /)"),
+                            v if v == fn_addr!(molt_aiter) => Some("(async_iterable, /)"),
+                            v if v == fn_addr!(molt_all_builtin) => Some("(iterable, /)"),
+                            v if v == fn_addr!(molt_any_builtin) => Some("(iterable, /)"),
+                            v if v == fn_addr!(molt_ascii_from_obj) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_bin_builtin) => Some("(number, /)"),
+                            v if v == fn_addr!(molt_callable_builtin) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_chr) => Some("(i, /)"),
+                            v if v == fn_addr!(molt_del_attr_name) => Some("(obj, name, /)"),
+                            v if v == fn_addr!(molt_divmod_builtin) => Some("(x, y, /)"),
+                            v if v == fn_addr!(molt_format_builtin) => {
+                                Some("(value, format_spec='', /)")
+                            }
+                            v if v == fn_addr!(molt_has_attr_name) => Some("(obj, name, /)"),
+                            v if v == fn_addr!(molt_hash_builtin) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_hex_builtin) => Some("(number, /)"),
+                            v if v == fn_addr!(molt_id) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_isinstance) => Some("(obj, class_or_tuple, /)"),
+                            v if v == fn_addr!(molt_issubclass) => Some("(cls, class_or_tuple, /)"),
+                            v if v == fn_addr!(molt_len) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_open_builtin) => Some(
+                                "(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None)",
+                            ),
+                            v if v == fn_addr!(molt_oct_builtin) => Some("(number, /)"),
+                            v if v == fn_addr!(molt_ord) => Some("(c, /)"),
+                            v if v == fn_addr!(molt_pow) => Some("(base, exp, mod=None)"),
+                            v if v == fn_addr!(molt_print_builtin) => {
+                                Some("(*args, sep=' ', end='\\n', file=None, flush=False)")
+                            }
+                            v if v == fn_addr!(molt_repr_builtin) => Some("(obj, /)"),
+                            v if v == fn_addr!(molt_round_builtin) => {
+                                Some("(number, ndigits=None)")
+                            }
+                            v if v == fn_addr!(molt_set_attr_name) => Some("(obj, name, value, /)"),
+                            v if v == fn_addr!(molt_sorted_builtin) => {
+                                Some("(iterable, /, *, key=None, reverse=False)")
+                            }
+                            v if v == fn_addr!(molt_sum_builtin) => Some("(iterable, /, start=0)"),
+                            _ => None,
+                        };
+                        if let Some(text_sig) = text_sig {
+                            let ptr = alloc_string(_py, text_sig.as_bytes());
+                            if ptr.is_null() {
+                                return None;
+                            }
+                            return Some(MoltObject::from_ptr(ptr).bits());
+                        }
+                    }
+                }
                 if name == "__closure__" {
                     let closure_bits = function_closure_bits(obj_ptr);
                     if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
@@ -1579,8 +1635,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                 if let Some(module_key_bits) =
                                     attr_name_bits_from_bytes(_py, b"__module__")
                                 {
-                                    let value =
-                                        unsafe { dict_get_in_place(_py, dict_ptr, module_key_bits) };
+                                    let value = unsafe {
+                                        dict_get_in_place(_py, dict_ptr, module_key_bits)
+                                    };
                                     dec_ref_bits(_py, module_key_bits);
                                     if let Some(bits) = value {
                                         inc_ref_bits(_py, bits);
@@ -1789,10 +1846,8 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     let name_bits = code_name_bits(obj_ptr);
                     let is_module = string_obj_to_owned(obj_from_bits(name_bits))
                         .is_some_and(|value| value == "<module>");
-                    let elems: [u64; 2] = [
-                        MoltObject::none().bits(),
-                        MoltObject::from_int(0).bits(),
-                    ];
+                    let elems: [u64; 2] =
+                        [MoltObject::none().bits(), MoltObject::from_int(0).bits()];
                     let ptr = if is_module {
                         alloc_tuple(_py, &elems)
                     } else {

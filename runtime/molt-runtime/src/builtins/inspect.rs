@@ -2,10 +2,11 @@ use molt_obj_model::MoltObject;
 
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::{
-    TYPE_ID_OBJECT, TYPE_ID_STRING, alloc_dict_with_pairs, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, clear_exception, dec_ref_bits, decode_value_list, exception_pending,
-    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, missing_bits, molt_getattr_builtin,
-    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
+    TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, clear_exception, dec_ref_bits,
+    decode_value_list, exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits,
+    missing_bits, molt_getattr_builtin, obj_from_bits, object_type_id, raise_exception,
+    string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
@@ -438,6 +439,7 @@ enum TextDefaultValue {
     None,
     Bool(bool),
     Ellipsis,
+    EmptyTuple,
     Int(i64),
     Float(f64),
     String(String),
@@ -521,20 +523,54 @@ fn parse_text_default(value: &str) -> Option<TextDefaultValue> {
         "True" => return Some(TextDefaultValue::Bool(true)),
         "False" => return Some(TextDefaultValue::Bool(false)),
         "..." => return Some(TextDefaultValue::Ellipsis),
+        "()" => return Some(TextDefaultValue::EmptyTuple),
         _ => {}
+    }
+
+    fn unescape_text_sig_string(value: &str) -> String {
+        // Best-effort unescape for CPython `__text_signature__` string literals.
+        // This is intentionally minimal: it covers the escapes we rely on for parity
+        // in builtin defaults (notably `print(end='\\n')`).
+        let mut out = String::with_capacity(value.len());
+        let mut chars = value.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                out.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('a') => out.push('\x07'),
+                Some('b') => out.push('\x08'),
+                Some('f') => out.push('\x0c'),
+                Some('v') => out.push('\x0b'),
+                Some('\\') => out.push('\\'),
+                Some('\'') => out.push('\''),
+                Some('\"') => out.push('\"'),
+                Some(other) => {
+                    // Preserve unknown escapes as literal.
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        }
+        out
     }
 
     if let Some(inner) = trimmed
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
     {
-        return Some(TextDefaultValue::String(inner.to_string()));
+        return Some(TextDefaultValue::String(unescape_text_sig_string(inner)));
     }
     if let Some(inner) = trimmed
         .strip_prefix('\'')
         .and_then(|rest| rest.strip_suffix('\''))
     {
-        return Some(TextDefaultValue::String(inner.to_string()));
+        return Some(TextDefaultValue::String(unescape_text_sig_string(inner)));
     }
 
     if trimmed.chars().any(|ch| matches!(ch, '.' | 'e' | 'E')) {
@@ -669,6 +705,15 @@ fn default_value_bits(
             if obj_from_bits(bits).is_none() {
                 None
             } else {
+                Some(bits)
+            }
+        }
+        TextDefaultValue::EmptyTuple => {
+            let bits = alloc_empty_tuple_bits(_py);
+            if obj_from_bits(bits).is_none() {
+                None
+            } else {
+                owned.push(bits);
                 Some(bits)
             }
         }
@@ -906,16 +951,40 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let molt_args = match get_attr_optional(_py, obj_bits, b"__molt_arg_names__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if let Some(arg_names_bits) = molt_args {
-            if !obj_from_bits(arg_names_bits).is_none() {
-                return match signature_payload_from_molt(_py, obj_bits, arg_names_bits) {
-                    Ok(bits) => bits,
-                    Err(err) => err,
-                };
+        let builtins = crate::builtins::classes::builtin_classes(_py);
+        let is_builtin_fn = type_of_bits(_py, obj_bits) == builtins.builtin_function_or_method;
+
+        // Prefer `__text_signature__` when present (CPython parity), but only for objects where
+        // CPython uses it for signature discovery (builtin functions and types). Avoid inheriting
+        // `object.__text_signature__` across arbitrary instances.
+        if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
+            let type_id = unsafe { object_type_id(ptr) };
+            if type_id == TYPE_ID_FUNCTION || type_id == TYPE_ID_TYPE {
+                let sig_from_text =
+                    match signature_payload_from_text_attr(_py, obj_bits, b"__text_signature__") {
+                        Ok(value) => value,
+                        Err(err) => return err,
+                    };
+                if let Some(sig_bits) = sig_from_text {
+                    return sig_bits;
+                }
+            }
+        }
+
+        // For Molt-defined (non-builtin) functions, prefer compiler-provided signature metadata.
+        // For runtime-created builtins, do not use Molt metadata or `__code__` fallbacks.
+        if !is_builtin_fn {
+            let molt_args = match get_attr_optional(_py, obj_bits, b"__molt_arg_names__") {
+                Ok(value) => value,
+                Err(err) => return err,
+            };
+            if let Some(arg_names_bits) = molt_args {
+                if !obj_from_bits(arg_names_bits).is_none() {
+                    return match signature_payload_from_molt(_py, obj_bits, arg_names_bits) {
+                        Ok(bits) => bits,
+                        Err(err) => err,
+                    };
+                }
             }
         }
 
@@ -925,24 +994,23 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
         };
         if let Some(code_bits) = code_bits_opt {
             if !obj_from_bits(code_bits).is_none() {
-                let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
-                    Ok(Some(bits)) => bits,
-                    Ok(None) => MoltObject::none().bits(),
-                    Err(err) => err,
-                };
-                dec_ref_bits(_py, code_bits);
-                if !obj_from_bits(out).is_none() {
-                    return out;
+                if !is_builtin_fn {
+                    let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
+                        Ok(Some(bits)) => bits,
+                        Ok(None) => MoltObject::none().bits(),
+                        Err(err) => err,
+                    };
+                    dec_ref_bits(_py, code_bits);
+                    if !obj_from_bits(out).is_none() {
+                        return out;
+                    }
+                } else {
+                    dec_ref_bits(_py, code_bits);
                 }
             }
         }
 
-        let sig_from_text =
-            match signature_payload_from_text_attr(_py, obj_bits, b"__text_signature__") {
-                Ok(value) => value,
-                Err(err) => return err,
-            };
-        sig_from_text.unwrap_or_else(|| MoltObject::none().bits())
+        MoltObject::none().bits()
     })
 }
 

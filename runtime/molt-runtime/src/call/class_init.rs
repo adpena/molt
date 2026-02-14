@@ -923,7 +923,11 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                     };
                     return Some(raise_exception::<_>(_py, "RuntimeError", msg));
                 }
-                return Some(raise_exception::<_>(_py, "TypeError", "super() expects 0 or 2 arguments"));
+                return Some(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "super() expects 0 or 2 arguments",
+                ));
             }
             // `type(...)` needs the builder-aware path in `call_type_via_bind`
             // for CPython-compatible 1-arg and 3-arg semantics.

@@ -18,6 +18,7 @@ _MOLT_SITE_HELP1 = _require_intrinsic("molt_site_help1", globals())
 _MOLT_SITE_CREDITS = _require_intrinsic("molt_site_credits", globals())
 _MOLT_SITE_LICENSE = _require_intrinsic("molt_site_license", globals())
 _MOLT_SITE_COPYRIGHT = _require_intrinsic("molt_site_copyright", globals())
+_MOLT_SITE_QUITTER_CALL = _require_intrinsic("molt_site_quitter_call", globals())
 
 
 class _Helper:
@@ -49,3 +50,31 @@ credits = _Printer(_MOLT_SITE_CREDITS)
 copyright = _Printer(_MOLT_SITE_COPYRIGHT)
 
 license = _Printer(_MOLT_SITE_LICENSE)
+
+
+class Quitter:
+    # CPython: `quit` / `exit` are instances of this type.
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __repr__(self) -> str:
+        # Keep this deterministic and CPython-shaped enough for tooling.
+        return f"Use {self._name}() or Ctrl-D (i.e. EOF) to exit"
+
+    def __call__(self, code: object = None) -> None:
+        _MOLT_SITE_QUITTER_CALL(code)
+        return None
+
+
+try:
+    # Keep `inspect.signature` parity for callable instances.
+    _Helper.__call__.__text_signature__ = "(self, *args, **kwds)"  # type: ignore[attr-defined]
+    Quitter.__call__.__text_signature__ = "(self, code=None)"  # type: ignore[attr-defined]
+except Exception as _exc:  # noqa: BLE001
+    raise RuntimeError(
+        "_sitebuiltins missing __text_signature__ support for inspect.signature parity"
+    ) from _exc
+
+
+quit = Quitter("quit")
+exit = Quitter("exit")
