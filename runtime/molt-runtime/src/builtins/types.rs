@@ -817,20 +817,26 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let type_obj = obj_from_bits(type_bits);
         let Some(type_ptr) = type_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "super() arg 1 must be a type");
+            let got = type_name(_py, type_obj);
+            let msg = format!("super() argument 1 must be a type, not {got}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(type_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "super() arg 1 must be a type");
+                let got = type_name(_py, type_obj);
+                let msg = format!("super() argument 1 must be a type, not {got}");
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
         let obj = obj_from_bits(obj_bits);
+        // CPython allows `super(type)` and `super(type, None)` as the "unbound" form.
         if obj.is_none() || obj_bits == 0 {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "super() arg 2 must be an instance or subtype of type",
-            );
+            let ptr = alloc_super_obj(_py, type_bits, MoltObject::none().bits());
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
         }
         let obj_is_type = if let Some(obj_ptr) = obj.as_ptr() {
             unsafe { object_type_id(obj_ptr) == TYPE_ID_TYPE }
@@ -846,7 +852,7 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
-                "super() arg 2 must be an instance or subtype of type",
+                "super(type, obj): obj must be an instance or subtype of type",
             );
         }
         let ptr = alloc_super_obj(_py, type_bits, obj_bits);

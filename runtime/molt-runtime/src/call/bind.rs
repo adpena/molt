@@ -6,15 +6,17 @@ use crate::{
     FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
     GEN_CONTROL_SIZE, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject,
     PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
-    TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    TYPE_ID_CODE, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    alloc_class_obj,
     alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
     alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
     bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
-    code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place,
+    code_argcount, code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method,
+    dict_get_in_place,
     dict_get_method, dict_order, dict_pop_method, dict_setdefault_method, dict_update_apply,
     dict_update_method, dict_update_set_in_place, dict_update_set_via_store, exception_class_bits,
     exception_pending, exception_type_bits_from_name, function_arity, function_attr_bits,
@@ -36,6 +38,7 @@ use crate::{
     molt_iter, molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop,
     molt_list_sort, molt_memoryview_cast, molt_object_init, molt_object_init_subclass,
     molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
+    molt_super_new,
     molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
     molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
     molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
@@ -230,6 +233,48 @@ unsafe fn call_type_with_builder(
             } else {
                 (&[] as &[u64], &[] as &[u64], &[] as &[u64])
             };
+
+            // `super` is a builtin type (CPython parity). We must handle it here so that
+            // indirect/bound calls like `SYMBOL = builtins.super; SYMBOL()` use CPython-shaped
+            // RuntimeError/TypeError behavior instead of falling through to generic type-call.
+            if class_bits == builtins.super_type {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(_py, "TypeError", "super() takes no keyword arguments");
+                }
+                match pos_args.len() {
+                    0 => {
+                        // CPython distinguishes between calling from module scope (no args at all)
+                        // and calling from a function/method frame without a `__class__` cell.
+                        let has_pos_args = FRAME_STACK.with(|stack| {
+                            let frame = stack.borrow().last().copied();
+                            let Some(frame) = frame else {
+                                return false;
+                            };
+                            let Some(code_ptr) = obj_from_bits(frame.code_bits).as_ptr() else {
+                                return false;
+                            };
+                            unsafe {
+                                if object_type_id(code_ptr) != TYPE_ID_CODE {
+                                    return false;
+                                }
+                                code_argcount(code_ptr) > 0
+                            }
+                        });
+                        let msg = if has_pos_args {
+                            "super(): __class__ cell not found"
+                        } else {
+                            "super(): no arguments"
+                        };
+                        return raise_exception::<_>(_py, "RuntimeError", msg);
+                    }
+                    1 => return molt_super_new(pos_args[0], MoltObject::none().bits()),
+                    2 => return molt_super_new(pos_args[0], pos_args[1]),
+                    n => {
+                        let msg = format!("super() expected at most 2 arguments, got {n}");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                }
+            }
 
             if class_bits == builtins.enumerate {
                 if pos_args.is_empty() {

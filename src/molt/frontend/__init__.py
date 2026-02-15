@@ -609,7 +609,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "_molt_path_mkdir": BuiltinFuncSpec("molt_path_mkdir", ("path",)),
     "_molt_path_unlink": BuiltinFuncSpec("molt_path_unlink", ("path",)),
     "_molt_path_rmdir": BuiltinFuncSpec("molt_path_rmdir", ("path",)),
-    "vars": BuiltinFuncSpec("molt_vars_builtin", ("obj",)),
+    # CPython parity: vars() is equivalent to locals() with no arguments.
+    "vars": BuiltinFuncSpec("molt_vars_builtin", ("obj",), (_MOLT_MISSING,)),
     "_molt_heapq_heapify": BuiltinFuncSpec("molt_heapq_heapify", ("list_obj",)),
     "_molt_heapq_heappush": BuiltinFuncSpec(
         "molt_heapq_heappush", ("list_obj", "item")

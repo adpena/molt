@@ -68,7 +68,11 @@ pub(crate) struct BuiltinClasses {
     pub(crate) dict_keyiterator: u64,
     pub(crate) dict_valueiterator: u64,
     pub(crate) dict_itemiterator: u64,
+    pub(crate) dict_reversekeyiterator: u64,
+    pub(crate) dict_reversevalueiterator: u64,
+    pub(crate) dict_reverseitemiterator: u64,
     pub(crate) list_iterator: u64,
+    pub(crate) list_reverseiterator: u64,
     pub(crate) range_iterator: u64,
     pub(crate) longrange_iterator: u64,
     pub(crate) set_iterator: u64,
@@ -147,7 +151,11 @@ impl BuiltinClasses {
             self.dict_keyiterator,
             self.dict_valueiterator,
             self.dict_itemiterator,
+            self.dict_reversekeyiterator,
+            self.dict_reversevalueiterator,
+            self.dict_reverseitemiterator,
             self.list_iterator,
+            self.list_reverseiterator,
             self.range_iterator,
             self.longrange_iterator,
             self.set_iterator,
@@ -402,7 +410,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let dict_keyiterator = make_builtin_class(_py, "dict_keyiterator");
     let dict_valueiterator = make_builtin_class(_py, "dict_valueiterator");
     let dict_itemiterator = make_builtin_class(_py, "dict_itemiterator");
+    let dict_reversekeyiterator = make_builtin_class(_py, "dict_reversekeyiterator");
+    let dict_reversevalueiterator = make_builtin_class(_py, "dict_reversevalueiterator");
+    let dict_reverseitemiterator = make_builtin_class(_py, "dict_reverseitemiterator");
     let list_iterator = make_builtin_class(_py, "list_iterator");
+    let list_reverseiterator = make_builtin_class(_py, "list_reverseiterator");
     let range_iterator = make_builtin_class(_py, "range_iterator");
     let longrange_iterator = make_builtin_class(_py, "longrange_iterator");
     let set_iterator = make_builtin_class(_py, "set_iterator");
@@ -477,7 +489,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             dict_keyiterator,
             dict_valueiterator,
             dict_itemiterator,
+            dict_reversekeyiterator,
+            dict_reversevalueiterator,
+            dict_reverseitemiterator,
             list_iterator,
+            list_reverseiterator,
             range_iterator,
             longrange_iterator,
             set_iterator,
@@ -573,7 +589,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(dict_keyiterator, object);
     let _ = molt_class_set_base(dict_valueiterator, object);
     let _ = molt_class_set_base(dict_itemiterator, object);
+    let _ = molt_class_set_base(dict_reversekeyiterator, object);
+    let _ = molt_class_set_base(dict_reversevalueiterator, object);
+    let _ = molt_class_set_base(dict_reverseitemiterator, object);
     let _ = molt_class_set_base(list_iterator, object);
+    let _ = molt_class_set_base(list_reverseiterator, object);
     let _ = molt_class_set_base(range_iterator, object);
     let _ = molt_class_set_base(longrange_iterator, object);
     let _ = molt_class_set_base(set_iterator, object);
@@ -734,7 +754,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         dict_keyiterator,
         dict_valueiterator,
         dict_itemiterator,
+        dict_reversekeyiterator,
+        dict_reversevalueiterator,
+        dict_reverseitemiterator,
         list_iterator,
+        list_reverseiterator,
         range_iterator,
         longrange_iterator,
         set_iterator,
@@ -849,7 +873,11 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.dict_keyiterator,
             builtins.dict_valueiterator,
             builtins.dict_itemiterator,
+            builtins.dict_reversekeyiterator,
+            builtins.dict_reversevalueiterator,
+            builtins.dict_reverseitemiterator,
             builtins.list_iterator,
+            builtins.list_reverseiterator,
             builtins.range_iterator,
             builtins.longrange_iterator,
             builtins.set_iterator,
@@ -934,6 +962,10 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.dict_valueiterator
         || bits == builtins.dict_itemiterator
         || bits == builtins.list_iterator
+        || bits == builtins.dict_reversekeyiterator
+        || bits == builtins.dict_reversevalueiterator
+        || bits == builtins.dict_reverseitemiterator
+        || bits == builtins.list_reverseiterator
         || bits == builtins.range_iterator
         || bits == builtins.longrange_iterator
         || bits == builtins.set_iterator
@@ -1036,6 +1068,22 @@ pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
             "slice" => builtins.slice,
             "memoryview" => builtins.memoryview,
             "enumerate" => builtins.enumerate,
+            "bytes_iterator" => builtins.bytes_iterator,
+            "bytearray_iterator" => builtins.bytearray_iterator,
+            "dict_keyiterator" => builtins.dict_keyiterator,
+            "dict_valueiterator" => builtins.dict_valueiterator,
+            "dict_itemiterator" => builtins.dict_itemiterator,
+            "dict_reversekeyiterator" => builtins.dict_reversekeyiterator,
+            "dict_reversevalueiterator" => builtins.dict_reversevalueiterator,
+            "dict_reverseitemiterator" => builtins.dict_reverseitemiterator,
+            "list_iterator" => builtins.list_iterator,
+            "list_reverseiterator" => builtins.list_reverseiterator,
+            "range_iterator" => builtins.range_iterator,
+            "longrange_iterator" => builtins.longrange_iterator,
+            "set_iterator" => builtins.set_iterator,
+            "str_iterator" => builtins.str_iterator,
+            "str_ascii_iterator" => builtins.str_ascii_iterator,
+            "tuple_iterator" => builtins.tuple_iterator,
             "reversed" => builtins.reversed,
             "zip" => builtins.zip,
             "map" => builtins.map,
