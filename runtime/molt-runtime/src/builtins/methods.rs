@@ -4,6 +4,25 @@ use std::sync::atomic::AtomicU64;
 
 use crate::*;
 
+static OBJECT_DIR: AtomicU64 = AtomicU64::new(0);
+static OBJECT_FORMAT: AtomicU64 = AtomicU64::new(0);
+static OBJECT_HASH: AtomicU64 = AtomicU64::new(0);
+static OBJECT_GETSTATE: AtomicU64 = AtomicU64::new(0);
+static OBJECT_LT: AtomicU64 = AtomicU64::new(0);
+static OBJECT_LE: AtomicU64 = AtomicU64::new(0);
+static OBJECT_GT: AtomicU64 = AtomicU64::new(0);
+static OBJECT_GE: AtomicU64 = AtomicU64::new(0);
+
+static INT_ABS: AtomicU64 = AtomicU64::new(0);
+static INT_ADD: AtomicU64 = AtomicU64::new(0);
+static INT_AND: AtomicU64 = AtomicU64::new(0);
+static INT_BOOL: AtomicU64 = AtomicU64::new(0);
+static INT_CEIL: AtomicU64 = AtomicU64::new(0);
+static INT_DIVMOD: AtomicU64 = AtomicU64::new(0);
+
+static STR_ADD: AtomicU64 = AtomicU64::new(0);
+static STR_GETITEM: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn builtin_func_bits(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
@@ -225,6 +244,18 @@ pub(crate) fn slice_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "__add__" => Some(builtin_func_bits(
+            _py,
+            &STR_ADD,
+            fn_addr!(molt_str_add_method),
+            2,
+        )),
+        "__getitem__" => Some(builtin_func_bits(
+            _py,
+            &STR_GETITEM,
+            fn_addr!(molt_getitem_method),
+            2,
+        )),
         "__str__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_str,
@@ -746,6 +777,42 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
 
 pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "__abs__" => Some(builtin_func_bits(
+            _py,
+            &INT_ABS,
+            fn_addr!(molt_int_abs_method),
+            1,
+        )),
+        "__add__" => Some(builtin_func_bits(
+            _py,
+            &INT_ADD,
+            fn_addr!(molt_int_add_method),
+            2,
+        )),
+        "__and__" => Some(builtin_func_bits(
+            _py,
+            &INT_AND,
+            fn_addr!(molt_int_and_method),
+            2,
+        )),
+        "__bool__" => Some(builtin_func_bits(
+            _py,
+            &INT_BOOL,
+            fn_addr!(molt_int_bool_method),
+            1,
+        )),
+        "__ceil__" => Some(builtin_func_bits(
+            _py,
+            &INT_CEIL,
+            fn_addr!(molt_int_ceil_method),
+            1,
+        )),
+        "__divmod__" => Some(builtin_func_bits(
+            _py,
+            &INT_DIVMOD,
+            fn_addr!(molt_int_divmod_method),
+            2,
+        )),
         "__new__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.int_new,
@@ -997,6 +1064,9 @@ pub(crate) fn builtin_class_method_bits(
     {
         return file_method_bits(_py, name);
     }
+    if is_builtin_class_bits(_py, class_bits) {
+        return object_method_bits(_py, name);
+    }
     None
 }
 
@@ -1062,6 +1132,54 @@ pub(crate) fn type_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "__dir__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_DIR,
+            fn_addr!(molt_object_dir_method),
+            1,
+        )),
+        "__format__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_FORMAT,
+            fn_addr!(molt_object_format_method),
+            2,
+        )),
+        "__hash__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_HASH,
+            fn_addr!(molt_hash_builtin),
+            1,
+        )),
+        "__getstate__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_GETSTATE,
+            fn_addr!(molt_object_getstate),
+            1,
+        )),
+        "__lt__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_LT,
+            fn_addr!(molt_object_lt_method),
+            2,
+        )),
+        "__le__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_LE,
+            fn_addr!(molt_object_le_method),
+            2,
+        )),
+        "__gt__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_GT,
+            fn_addr!(molt_object_gt_method),
+            2,
+        )),
+        "__ge__" => Some(builtin_func_bits(
+            _py,
+            &OBJECT_GE,
+            fn_addr!(molt_object_ge_method),
+            2,
+        )),
         "__getattribute__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.object_getattribute,

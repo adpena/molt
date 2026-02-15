@@ -555,18 +555,28 @@ pub(crate) unsafe fn dir_collect_from_instance(
 ) {
     unsafe {
         crate::gil_assert();
-        let dict_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
-        let Some(dict_bits) = attr_lookup_ptr_allow_missing(_py, obj_ptr, dict_name_bits) else {
+        // CPython's `dir()` includes instance `__dict__` keys, but it must not call
+        // `getattr(obj, "__dict__")` (which can run arbitrary user code and/or recurse).
+        //
+        // Instead, consult the runtime's internal dict storage for the handful of object
+        // categories that actually have one.
+        let dict_bits = match object_type_id(obj_ptr) {
+            TYPE_ID_OBJECT => instance_dict_bits(obj_ptr),
+            TYPE_ID_DATACLASS => dataclass_dict_bits(obj_ptr),
+            TYPE_ID_EXCEPTION => exception_dict_bits(obj_ptr),
+            TYPE_ID_MODULE => module_dict_bits(obj_ptr),
+            _ => 0,
+        };
+        if dict_bits == 0 || obj_from_bits(dict_bits).is_none() {
+            return;
+        }
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
             return;
         };
-        let dict_obj = obj_from_bits(dict_bits);
-        if let Some(dict_ptr) = dict_obj.as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                dir_collect_from_dict_ptr(dict_ptr, seen, out);
-            }
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
         }
-        dec_ref_bits(_py, dict_bits);
+        dir_collect_from_dict_ptr(dict_ptr, seen, out);
     }
 }
 
