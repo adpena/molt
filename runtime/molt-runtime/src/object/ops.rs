@@ -12193,6 +12193,296 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
+    unsafe {
+        crate::gil_assert();
+
+        let mut names: Vec<u64> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut extra_owned: Vec<u64> = Vec::new();
+
+        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+            let type_id = object_type_id(obj_ptr);
+            if type_id == TYPE_ID_TYPE {
+                dir_collect_from_class_bits(obj_bits, &mut seen, &mut names);
+            } else {
+                dir_collect_from_instance(_py, obj_ptr, &mut seen, &mut names);
+                dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+            }
+        } else {
+            dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+        }
+
+        // Our runtime keeps many builtin methods in fast method caches rather than in
+        // `type.__dict__`. CPython's dir() includes those names, so ensure they're visible.
+        let mut add_name = |name: &[u8]| -> bool {
+            let Ok(name_str) = std::str::from_utf8(name) else {
+                return true;
+            };
+            if !seen.insert(name_str.to_string()) {
+                return true;
+            }
+            let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
+                return false;
+            };
+            extra_owned.push(bits);
+            names.push(bits);
+            true
+        };
+
+        // Object surface (ordering-critical names appear early in CPython's sorted dir()).
+        for name in [
+            &b"__class__"[..],
+            &b"__delattr__"[..],
+            &b"__dir__"[..],
+            &b"__doc__"[..],
+            &b"__eq__"[..],
+            &b"__format__"[..],
+            &b"__ge__"[..],
+            &b"__getattribute__"[..],
+            &b"__getstate__"[..],
+            &b"__gt__"[..],
+            &b"__hash__"[..],
+            &b"__init__"[..],
+            &b"__init_subclass__"[..],
+            &b"__le__"[..],
+            &b"__lt__"[..],
+            &b"__ne__"[..],
+            &b"__new__"[..],
+            &b"__repr__"[..],
+            &b"__setattr__"[..],
+            &b"__str__"[..],
+        ] {
+            if !add_name(name) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+
+        let builtins = builtin_classes(_py);
+        let target_class_bits = if maybe_ptr_from_bits(obj_bits)
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        {
+            obj_bits
+        } else {
+            type_of_bits(_py, obj_bits)
+        };
+
+        if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+            for name in [
+                &b"__abs__"[..],
+                &b"__add__"[..],
+                &b"__and__"[..],
+                &b"__bool__"[..],
+                &b"__ceil__"[..],
+                &b"__divmod__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.str {
+            for name in [&b"__add__"[..], &b"__contains__"[..], &b"__getitem__"[..]] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.list {
+            for name in [
+                &b"__add__"[..],
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.dict {
+            for name in [
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+                &b"__getitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.none_type {
+            if !add_name(&b"__bool__"[..]) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+
+        // Hide names that CPython deliberately excludes from dir() output (even though the
+        // attributes exist).
+        let hide_module = is_builtin_class_bits(_py, target_class_bits);
+        names.retain(|&bits| {
+            let Some(name) = string_obj_to_owned(obj_from_bits(bits)) else {
+                return true;
+            };
+            if name == "__mro__" || name == "__bases__" || name == "__text_signature__" {
+                return false;
+            }
+            if name.starts_with("__molt_") {
+                return false;
+            }
+            if hide_module && name == "__module__" {
+                return false;
+            }
+            true
+        });
+
+        let list_ptr = alloc_list(_py, &names);
+        for owned in extra_owned {
+            dec_ref_bits(_py, owned);
+        }
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let none_bits = MoltObject::none().bits();
+        let reverse_bits = MoltObject::from_int(0).bits();
+        let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        list_bits
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_dir_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { unsafe { dir_default_collect(_py, self_bits) } })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let spec_obj = obj_from_bits(spec_bits);
+        let Some(spec) = string_obj_to_owned(spec_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "format_spec must be str");
+        };
+        if spec.is_empty() {
+            return molt_str_from_obj(self_bits);
+        }
+        let type_label = type_name(_py, obj_from_bits(self_bits));
+        let msg = format!("unsupported format string passed to {type_label}.__format__");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_lt_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_le_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_gt_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_ge_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_bool_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_bool(is_truthy(_py, obj_from_bits(self_bits))).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        inc_ref_bits(_py, self_bits);
+        self_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_abs_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { molt_abs_builtin(self_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_add_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_add(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_and_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_bit_and(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_divmod_builtin(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_add_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.str {
+            return not_implemented_bits(_py);
+        }
+        molt_add(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let missing = missing_bits(_py);
@@ -12232,16 +12522,62 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
         let _obj = obj_from_bits(obj_bits);
         if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
             unsafe {
-                if let Some(dir_bits) = attr_name_bits_from_bytes(_py, b"__dir__") {
-                    if let Some(method_bits) = attr_lookup_ptr_allow_missing(_py, obj_ptr, dir_bits)
-                    {
-                        let res_bits = call_callable0(_py, method_bits);
-                        dec_ref_bits(_py, method_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
+                // CPython's dir() respects user-defined `__dir__`, but it must *not* dispatch
+                // to our internal fast-path method-cache implementation (which would recurse
+                // back into this builtin).
+                //
+                // So: only consult instance `__dict__` and the class `__dict__` MRO chain,
+                // skipping method caches entirely.
+                static DIR_NAME: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let dir_name_bits = intern_static_name(_py, &DIR_NAME, b"__dir__");
+                let mut override_bits: u64 = 0;
+
+                let dict_bits = instance_dict_bits(obj_ptr);
+                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits) {
+                                inc_ref_bits(_py, val_bits);
+                                override_bits = val_bits;
+                            }
                         }
-                        return res_bits;
                     }
+                }
+
+                if override_bits == 0 {
+                    let class_bits = type_of_bits(_py, obj_bits);
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                        if let Some(attr_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
+                        {
+                            let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
+                            dec_ref_bits(_py, attr_bits);
+
+                            if exception_pending(_py) {
+                                // `descriptor_bind` can create a temporary bound object; avoid leaks.
+                                if let Some(bound_bits) = bound_opt {
+                                    if !obj_from_bits(bound_bits).is_none() {
+                                        dec_ref_bits(_py, bound_bits);
+                                    }
+                                }
+                                return MoltObject::none().bits();
+                            }
+
+                            if let Some(bound_bits) = bound_opt {
+                                override_bits = bound_bits;
+                            }
+                        }
+                    }
+                }
+
+                if override_bits != 0 && !obj_from_bits(override_bits).is_none() {
+                    let res_bits = call_callable0(_py, override_bits);
+                    dec_ref_bits(_py, override_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return res_bits;
                 }
                 let type_id = object_type_id(obj_ptr);
                 if type_id == TYPE_ID_TYPE {
@@ -12258,39 +12594,144 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
         }
 
         // Our runtime keeps many builtin methods in fast method caches rather than in
-        // `type.__dict__`. CPython's dir() includes those names (via slot-based lookup),
-        // so ensure they're visible for parity.
-        //
-        // Note: these names are stable and exist on all objects in CPython 3.12+.
-        for name in [
-            &b"__getattribute__"[..],
-            &b"__new__"[..],
-            &b"__init__"[..],
-            &b"__init_subclass__"[..],
-            &b"__setattr__"[..],
-            &b"__delattr__"[..],
-            &b"__eq__"[..],
-            &b"__ne__"[..],
-            &b"__repr__"[..],
-            &b"__str__"[..],
-        ] {
+        // `type.__dict__`. CPython's dir() includes those names, so ensure they're visible.
+        let mut add_name = |name: &[u8]| -> bool {
             let Ok(name_str) = std::str::from_utf8(name) else {
-                continue;
+                return true;
             };
             if !seen.insert(name_str.to_string()) {
-                continue;
+                return true;
             }
             unsafe {
                 let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
-                    for owned in extra_owned {
-                        dec_ref_bits(_py, owned);
-                    }
-                    return MoltObject::none().bits();
+                    return false;
                 };
                 extra_owned.push(bits);
                 names.push(bits);
             }
+            true
+        };
+
+        // Object surface (ordering-critical names appear early in CPython's sorted dir()).
+        for name in [
+            &b"__class__"[..],
+            &b"__delattr__"[..],
+            &b"__dir__"[..],
+            &b"__doc__"[..],
+            &b"__eq__"[..],
+            &b"__format__"[..],
+            &b"__ge__"[..],
+            &b"__getattribute__"[..],
+            &b"__getstate__"[..],
+            &b"__gt__"[..],
+            &b"__hash__"[..],
+            &b"__init__"[..],
+            &b"__init_subclass__"[..],
+            &b"__le__"[..],
+            &b"__lt__"[..],
+            &b"__ne__"[..],
+            &b"__new__"[..],
+            &b"__repr__"[..],
+            &b"__setattr__"[..],
+            &b"__str__"[..],
+        ] {
+            if !add_name(name) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
         }
+
+        let builtins = builtin_classes(_py);
+        let target_class_bits = if maybe_ptr_from_bits(obj_bits)
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        {
+            obj_bits
+        } else {
+            unsafe { type_of_bits(_py, obj_bits) }
+        };
+
+        if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+            for name in [
+                &b"__abs__"[..],
+                &b"__add__"[..],
+                &b"__and__"[..],
+                &b"__bool__"[..],
+                &b"__ceil__"[..],
+                &b"__divmod__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.str {
+            for name in [&b"__add__"[..], &b"__contains__"[..], &b"__getitem__"[..]] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.list {
+            for name in [
+                &b"__add__"[..],
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.dict {
+            for name in [
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+                &b"__getitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.none_type {
+            if !add_name(&b"__bool__"[..]) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+
+        // Hide names that CPython deliberately excludes from dir() output (even though the
+        // attributes exist).
+        let hide_module = is_builtin_class_bits(_py, target_class_bits);
+        names.retain(|&bits| {
+            let Some(name) = string_obj_to_owned(obj_from_bits(bits)) else {
+                return true;
+            };
+            if name == "__mro__" || name == "__bases__" || name == "__text_signature__" {
+                return false;
+            }
+            if name.starts_with("__molt_") {
+                return false;
+            }
+            if hide_module && name == "__module__" {
+                return false;
+            }
+            true
+        });
 
         let list_ptr = alloc_list(_py, &names);
         for owned in extra_owned {
