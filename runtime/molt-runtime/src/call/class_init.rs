@@ -895,9 +895,6 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
             // through to the generic type-call path.
             let builtins = builtin_classes(_py);
             if call_bits == builtins.super_type {
-                if args.len() == 2 {
-                    return Some(molt_super_new(args[0], args[1]));
-                }
                 if args.is_empty() {
                     // CPython distinguishes between calling from module scope (no args at all)
                     // and calling from a function/method frame without a `__class__` cell.
@@ -923,11 +920,14 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                     };
                     return Some(raise_exception::<_>(_py, "RuntimeError", msg));
                 }
-                return Some(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "super() expects 0 or 2 arguments",
-                ));
+                if args.len() == 1 {
+                    return Some(molt_super_new(args[0], MoltObject::none().bits()));
+                }
+                if args.len() == 2 {
+                    return Some(molt_super_new(args[0], args[1]));
+                }
+                let msg = format!("super() expected at most 2 arguments, got {}", args.len());
+                return Some(raise_exception::<_>(_py, "TypeError", &msg));
             }
             // `type(...)` needs the builder-aware path in `call_type_via_bind`
             // for CPython-compatible 1-arg and 3-arg semantics.

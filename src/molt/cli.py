@@ -5301,6 +5301,37 @@ def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
     return None
 
 
+def _darwin_binary_magic_error(binary_path: Path) -> str | None:
+    """Return an error string when a purported Mach-O binary is obviously invalid.
+
+    This is a hard correctness check: we should not claim a successful build when the
+    linker returned 0 but produced a non-Mach-O output file (observed as all-zero data
+    artifacts under some linker/toolchain configurations).
+    """
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        header = binary_path.read_bytes()[:4]
+    except OSError as exc:
+        return f"Failed to read output binary: {exc}"
+    if len(header) < 4:
+        return "Output binary is truncated (missing Mach-O header)."
+    magic = int.from_bytes(header, "big", signed=False)
+    # Accept thin and fat Mach-O headers (32/64-bit). We only need to reject
+    # obviously-invalid outputs (e.g. all-zero placeholders).
+    if magic in {
+        0xFEEDFACE,
+        0xFEEDFACF,
+        0xCEFAEDFE,
+        0xCFFAEDFE,
+        0xCAFEBABE,
+        0xBEBAFECA,
+    }:
+        return None
+    return f"Output binary is not Mach-O (header=0x{magic:08x})."
+
+
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
 ) -> tuple[Path, Path, Path]:
@@ -8424,6 +8455,53 @@ int main(int argc, char** argv) {
                     f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
                 )
                 link_process = retry_process
+
+    if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+        magic_error = _darwin_binary_magic_error(output_binary)
+        if (
+            magic_error is not None
+            and linker_hint is not None
+            and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
+        ):
+            retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
+            if retry_cmd != link_cmd:
+                try:
+                    retry_process = subprocess.run(
+                        retry_cmd,
+                        capture_output=json_output,
+                        text=True,
+                        timeout=link_timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    return _fail("Linker timed out", json_output, command="build")
+                if retry_process.returncode == 0:
+                    retry_magic_error = _darwin_binary_magic_error(output_binary)
+                    if retry_magic_error is None:
+                        warnings.append(
+                            "Linker fallback: "
+                            f"-fuse-ld={linker_hint} produced invalid output; "
+                            "retried default linker."
+                        )
+                        link_process = retry_process
+                        magic_error = None
+                    else:
+                        link_process = retry_process
+                        magic_error = retry_magic_error
+                else:
+                    link_process = retry_process
+        if magic_error is not None:
+            failure_stderr = (
+                (link_process.stderr or "")
+                + "\nGenerated binary failed Mach-O header validation.\n"
+                + magic_error
+                + "\n"
+            )
+            link_process = subprocess.CompletedProcess(
+                args=link_cmd,
+                returncode=1,
+                stdout=link_process.stdout,
+                stderr=failure_stderr,
+            )
 
     if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
         dyld_validation_error = _darwin_binary_imports_validation_error(output_binary)

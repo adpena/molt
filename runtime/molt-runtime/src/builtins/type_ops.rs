@@ -196,7 +196,40 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 }
                 TYPE_ID_ENUMERATE => builtins.enumerate,
                 TYPE_ID_CALL_ITER => builtins.callable_iterator,
-                TYPE_ID_REVERSED => builtins.reversed,
+                TYPE_ID_REVERSED => {
+                    // CPython exposes distinct reverse iterator types for some builtins
+                    // (notably list_reverseiterator and the dict reverse iterators). Our
+                    // reversed object stores the target, so resolve the public type name from
+                    // that target.
+                    let target_bits = reversed_target_bits(ptr);
+                    let target_obj = obj_from_bits(target_bits);
+                    if let Some(target_ptr) = target_obj.as_ptr() {
+                        match object_type_id(target_ptr) {
+                            TYPE_ID_LIST => builtins.list_reverseiterator,
+                            TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => {
+                                builtins.dict_reversekeyiterator
+                            }
+                            TYPE_ID_DICT_VALUES_VIEW => builtins.dict_reversevalueiterator,
+                            TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_reverseitemiterator,
+                            TYPE_ID_RANGE => {
+                                let start_bits = range_start_bits(target_ptr);
+                                let stop_bits = range_stop_bits(target_ptr);
+                                let step_bits = range_step_bits(target_ptr);
+                                if bigint_ptr_from_bits(start_bits).is_some()
+                                    || bigint_ptr_from_bits(stop_bits).is_some()
+                                    || bigint_ptr_from_bits(step_bits).is_some()
+                                {
+                                    builtins.longrange_iterator
+                                } else {
+                                    builtins.range_iterator
+                                }
+                            }
+                            _ => builtins.reversed,
+                        }
+                    } else {
+                        builtins.reversed
+                    }
+                }
                 TYPE_ID_ZIP => builtins.zip,
                 TYPE_ID_MAP => builtins.map,
                 TYPE_ID_FILTER => builtins.filter,

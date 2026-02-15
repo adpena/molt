@@ -2990,6 +2990,8 @@ def run_diff(
                             payload["stdout"],
                             payload["stderr"],
                         )
+                    if fail_fast and status == "fail":
+                        break
     else:
         if log_dir is not None:
             try:
