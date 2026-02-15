@@ -1101,17 +1101,17 @@ else:
                 self.function(*self.args, **self.kwargs)
             self.finished.set()
 
-    def _registry_current_record() -> (
-        tuple[str, bool, int | None, int | None, bool, bool]
-    ):
+    def _registry_current_record() -> tuple[
+        str, bool, int | None, int | None, bool, bool
+    ]:
         record = _thread_registry_current()
         if record is None:
             return ("MainThread", False, get_ident(), get_native_id(), True, True)
         return _parse_registry_record(record)
 
-    def _registry_snapshot_records() -> (
-        list[tuple[str, bool, int | None, int | None, bool, bool]]
-    ):
+    def _registry_snapshot_records() -> list[
+        tuple[str, bool, int | None, int | None, bool, bool]
+    ]:
         records = _thread_registry_snapshot()
         if not isinstance(records, list):
             raise RuntimeError("invalid thread registry snapshot")
