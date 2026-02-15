@@ -202,15 +202,9 @@ class AbstractAsyncContextManager(_abc.ABC):
         return NotImplemented
 
 
-class ContextDecorator(_abc.ABC):
+class ContextDecorator:
     def _recreate_cm(self) -> "ContextDecorator":
         return self
-
-    @_abc.abstractmethod
-    def __enter__(self) -> Any: ...
-
-    @_abc.abstractmethod
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool: ...
 
     def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
         def _inner(*args: Any, **kwargs: Any) -> Any:

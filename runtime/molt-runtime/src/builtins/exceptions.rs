@@ -2398,14 +2398,21 @@ pub(crate) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
             let type_id = object_type_id(args_ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
                 let elems = seq_vec_ref(args_ptr);
-                if let Some(first) = elems.first() {
-                    errno_val = to_i64(obj_from_bits(*first));
-                }
-                if let Some(second) = elems.get(1) {
-                    strerror_bits = *second;
-                }
-                if let Some(third) = elems.get(2) {
-                    filename_bits = *third;
+                // CPython: `OSError(errno, strerror, filename, ...)` interprets positional args
+                // as `(errno, strerror[, filename[, winerror[, filename2]]])`, and uses those to
+                // populate `errno/strerror/filename` and to choose a more specific subclass.
+                //
+                // When *only one* positional argument is provided (e.g. `OSError(3)`), CPython
+                // does *not* interpret that value as `errno`; the `errno/strerror/filename`
+                // attributes remain `None`.
+                if elems.len() >= 2 {
+                    errno_val = elems.first().and_then(|first| to_i64(obj_from_bits(*first)));
+                    if let Some(second) = elems.get(1) {
+                        strerror_bits = *second;
+                    }
+                    if let Some(third) = elems.get(2) {
+                        filename_bits = *third;
+                    }
                 }
             }
         }
