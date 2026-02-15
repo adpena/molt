@@ -63,6 +63,18 @@ pub(crate) struct BuiltinClasses {
     pub(crate) async_generator: u64,
     pub(crate) iterator: u64,
     pub(crate) callable_iterator: u64,
+    pub(crate) bytes_iterator: u64,
+    pub(crate) bytearray_iterator: u64,
+    pub(crate) dict_keyiterator: u64,
+    pub(crate) dict_valueiterator: u64,
+    pub(crate) dict_itemiterator: u64,
+    pub(crate) list_iterator: u64,
+    pub(crate) range_iterator: u64,
+    pub(crate) longrange_iterator: u64,
+    pub(crate) set_iterator: u64,
+    pub(crate) str_iterator: u64,
+    pub(crate) str_ascii_iterator: u64,
+    pub(crate) tuple_iterator: u64,
     pub(crate) enumerate: u64,
     pub(crate) reversed: u64,
     pub(crate) zip: u64,
@@ -130,6 +142,18 @@ impl BuiltinClasses {
             self.async_generator,
             self.iterator,
             self.callable_iterator,
+            self.bytes_iterator,
+            self.bytearray_iterator,
+            self.dict_keyiterator,
+            self.dict_valueiterator,
+            self.dict_itemiterator,
+            self.list_iterator,
+            self.range_iterator,
+            self.longrange_iterator,
+            self.set_iterator,
+            self.str_iterator,
+            self.str_ascii_iterator,
+            self.tuple_iterator,
             self.enumerate,
             self.reversed,
             self.zip,
@@ -373,6 +397,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let async_generator = make_builtin_class(_py, "async_generator");
     let iterator = make_builtin_class(_py, "iterator");
     let callable_iterator = make_builtin_class(_py, "callable_iterator");
+    let bytes_iterator = make_builtin_class(_py, "bytes_iterator");
+    let bytearray_iterator = make_builtin_class(_py, "bytearray_iterator");
+    let dict_keyiterator = make_builtin_class(_py, "dict_keyiterator");
+    let dict_valueiterator = make_builtin_class(_py, "dict_valueiterator");
+    let dict_itemiterator = make_builtin_class(_py, "dict_itemiterator");
+    let list_iterator = make_builtin_class(_py, "list_iterator");
+    let range_iterator = make_builtin_class(_py, "range_iterator");
+    let longrange_iterator = make_builtin_class(_py, "longrange_iterator");
+    let set_iterator = make_builtin_class(_py, "set_iterator");
+    let str_iterator = make_builtin_class(_py, "str_iterator");
+    let str_ascii_iterator = make_builtin_class(_py, "str_ascii_iterator");
+    let tuple_iterator = make_builtin_class(_py, "tuple_iterator");
     let enumerate = make_builtin_class(_py, "enumerate");
     let reversed = make_builtin_class(_py, "reversed");
     let zip = make_builtin_class(_py, "zip");
@@ -436,6 +472,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             async_generator,
             iterator,
             callable_iterator,
+            bytes_iterator,
+            bytearray_iterator,
+            dict_keyiterator,
+            dict_valueiterator,
+            dict_itemiterator,
+            list_iterator,
+            range_iterator,
+            longrange_iterator,
+            set_iterator,
+            str_iterator,
+            str_ascii_iterator,
+            tuple_iterator,
             enumerate,
             reversed,
             zip,
@@ -520,6 +568,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(async_generator, object);
     let _ = molt_class_set_base(iterator, object);
     let _ = molt_class_set_base(callable_iterator, object);
+    let _ = molt_class_set_base(bytes_iterator, object);
+    let _ = molt_class_set_base(bytearray_iterator, object);
+    let _ = molt_class_set_base(dict_keyiterator, object);
+    let _ = molt_class_set_base(dict_valueiterator, object);
+    let _ = molt_class_set_base(dict_itemiterator, object);
+    let _ = molt_class_set_base(list_iterator, object);
+    let _ = molt_class_set_base(range_iterator, object);
+    let _ = molt_class_set_base(longrange_iterator, object);
+    let _ = molt_class_set_base(set_iterator, object);
+    let _ = molt_class_set_base(str_iterator, object);
+    let _ = molt_class_set_base(str_ascii_iterator, object);
+    let _ = molt_class_set_base(tuple_iterator, object);
     let _ = molt_class_set_base(enumerate, object);
     let _ = molt_class_set_base(reversed, object);
     let _ = molt_class_set_base(zip, object);
@@ -669,6 +729,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         async_generator,
         iterator,
         callable_iterator,
+        bytes_iterator,
+        bytearray_iterator,
+        dict_keyiterator,
+        dict_valueiterator,
+        dict_itemiterator,
+        list_iterator,
+        range_iterator,
+        longrange_iterator,
+        set_iterator,
+        str_iterator,
+        str_ascii_iterator,
+        tuple_iterator,
         enumerate,
         reversed,
         zip,
@@ -772,6 +844,18 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.async_generator,
             builtins.iterator,
             builtins.callable_iterator,
+            builtins.bytes_iterator,
+            builtins.bytearray_iterator,
+            builtins.dict_keyiterator,
+            builtins.dict_valueiterator,
+            builtins.dict_itemiterator,
+            builtins.list_iterator,
+            builtins.range_iterator,
+            builtins.longrange_iterator,
+            builtins.set_iterator,
+            builtins.str_iterator,
+            builtins.str_ascii_iterator,
+            builtins.tuple_iterator,
             builtins.enumerate,
             builtins.reversed,
             builtins.zip,
@@ -844,6 +928,18 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.async_generator
         || bits == builtins.iterator
         || bits == builtins.callable_iterator
+        || bits == builtins.bytes_iterator
+        || bits == builtins.bytearray_iterator
+        || bits == builtins.dict_keyiterator
+        || bits == builtins.dict_valueiterator
+        || bits == builtins.dict_itemiterator
+        || bits == builtins.list_iterator
+        || bits == builtins.range_iterator
+        || bits == builtins.longrange_iterator
+        || bits == builtins.set_iterator
+        || bits == builtins.str_iterator
+        || bits == builtins.str_ascii_iterator
+        || bits == builtins.tuple_iterator
         || bits == builtins.enumerate
         || bits == builtins.reversed
         || bits == builtins.zip

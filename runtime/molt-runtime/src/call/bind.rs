@@ -290,6 +290,24 @@ unsafe fn call_type_with_builder(
                 return MoltObject::from_bool(is_truthy(_py, obj_from_bits(pos_args[0]))).bits();
             }
 
+            if class_bits == builtins.float {
+                if !kw_names.is_empty() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "float() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() > 1 {
+                    let msg = format!("float expected at most 1 argument, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if pos_args.is_empty() {
+                    return MoltObject::from_float(0.0).bits();
+                }
+                return crate::molt_float_from_obj(pos_args[0]);
+            }
+
             if class_bits == builtins.complex {
                 if pos_args.len() > 2 {
                     let msg = format!(

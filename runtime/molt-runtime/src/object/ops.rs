@@ -12537,7 +12537,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                         if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits) {
+                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
+                            {
                                 inc_ref_bits(_py, val_bits);
                                 override_bits = val_bits;
                             }
@@ -12551,7 +12552,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                         if let Some(attr_bits) =
                             class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
                         {
-                            let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
+                            let bound_opt =
+                                descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
                             dec_ref_bits(_py, attr_bits);
 
                             if exception_pending(_py) {
@@ -34399,7 +34401,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_GENERATOR => Cow::Borrowed("generator"),
                 TYPE_ID_ASYNC_GENERATOR => Cow::Borrowed("async_generator"),
                 TYPE_ID_ENUMERATE => Cow::Borrowed("enumerate"),
-                TYPE_ID_ITER => Cow::Borrowed("iterator"),
+                TYPE_ID_ITER => Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits()))),
                 TYPE_ID_CALL_ITER => Cow::Borrowed("callable_iterator"),
                 TYPE_ID_REVERSED => Cow::Borrowed("reversed"),
                 TYPE_ID_ZIP => Cow::Borrowed("zip"),

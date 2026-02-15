@@ -1,4 +1,5 @@
 """Purpose: CPython 3.12+ builtins semantic probe for symbol `hash`."""
+
 import builtins
 import contextlib
 import hashlib
@@ -11,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 
-NAME = 'hash'
+NAME = "hash"
 SYMBOL = getattr(builtins, NAME)
 
 
@@ -52,7 +53,9 @@ def _normalize(value: object, depth: int = 0) -> object:
         return [_normalize(item, depth + 1) for item in value[:10]]
     if isinstance(value, (set, frozenset)):
         normalized = [_normalize(item, depth + 1) for item in value]
-        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return sorted(
+            normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str)
+        )
     if isinstance(value, BaseException):
         return {"type": type(value).__name__, "args": _normalize(value.args, depth + 1)}
     return {"type": type(value).__name__}
@@ -137,7 +140,27 @@ def _edge_matrix() -> list[dict[str, object]]:
     for args in vectors:
         try:
             result = SYMBOL(*args)
-            out.append({"args": _normalize(args), "status": "ok", "result": _normalize(result)})
+            # CPython intentionally hashes NaN floats by object identity, which is stable only
+            # within a single process. Differential runs compare across two separate processes
+            # (CPython vs Molt), so the exact integer hash is not a meaningful parity signal.
+            # Normalize this case to a stable sentinel.
+            if (
+                len(args) == 1
+                and isinstance(args[0], float)
+                and math.isnan(args[0])
+                and isinstance(result, int)
+            ):
+                out.append(
+                    {"args": _normalize(args), "status": "ok", "result": "nan_hash"}
+                )
+            else:
+                out.append(
+                    {
+                        "args": _normalize(args),
+                        "status": "ok",
+                        "result": _normalize(result),
+                    }
+                )
         except BaseException as exc:  # noqa: BLE001
             out.append(
                 {
@@ -161,7 +184,9 @@ def _category_specific() -> object:
         except BaseException as raised:  # noqa: BLE001
             chain = {
                 "raised": type(raised).__name__,
-                "cause": type(raised.__cause__).__name__ if raised.__cause__ is not None else None,
+                "cause": type(raised.__cause__).__name__
+                if raised.__cause__ is not None
+                else None,
             }
         return {
             "kind": "exception",
@@ -187,9 +212,7 @@ def _category_specific() -> object:
 def _exec_class_body_case() -> object:
     namespace: dict[str, object] = {}
     SYMBOL(
-        "class Probe:\n"
-        "    label = 'daily'\n"
-        "    score = 42\n",
+        "class Probe:\n    label = 'daily'\n    score = 42\n",
         namespace,
         namespace,
     )

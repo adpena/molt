@@ -934,6 +934,16 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
             if call_bits == builtins.type_obj {
                 return None;
             }
+            if call_bits == builtins.float {
+                if args.is_empty() {
+                    return Some(MoltObject::from_float(0.0).bits());
+                }
+                if args.len() == 1 {
+                    return Some(crate::molt_float_from_obj(args[0]));
+                }
+                let msg = format!("float expected at most 1 argument, got {}", args.len());
+                return Some(raise_exception::<_>(_py, "TypeError", &msg));
+            }
             return Some(call_class_init_with_args(_py, call_ptr, args));
         }
         None

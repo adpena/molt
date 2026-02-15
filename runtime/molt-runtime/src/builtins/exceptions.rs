@@ -2406,7 +2406,9 @@ pub(crate) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
                 // does *not* interpret that value as `errno`; the `errno/strerror/filename`
                 // attributes remain `None`.
                 if elems.len() >= 2 {
-                    errno_val = elems.first().and_then(|first| to_i64(obj_from_bits(*first)));
+                    errno_val = elems
+                        .first()
+                        .and_then(|first| to_i64(obj_from_bits(*first)));
                     if let Some(second) = elems.get(1) {
                         strerror_bits = *second;
                     }
