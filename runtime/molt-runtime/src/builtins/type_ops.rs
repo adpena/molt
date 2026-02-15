@@ -148,7 +148,52 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 }
                 TYPE_ID_GENERATOR => builtins.generator,
                 TYPE_ID_ASYNC_GENERATOR => builtins.async_generator,
-                TYPE_ID_ITER => builtins.iterator,
+                TYPE_ID_ITER => {
+                    // CPython exposes distinct iterator types (e.g. list_iterator,
+                    // str_ascii_iterator). Our iterator object stores the target iterable, so
+                    // resolve the type from the target at runtime.
+                    let target_bits = iter_target_bits(ptr);
+                    let target_obj = obj_from_bits(target_bits);
+                    if let Some(target_ptr) = target_obj.as_ptr() {
+                        match object_type_id(target_ptr) {
+                            TYPE_ID_LIST => builtins.list_iterator,
+                            TYPE_ID_TUPLE => builtins.tuple_iterator,
+                            TYPE_ID_STRING => {
+                                let bytes = std::slice::from_raw_parts(
+                                    string_bytes(target_ptr),
+                                    string_len(target_ptr),
+                                );
+                                if bytes.is_ascii() {
+                                    builtins.str_ascii_iterator
+                                } else {
+                                    builtins.str_iterator
+                                }
+                            }
+                            TYPE_ID_BYTES => builtins.bytes_iterator,
+                            TYPE_ID_BYTEARRAY => builtins.bytearray_iterator,
+                            TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keyiterator,
+                            TYPE_ID_DICT_VALUES_VIEW => builtins.dict_valueiterator,
+                            TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_itemiterator,
+                            TYPE_ID_SET | TYPE_ID_FROZENSET => builtins.set_iterator,
+                            TYPE_ID_RANGE => {
+                                let start_bits = range_start_bits(target_ptr);
+                                let stop_bits = range_stop_bits(target_ptr);
+                                let step_bits = range_step_bits(target_ptr);
+                                if bigint_ptr_from_bits(start_bits).is_some()
+                                    || bigint_ptr_from_bits(stop_bits).is_some()
+                                    || bigint_ptr_from_bits(step_bits).is_some()
+                                {
+                                    builtins.longrange_iterator
+                                } else {
+                                    builtins.range_iterator
+                                }
+                            }
+                            _ => builtins.iterator,
+                        }
+                    } else {
+                        builtins.iterator
+                    }
+                }
                 TYPE_ID_ENUMERATE => builtins.enumerate,
                 TYPE_ID_CALL_ITER => builtins.callable_iterator,
                 TYPE_ID_REVERSED => builtins.reversed,
