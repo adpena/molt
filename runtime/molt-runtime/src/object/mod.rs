@@ -1004,6 +1004,27 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     );
                 }
             }
+            if header.type_id == TYPE_ID_FUNCTION
+                && matches!(
+                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
+                        .ok()
+                        .as_deref(),
+                    Some("1")
+                )
+            {
+                // Debug-only: when chasing refcount bugs, print which function is being freed.
+                let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
+                let name_bits = unsafe { crate::function_name_bits(py, ptr) };
+                let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<function>".to_string());
+                let bt = std::backtrace::Backtrace::force_capture();
+                eprintln!(
+                    "molt dec_ref_zero function name={} fn_ptr=0x{:x} obj_ptr=0x{:x}\n{bt}",
+                    name,
+                    freed_fn_ptr,
+                    ptr as usize,
+                );
+            }
             weakref_clear_for_ptr(py, ptr);
             match header.type_id {
                 TYPE_ID_STRING => {

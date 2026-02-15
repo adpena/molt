@@ -18995,6 +18995,156 @@ pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
     })
 }
 
+fn fromhex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut idx = 0usize;
+    while idx < text.len() {
+        // Skip ASCII whitespace. CPython ignores whitespace between nibbles and bytes.
+        while idx < text.len() && text[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= text.len() {
+            break;
+        }
+        let Some(hi) = fromhex_nibble(text[idx]) else {
+            let msg = format!(
+                "non-hexadecimal number found in fromhex() arg at position {idx}"
+            );
+            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+        };
+        idx += 1;
+        while idx < text.len() && text[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= text.len() {
+            let msg = format!(
+                "non-hexadecimal number found in fromhex() arg at position {idx}"
+            );
+            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+        }
+        let Some(lo) = fromhex_nibble(text[idx]) else {
+            let msg = format!(
+                "non-hexadecimal number found in fromhex() arg at position {idx}"
+            );
+            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+        };
+        idx += 1;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let text_obj = obj_from_bits(text_bits);
+        let Some(text_ptr) = text_obj.as_ptr() else {
+            let msg = format!(
+                "fromhex() argument must be str, not {}",
+                type_name(_py, text_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(text_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "fromhex() argument must be str, not {}",
+                    type_name(_py, text_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let text = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
+            let out = match bytes_fromhex_parse(_py, text) {
+                Ok(out) => out,
+                Err(err_bits) => return err_bits,
+            };
+            let bytes_ptr = alloc_bytes(_py, &out);
+            if bytes_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+            let builtins = builtin_classes(_py);
+            if cls_bits == builtins.bytes {
+                return bytes_bits;
+            }
+            if !issubclass_bits(cls_bits, builtins.bytes) {
+                dec_ref_bits(_py, bytes_bits);
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "fromhex() requires a bytes subclass",
+                );
+            }
+            let res_bits = call_callable1(_py, cls_bits, bytes_bits);
+            dec_ref_bits(_py, bytes_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let text_obj = obj_from_bits(text_bits);
+        let Some(text_ptr) = text_obj.as_ptr() else {
+            let msg = format!(
+                "fromhex() argument must be str, not {}",
+                type_name(_py, text_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(text_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "fromhex() argument must be str, not {}",
+                    type_name(_py, text_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let text = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
+            let out = match bytes_fromhex_parse(_py, text) {
+                Ok(out) => out,
+                Err(err_bits) => return err_bits,
+            };
+            let ba_ptr = alloc_bytearray(_py, &out);
+            if ba_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let ba_bits = MoltObject::from_ptr(ba_ptr).bits();
+            let builtins = builtin_classes(_py);
+            if cls_bits == builtins.bytearray {
+                return ba_bits;
+            }
+            if !issubclass_bits(cls_bits, builtins.bytearray) {
+                dec_ref_bits(_py, ba_bits);
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "fromhex() requires a bytearray subclass",
+                );
+            }
+            let res_bits = call_callable1(_py, cls_bits, ba_bits);
+            dec_ref_bits(_py, ba_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
