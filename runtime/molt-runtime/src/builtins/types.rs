@@ -202,6 +202,7 @@ pub extern "C" fn molt_type_new(
             return MoltObject::none().bits();
         }
         let mut qualname_bits = 0u64;
+        let mut qualname_owned = false;
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
             if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
                 let qualname_name_bits = intern_static_name(
@@ -213,10 +214,17 @@ pub extern "C" fn molt_type_new(
                     unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) }
                 {
                     qualname_bits = val_bits;
+                    // We're about to delete __qualname__ from the class dict; hold a strong
+                    // reference so we can safely move it into the class qualname slot.
+                    inc_ref_bits(_py, qualname_bits);
+                    qualname_owned = true;
                     unsafe {
                         dict_del_in_place(_py, dict_ptr, qualname_name_bits);
                     }
                     if exception_pending(_py) {
+                        if qualname_owned {
+                            dec_ref_bits(_py, qualname_bits);
+                        }
                         if bases_owned {
                             dec_ref_bits(_py, bases_tuple_bits);
                         }
@@ -229,6 +237,9 @@ pub extern "C" fn molt_type_new(
                     }
                     dec_ref_bits(_py, classcell_bits);
                     if exception_pending(_py) {
+                        if qualname_owned {
+                            dec_ref_bits(_py, qualname_bits);
+                        }
                         if bases_owned {
                             dec_ref_bits(_py, bases_tuple_bits);
                         }
@@ -249,6 +260,9 @@ pub extern "C" fn molt_type_new(
         if !qualname_is_str {
             let type_label = type_name(_py, qualname_obj);
             let msg = format!("type __qualname__ must be a str, not {}", type_label);
+            if qualname_owned {
+                dec_ref_bits(_py, qualname_bits);
+            }
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
             }
@@ -256,6 +270,10 @@ pub extern "C" fn molt_type_new(
         }
         unsafe {
             class_set_qualname_bits(_py, class_ptr, qualname_bits);
+        }
+        if qualname_owned {
+            // Balance the strong ref we took before deleting __qualname__ from the dict.
+            dec_ref_bits(_py, qualname_bits);
         }
 
         let _ = molt_class_set_base(class_bits, bases_tuple_bits);
@@ -4129,6 +4147,10 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
     let missing = missing_bits(_py);
     let mut out: Vec<u64> = Vec::new();
     let mut updated = false;
+    // Keep any temporary tuples (including bases_tuple_bits and __mro_entries__ results) alive
+    // until we materialize the final resolved bases tuple. Otherwise, elements that are only
+    // referenced by those temporary tuples may be freed, leaving dangling bits in `out`.
+    let mut keepalive_tuples: Vec<u64> = Vec::new();
 
     for (idx, base_bits) in bases.iter().copied().enumerate() {
         let is_type = obj_from_bits(base_bits)
@@ -4142,6 +4164,9 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         }
         let mro_entries_bits = molt_getattr_builtin(base_bits, mro_entries_name_bits, missing);
         if exception_pending(_py) {
+            for bits in keepalive_tuples.drain(..) {
+                dec_ref_bits(_py, bits);
+            }
             dec_ref_bits(_py, mro_entries_name_bits);
             dec_ref_bits(_py, bases_tuple_bits);
             return MoltObject::none().bits();
@@ -4159,11 +4184,17 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         let resolved_bits = unsafe { call_callable1(_py, mro_entries_bits, bases_bits) };
         dec_ref_bits(_py, mro_entries_bits);
         if exception_pending(_py) {
+            for bits in keepalive_tuples.drain(..) {
+                dec_ref_bits(_py, bits);
+            }
             dec_ref_bits(_py, mro_entries_name_bits);
             dec_ref_bits(_py, bases_tuple_bits);
             return MoltObject::none().bits();
         }
         let Some(resolved_ptr) = obj_from_bits(resolved_bits).as_ptr() else {
+            for bits in keepalive_tuples.drain(..) {
+                dec_ref_bits(_py, bits);
+            }
             dec_ref_bits(_py, mro_entries_name_bits);
             dec_ref_bits(_py, bases_tuple_bits);
             return MoltObject::none().bits();
@@ -4171,6 +4202,9 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         unsafe {
             if object_type_id(resolved_ptr) != TYPE_ID_TUPLE {
                 dec_ref_bits(_py, resolved_bits);
+                for bits in keepalive_tuples.drain(..) {
+                    dec_ref_bits(_py, bits);
+                }
                 dec_ref_bits(_py, mro_entries_name_bits);
                 dec_ref_bits(_py, bases_tuple_bits);
                 return raise_exception::<_>(
@@ -4181,16 +4215,23 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
             }
             out.extend_from_slice(seq_vec_ref(resolved_ptr));
         }
-        dec_ref_bits(_py, resolved_bits);
+        // Keep the returned tuple alive until after we allocate the final output tuple.
+        keepalive_tuples.push(resolved_bits);
     }
 
     dec_ref_bits(_py, mro_entries_name_bits);
-    dec_ref_bits(_py, bases_tuple_bits);
     if !updated {
+        dec_ref_bits(_py, bases_tuple_bits);
         inc_ref_bits(_py, bases_bits);
         return bases_bits;
     }
     let out_ptr = alloc_tuple(_py, out.as_slice());
+    // Now that `out_ptr` has taken ownership (via inc-refs) of the elements, we can drop the
+    // temporary tuples that were keeping the elements alive.
+    for bits in keepalive_tuples.drain(..) {
+        dec_ref_bits(_py, bits);
+    }
+    dec_ref_bits(_py, bases_tuple_bits);
     if out_ptr.is_null() {
         return MoltObject::none().bits();
     }

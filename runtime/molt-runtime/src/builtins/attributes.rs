@@ -443,6 +443,48 @@ pub(crate) unsafe fn type_attr_lookup_ptr(
                 inc_ref_bits(_py, res_bits);
                 return Some(res_bits);
             }
+
+            // Builtin-type class surfaces that are implemented as Rust intrinsics rather than
+            // being materialized in the class dict.
+            //
+            // CPython: bytes/bytearray expose `fromhex` as a classmethod and `maketrans` as a
+            // staticmethod on the type object.
+            let builtins = builtin_classes(_py);
+            if class_bits == builtins.bytes {
+                if name == "fromhex" {
+                    static BYTES_FROMHEX: AtomicU64 = AtomicU64::new(0);
+                    let func_bits =
+                        builtin_func_bits(_py, &BYTES_FROMHEX, fn_addr!(molt_bytes_fromhex), 2);
+                    let bound = molt_bound_method_new(func_bits, class_bits);
+                    return Some(bound);
+                }
+                if name == "maketrans" {
+                    if let Some(func_bits) = bytes_method_bits(_py, "maketrans") {
+                        inc_ref_bits(_py, func_bits);
+                        return Some(func_bits);
+                    }
+                }
+            }
+            if class_bits == builtins.bytearray {
+                if name == "fromhex" {
+                    static BYTEARRAY_FROMHEX: AtomicU64 = AtomicU64::new(0);
+                    let func_bits = builtin_func_bits(
+                        _py,
+                        &BYTEARRAY_FROMHEX,
+                        fn_addr!(molt_bytearray_fromhex),
+                        2,
+                    );
+                    let bound = molt_bound_method_new(func_bits, class_bits);
+                    return Some(bound);
+                }
+                if name == "maketrans" {
+                    if let Some(func_bits) = bytearray_method_bits(_py, "maketrans") {
+                        inc_ref_bits(_py, func_bits);
+                        return Some(func_bits);
+                    }
+                }
+            }
+
             if name == "__name__" {
                 let name_bits = class_name_bits(obj_ptr);
                 inc_ref_bits(_py, name_bits);
@@ -750,6 +792,35 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let name = string_obj_to_owned(obj_from_bits(attr_bits));
             let attr_name = name.as_deref()?;
             match attr_name {
+                "name" | "obj" => {
+                    let kind_bits = exception_kind_bits(obj_ptr);
+                    if let Some(kind_ptr) = obj_from_bits(kind_bits).as_ptr() {
+                        if object_type_id(kind_ptr) == TYPE_ID_STRING {
+                            let kind_len = string_len(kind_ptr);
+                            let kind_bytes =
+                                std::slice::from_raw_parts(string_bytes(kind_ptr), kind_len);
+                            if kind_bytes == b"AttributeError" {
+                                let members_bits = exception_value_bits(obj_ptr);
+                                if obj_from_bits(members_bits).is_none() || members_bits == 0 {
+                                    return Some(MoltObject::none().bits());
+                                }
+                                if let Some(members_ptr) = obj_from_bits(members_bits).as_ptr() {
+                                    if object_type_id(members_ptr) == TYPE_ID_TUPLE {
+                                        let elems = seq_vec_ref(members_ptr);
+                                        let bits = if attr_name == "name" {
+                                            elems.get(0).copied().unwrap_or_else(|| MoltObject::none().bits())
+                                        } else {
+                                            elems.get(1).copied().unwrap_or_else(|| MoltObject::none().bits())
+                                        };
+                                        inc_ref_bits(_py, bits);
+                                        return Some(bits);
+                                    }
+                                }
+                                return Some(MoltObject::none().bits());
+                            }
+                        }
+                    }
+                }
                 "__cause__" => {
                     let bits = exception_cause_bits(obj_ptr);
                     inc_ref_bits(_py, bits);
@@ -1412,6 +1483,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_BYTES {
             if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+                if name == "fromhex" {
+                    static BYTES_FROMHEX: AtomicU64 = AtomicU64::new(0);
+                    let builtins = builtin_classes(_py);
+                    let func_bits =
+                        builtin_func_bits(_py, &BYTES_FROMHEX, fn_addr!(molt_bytes_fromhex), 2);
+                    let bound = molt_bound_method_new(func_bits, builtins.bytes);
+                    return Some(bound);
+                }
                 if name == "maketrans" {
                     if let Some(func_bits) = bytes_method_bits(_py, name.as_str()) {
                         inc_ref_bits(_py, func_bits);
@@ -1427,6 +1506,18 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_BYTEARRAY {
             if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+                if name == "fromhex" {
+                    static BYTEARRAY_FROMHEX: AtomicU64 = AtomicU64::new(0);
+                    let builtins = builtin_classes(_py);
+                    let func_bits = builtin_func_bits(
+                        _py,
+                        &BYTEARRAY_FROMHEX,
+                        fn_addr!(molt_bytearray_fromhex),
+                        2,
+                    );
+                    let bound = molt_bound_method_new(func_bits, builtins.bytearray);
+                    return Some(bound);
+                }
                 if name == "maketrans" {
                     if let Some(func_bits) = bytearray_method_bits(_py, name.as_str()) {
                         inc_ref_bits(_py, func_bits);
@@ -2766,6 +2857,68 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 };
                 let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
+                if name == "name" || name == "obj" {
+                    let kind_bits = exception_kind_bits(obj_ptr);
+                    let mut is_attrerr = false;
+                    if let Some(kind_ptr) = obj_from_bits(kind_bits).as_ptr() {
+                        if object_type_id(kind_ptr) == TYPE_ID_STRING {
+                            let kind_len = string_len(kind_ptr);
+                            let kind_bytes =
+                                std::slice::from_raw_parts(string_bytes(kind_ptr), kind_len);
+                            is_attrerr = kind_bytes == b"AttributeError";
+                        }
+                    }
+                    if is_attrerr {
+                        let members_bits = exception_value_bits(obj_ptr);
+                        let (old_name_bits, old_obj_bits) = if let Some(members_ptr) =
+                            obj_from_bits(members_bits).as_ptr()
+                        {
+                            if object_type_id(members_ptr) == TYPE_ID_TUPLE {
+                                let elems = seq_vec_ref(members_ptr);
+                                (
+                                    elems.get(0)
+                                        .copied()
+                                        .unwrap_or_else(|| MoltObject::none().bits()),
+                                    elems.get(1)
+                                        .copied()
+                                        .unwrap_or_else(|| MoltObject::none().bits()),
+                                )
+                            } else {
+                                (MoltObject::none().bits(), MoltObject::none().bits())
+                            }
+                        } else {
+                            (MoltObject::none().bits(), MoltObject::none().bits())
+                        };
+                        let new_name_bits = if name == "name" {
+                            val_bits
+                        } else {
+                            old_name_bits
+                        };
+                        let new_obj_bits = if name == "obj" {
+                            val_bits
+                        } else {
+                            old_obj_bits
+                        };
+                        let tuple_ptr = alloc_tuple(_py, &[new_name_bits, new_obj_bits]);
+                        if tuple_ptr.is_null() {
+                            dec_ref_bits(_py, attr_bits);
+                            return MoltObject::none().bits() as i64;
+                        }
+                        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                        unsafe {
+                            let slot = obj_ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+                            let old_bits = *slot;
+                            if old_bits != tuple_bits {
+                                dec_ref_bits(_py, old_bits);
+                                inc_ref_bits(_py, tuple_bits);
+                                *slot = tuple_bits;
+                            }
+                        }
+                        dec_ref_bits(_py, tuple_bits);
+                        dec_ref_bits(_py, attr_bits);
+                        return MoltObject::none().bits() as i64;
+                    }
+                }
                 if name == "__cause__" || name == "__context__" {
                     let val_obj = obj_from_bits(val_bits);
                     if !val_obj.is_none() {

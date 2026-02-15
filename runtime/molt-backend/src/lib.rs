@@ -10297,6 +10297,36 @@ impl SimpleBackend {
                         .call(local_callee, &[site_bits, *func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+
+                    // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
+                    // internally (see `PtrDropGuard` in runtime). The backend's lifetime tracking
+                    // must therefore *not* emit an additional decref for the builder variable,
+                    // or we'll double-free the CallArgs object and corrupt unrelated state.
+                    //
+                    // This is a semantic ownership transfer: the builder must not be used after
+                    // the call_bind op. If IR ever violates this, it is a compiler bug.
+                    let callargs_name = &args_names[1];
+                    let last = last_use.get(callargs_name).copied().unwrap_or(op_idx);
+                    if last > op_idx {
+                        panic!(
+                            "call_bind consumes callargs builder {}, but it is used later (func={} op_idx={} last_use={})",
+                            callargs_name, func_ir.name, op_idx, last
+                        );
+                    }
+                    if let Some(block) = builder.current_block() {
+                        if block == entry_block && loop_depth == 0 {
+                            tracked_obj_vars.retain(|n| n != callargs_name);
+                            tracked_vars.retain(|n| n != callargs_name);
+                            entry_vars.remove(callargs_name);
+                        } else {
+                            if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                names.retain(|n| n != callargs_name);
+                            }
+                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                names.retain(|n| n != callargs_name);
+                            }
+                        }
+                    }
                 }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap();
@@ -13031,6 +13061,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
+                    // Attribute lookup returns a borrowed reference from object internals/dicts in
+                    // some fast paths. Convert it to an owned reference so lifetime tracking can
+                    // safely decref at last use without corrupting dict-owned values.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name_default" => {
@@ -13053,6 +13087,8 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
                     let res = builder.inst_results(call)[0];
+                    // See `get_attr_name` above: ensure the returned value is owned.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "has_attr_name" => {
