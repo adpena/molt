@@ -12174,9 +12174,15 @@ pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bi
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if obj_bits == missing {
+            // CPython parity: vars() == locals() when called with no arguments.
+            // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
+            // re-entrant and uses the existing token.
+            return crate::molt_locals_builtin();
+        }
         let dict_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
-        let missing = missing_bits(_py);
         let dict_bits = molt_get_attr_name_default(obj_bits, dict_name_bits, missing);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -12537,7 +12543,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                         if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits) {
+                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
+                            {
                                 inc_ref_bits(_py, val_bits);
                                 override_bits = val_bits;
                             }
@@ -12551,7 +12558,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                         if let Some(attr_bits) =
                             class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
                         {
-                            let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
+                            let bound_opt =
+                                descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
                             dec_ref_bits(_py, attr_bits);
 
                             if exception_pending(_py) {
@@ -29546,67 +29554,70 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(set_bits);
         let other = obj_from_bits(other_bits);
-        if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
-            unsafe {
-                if object_type_id(set_ptr) == TYPE_ID_SET {
-                    let other_type = object_type_id(other_ptr);
-                    if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
-                        if other_ptr == set_ptr {
-                            return MoltObject::none().bits();
-                        }
-                        let entries = set_order(other_ptr);
-                        for entry in entries.iter().copied() {
-                            set_add_in_place(_py, set_ptr, entry);
-                        }
+        let Some(set_ptr) = obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(set_ptr) != TYPE_ID_SET {
+                return MoltObject::none().bits();
+            }
+            if let Some(other_ptr) = other.as_ptr() {
+                let other_type = object_type_id(other_ptr);
+                if other_type == TYPE_ID_SET || other_type == TYPE_ID_FROZENSET {
+                    if other_ptr == set_ptr {
                         return MoltObject::none().bits();
                     }
-                    if is_set_view_type(other_type) {
-                        let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
-                            dec_ref_bits(_py, bits);
-                            return MoltObject::none().bits();
-                        };
-                        let entries = set_order(view_set_ptr);
-                        for entry in entries.iter().copied() {
-                            set_add_in_place(_py, set_ptr, entry);
-                        }
-                        dec_ref_bits(_py, bits);
-                        return MoltObject::none().bits();
-                    }
-                    let iter_bits = molt_iter(other_bits);
-                    if obj_from_bits(iter_bits).is_none() {
-                        return raise_not_iterable(_py, other_bits);
-                    }
-                    loop {
-                        let pair_bits = molt_iter_next(iter_bits);
-                        let pair_obj = obj_from_bits(pair_bits);
-                        let Some(pair_ptr) = pair_obj.as_ptr() else {
-                            return MoltObject::none().bits();
-                        };
-                        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                            return MoltObject::none().bits();
-                        }
-                        let pair_elems = seq_vec_ref(pair_ptr);
-                        if pair_elems.len() < 2 {
-                            return MoltObject::none().bits();
-                        }
-                        let done_bits = pair_elems[1];
-                        if is_truthy(_py, obj_from_bits(done_bits)) {
-                            break;
-                        }
-                        let val_bits = pair_elems[0];
-                        set_add_in_place(_py, set_ptr, val_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
+                    let entries = set_order(other_ptr);
+                    for entry in entries.iter().copied() {
+                        set_add_in_place(_py, set_ptr, entry);
                     }
                     return MoltObject::none().bits();
                 }
+                if is_set_view_type(other_type) {
+                    let Some(bits) = dict_view_as_set_bits(_py, other_ptr, other_type) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(view_set_ptr) = obj_from_bits(bits).as_ptr() else {
+                        dec_ref_bits(_py, bits);
+                        return MoltObject::none().bits();
+                    };
+                    let entries = set_order(view_set_ptr);
+                    for entry in entries.iter().copied() {
+                        set_add_in_place(_py, set_ptr, entry);
+                    }
+                    dec_ref_bits(_py, bits);
+                    return MoltObject::none().bits();
+                }
             }
+            let iter_bits = molt_iter(other_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                return raise_not_iterable(_py, other_bits);
+            }
+            loop {
+                let pair_bits = molt_iter_next(iter_bits);
+                let pair_obj = obj_from_bits(pair_bits);
+                let Some(pair_ptr) = pair_obj.as_ptr() else {
+                    return MoltObject::none().bits();
+                };
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    return MoltObject::none().bits();
+                }
+                let pair_elems = seq_vec_ref(pair_ptr);
+                if pair_elems.len() < 2 {
+                    return MoltObject::none().bits();
+                }
+                let done_bits = pair_elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    break;
+                }
+                let val_bits = pair_elems[0];
+                set_add_in_place(_py, set_ptr, val_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+            }
+            MoltObject::none().bits()
         }
-        MoltObject::none().bits()
     })
 }
 
@@ -34399,9 +34410,9 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_GENERATOR => Cow::Borrowed("generator"),
                 TYPE_ID_ASYNC_GENERATOR => Cow::Borrowed("async_generator"),
                 TYPE_ID_ENUMERATE => Cow::Borrowed("enumerate"),
-                TYPE_ID_ITER => Cow::Borrowed("iterator"),
+                TYPE_ID_ITER => Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits()))),
                 TYPE_ID_CALL_ITER => Cow::Borrowed("callable_iterator"),
-                TYPE_ID_REVERSED => Cow::Borrowed("reversed"),
+                TYPE_ID_REVERSED => Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits()))),
                 TYPE_ID_ZIP => Cow::Borrowed("zip"),
                 TYPE_ID_MAP => Cow::Borrowed("map"),
                 TYPE_ID_FILTER => Cow::Borrowed("filter"),

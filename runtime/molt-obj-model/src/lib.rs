@@ -97,10 +97,10 @@ pub fn register_ptr(ptr: *mut u8) -> u64 {
     let slot = PtrSlot(ptr);
     let addr = ptr.expose_provenance() as u64;
     let shard = ptr_registry().shard(addr);
-    if let Ok(guard) = shard.read() {
-        if guard.get(&addr).copied() == Some(slot) {
-            return addr;
-        }
+    if let Ok(guard) = shard.read()
+        && guard.get(&addr).copied() == Some(slot)
+    {
+        return addr;
     }
     let mut guard = shard.write().expect("pointer registry lock poisoned");
     guard.insert(addr, slot);
