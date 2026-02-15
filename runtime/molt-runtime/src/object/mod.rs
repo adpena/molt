@@ -590,6 +590,11 @@ pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
+        // Only `TYPE_ID_OBJECT` instances reserve a trailing `__dict__` slot in their payload.
+        // Calling this on other builtins (int/str/tuple/etc.) is UB (and can misalign).
+        if object_type_id(ptr) != TYPE_ID_OBJECT {
+            return std::ptr::null_mut();
+        }
         let payload = object_payload_size(ptr);
         if payload < std::mem::size_of::<u64>() {
             return std::ptr::null_mut();
