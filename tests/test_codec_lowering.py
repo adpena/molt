@@ -36,9 +36,9 @@ def _assert_control_values_are_ints(ir: dict) -> None:
         for op in func["ops"]:
             if op["kind"] not in control_kinds:
                 continue
-            assert isinstance(
-                op.get("value"), int
-            ), f"{func['name']} emitted non-int control value: {op}"
+            assert isinstance(op.get("value"), int), (
+                f"{func['name']} emitted non-int control value: {op}"
+            )
 
 
 def test_default_codec_is_msgpack():

@@ -142,40 +142,38 @@ def molt_compileall_compile_dir(dir: str, maxlevels: int) -> bool: ...
 def molt_compileall_compile_path(
     paths: Any, skip_curdir: bool, maxlevels: int
 ) -> bool: ...
-def molt_stat_constants() -> (
-    tuple[
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-    ]
-): ...
+def molt_stat_constants() -> tuple[
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+]: ...
 def molt_stat_ifmt(mode: int) -> int: ...
 def molt_stat_imode(mode: int) -> int: ...
 def molt_stat_isdir(mode: int) -> bool: ...
@@ -953,9 +951,9 @@ def molt_thread_registry_register(
     handle: Any, token: int, name: str, daemon: bool
 ) -> None: ...
 def molt_thread_registry_forget(token: int) -> None: ...
-def molt_thread_registry_snapshot() -> (
-    list[tuple[str, bool, int | None, int | None, bool, bool]]
-): ...
+def molt_thread_registry_snapshot() -> list[
+    tuple[str, bool, int | None, int | None, bool, bool]
+]: ...
 def molt_thread_registry_current() -> (
     tuple[str, bool, int | None, int | None, bool, bool] | None
 ): ...
@@ -1326,9 +1324,9 @@ def molt_importlib_metadata_entry_points_select_payload(
 def molt_importlib_metadata_normalize_name(name: str) -> str: ...
 def molt_importlib_metadata_payload(path: str) -> dict[str, Any]: ...
 def molt_importlib_spec_from_file_location_payload(path: str) -> dict[str, Any]: ...
-def molt_copyreg_bootstrap() -> (
-    tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any], dict[Any, Any], set[Any]]
-): ...
+def molt_copyreg_bootstrap() -> tuple[
+    dict[Any, Any], dict[Any, Any], dict[Any, Any], dict[Any, Any], set[Any]
+]: ...
 def molt_copyreg_pickle(cls: Any, reducer: Any, constructor: Any) -> None: ...
 def molt_pickle_encode_protocol0(parts: Any) -> bytes: ...
 def molt_pickle_dumps_protocol01(obj: Any, protocol: int) -> bytes: ...
@@ -1527,8 +1525,8 @@ def molt_functools_lru_cache(maxsize: Any, typed: Any) -> Any: ...
 def molt_keyword_lists() -> tuple[list[str], list[str]]: ...
 def molt_keyword_iskeyword(value: Any) -> bool: ...
 def molt_keyword_issoftkeyword(value: Any) -> bool: ...
-def molt_future_features() -> (
-    list[tuple[str, tuple[Any, ...], tuple[Any, ...] | None, int]]
-): ...
+def molt_future_features() -> list[
+    tuple[str, tuple[Any, ...], tuple[Any, ...] | None, int]
+]: ...
 def molt_types_bootstrap() -> dict[str, Any]: ...
 def molt_stdlib_probe() -> bool: ...
