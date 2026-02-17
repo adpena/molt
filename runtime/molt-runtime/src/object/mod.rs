@@ -343,6 +343,8 @@ pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
 pub(crate) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+// Ensure __del__ runs at most once even if the object resurrects itself.
+pub(crate) const HEADER_FLAG_FINALIZER_RAN: u64 = 1 << 16;
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
@@ -941,6 +943,70 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 /// # Safety
+/// Caller must pass a valid object pointer and matching header.
+unsafe fn maybe_run_object_finalizer(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    header: &mut MoltHeader,
+) -> bool {
+    if header.type_id != TYPE_ID_OBJECT {
+        return false;
+    }
+    if (header.flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
+        return false;
+    }
+    let class_bits = unsafe { object_class_bits(ptr) };
+    if class_bits == 0 || obj_from_bits(class_bits).is_none() {
+        return false;
+    }
+    let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+        return false;
+    };
+    header.flags |= HEADER_FLAG_FINALIZER_RAN;
+    // Keep `self` alive while we resolve and call __del__ so resurrection is possible.
+    header.ref_count.store(1, AtomicOrdering::Release);
+    let self_bits = MoltObject::from_ptr(ptr).bits();
+    let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
+        .filter(|bits| !obj_from_bits(*bits).is_none());
+    if let Some(bits) = prior_exc_bits {
+        inc_ref_bits(py, bits);
+    }
+    let missing_bits = crate::missing_bits(py);
+    let del_bits = crate::molt_get_attr_name_default(self_bits, del_name_bits, missing_bits);
+    dec_ref_bits(py, del_name_bits);
+    if del_bits != missing_bits {
+        let result_bits = unsafe { crate::call_callable0(py, del_bits) };
+        if !obj_from_bits(result_bits).is_none() {
+            dec_ref_bits(py, result_bits);
+        }
+    }
+    if !obj_from_bits(del_bits).is_none() {
+        dec_ref_bits(py, del_bits);
+    }
+    // CPython ignores exceptions raised during finalization and preserves any already-active
+    // exception from surrounding bytecode.
+    if let Some(bits) = prior_exc_bits {
+        let same_as_prior = crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
+        let pending = crate::exception_pending(py);
+        if !same_as_prior || !pending {
+            if pending {
+                crate::clear_exception(py);
+            }
+            crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
+        }
+        dec_ref_bits(py, bits);
+    } else if crate::exception_pending(py) {
+        crate::clear_exception(py);
+    }
+    let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+    if prev > 1 {
+        // Object was resurrected by __del__; abort deallocation now.
+        return true;
+    }
+    false
+}
+
+/// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
@@ -975,6 +1041,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             );
         }
         if prev == 1 {
+            if header.type_id == TYPE_ID_EXCEPTION
+                && crate::builtins::exceptions::exception_is_rooted(py, ptr)
+            {
+                // Pending exception roots (last-exception slots / active exception stacks)
+                // must keep the object alive even if transient lowering bugs over-decref.
+                header.ref_count.store(1, AtomicOrdering::Release);
+                return;
+            }
             std::sync::atomic::fence(AtomicOrdering::Acquire);
             if debug_dec_ref_zero() {
                 eprintln!(
@@ -1003,6 +1077,28 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         freed_fn_ptr, obj_init_subclass_ptr, type_init_ptr,
                     );
                 }
+            }
+            if header.type_id == TYPE_ID_FUNCTION
+                && matches!(
+                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
+                        .ok()
+                        .as_deref(),
+                    Some("1")
+                )
+            {
+                // Debug-only: when chasing refcount bugs, print which function is being freed.
+                let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
+                let name_bits = unsafe { crate::function_name_bits(py, ptr) };
+                let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<function>".to_string());
+                let bt = std::backtrace::Backtrace::force_capture();
+                eprintln!(
+                    "molt dec_ref_zero function name={} fn_ptr=0x{:x} obj_ptr=0x{:x}\n{bt}",
+                    name, freed_fn_ptr, ptr as usize,
+                );
+            }
+            if unsafe { maybe_run_object_finalizer(py, ptr, header) } {
+                return;
             }
             weakref_clear_for_ptr(py, ptr);
             match header.type_id {

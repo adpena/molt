@@ -135,6 +135,12 @@ fn debug_exception_pending() -> bool {
 }
 
 #[inline]
+fn debug_exception_rc() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_RC").as_deref() == Ok("1"))
+}
+
+#[inline]
 fn trace_exception_stack() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_EXCEPTION_STACK").as_deref() == Ok("1"))
@@ -618,6 +624,54 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     pending
 }
 
+pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if ptr.is_null() {
+        return false;
+    }
+    let state = runtime_state(_py);
+    if state
+        .last_exception
+        .lock()
+        .unwrap()
+        .is_some_and(|slot| slot.0 == ptr)
+    {
+        return true;
+    }
+    if task_last_exceptions(_py)
+        .lock()
+        .unwrap()
+        .values()
+        .any(|slot| slot.0 == ptr)
+    {
+        return true;
+    }
+    if ACTIVE_EXCEPTION_STACK.with(|stack| {
+        let Ok(stack) = stack.try_borrow() else {
+            // If the stack is mutably borrowed, we are in exception-stack mutation and must
+            // conservatively keep exception objects alive.
+            return true;
+        };
+        stack
+            .iter()
+            .copied()
+            .filter_map(|bits| obj_from_bits(bits).as_ptr())
+            .any(|p| p == ptr)
+    }) {
+        return true;
+    }
+    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+        let Ok(stack) = stack.try_borrow() else {
+            return true;
+        };
+        stack
+            .iter()
+            .copied()
+            .filter_map(|bits| obj_from_bits(bits).as_ptr())
+            .any(|p| p == ptr)
+    })
+}
+
 pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
     if let Some(task_key) = current_task_key() {
         if let Some(ptr) = task_last_exceptions(_py)
@@ -1011,7 +1065,17 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     let task_key = current_task_key();
     let mut prior_ptr = None;
     let mut context_bits: Option<u64> = None;
+    let mut context_bits_owned = false;
+    let mut context_from_active = false;
     let mut same_ptr = false;
+    let debug_rc = debug_exception_rc();
+    if debug_rc {
+        let rc = unsafe {
+            let header = header_from_obj_ptr(ptr);
+            (*header).ref_count.load(AtomicOrdering::Acquire)
+        };
+        eprintln!("molt exc rc start ptr=0x{:x} rc={}", ptr as usize, rc);
+    }
     let mut suppress_trace = unsafe {
         let header = header_from_obj_ptr(ptr);
         (*header).flags & HEADER_FLAG_TRACEBACK_SUPPRESSED != 0
@@ -1050,15 +1114,45 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     }
     if let Some(old_ptr) = prior_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr).bits();
+        if debug_rc {
+            let old_rc = unsafe {
+                let header = header_from_obj_ptr(old_ptr);
+                (*header).ref_count.load(AtomicOrdering::Acquire)
+            };
+            eprintln!(
+                "molt exc rc prior ptr=0x{:x} rc={}",
+                old_ptr as usize, old_rc
+            );
+        }
         if old_ptr == ptr {
             same_ptr = true;
         } else {
             context_bits = Some(old_bits);
-            dec_ref_bits(_py, old_bits);
+            // Own the previous exception reference removed from last_exception/task slot.
+            // If we attach it as __context__, ownership transfers there; otherwise we drop it.
+            context_bits_owned = true;
         }
     }
     if context_bits.is_none() {
         context_bits = exception_context_active_bits();
+        context_from_active = context_bits.is_some();
+    }
+    if debug_rc {
+        if let Some(ctx_bits) = context_bits {
+            let ctx_obj = obj_from_bits(ctx_bits);
+            let ctx_ptr = ctx_obj.as_ptr().map(|p| p as usize).unwrap_or(0);
+            let ctx_ty = if let Some(ptr) = ctx_obj.as_ptr() {
+                unsafe { object_type_id(ptr) }
+            } else {
+                0
+            };
+            eprintln!(
+                "molt exc rc context bits=0x{:x} ptr=0x{:x} type_id={} owned={} from_active={}",
+                ctx_bits, ctx_ptr, ctx_ty, context_bits_owned, context_from_active
+            );
+        } else {
+            eprintln!("molt exc rc context none");
+        }
     }
     if let Some(ctx_bits) = context_bits {
         let new_bits = MoltObject::from_ptr(ptr).bits();
@@ -1066,10 +1160,18 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             let existing = unsafe { exception_context_bits(ptr) };
             if obj_from_bits(existing).is_none() {
                 unsafe {
-                    inc_ref_bits(_py, ctx_bits);
+                    // Active-exception stack values are borrowed; prior last_exception values
+                    // already carry owned storage ref that we transfer into __context__.
+                    if !context_bits_owned {
+                        inc_ref_bits(_py, ctx_bits);
+                    }
                     *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = ctx_bits;
                 }
+            } else if context_bits_owned {
+                dec_ref_bits(_py, ctx_bits);
             }
+        } else if context_bits_owned {
+            dec_ref_bits(_py, ctx_bits);
         }
     }
     let trace_bits = unsafe { exception_trace_bits(ptr) };
@@ -1084,8 +1186,9 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         // Preserve an existing traceback instead of rebuilding on re-raise.
     } else {
         let handler_frame_index = EXCEPTION_STACK.with(|stack| stack.borrow().last().copied());
-        let cause_bits = unsafe { exception_cause_bits(ptr) };
-        let include_caller_frame = !obj_from_bits(cause_bits).is_none();
+        // CPython keeps the active traceback chain rooted at the raising frame even for
+        // explicit `raise ... from ...`; the cause carries its own traceback separately.
+        let include_caller_frame = false;
         if let Some(new_bits) =
             frame_stack_trace_bits(_py, handler_frame_index, include_caller_frame)
         {
@@ -1164,6 +1267,16 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     if !same_ptr {
         inc_ref_bits(_py, new_bits);
     }
+    if debug_rc {
+        let rc = unsafe {
+            let header = header_from_obj_ptr(ptr);
+            (*header).ref_count.load(AtomicOrdering::Acquire)
+        };
+        eprintln!(
+            "molt exc rc end ptr=0x{:x} rc={} same_ptr={} ctx_owned={}",
+            ptr as usize, rc, same_ptr, context_bits_owned
+        );
+    }
 }
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
@@ -1197,6 +1310,54 @@ pub(crate) fn clear_exception(_py: &PyToken<'_>) {
         state
             .last_exception_pending
             .store(false, AtomicOrdering::Relaxed);
+    }
+}
+
+pub(crate) fn exception_set_last_bits_raw(_py: &PyToken<'_>, exc_bits: u64) {
+    crate::gil_assert();
+    let Some(ptr) = obj_from_bits(exc_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            return;
+        }
+    }
+    let state = runtime_state(_py);
+    if let Some(task_key) = current_task_key() {
+        let old_ptr = {
+            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            guard.insert(task_key, PtrSlot(ptr))
+        };
+        if let Some(old_ptr) = old_ptr {
+            if old_ptr.0 != ptr {
+                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, exc_bits);
+            }
+        } else {
+            inc_ref_bits(_py, exc_bits);
+        }
+        state
+            .task_last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
+    } else {
+        let old_ptr = {
+            let mut guard = state.last_exception.lock().unwrap();
+            guard.replace(PtrSlot(ptr))
+        };
+        if let Some(old_ptr) = old_ptr {
+            if old_ptr.0 != ptr {
+                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, exc_bits);
+            }
+        } else {
+            inc_ref_bits(_py, exc_bits);
+        }
+        state
+            .last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
     }
 }
 
@@ -3232,24 +3393,23 @@ pub(crate) fn frame_stack_set_line(line: i64) {
 
 pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
-    FRAME_STACK.with(|stack| {
-        if let Some(entry) = stack.borrow_mut().pop() {
-            if entry.code_bits != 0 {
-                dec_ref_bits(_py, entry.code_bits);
-            }
-            if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
-                dec_ref_bits(_py, entry.locals_bits);
-            }
+    let entry = FRAME_STACK.with(|stack| stack.borrow_mut().pop());
+    if let Some(entry) = entry {
+        if entry.code_bits != 0 {
+            dec_ref_bits(_py, entry.code_bits);
         }
-    });
+        if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
+            dec_ref_bits(_py, entry.locals_bits);
+        }
+    }
 }
 
 pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     crate::gil_assert();
-    FRAME_STACK.with(|stack| {
+    let prev = FRAME_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         let Some(entry) = stack.last_mut() else {
-            return;
+            return None;
         };
         // Replace and manage refcounts. 0 means "unset".
         let prev = entry.locals_bits;
@@ -3258,10 +3418,13 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
             inc_ref_bits(_py, dict_bits);
             entry.locals_bits = dict_bits;
         }
+        Some(prev)
+    });
+    if let Some(prev) = prev {
         if prev != 0 && !obj_from_bits(prev).is_none() {
             dec_ref_bits(_py, prev);
         }
-    });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -3783,13 +3946,25 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
         if let Some(entry) = entry {
             let bits = entry.locals_bits;
             if bits != 0 && !obj_from_bits(bits).is_none() {
-                // CPython behavior: for function frames, `locals()` returns a snapshot dict,
-                // not the live backing store. (Module frames use f_locals == f_globals.)
                 unsafe {
-                    if !code_is_module(entry.code_bits) {
-                        return crate::molt_dict_copy(bits);
+                    // CPython 3.12+: optimized-function `locals()` returns a snapshot dict at
+                    // the call point; module-scope `locals()` stays an alias of globals.
+                    if code_is_module(entry.code_bits) {
+                        inc_ref_bits(_py, bits);
+                        return bits;
+                    }
+                    if let Some(locals_ptr) = obj_from_bits(bits).as_ptr() {
+                        if object_type_id(locals_ptr) == TYPE_ID_DICT {
+                            let pairs = dict_order(locals_ptr).clone();
+                            let out_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
+                            if out_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(out_ptr).bits();
+                        }
                     }
                 }
+                // Defensive fallback for non-dict locals payloads.
                 inc_ref_bits(_py, bits);
                 return bits;
             }
@@ -4779,7 +4954,44 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
             eprintln!("molt exc set_last task=0x{:x} kind={}", task, kind);
         }
-        record_exception(_py, ptr);
+        let new_bits = MoltObject::from_ptr(ptr).bits();
+        if let Some(task_key) = current_task_key() {
+            let state = runtime_state(_py);
+            let old_ptr = {
+                let mut guard = task_last_exceptions(_py).lock().unwrap();
+                guard.insert(task_key, PtrSlot(ptr))
+            };
+            if let Some(old_ptr) = old_ptr {
+                if old_ptr.0 != ptr {
+                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                    dec_ref_bits(_py, old_bits);
+                    inc_ref_bits(_py, new_bits);
+                }
+            } else {
+                inc_ref_bits(_py, new_bits);
+            }
+            state
+                .task_last_exception_pending
+                .store(true, AtomicOrdering::Relaxed);
+        } else {
+            let state = runtime_state(_py);
+            let old_ptr = {
+                let mut guard = state.last_exception.lock().unwrap();
+                guard.replace(PtrSlot(ptr))
+            };
+            if let Some(old_ptr) = old_ptr {
+                if old_ptr.0 != ptr {
+                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                    dec_ref_bits(_py, old_bits);
+                    inc_ref_bits(_py, new_bits);
+                }
+            } else {
+                inc_ref_bits(_py, new_bits);
+            }
+            state
+                .last_exception_pending
+                .store(true, AtomicOrdering::Relaxed);
+        }
         MoltObject::none().bits()
     })
 }
@@ -4799,9 +5011,13 @@ pub extern "C" fn molt_exception_last() -> u64 {
                     let kind_bits = unsafe { exception_kind_bits(ptr.0) };
                     let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                         .unwrap_or_else(|| "<unknown>".to_string());
+                    let rc = unsafe {
+                        let header = header_from_obj_ptr(ptr.0);
+                        (*header).ref_count.load(AtomicOrdering::Acquire)
+                    };
                     eprintln!(
-                        "molt exc last task=0x{:x} kind={}",
-                        task_key.0 as usize, kind
+                        "molt exc last task=0x{:x} kind={} ptr=0x{:x} rc={}",
+                        task_key.0 as usize, kind, ptr.0 as usize, rc
                     );
                 }
                 let bits = MoltObject::from_ptr(ptr.0).bits();
@@ -4815,7 +5031,14 @@ pub extern "C" fn molt_exception_last() -> u64 {
                 let kind_bits = unsafe { exception_kind_bits(ptr.0) };
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                     .unwrap_or_else(|| "<unknown>".to_string());
-                eprintln!("molt exc last task=0x0 kind={}", kind);
+                let rc = unsafe {
+                    let header = header_from_obj_ptr(ptr.0);
+                    (*header).ref_count.load(AtomicOrdering::Acquire)
+                };
+                eprintln!(
+                    "molt exc last task=0x0 kind={} ptr=0x{:x} rc={}",
+                    kind, ptr.0 as usize, rc
+                );
             }
             let bits = MoltObject::from_ptr(ptr.0).bits();
             inc_ref_bits(_py, bits);

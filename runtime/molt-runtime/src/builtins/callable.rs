@@ -1,11 +1,12 @@
 use molt_obj_model::MoltObject;
 
 use crate::{
-    TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
-    TYPE_ID_TYPE, class_attr_lookup_raw_mro, dataclass_desc_ptr, dataclass_dict_bits,
-    dict_get_in_place, function_attr_bits, function_closure_bits, function_dict_bits,
-    instance_dict_bits, intern_static_name, is_truthy, maybe_ptr_from_bits, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, runtime_state,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FUNCTION,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, class_attr_lookup_raw_mro,
+    dataclass_desc_ptr, dataclass_dict_bits, dict_get_in_place, function_attr_bits,
+    function_closure_bits, function_dict_bits, instance_dict_bits, intern_static_name, is_truthy,
+    maybe_ptr_from_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    runtime_state,
 };
 
 #[unsafe(no_mangle)]
@@ -89,7 +90,9 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let is_callable = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
             match object_type_id(ptr) {
-                TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE => true,
+                TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_GENERIC_ALIAS => {
+                    true
+                }
                 TYPE_ID_OBJECT => {
                     let call_bits = intern_static_name(
                         _py,

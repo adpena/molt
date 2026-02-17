@@ -5,51 +5,49 @@ use crate::{
     FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE,
     FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
     GEN_CONTROL_SIZE, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject,
-    PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_CODE, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
+    PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS,
+    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
     TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_class_obj,
-    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
-    alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
+    alloc_class_obj, alloc_dict_with_pairs, alloc_exception_from_class_bits,
+    alloc_instance_for_class, alloc_object, alloc_string, alloc_tuple, apply_class_slots_layout,
+    attr_lookup_ptr, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
     bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
     code_argcount, code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method,
-    dict_get_in_place,
-    dict_get_method, dict_order, dict_pop_method, dict_setdefault_method, dict_update_apply,
-    dict_update_method, dict_update_set_in_place, dict_update_set_via_store, exception_class_bits,
-    exception_pending, exception_type_bits_from_name, function_arity, function_attr_bits,
-    function_closure_bits, function_fn_ptr, function_name_bits, generic_alias_origin_bits,
-    has_capability, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
-    is_trusted, is_truthy, isinstance_bits, issubclass_bits, list_len, lookup_call_attr,
-    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
-    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
-    molt_bytearray_rfind_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
-    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
-    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
-    molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max,
-    molt_bytes_splitlines, molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new,
-    molt_dataclass_set_class, molt_dict_from_obj, molt_dict_new, molt_file_reconfigure,
-    molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,
-    molt_frozenset_isdisjoint, molt_frozenset_issubset, molt_frozenset_issuperset,
-    molt_frozenset_symmetric_difference, molt_frozenset_union_multi, molt_function_default_kind,
-    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable,
-    molt_iter, molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop,
-    molt_list_sort, molt_memoryview_cast, molt_object_init, molt_object_init_subclass,
-    molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
-    molt_super_new,
-    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
-    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
-    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
-    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_startswith_slice, molt_type_call, molt_type_init, molt_type_new, obj_eq,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, profile_hit_unchecked,
-    ptr_from_bits, raise_exception, raise_not_callable, raise_not_iterable, runtime_state,
-    seq_vec_ref, string_obj_to_owned, tuple_len, type_name, type_of_bits,
+    dict_get_in_place, dict_get_method, dict_order, dict_pop_method, dict_setdefault_method,
+    dict_update_apply, dict_update_method, dict_update_set_in_place, dict_update_set_via_store,
+    exception_class_bits, exception_pending, exception_type_bits_from_name, function_arity,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    generic_alias_origin_bits, has_capability, inc_ref_bits, init_atomic_bits, intern_static_name,
+    is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits, issubclass_bits, list_len,
+    lookup_call_attr, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
+    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
+    molt_bytearray_hex, molt_bytearray_rfind_slice, molt_bytearray_rsplit_max,
+    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
+    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
+    molt_bytes_hex, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rsplit_max,
+    molt_bytes_split_max, molt_bytes_splitlines, molt_bytes_startswith_slice, molt_class_set_base,
+    molt_dataclass_new, molt_dataclass_set_class, molt_dict_from_obj, molt_dict_new,
+    molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
+    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
+    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
+    molt_function_default_kind, molt_generator_new, molt_int_from_bytes, molt_int_new,
+    molt_int_to_bytes, molt_is_callable, molt_iter, molt_iter_next, molt_list_append,
+    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_object_init,
+    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
+    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
+    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
+    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
+    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
+    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
+    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
+    molt_type_call, molt_type_init, molt_type_new, obj_eq, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
+    raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned,
+    tuple_len, type_name, type_of_bits,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -239,7 +237,11 @@ unsafe fn call_type_with_builder(
             // RuntimeError/TypeError behavior instead of falling through to generic type-call.
             if class_bits == builtins.super_type {
                 if !kw_names.is_empty() {
-                    return raise_exception::<_>(_py, "TypeError", "super() takes no keyword arguments");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "super() takes no keyword arguments",
+                    );
                 }
                 match pos_args.len() {
                     0 => {
@@ -3761,7 +3763,7 @@ unsafe fn bind_builtin_file_reconfigure(_py: &PyToken<'_>, args: &CallArgs) -> O
                 write_through_bits = val_bits;
             }
             _ => {
-                let msg = format!("reconfigure() got an unexpected keyword argument '{name_str}'");
+                let msg = format!("'{name_str}' is an invalid keyword argument for reconfigure()");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }

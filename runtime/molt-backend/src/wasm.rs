@@ -7208,6 +7208,8 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         let pair = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(pair));
+                        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalGet(pair));
                             func.instruction(&Instruction::LocalSet(locals[out]));
@@ -8015,6 +8017,8 @@ impl WasmBackend {
                                 offset: 0,
                                 memory_index: 0,
                             }));
+                            func.instruction(&Instruction::LocalGet(pair));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                             func.instruction(&Instruction::LocalGet(pair));
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
