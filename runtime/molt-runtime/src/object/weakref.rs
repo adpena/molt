@@ -381,6 +381,8 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
         };
         for (weak_bits, callback_bits) in weakref_snapshot_for_target(_py, target_ptr) {
             if obj_from_bits(callback_bits).is_none() {
+                // Return a strong reference; callers own the result.
+                inc_ref_bits(_py, weak_bits);
                 return weak_bits;
             }
         }
@@ -457,6 +459,8 @@ pub extern "C" fn molt_weakref_register(
             .entry(target_slot)
             .or_default()
             .push(weak_slot);
+        // Return a strong reference; callers own the result.
+        inc_ref_bits(_py, weak_bits);
         weak_bits
     })
 }
@@ -514,7 +518,10 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
         if target_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        MoltObject::from_ptr(target_ptr).bits()
+        let target_bits = MoltObject::from_ptr(target_ptr).bits();
+        // weakref() returns a strong reference while the referent is alive.
+        inc_ref_bits(_py, target_bits);
+        target_bits
     })
 }
 
@@ -539,7 +546,10 @@ pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
         if resolve_ptr(addr).is_none() {
             return MoltObject::none().bits();
         }
-        MoltObject::from_ptr(target_ptr).bits()
+        let target_bits = MoltObject::from_ptr(target_ptr).bits();
+        // Return a strong reference; callers own the result.
+        inc_ref_bits(_py, target_bits);
+        target_bits
     })
 }
 

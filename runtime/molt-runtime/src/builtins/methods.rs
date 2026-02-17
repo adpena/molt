@@ -1062,6 +1062,9 @@ pub(crate) fn builtin_class_method_bits(
         || class_bits == builtins.bytes_io
         || class_bits == builtins.string_io
     {
+        if name == "reconfigure" && class_bits != builtins.text_io_wrapper {
+            return None;
+        }
         return file_method_bits(_py, name);
     }
     if is_builtin_class_bits(_py, class_bits) {
@@ -1295,6 +1298,12 @@ pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u6
             _py,
             &runtime_state(_py).method_cache.memoryview_tobytes,
             fn_addr!(molt_memoryview_tobytes),
+            1,
+        )),
+        "tolist" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.memoryview_tolist,
+            fn_addr!(molt_memoryview_tolist),
             1,
         )),
         "cast" => Some(builtin_func_bits(

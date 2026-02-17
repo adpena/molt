@@ -11752,14 +11752,16 @@ pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iterables_obj = obj_from_bits(iterables_bits);
         let Some(iterables_ptr) = iterables_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "map expects a tuple");
+            let single = [iterables_bits];
+            return unsafe { map_new_impl(_py, func_bits, &single) };
         };
         unsafe {
-            if object_type_id(iterables_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "map expects a tuple");
+            if object_type_id(iterables_ptr) == TYPE_ID_TUPLE {
+                let iterables = seq_vec_ref(iterables_ptr);
+                return map_new_impl(_py, func_bits, iterables.as_slice());
             }
-            let iterables = seq_vec_ref(iterables_ptr);
-            map_new_impl(_py, func_bits, iterables.as_slice())
+            let single = [iterables_bits];
+            map_new_impl(_py, func_bits, &single)
         }
     })
 }
@@ -12880,8 +12882,9 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
                 if type_id != TYPE_ID_TYPE {
                     return molt_object_getattribute(obj_bits, name_bits);
                 }
-                let found =
-                    crate::builtins::attributes::type_attr_lookup_ptr(_py, obj_ptr, name_bits);
+                let found = crate::builtins::attributes::type_attr_lookup_ptr_default(
+                    _py, obj_ptr, name_bits,
+                );
                 if let Some(val) = found {
                     return val;
                 }
@@ -19016,9 +19019,7 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
             break;
         }
         let Some(hi) = fromhex_nibble(text[idx]) else {
-            let msg = format!(
-                "non-hexadecimal number found in fromhex() arg at position {idx}"
-            );
+            let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
             return Err(raise_exception::<_>(_py, "ValueError", &msg));
         };
         idx += 1;
@@ -19026,15 +19027,11 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
             idx += 1;
         }
         if idx >= text.len() {
-            let msg = format!(
-                "non-hexadecimal number found in fromhex() arg at position {idx}"
-            );
+            let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
             return Err(raise_exception::<_>(_py, "ValueError", &msg));
         }
         let Some(lo) = fromhex_nibble(text[idx]) else {
-            let msg = format!(
-                "non-hexadecimal number found in fromhex() arg at position {idx}"
-            );
+            let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
             return Err(raise_exception::<_>(_py, "ValueError", &msg));
         };
         idx += 1;
@@ -25675,6 +25672,115 @@ pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
     })
 }
 
+unsafe fn memoryview_tolist_recursive(
+    _py: &PyToken<'_>,
+    data: &[u8],
+    fmt: MemoryViewFormat,
+    shape: &[isize],
+    strides: &[isize],
+    dim: usize,
+    base_offset: isize,
+) -> Option<u64> {
+    if dim >= shape.len() || shape.len() != strides.len() {
+        return None;
+    }
+    let dim_len = shape[dim].max(0) as usize;
+    let mut items: Vec<u64> = Vec::with_capacity(dim_len);
+    if dim + 1 == shape.len() {
+        for i in 0..dim_len {
+            let item_offset = base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
+            let scalar = unsafe { memoryview_read_scalar(_py, data, item_offset, fmt) }?;
+            items.push(scalar);
+        }
+    } else {
+        for i in 0..dim_len {
+            let child_offset =
+                base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
+            let child = unsafe {
+                memoryview_tolist_recursive(
+                    _py,
+                    data,
+                    fmt,
+                    shape,
+                    strides,
+                    dim + 1,
+                    child_offset,
+                )
+            }?;
+            items.push(child);
+        }
+    }
+    let out_ptr = alloc_list(_py, items.as_slice());
+    if out_ptr.is_null() {
+        return None;
+    }
+    Some(MoltObject::from_ptr(out_ptr).bits())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return raise_exception::<_>(_py, "TypeError", "tolist expects a memoryview"),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "tolist expects a memoryview");
+            }
+            let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
+                Some(fmt) => fmt,
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: unsupported format for tolist()",
+                    );
+                }
+            };
+            let owner_bits = memoryview_owner_bits(ptr);
+            let owner = obj_from_bits(owner_bits);
+            let owner_ptr = match owner.as_ptr() {
+                Some(ptr) => ptr,
+                None => return MoltObject::none().bits(),
+            };
+            let data = match bytes_like_slice_raw(owner_ptr) {
+                Some(slice) => slice,
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: tolist() requires a bytes-like exporter",
+                    );
+                }
+            };
+            let shape = memoryview_shape(ptr).unwrap_or(&[]);
+            let strides = memoryview_strides(ptr).unwrap_or(&[]);
+            if shape.is_empty() || memoryview_ndim(ptr) == 0 {
+                let scalar =
+                    match memoryview_read_scalar(_py, data, memoryview_offset(ptr), fmt) {
+                        Some(bits) => bits,
+                        None => return MoltObject::none().bits(),
+                    };
+                return scalar;
+            }
+            match memoryview_tolist_recursive(
+                _py,
+                data,
+                fmt,
+                shape,
+                strides,
+                0,
+                memoryview_offset(ptr),
+            ) {
+                Some(bits) => bits,
+                None => MoltObject::none().bits(),
+            }
+        }
+    })
+}
+
 #[repr(C)]
 pub struct BufferExport {
     pub ptr: u64,
@@ -26916,6 +27022,15 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                 if type_id == TYPE_ID_OBJECT {
                     let class_bits = object_class_bits(ptr);
                     if class_bits != 0 {
+                        let mappingproxy_bits =
+                            crate::builtins::types::mappingproxy_class_bits(_py);
+                        if class_bits == mappingproxy_bits {
+                            return raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                "'mappingproxy' object does not support item assignment",
+                            );
+                        }
                         let builtins = builtin_classes(_py);
                         if issubclass_bits(class_bits, builtins.dict) {
                             if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__setitem__")
@@ -32709,6 +32824,44 @@ fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     }
 }
 
+fn format_type_name_for_alias(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<String> {
+    unsafe {
+        let name = string_obj_to_owned(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
+        if name.is_empty() {
+            return None;
+        }
+        let mut qualname = name;
+        let mut module_name: Option<String> = None;
+        if !exception_pending(_py) {
+            let dict_bits = class_dict_bits(type_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__") {
+                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key) {
+                            if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
+                                module_name = Some(val);
+                            }
+                        }
+                    }
+                    if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__") {
+                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key) {
+                            if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
+                                qualname = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(module) = module_name {
+            if !module.is_empty() && module != "builtins" {
+                return Some(format!("{module}.{qualname}"));
+            }
+        }
+        Some(qualname)
+    }
+}
+
 fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     unsafe {
         let origin_bits = generic_alias_origin_bits(ptr);
@@ -32718,9 +32871,7 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             let arg_obj = obj_from_bits(arg_bits);
             if let Some(arg_ptr) = arg_obj.as_ptr() {
                 if object_type_id(arg_ptr) == TYPE_ID_TYPE {
-                    let name = string_obj_to_owned(obj_from_bits(class_name_bits(arg_ptr)))
-                        .unwrap_or_default();
-                    if !name.is_empty() {
+                    if let Some(name) = format_type_name_for_alias(_py, arg_ptr) {
                         return name;
                     }
                 }
@@ -32729,13 +32880,7 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         };
         let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
             if object_type_id(origin_ptr) == TYPE_ID_TYPE {
-                let name = string_obj_to_owned(obj_from_bits(class_name_bits(origin_ptr)))
-                    .unwrap_or_default();
-                if name.is_empty() {
-                    format_obj(_py, origin_obj)
-                } else {
-                    name
-                }
+                format_type_name_for_alias(_py, origin_ptr).unwrap_or_else(|| format_obj(_py, origin_obj))
             } else {
                 format_obj(_py, origin_obj)
             }
@@ -32773,9 +32918,7 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             let arg_obj = obj_from_bits(arg_bits);
             if let Some(arg_ptr) = arg_obj.as_ptr() {
                 if object_type_id(arg_ptr) == TYPE_ID_TYPE {
-                    let name = string_obj_to_owned(obj_from_bits(class_name_bits(arg_ptr)))
-                        .unwrap_or_default();
-                    if !name.is_empty() {
+                    if let Some(name) = format_type_name_for_alias(_py, arg_ptr) {
                         return name;
                     }
                 }

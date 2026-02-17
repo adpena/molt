@@ -3626,11 +3626,15 @@ fn open_impl(
                         _ => err.to_string(),
                     };
                     let path_display = path.to_string_lossy();
-                    let msg = if let Some(code) = err.raw_os_error() {
+                    let raw_code = err.raw_os_error();
+                    let msg = if let Some(code) = raw_code {
                         format!("[Errno {code}] {short}: '{path_display}'")
                     } else {
                         format!("{short}: '{path_display}'")
                     };
+                    if let Some(code) = raw_code {
+                        return raise_os_error_errno::<_>(_py, code as i64, &msg);
+                    }
                     match err.kind() {
                         ErrorKind::AlreadyExists => {
                             return raise_exception::<_>(_py, "FileExistsError", &msg);

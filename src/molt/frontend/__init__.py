@@ -6642,14 +6642,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             params = self.funcs_map.get(self.current_func_name, {}).get("params", [])
             if name not in self.scope_assigned and name not in params:
                 return
-            if value.type_hint == "missing":
-                # CPython omits uninitialized locals from `locals()` snapshots.
-                return
             cache = self.locals_cache_val
             if cache is None:
                 return
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
+            if value.type_hint == "missing":
+                # Keep the pinned frame-locals cache in sync for `del`/unbound transitions.
+                self.emit(
+                    MoltOp(
+                        kind="DICT_UPDATE_MISSING",
+                        args=[cache, key, value],
+                        result=MoltValue("none"),
+                    )
+                )
+                return
             self.emit(
                 MoltOp(
                     kind="DICT_SET",
@@ -15509,10 +15516,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     count = len(node.args) + len(node.keywords)
                     msg = f"locals() takes no arguments ({count} given)"
                     return self._emit_type_error_value(msg, "dict")
-                callee = self._emit_module_attr_get_on("builtins", "locals")
-                res = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="CALL_FUNC", args=[callee], result=res))
-                return res
+                return self._emit_locals_dict()
             if func_id == "vars":
                 if node.keywords:
                     return self._emit_type_error_value(
@@ -15522,10 +15526,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     msg = f"vars() takes at most 1 argument ({len(node.args)} given)"
                     return self._emit_type_error_value(msg, "dict")
                 if not node.args:
-                    callee = self._emit_module_attr_get_on("builtins", "locals")
-                    res = MoltValue(self.next_var(), type_hint="dict")
-                    self.emit(MoltOp(kind="CALL_FUNC", args=[callee], result=res))
-                    return res
+                    return self._emit_locals_dict()
                 obj = self.visit(node.args[0])
                 if obj is None:
                     raise NotImplementedError("vars expects a simple object")
@@ -15542,15 +15543,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     msg = f"dir() takes at most 1 argument ({len(node.args)} given)"
                     return self._emit_type_error_value(msg, "list")
                 if not node.args:
-                    locals_callee = self._emit_module_attr_get_on("builtins", "locals")
-                    locals_dict = MoltValue(self.next_var(), type_hint="dict")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_FUNC",
-                            args=[locals_callee],
-                            result=locals_dict,
-                        )
-                    )
+                    locals_dict = self._emit_locals_dict()
                     keys = MoltValue(self.next_var(), type_hint="dict_keys")
                     self.emit(MoltOp(kind="DICT_KEYS", args=[locals_dict], result=keys))
                     callee = self._emit_builtin_function("sorted")
@@ -20862,6 +20855,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 continue
 
+            item_name = f"__molt_match_item_{self.next_label()}"
+            # Pre-box the temporary outside the guarded block so false branches keep a
+            # deterministic initialized cell instead of reading an uninitialized backend var.
+            self._box_local(item_name)
             current = self._emit_match_load(match_cell, match_idx)
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             len_val = None
@@ -20897,8 +20894,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     index_val = base_val
             item_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="INDEX", args=[subject, index_val], result=item_val))
-            item_name = f"__molt_match_item_{self.next_label()}"
-            self._box_local(item_name)
             self._store_local_value(item_name, item_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             item_loaded = self._load_local_value_unchecked(item_name)
