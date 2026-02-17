@@ -14,9 +14,8 @@ use crate::{
     TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
     alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple,
-    attr_lookup_ptr,
-    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
-    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
+    call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
     class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
@@ -146,8 +145,8 @@ fn set_attribute_error_attrs(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, 
         if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
             return;
         }
-        let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr)))
-            .unwrap_or_default();
+        let kind =
+            string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr))).unwrap_or_default();
         if kind != "AttributeError" {
             return;
         }
@@ -971,7 +970,22 @@ pub(crate) unsafe fn descriptor_bind(
         };
         match object_type_id(val_ptr) {
             TYPE_ID_FUNCTION => {
+                let fn_ptr = crate::function_fn_ptr(val_ptr);
                 if let Some(inst_ptr) = instance_ptr {
+                    // CPython parity: descriptor access via class objects for object-level slot
+                    // wrappers (object.__getattribute__/__setattr__/__delattr__) must remain
+                    // unbound so callers pass the target instance explicitly.
+                    let object_getattribute_ptr = crate::molt_object_getattribute as usize as u64;
+                    let object_setattr_ptr = crate::molt_object_setattr as usize as u64;
+                    let object_delattr_ptr = crate::molt_object_delattr as usize as u64;
+                    if object_type_id(inst_ptr) == TYPE_ID_TYPE
+                        && (fn_ptr == object_getattribute_ptr
+                            || fn_ptr == object_setattr_ptr
+                            || fn_ptr == object_delattr_ptr)
+                    {
+                        inc_ref_bits(_py, val_bits);
+                        return Some(val_bits);
+                    }
                     let inst_bits = instance_bits_for_call(inst_ptr);
                     let bound_bits = molt_bound_method_new(val_bits, inst_bits);
                     Some(bound_bits)

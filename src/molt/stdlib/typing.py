@@ -9,6 +9,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys as _sys
+import builtins as _builtins
 from types import ModuleType
 
 
@@ -910,11 +911,144 @@ def get_args(tp: object) -> tuple[object, ...]:
     return ()
 
 
+def _typing_lookup_name(expr: str, globalns: dict, localns: dict) -> object:
+    if expr in localns:
+        return localns[expr]
+    if expr in globalns:
+        return globalns[expr]
+    if hasattr(_builtins, expr):
+        return getattr(_builtins, expr)
+    raise NameError(f"name '{expr}' is not defined")
+
+
+def _typing_split_top_level(expr: str, sep: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for idx, ch in enumerate(expr):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            if depth > 0:
+                depth -= 1
+        elif ch == sep and depth == 0:
+            piece = expr[start:idx].strip()
+            if piece:
+                parts.append(piece)
+            start = idx + 1
+    tail = expr[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _typing_strip_wrapping_parens(expr: str) -> str:
+    text = expr.strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        balanced = True
+        for idx, ch in enumerate(text):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and idx != len(text) - 1:
+                    balanced = False
+                    break
+        if not balanced or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def _typing_parse_subscription(expr: str) -> tuple[str, str] | None:
+    text = expr.strip()
+    if not text.endswith("]"):
+        return None
+    depth = 0
+    open_idx = -1
+    for idx, ch in enumerate(text):
+        if ch == "[":
+            if depth == 0:
+                open_idx = idx
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                if idx != len(text) - 1 or open_idx <= 0:
+                    return None
+                return (text[:open_idx].strip(), text[open_idx + 1 : -1].strip())
+            if depth < 0:
+                return None
+    return None
+
+
+def _typing_eval_annotation_expr(expr: str, globalns: dict, localns: dict) -> object:
+    text = _typing_strip_wrapping_parens(expr)
+    if not text:
+        raise ValueError("empty annotation expression")
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return _typing_eval_annotation_expr(text[1:-1], globalns, localns)
+
+    union_parts = _typing_split_top_level(text, "|")
+    if len(union_parts) > 1:
+        evaluated = [
+            _typing_eval_annotation_expr(part, globalns, localns)
+            for part in union_parts
+        ]
+        out = evaluated[0]
+        for part in evaluated[1:]:
+            out = out | part
+        return out
+
+    sub = _typing_parse_subscription(text)
+    if sub is not None:
+        base_expr, args_expr = sub
+        base = _typing_eval_annotation_expr(base_expr, globalns, localns)
+        arg_parts = _typing_split_top_level(args_expr, ",")
+        if not arg_parts:
+            class_getitem = getattr(base, "__class_getitem__", None)
+            if class_getitem is not None:
+                return class_getitem(())
+            return base[()]
+        args = tuple(
+            _typing_eval_annotation_expr(part, globalns, localns) for part in arg_parts
+        )
+        payload: object = args[0] if len(args) == 1 else args
+        if base in {
+            _builtins.list,
+            _builtins.dict,
+            _builtins.tuple,
+            _builtins.set,
+            _builtins.frozenset,
+        }:
+            return _MOLT_GENERIC_ALIAS_NEW(base, payload)
+        class_getitem = getattr(base, "__class_getitem__", None)
+        if class_getitem is not None:
+            return class_getitem(payload)
+        return base[payload]
+
+    if "." in text:
+        parts = text.split(".")
+        cur = _typing_lookup_name(parts[0], globalns, localns)
+        for part in parts[1:]:
+            cur = getattr(cur, part)
+        return cur
+    return _typing_lookup_name(text, globalns, localns)
+
+
 def _eval_type(value: object, globalns: dict, localns: dict) -> object:
     if isinstance(value, ForwardRef):
-        return eval(value.__forward_arg__, globalns, localns)
+        expr = value.__forward_arg__
+        try:
+            return _typing_eval_annotation_expr(expr, globalns, localns)
+        except Exception:
+            return eval(expr, globalns, localns)
     if isinstance(value, str):
-        return eval(value, globalns, localns)
+        try:
+            return _typing_eval_annotation_expr(value, globalns, localns)
+        except Exception:
+            return eval(value, globalns, localns)
     return value
 
 

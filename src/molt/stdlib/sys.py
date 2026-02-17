@@ -261,52 +261,21 @@ _molt_bootstrap_stdlib_root = _bootstrap_str_or_none(
 )
 
 
-class _LazyStdio:
-    def __init__(self, intrinsic: object, readable: bool, writable: bool) -> None:
-        self._intrinsic = intrinsic
-        del readable, writable
-        self._handle: object | None = None
-
-    def _resolve(self) -> object:
-        if self._handle is None:
-            intrinsic = self._intrinsic
-            if isinstance(intrinsic, str):
-                intrinsic = _require_intrinsic(intrinsic)
-            if not callable(intrinsic):
-                raise RuntimeError("sys stdio intrinsic unavailable")
-            handle = intrinsic()
-            if handle is None:
-                raise RuntimeError("sys stdio intrinsic returned invalid value")
-            self._handle = handle
-        return self._handle
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._resolve(), name)
-
-    def __iter__(self):
-        return iter(cast("Iterable[object]", self._resolve()))
-
-    def __next__(self):
-        return next(cast("Iterator[object]", self._resolve()))
-
-    def __enter__(self):
-        target = self._resolve()
-        enter = getattr(target, "__enter__", None)
-        if enter is None:
-            return target
-        return enter()
-
-    def __exit__(self, exc_type, exc, tb):
-        target = self._resolve()
-        exit_fn = getattr(target, "__exit__", None)
-        if exit_fn is None:
-            return False
-        return exit_fn(exc_type, exc, tb)
+def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
+    resolved = intrinsic
+    if isinstance(resolved, str):
+        resolved = _require_intrinsic(resolved)
+    if not callable(resolved):
+        raise RuntimeError(f"sys {name} intrinsic unavailable")
+    handle = resolved()
+    if handle is None:
+        raise RuntimeError(f"sys {name} intrinsic returned invalid value")
+    return handle
 
 
-stdin = _LazyStdio(_MOLT_SYS_STDIN, True, False)
-stdout = _LazyStdio(_MOLT_SYS_STDOUT, False, True)
-stderr = _LazyStdio(_MOLT_SYS_STDERR, False, True)
+stdin = _resolve_stdio_handle(_MOLT_SYS_STDIN, "stdin")
+stdout = _resolve_stdio_handle(_MOLT_SYS_STDOUT, "stdout")
+stderr = _resolve_stdio_handle(_MOLT_SYS_STDERR, "stderr")
 __stdin__ = stdin
 __stdout__ = stdout
 __stderr__ = stderr

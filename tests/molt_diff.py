@@ -2196,6 +2196,7 @@ def _run_molt(
             file_path,
             "--profile",
             build_profile,
+            "--respect-pythonpath",
             "--out-dir",
             str(output_root),
             "--output",
