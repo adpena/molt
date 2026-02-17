@@ -13,9 +13,9 @@ use crate::{
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR,
     TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, attr_lookup_ptr,
-    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
-    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple,
+    attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
+    call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
     class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
@@ -100,52 +100,39 @@ pub(crate) fn attr_error(_py: &PyToken<'_>, type_label: impl AsRef<str>, attr_na
         type_label.as_ref(),
         attr_name
     );
-    let res = raise_exception(_py, "AttributeError", &msg);
-    let exc_bits = molt_exception_last();
-    if !obj_from_bits(exc_bits).is_none() {
-        set_attribute_error_defaults(_py, exc_bits);
-    }
-    dec_ref_bits(_py, exc_bits);
-    res
+    raise_exception(_py, "AttributeError", &msg)
 }
 
-fn set_attribute_error_defaults(_py: &PyToken<'_>, exc_bits: u64) {
+fn set_attribute_error_members(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, obj_bits: u64) {
     crate::gil_assert();
     let exc_obj = obj_from_bits(exc_bits);
     let Some(exc_ptr) = exc_obj.as_ptr() else {
         return;
     };
-    let name_key = intern_static_name(_py, &runtime_state(_py).interned.name_name, b"name");
-    let obj_key = intern_static_name(_py, &runtime_state(_py).interned.obj_name, b"obj");
-    let none_bits = MoltObject::none().bits();
-    let mut dict_bits = unsafe { exception_dict_bits(exc_ptr) };
-    if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
-        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-        if dict_ptr.is_null() {
-            return;
-        }
-        dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        unsafe {
-            let slot = exc_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-            let old_bits = *slot;
-            if old_bits != dict_bits {
-                dec_ref_bits(_py, old_bits);
-                *slot = dict_bits;
-            }
+    // AttributeError.name and AttributeError.obj are not stored in `__dict__` on CPython.
+    // Store the pair in the exception "value" slot (used for StopIteration/SystemExit),
+    // and have getattr/setattr on exceptions treat this slot specially for AttributeError.
+    let name_ptr = alloc_string(_py, attr_name.as_bytes());
+    if name_ptr.is_null() {
+        return;
+    };
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let tuple_ptr = alloc_tuple(_py, &[name_bits, obj_bits]);
+    dec_ref_bits(_py, name_bits);
+    if tuple_ptr.is_null() {
+        return;
+    }
+    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    unsafe {
+        let slot = exc_ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != tuple_bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, tuple_bits);
+            *slot = tuple_bits;
         }
     }
-    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-        unsafe {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                crate::object::ops::dict_set_in_place_preserving_pending(
-                    _py, dict_ptr, name_key, none_bits,
-                );
-                crate::object::ops::dict_set_in_place_preserving_pending(
-                    _py, dict_ptr, obj_key, none_bits,
-                );
-            }
-        }
-    }
+    dec_ref_bits(_py, tuple_bits);
 }
 
 fn set_attribute_error_attrs(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, obj_bits: u64) {
@@ -154,41 +141,17 @@ fn set_attribute_error_attrs(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, 
     let Some(exc_ptr) = exc_obj.as_ptr() else {
         return;
     };
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, attr_name.as_bytes()) else {
-        return;
-    };
-    let name_key = intern_static_name(_py, &runtime_state(_py).interned.name_name, b"name");
-    let obj_key = intern_static_name(_py, &runtime_state(_py).interned.obj_name, b"obj");
-    let mut dict_bits = unsafe { exception_dict_bits(exc_ptr) };
-    if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
-        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-        if dict_ptr.is_null() {
-            dec_ref_bits(_py, name_bits);
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
             return;
         }
-        dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        unsafe {
-            let slot = exc_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-            let old_bits = *slot;
-            if old_bits != dict_bits {
-                dec_ref_bits(_py, old_bits);
-                *slot = dict_bits;
-            }
+        let kind =
+            string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr))).unwrap_or_default();
+        if kind != "AttributeError" {
+            return;
         }
     }
-    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-        unsafe {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                crate::object::ops::dict_set_in_place_preserving_pending(
-                    _py, dict_ptr, name_key, name_bits,
-                );
-                crate::object::ops::dict_set_in_place_preserving_pending(
-                    _py, dict_ptr, obj_key, obj_bits,
-                );
-            }
-        }
-    }
-    dec_ref_bits(_py, name_bits);
+    set_attribute_error_members(_py, exc_bits, attr_name, obj_bits);
 }
 
 pub(crate) fn attr_error_with_obj(
@@ -214,13 +177,7 @@ pub(crate) fn attr_error_with_obj(
 
 pub(crate) fn attr_error_with_message(_py: &PyToken<'_>, msg: &str) -> i64 {
     crate::gil_assert();
-    let res = raise_exception(_py, "AttributeError", msg);
-    let exc_bits = molt_exception_last();
-    if !obj_from_bits(exc_bits).is_none() {
-        set_attribute_error_defaults(_py, exc_bits);
-    }
-    dec_ref_bits(_py, exc_bits);
-    res
+    raise_exception(_py, "AttributeError", msg)
 }
 
 pub(crate) fn attr_error_with_obj_message(
@@ -1013,7 +970,22 @@ pub(crate) unsafe fn descriptor_bind(
         };
         match object_type_id(val_ptr) {
             TYPE_ID_FUNCTION => {
+                let fn_ptr = crate::function_fn_ptr(val_ptr);
                 if let Some(inst_ptr) = instance_ptr {
+                    // CPython parity: descriptor access via class objects for object-level slot
+                    // wrappers (object.__getattribute__/__setattr__/__delattr__) must remain
+                    // unbound so callers pass the target instance explicitly.
+                    let object_getattribute_ptr = crate::molt_object_getattribute as usize as u64;
+                    let object_setattr_ptr = crate::molt_object_setattr as usize as u64;
+                    let object_delattr_ptr = crate::molt_object_delattr as usize as u64;
+                    if object_type_id(inst_ptr) == TYPE_ID_TYPE
+                        && (fn_ptr == object_getattribute_ptr
+                            || fn_ptr == object_setattr_ptr
+                            || fn_ptr == object_delattr_ptr)
+                    {
+                        inc_ref_bits(_py, val_bits);
+                        return Some(val_bits);
+                    }
                     let inst_bits = instance_bits_for_call(inst_ptr);
                     let bound_bits = molt_bound_method_new(val_bits, inst_bits);
                     Some(bound_bits)

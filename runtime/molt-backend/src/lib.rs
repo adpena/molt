@@ -203,24 +203,10 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
-    let current_block = builder
-        .current_block()
-        .expect("ref adjust requires an active block");
-    let ptr_block = builder.create_block();
-    let cont_block = builder.create_block();
-    builder.insert_block_after(ptr_block, current_block);
-    builder.insert_block_after(cont_block, ptr_block);
-
-    let is_ptr = is_ptr_tag(builder, val);
-    brif_block(builder, is_ptr, ptr_block, &[], cont_block, &[]);
-
-    builder.switch_to_block(ptr_block);
-    builder.seal_block(ptr_block);
-    builder.ins().call(obj_ref_fn, &[val]);
-    jump_block(builder, cont_block, &[]);
-
-    builder.switch_to_block(cont_block);
-    builder.seal_block(cont_block);
+    // Keep ref-adjust control flow linear. Hidden branch blocks here can invalidate
+    // block-local tracked-value carry if callers do not explicitly propagate tracking.
+    // The runtime ref helpers already no-op for non-pointer boxed values.
+    let _ = builder.ins().call(obj_ref_fn, &[val]);
 }
 
 fn emit_mark_has_ptrs(builder: &mut FunctionBuilder, obj_ptr: Value) {
@@ -7738,6 +7724,10 @@ impl SimpleBackend {
 
                     reachable_blocks.insert(master_return_block);
                     if has_ret {
+                        // Suspension returns an owned value to the caller; explicitly
+                        // retain it here so downstream cleanup/control-flow lowering cannot
+                        // invalidate yielded data before next()/send()/throw() unwraps it.
+                        builder.ins().call(local_inc_ref_obj, &[*pair]);
                         jump_block(&mut builder, master_return_block, &[*pair]);
                     } else {
                         jump_block(&mut builder, master_return_block, &[]);
@@ -10297,6 +10287,36 @@ impl SimpleBackend {
                         .call(local_callee, &[site_bits, *func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+
+                    // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
+                    // internally (see `PtrDropGuard` in runtime). The backend's lifetime tracking
+                    // must therefore *not* emit an additional decref for the builder variable,
+                    // or we'll double-free the CallArgs object and corrupt unrelated state.
+                    //
+                    // This is a semantic ownership transfer: the builder must not be used after
+                    // the call_bind op. If IR ever violates this, it is a compiler bug.
+                    let callargs_name = &args_names[1];
+                    let last = last_use.get(callargs_name).copied().unwrap_or(op_idx);
+                    if last > op_idx {
+                        panic!(
+                            "call_bind consumes callargs builder {}, but it is used later (func={} op_idx={} last_use={})",
+                            callargs_name, func_ir.name, op_idx, last
+                        );
+                    }
+                    if let Some(block) = builder.current_block() {
+                        if block == entry_block && loop_depth == 0 {
+                            tracked_obj_vars.retain(|n| n != callargs_name);
+                            tracked_vars.retain(|n| n != callargs_name);
+                            entry_vars.remove(callargs_name);
+                        } else {
+                            if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                names.retain(|n| n != callargs_name);
+                            }
+                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                names.retain(|n| n != callargs_name);
+                            }
+                        }
+                    }
                 }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap();
@@ -11328,13 +11348,13 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     let mut carry_obj: Vec<String> = Vec::new();
                     let mut carry_ptr: Vec<String> = Vec::new();
+                    let mut preserved_last_out: Option<(String, Value)> = None;
                     // `check_exception` terminates the current block (brif) to either jump to the
                     // exception handler label or continue on the fallthrough path. That means any
                     // temporaries tracked on the current block would otherwise have no natural
                     // "line"/control-flow cleanup point until much later. Drain dead values here so
                     // short-lived temporaries (for example list indexing results) are decref'd
                     // deterministically and do not leak across exception checks.
-                    let mut preserved_last_out: Option<(String, Value)> = None;
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             carry_obj.extend(names);
@@ -11364,8 +11384,7 @@ impl SimpleBackend {
                         }
                     }
                     if !carry_obj.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                        let cleanup = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
                         for name in cleanup {
                             let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                 panic!(
@@ -11377,8 +11396,7 @@ impl SimpleBackend {
                         }
                     }
                     if !carry_ptr.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                        let cleanup = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
                         for name in cleanup {
                             let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                 panic!(
@@ -12044,6 +12062,15 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
+                    let indexed_loop_follows = func_ir
+                        .ops
+                        .get(op_idx + 1)
+                        .is_some_and(|next| next.kind == "loop_index_start");
+                    if indexed_loop_follows {
+                        // Indexed loops are emitted as LOOP_START + LOOP_INDEX_START.
+                        // LOOP_INDEX_START owns the loop frame and IV block param.
+                        continue;
+                    }
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
@@ -12068,6 +12095,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let start =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index start not found");
+                    let out_name = op.out.unwrap();
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
@@ -12080,7 +12108,6 @@ impl SimpleBackend {
                     } else {
                         is_block_filled = true;
                     }
-                    let out_name = op.out.unwrap();
                     if reachable_blocks.contains(&loop_block) {
                         def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
                     }
@@ -12526,52 +12553,23 @@ impl SimpleBackend {
                     jump_block(&mut builder, profile_cont, &[]);
                     builder.switch_to_block(profile_cont);
                     builder.seal_block(profile_cont);
-                    let old_val = builder
+                    let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_object_field_set_ptr", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
                         .ins()
-                        .load(types::I64, MemFlags::new(), obj_ptr, offset);
-                    let old_is_ptr = is_ptr_tag(&mut builder, old_val);
-                    let new_is_ptr = is_ptr_tag(&mut builder, *val);
-                    let either_ptr = builder.ins().bor(old_is_ptr, new_is_ptr);
-                    let fast_block = builder.create_block();
-                    let slow_block = builder.create_block();
-                    let store_block = builder.create_block();
-                    let cont_block = builder.create_block();
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(fast_block, current_block);
-                        builder.insert_block_after(slow_block, fast_block);
-                        builder.insert_block_after(store_block, slow_block);
-                        builder.insert_block_after(cont_block, store_block);
-                    }
-
-                    builder
-                        .ins()
-                        .brif(either_ptr, slow_block, &[], fast_block, &[]);
-
-                    builder.switch_to_block(fast_block);
-                    builder.seal_block(fast_block);
-                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
-                    jump_block(&mut builder, cont_block, &[]);
-
-                    builder.switch_to_block(slow_block);
-                    builder.seal_block(slow_block);
-                    emit_mark_has_ptrs(&mut builder, obj_ptr);
-                    let is_same = builder.ins().icmp(IntCC::Equal, old_val, *val);
-                    builder
-                        .ins()
-                        .brif(is_same, cont_block, &[], store_block, &[]);
-
-                    builder.switch_to_block(store_block);
-                    builder.seal_block(store_block);
-                    emit_maybe_ref_adjust(&mut builder, old_val, local_dec_ref_obj);
-                    emit_maybe_ref_adjust(&mut builder, *val, local_inc_ref_obj);
-                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
-                    jump_block(&mut builder, cont_block, &[]);
-
-                    builder.switch_to_block(cont_block);
-                    builder.seal_block(cont_block);
+                        .call(local_callee, &[obj_ptr, offset_bits, *val]);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
-                            let res = builder.ins().iconst(types::I64, box_none());
+                            let res = builder.inst_results(call)[0];
                             def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
@@ -12582,29 +12580,23 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let new_is_ptr = is_ptr_tag(&mut builder, *val);
-                    let mark_block = builder.create_block();
-                    let cont_block = builder.create_block();
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(mark_block, current_block);
-                        builder.insert_block_after(cont_block, mark_block);
-                    }
-                    builder
+                    let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_object_field_init_ptr", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
                         .ins()
-                        .brif(new_is_ptr, mark_block, &[], cont_block, &[]);
-
-                    builder.switch_to_block(mark_block);
-                    builder.seal_block(mark_block);
-                    emit_mark_has_ptrs(&mut builder, obj_ptr);
-                    jump_block(&mut builder, cont_block, &[]);
-
-                    builder.switch_to_block(cont_block);
-                    builder.seal_block(cont_block);
-                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
-                    emit_maybe_ref_adjust(&mut builder, *val, local_inc_ref_obj);
+                        .call(local_callee, &[obj_ptr, offset_bits, *val]);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
-                            let res = builder.ins().iconst(types::I64, box_none());
+                            let res = builder.inst_results(call)[0];
                             def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
@@ -13031,6 +13023,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
+                    // Attribute lookup returns a borrowed reference from object internals/dicts in
+                    // some fast paths. Convert it to an owned reference so lifetime tracking can
+                    // safely decref at last use without corrupting dict-owned values.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name_default" => {
@@ -13053,6 +13049,8 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
                     let res = builder.inst_results(call)[0];
+                    // See `get_attr_name` above: ensure the returned value is owned.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "has_attr_name" => {
@@ -13334,8 +13332,8 @@ impl SimpleBackend {
                         }
                         reachable_blocks.insert(master_return_block);
                         if has_ret {
-                            let zero = builder.ins().iconst(types::I64, 0);
-                            jump_block(&mut builder, master_return_block, &[zero]);
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            jump_block(&mut builder, master_return_block, &[none_bits]);
                         } else {
                             jump_block(&mut builder, master_return_block, &[]);
                         }
@@ -13437,8 +13435,8 @@ impl SimpleBackend {
                     }
                     reachable_blocks.insert(master_return_block);
                     if has_ret {
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, master_return_block, &[zero]);
+                        let none_bits = builder.ins().iconst(types::I64, box_none());
+                        jump_block(&mut builder, master_return_block, &[none_bits]);
                     } else {
                         jump_block(&mut builder, master_return_block, &[]);
                     }

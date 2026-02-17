@@ -443,19 +443,24 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     };
 
     let sep = if windows_paths { ';' } else { ':' };
-    let pythonpath_entries = split_nonempty_paths(&py_path_raw, sep);
+    let path_sep = if windows_paths { '\\' } else { '/' };
+    let pwd = resolve_bootstrap_pwd(&pwd_raw);
+    let mut pythonpath_entries: Vec<String> = Vec::new();
+    for entry in split_nonempty_paths(&py_path_raw, sep) {
+        let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
+        append_unique_path(&mut pythonpath_entries, &resolved);
+    }
     let mut paths: Vec<String> = pythonpath_entries.clone();
 
     let stdlib_root = module_file.and_then(|path| {
         if path.is_empty() {
             return None;
         }
-        let sep = if windows_paths { '\\' } else { '/' };
-        let dirname = path_dirname_text(&path, sep);
+        let dirname = path_dirname_text(&path, path_sep);
         if dirname.is_empty() {
             None
         } else {
-            Some(dirname)
+            Some(bootstrap_resolve_path_entry(&dirname, &pwd, path_sep))
         }
     });
     if let Some(root) = &stdlib_root {
@@ -464,8 +469,9 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
 
     let mut module_roots_entries: Vec<String> = Vec::new();
     for entry in split_nonempty_paths(&module_roots_raw, sep) {
-        append_unique_path(&mut module_roots_entries, &entry);
-        append_unique_path(&mut paths, &entry);
+        let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
+        append_unique_path(&mut module_roots_entries, &resolved);
+        append_unique_path(&mut paths, &resolved);
     }
 
     let venv_site_packages_entries =
@@ -476,7 +482,6 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
 
     let dev_trusted = dev_trusted_raw.trim().to_ascii_lowercase();
     let include_cwd = !matches!(dev_trusted.as_str(), "0" | "false" | "no");
-    let pwd = resolve_bootstrap_pwd(&pwd_raw);
     if include_cwd && !paths.iter().any(|entry| entry.is_empty()) {
         paths.insert(0, String::new());
     }
@@ -612,6 +617,16 @@ fn path_is_absolute_text(path: &str, sep: char) -> bool {
         }
     }
     false
+}
+
+fn bootstrap_resolve_path_entry(path: &str, pwd: &str, sep: char) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    if path_is_absolute_text(path, sep) || pwd.is_empty() {
+        return path_normpath_text(path, sep);
+    }
+    path_normpath_text(&path_join_text(pwd.to_string(), path, sep), sep)
 }
 
 fn source_loader_resolution(

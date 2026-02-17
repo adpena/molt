@@ -55,7 +55,10 @@ if path.exists():
     path.unlink()
 with open(path, "x") as handle:
     handle.write("new")
-show_err("x_exists", lambda: open(path, "x"))
+try:
+    open(path, "x")
+except Exception as exc:
+    print("x_exists", type(exc).__name__, getattr(exc, "errno", None))
 
 with open(path, mode="r") as handle:
     show("mode_kw", handle.read())
