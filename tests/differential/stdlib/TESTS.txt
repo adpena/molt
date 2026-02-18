@@ -1218,6 +1218,9 @@ tests/differential/stdlib/importlib_find_spec_path_importer_cache_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_path_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_zip_source_intrinsic.py
 tests/differential/stdlib/importlib_import_module_basic.py
+tests/differential/stdlib/importlib_import_module_helper_constant.py
+tests/differential/stdlib/importlib_import_module_helper_dynamic.py
+tests/differential/stdlib/importlib_import_module_helper_submodule.py
 tests/differential/stdlib/importlib_invalidate_caches.py
 tests/differential/stdlib/importlib_metadata_basic.py
 tests/differential/stdlib/importlib_metadata_dist_paths_intrinsic.py
@@ -1859,6 +1862,7 @@ tests/differential/stdlib/weakref_extended.py
 tests/differential/stdlib/weakref_finalize_atexit.py
 tests/differential/stdlib/weakref_finalize_atexit_disabled.py
 tests/differential/stdlib/weakref_getrefs_callbacks.py
+tests/differential/stdlib/weakref_ref_constructor_identity.py
 tests/differential/stdlib/weakref_weakcontainers_methods.py
 tests/differential/stdlib/weakref_weakkeydict_basic.py
 tests/differential/stdlib/windows_platform_basic.py

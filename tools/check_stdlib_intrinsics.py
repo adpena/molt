@@ -492,6 +492,19 @@ def _scan_host_fallback_module_patterns(path: Path) -> list[str]:
     def _is_forbidden_module_name(name: str) -> bool:
         return name.startswith("_py_") or "._py_" in name
 
+    def _call_target_name(node: ast.Call) -> str | None:
+        if node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return first.value
+        for keyword in node.keywords:
+            if keyword.arg != "name":
+                continue
+            value = keyword.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
+        return None
+
     errors: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -510,23 +523,27 @@ def _scan_host_fallback_module_patterns(path: Path) -> list[str]:
                 return errors
         if not isinstance(node, ast.Call):
             continue
-        if not node.args:
+        target = _call_target_name(node)
+        if target is None:
             continue
-        first = node.args[0]
-        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-            continue
-        target = first.value
         if not _is_forbidden_module_name(target):
             continue
         func = node.func
-        if isinstance(func, ast.Name) and func.id == "__import__":
+        if isinstance(func, ast.Name) and func.id in {"__import__", "import_module"}:
             errors.append(
                 "Dynamic host fallback imports (`__import__` on `_py_*`) are forbidden."
+                if func.id == "__import__"
+                else "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
             )
             return errors
-        if isinstance(func, ast.Attribute) and func.attr == "import_module":
+        if isinstance(func, ast.Attribute) and func.attr in {
+            "__import__",
+            "import_module",
+        }:
             errors.append(
-                "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
+                "Dynamic host fallback imports (`__import__` on `_py_*`) are forbidden."
+                if func.attr == "__import__"
+                else "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
             )
             return errors
     return errors

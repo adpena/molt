@@ -758,6 +758,83 @@ def test_host_fallback_import_pattern_rejected(
     assert "Host fallback imports (`_py_*`) are forbidden" in out
 
 
+def test_host_fallback_dynamic_import_module_alias_pattern_rejected(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(
+        stdlib_root,
+        "fallback_mod",
+        'from importlib import import_module\nimport_module("_py_decimal")\n',
+    )
+    ratchet = tmp_path / "ratchet.json"
+    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--fallback-intrinsic-backed-only",
+            "--intrinsic-partial-ratchet-file",
+            str(ratchet),
+        ],
+    )
+
+    exit_code = module.main()
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert (
+        "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
+        in out
+    )
+
+
+def test_host_fallback_dynamic_import_keyword_name_pattern_rejected(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(
+        stdlib_root,
+        "fallback_mod",
+        '__import__(name="_py_decimal")\n',
+    )
+    ratchet = tmp_path / "ratchet.json"
+    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--fallback-intrinsic-backed-only",
+            "--intrinsic-partial-ratchet-file",
+            str(ratchet),
+        ],
+    )
+
+    exit_code = module.main()
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert (
+        "Dynamic host fallback imports (`__import__` on `_py_*`) are forbidden." in out
+    )
+
+
 def test_full_coverage_attestation_defaults_to_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
