@@ -11348,7 +11348,6 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     let mut carry_obj: Vec<String> = Vec::new();
                     let mut carry_ptr: Vec<String> = Vec::new();
-                    let mut preserved_last_out: Option<(String, Value)> = None;
                     // `check_exception` terminates the current block (brif) to either jump to the
                     // exception handler label or continue on the fallthrough path. That means any
                     // temporaries tracked on the current block would otherwise have no natural
@@ -11366,25 +11365,15 @@ impl SimpleBackend {
                             carry_obj.extend(tracked_obj_vars.drain(..));
                             carry_ptr.extend(tracked_vars.drain(..));
                         }
-                        if let Some((name, value)) = last_out.as_ref() {
-                            let last = last_use.get(name).copied().unwrap_or(op_idx);
-                            if last > op_idx {
-                                preserved_last_out = Some((name.clone(), *value));
-                            }
-                        }
                         if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
                             && func_ir.name.contains("_tmp_compress_repro11b__f")
                         {
-                            eprintln!(
-                                "check_exception {} op={} preserved_last_out={:?}",
-                                func_ir.name,
-                                op_idx,
-                                preserved_last_out.as_ref().map(|(name, _)| name)
-                            );
+                            eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
                     }
                     if !carry_obj.is_empty() {
-                        let cleanup = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
                         for name in cleanup {
                             let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                 panic!(
@@ -11396,7 +11385,8 @@ impl SimpleBackend {
                         }
                     }
                     if !carry_ptr.is_empty() {
-                        let cleanup = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
                         for name in cleanup {
                             let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                 panic!(
@@ -11418,28 +11408,10 @@ impl SimpleBackend {
                     let pending = builder.inst_results(call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
                     let fallthrough = builder.create_block();
-                    let mut fallthrough_args: Vec<Value> = Vec::new();
-                    let mut preserved_param: Option<(String, Value)> = None;
-                    if let Some((name, value)) = preserved_last_out {
-                        let param = builder.append_block_param(fallthrough, types::I64);
-                        let arg = builder.ins().iadd_imm(value, 0);
-                        fallthrough_args.push(arg);
-                        preserved_param = Some((name, param));
-                    }
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    brif_block(
-                        &mut builder,
-                        cond,
-                        target_block,
-                        &[],
-                        fallthrough,
-                        &fallthrough_args,
-                    );
+                    brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
-                    if let Some((name, param)) = preserved_param {
-                        def_var_named(&mut builder, &vars, name, param);
-                    }
                     if !carry_obj.is_empty() {
                         block_tracked_obj
                             .entry(fallthrough)
@@ -12919,6 +12891,9 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
+                    // Attribute lookup may return borrowed values from object/class internals.
+                    // Normalize to an owned reference so last-use decref remains safe.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_generic_obj" => {
@@ -12966,6 +12941,9 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len, site_bits]);
                     let res = builder.inst_results(call)[0];
+                    // `molt_get_attr_object_ic` delegates to `molt_get_attr_name`, which can
+                    // hand back borrowed values on fast paths. Own the result here.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_special_obj" => {
@@ -13004,6 +12982,8 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
+                    // Keep attribute result ownership consistent across all get-attr ops.
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name" => {

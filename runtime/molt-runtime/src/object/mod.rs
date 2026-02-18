@@ -986,7 +986,8 @@ unsafe fn maybe_run_object_finalizer(
     // CPython ignores exceptions raised during finalization and preserves any already-active
     // exception from surrounding bytecode.
     if let Some(bits) = prior_exc_bits {
-        let same_as_prior = crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
+        let same_as_prior =
+            crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
         let pending = crate::exception_pending(py);
         if !same_as_prior || !pending {
             if pending {

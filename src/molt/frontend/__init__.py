@@ -21466,7 +21466,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_exit], result=exit_ok)
         )
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(MoltOp(kind="LABEL", args=[try_exc_label], result=MoltValue("none")))
         self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
@@ -21495,7 +21495,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         exit_res = MoltValue(self.next_var(), type_hint="Any")
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, exc_val], result=exit_res))
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         not_res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="NOT", args=[exit_res], result=not_res))
         is_truthy = MoltValue(self.next_var(), type_hint="bool")
@@ -21510,7 +21510,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_val], result=exit_ok))
-        self._emit_raise_if_pending(emit_exit=True)
+        self._emit_raise_if_pending()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         self.emit(MoltOp(kind="LABEL", args=[try_done_label], result=MoltValue("none")))
@@ -21518,7 +21518,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_scopes.pop()
         self.try_suppress_depth = prior_suppress
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True, force_exit=True)
+        self._emit_raise_if_pending()
         return None
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:

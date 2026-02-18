@@ -15,6 +15,7 @@ _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
 _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
     "molt_importlib_runtime_state_payload", globals()
 )
+_MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
 
 
 __all__ = [
@@ -93,8 +94,10 @@ def _module_import_with_fallback(resolved: str):
         # return path yet; fall back to the intrinsic-backed spec/loader flow.
         if "import returned non-module payload" not in str(exc):
             raise
+        _MOLT_EXCEPTION_CLEAR()
         return _import_via_spec(resolved)
     except ImportError:
+        _MOLT_EXCEPTION_CLEAR()
         return _import_via_spec(resolved)
 
 
