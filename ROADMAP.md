@@ -48,7 +48,7 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - zero `probe-only`,
   - zero `python-only`,
   - intrinsic-partial ratchet budget (`tools/stdlib_intrinsics_ratchet.json`),
-  - fallback anti-pattern blocking for `_py_*` direct/dynamic imports.
+  - fallback anti-pattern blocking for `_py_*` direct/dynamic imports (including alias and keyword-argument dynamic forms).
 - Blocker-first tranche update:
   - landed importlib blocker/resolver hardening (`importlib.machinery` + `importlib.util`)
     with regression tests and targeted differential evidence.
@@ -420,7 +420,7 @@ Sign-off criteria:
 - Implemented: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (strict all-stdlib mode); opt-down to intrinsic-backed-only scope is explicit via `--fallback-intrinsic-backed-only`.
 - Implemented: `tools/check_stdlib_intrinsics.py` now enforces CPython 3.12/3.13/3.14 union coverage for both top-level stdlib names and `.py` submodule names (missing-name failures, required-package shape checks, and duplicate module/package mappings).
 - Implemented: stdlib coverage stubs are synchronized by `tools/sync_stdlib_top_level_stubs.py` and `tools/sync_stdlib_submodule_stubs.py` against the generated baseline in `tools/stdlib_module_union.py` (`tools/gen_stdlib_module_union.py`).
-- Implemented: probe-only and python-only buckets are currently zero; union coverage is complete by name (`320` top-level names, `743` submodule names), with remaining work concentrated in intrinsic-partial burn-down.
+- Implemented: probe-only and python-only buckets are currently zero; union coverage is complete by name (`320` top-level names, `540` submodule names), with remaining work concentrated in intrinsic-partial burn-down.
 - Implemented: non-CPython stdlib top-level extras are now constrained to `_intrinsics` and `test` only.
 - Implemented: Molt-specific DB client shim moved from stdlib (`molt_db`) to `moltlib.molt_db`, with `molt.molt_db` compatibility shim retained.
 - Implemented: `ast.parse` / `ast.walk` / `ast.get_docstring` now route through Rust intrinsics (`molt_ast_parse`, `molt_ast_walk`, `molt_ast_get_docstring`) with Python wrappers reduced to constructor wiring and argument forwarding.
