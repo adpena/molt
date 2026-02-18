@@ -58,6 +58,37 @@ which wasmtime
 wasmtime --version
 ```
 
+### WASM Runtime Artifact Failure Strings
+Use these when `molt build --target wasm` fails with runtime-artifact validation errors.
+
+`Runtime wasm build produced invalid artifact`
+```bash
+# Validate the current runtime artifact and detect zero-filled/corrupt output.
+RUNTIME="$CARGO_TARGET_DIR/wasm32-wasip1/release/molt_runtime.wasm"
+ls -l "$RUNTIME"
+xxd -l 16 "$RUNTIME"
+wasm-tools validate "$RUNTIME"
+
+# Compare release vs release-fast wasm runtime outputs directly.
+export TEST_ROOT=/Volumes/APDataStore/Molt/cargo-target-wasm-profile-check
+export CARGO_TARGET_DIR="$TEST_ROOT/release"
+cargo build --package molt-runtime --profile release --target wasm32-wasip1
+xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release/molt_runtime.wasm"
+
+export CARGO_TARGET_DIR="$TEST_ROOT/release-fast"
+cargo build --package molt-runtime --profile release-fast --target wasm32-wasip1
+xxd -l 16 "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
+wasm-tools validate "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.wasm"
+```
+
+`Runtime wasm recovery build produced invalid artifact`
+```bash
+# Force fallback profile lane (default fallback is release-fast).
+export MOLT_WASM_RUNTIME_FALLBACK_PROFILE=release-fast
+export MOLT_WASM_FORCE_CC=1
+uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py
+```
+
 ### Failure String -> Copy-Paste Response
 `stdlib intrinsics lint failed: stdlib top-level coverage gate violated`
 ```bash
