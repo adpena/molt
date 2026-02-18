@@ -23,6 +23,7 @@ _MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", _NS)
 _MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", _NS)
 _MOLT_PROPERTY_NEW = _require_intrinsic("molt_property_new", _NS)
 _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", _NS)
+_MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", _NS)
 
 # Provide `builtins.globals` / `builtins.locals` early during bootstrap. Other stdlib
 # modules may import `builtins` during their own initialization and expect these to
@@ -125,6 +126,39 @@ def _recover_placeholder_module(resolved: str, placeholder: object):
         raise
 
 
+def _load_via_spec(resolved: str):
+    modules = getattr(_sys, "modules", {})
+    existing = modules.get(resolved)
+    if existing is not None and not _is_placeholder_module(existing):
+        return existing
+    importlib_util = _require_importlib_util_module()
+    find_spec = getattr(importlib_util, "find_spec", None)
+    module_from_spec = getattr(importlib_util, "module_from_spec", None)
+    if not callable(find_spec) or not callable(module_from_spec):
+        raise RuntimeError("importlib.util missing required loader helpers")
+    spec = find_spec(resolved, None)
+    if spec is None:
+        raise ImportError(f"No module named '{resolved}'")
+    module = module_from_spec(spec)
+    modules[resolved] = module
+    try:
+        loader = getattr(spec, "loader", None)
+        if loader is not None:
+            if hasattr(loader, "exec_module"):
+                loader.exec_module(module)
+            elif hasattr(loader, "load_module"):
+                loaded = loader.load_module(resolved)
+                if loaded is not None:
+                    module = loaded
+        loaded_module = modules.get(resolved, module)
+        if _is_placeholder_module(loaded_module):
+            raise ImportError(f"import of {resolved} produced placeholder module")
+        return loaded_module
+    except Exception:
+        modules.pop(resolved, None)
+        raise
+
+
 def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
     if not name:
         raise ImportError("Empty module name")
@@ -140,9 +174,14 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
             return mod
         top = resolved.split(".", 1)[0]
         return modules.get(top, mod)
-    mod = _MOLT_MODULE_IMPORT(resolved)
+    try:
+        mod = _MOLT_MODULE_IMPORT(resolved)
+    except (ImportError, TypeError):
+        _MOLT_EXCEPTION_CLEAR()
+        mod = _load_via_spec(resolved)
     if mod is None:
-        raise ImportError(f"No module named '{resolved}'")
+        _MOLT_EXCEPTION_CLEAR()
+        mod = _load_via_spec(resolved)
     if _is_placeholder_module(mod):
         mod = _recover_placeholder_module(resolved, mod)
     if fromlist:

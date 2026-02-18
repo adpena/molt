@@ -1718,6 +1718,8 @@ def _collect_imports(
     imports: list[str] = []
     needs_typing = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
+    module_string_constants: dict[str, str] = {}
+    helper_param_import_positions: dict[str, set[int]] = {}
     (
         package_override_set,
         package_override,
@@ -1737,6 +1739,74 @@ def _collect_imports(
                 parts.append(current.id)
                 return ".".join(reversed(parts))
         return None
+
+    def _resolve_string_constant(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return module_string_constants.get(node.id)
+        return None
+
+    if include_nested and isinstance(tree, ast.Module):
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target = stmt.targets[0]
+                if isinstance(target, ast.Name):
+                    value = _resolve_string_constant(stmt.value)
+                    if value is not None:
+                        module_string_constants[target.id] = value
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                value = _resolve_string_constant(stmt.value) if stmt.value else None
+                if value is not None:
+                    module_string_constants[stmt.target.id] = value
+
+        for stmt in tree.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            params = [
+                arg.arg
+                for arg in (
+                    list(stmt.args.posonlyargs)
+                    + list(stmt.args.args)
+                    + list(stmt.args.kwonlyargs)
+                )
+            ]
+            if stmt.args.vararg is not None:
+                params.append(stmt.args.vararg.arg)
+            if stmt.args.kwarg is not None:
+                params.append(stmt.args.kwarg.arg)
+            if not params:
+                continue
+            param_set = set(params)
+            for node in ast.walk(stmt):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                target = _importlib_target(node.func)
+                if target not in {
+                    "importlib.import_module",
+                    "importlib.util.find_spec",
+                }:
+                    continue
+                first = node.args[0]
+                if isinstance(first, ast.Name) and first.id in param_set:
+                    pos = params.index(first.id)
+                    helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
+
+        for stmt in tree.body:
+            for node in ast.walk(stmt):
+                if not isinstance(node, ast.Call):
+                    continue
+                if not isinstance(node.func, ast.Name):
+                    continue
+                positions = helper_param_import_positions.get(node.func.id)
+                if not positions:
+                    continue
+                for pos in positions:
+                    if pos >= len(node.args):
+                        continue
+                    resolved = _resolve_string_constant(node.args[pos])
+                    if resolved is not None:
+                        imports.append(resolved)
 
     if include_nested:
         scan_nodes: list[ast.AST] = list(ast.walk(tree))
@@ -1786,9 +1856,9 @@ def _collect_imports(
         if isinstance(node, ast.Call) and node.args:
             target = _importlib_target(node.func)
             if target in {"importlib.import_module", "importlib.util.find_spec"}:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                    imports.append(first.value)
+                resolved = _resolve_string_constant(node.args[0])
+                if resolved is not None:
+                    imports.append(resolved)
             continue
     if needs_typing:
         imports.append("typing")

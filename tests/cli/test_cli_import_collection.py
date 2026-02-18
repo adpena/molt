@@ -86,6 +86,38 @@ def test_collect_imports_can_skip_nested_imports() -> None:
     assert "os" in top_level_only
 
 
+def test_collect_imports_resolves_module_constant_via_helper_call() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "MODULE_NAME = '_socket'\n"
+        "def _probe(module_name):\n"
+        "    return importlib.import_module(module_name)\n"
+        "_probe(MODULE_NAME)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "_socket" in imports
+
+
+def test_collect_imports_resolves_helper_call_nested_in_expression() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "MODULE_NAME = '_socket'\n"
+        "def _probe(module_name):\n"
+        "    return importlib.import_module(module_name)\n"
+        "print(_probe(MODULE_NAME))\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "_socket" in imports
+
+
+def test_collect_imports_resolves_name_argument_for_import_module() -> None:
+    tree = ast.parse(
+        "import importlib\nTARGET = 'pathlib'\nimportlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")

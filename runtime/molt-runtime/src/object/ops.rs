@@ -25697,15 +25697,7 @@ unsafe fn memoryview_tolist_recursive(
             let child_offset =
                 base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
             let child = unsafe {
-                memoryview_tolist_recursive(
-                    _py,
-                    data,
-                    fmt,
-                    shape,
-                    strides,
-                    dim + 1,
-                    child_offset,
-                )
+                memoryview_tolist_recursive(_py, data, fmt, shape, strides, dim + 1, child_offset)
             }?;
             items.push(child);
         }
@@ -25758,11 +25750,10 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
             let shape = memoryview_shape(ptr).unwrap_or(&[]);
             let strides = memoryview_strides(ptr).unwrap_or(&[]);
             if shape.is_empty() || memoryview_ndim(ptr) == 0 {
-                let scalar =
-                    match memoryview_read_scalar(_py, data, memoryview_offset(ptr), fmt) {
-                        Some(bits) => bits,
-                        None => return MoltObject::none().bits(),
-                    };
+                let scalar = match memoryview_read_scalar(_py, data, memoryview_offset(ptr), fmt) {
+                    Some(bits) => bits,
+                    None => return MoltObject::none().bits(),
+                };
                 return scalar;
             }
             match memoryview_tolist_recursive(
@@ -32826,7 +32817,8 @@ fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> String {
 
 fn format_type_name_for_alias(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<String> {
     unsafe {
-        let name = string_obj_to_owned(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
+        let name =
+            string_obj_to_owned(obj_from_bits(class_name_bits(type_ptr))).unwrap_or_default();
         if name.is_empty() {
             return None;
         }
@@ -32880,7 +32872,8 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         };
         let origin_repr = if let Some(origin_ptr) = origin_obj.as_ptr() {
             if object_type_id(origin_ptr) == TYPE_ID_TYPE {
-                format_type_name_for_alias(_py, origin_ptr).unwrap_or_else(|| format_obj(_py, origin_obj))
+                format_type_name_for_alias(_py, origin_ptr)
+                    .unwrap_or_else(|| format_obj(_py, origin_obj))
             } else {
                 format_obj(_py, origin_obj)
             }

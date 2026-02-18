@@ -466,6 +466,9 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `molt_importlib_metadata_entry_points_payload`/`molt_importlib_metadata_entry_points_select_payload`,
   `molt_importlib_metadata_normalize_name`, and `molt_importlib_metadata_payload`
   (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields).
+  Build-time module-graph import collection now resolves constant module-name flows through helper wrappers (for example
+  `importlib.import_module(module_name)` inside a helper invoked as `_probe(MODULE_NAME)`), so generated `_molt_importer`
+  dispatchers include the required stdlib modules/submodules and avoid brittle runtime fallback paths for those imports.
   TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery full extension/sourceless execution parity beyond capability-gated restricted-source shim lanes (zip source loader path is intrinsic-lowered).
 - Imports: module-level `from x import *` honors `__all__` (with strict name checks) and otherwise skips underscore-prefixed names.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).

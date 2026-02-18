@@ -437,9 +437,7 @@ unsafe fn type_attr_lookup_ptr_inner(
         if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
             let builtins = builtin_classes(_py);
             if class_bits == builtins.object
-                && (name == "__getattribute__"
-                    || name == "__setattr__"
-                    || name == "__delattr__")
+                && (name == "__getattribute__" || name == "__setattr__" || name == "__delattr__")
             {
                 if let Some(func_bits) = object_method_bits(_py, name.as_str()) {
                     inc_ref_bits(_py, func_bits);
@@ -740,13 +738,9 @@ unsafe fn type_attr_lookup_ptr_inner(
                         obj_from_bits(getattribute_bits),
                     )
                 {
-                    if let Some(call_bits) = class_attr_lookup(
-                        _py,
-                        meta_ptr,
-                        meta_ptr,
-                        Some(obj_ptr),
-                        getattribute_bits,
-                    ) {
+                    if let Some(call_bits) =
+                        class_attr_lookup(_py, meta_ptr, meta_ptr, Some(obj_ptr), getattribute_bits)
+                    {
                         let getattr_bits = intern_static_name(
                             _py,
                             &runtime_state(_py).interned.getattr_name,
