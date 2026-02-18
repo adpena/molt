@@ -114,29 +114,29 @@ fn itertools_class(
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                let layout_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.molt_layout_size,
-                    b"__molt_layout_size__",
-                );
-                let layout_bits = MoltObject::from_int(layout_size).bits();
-                unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
-                let iter_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.iter_name,
-                    b"__iter__",
-                );
-                unsafe { dict_set_in_place(_py, dict_ptr, iter_name, iter_self_bits(_py)) };
-                let next_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.next_name,
-                    b"__next__",
-                );
-                let next_bits = builtin_func_bits(_py, next_slot, next_fn, 1);
-                unsafe { dict_set_in_place(_py, dict_ptr, next_name, next_bits) };
-            }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let layout_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.molt_layout_size,
+                b"__molt_layout_size__",
+            );
+            let layout_bits = MoltObject::from_int(layout_size).bits();
+            unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
+            let iter_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.iter_name,
+                b"__iter__",
+            );
+            unsafe { dict_set_in_place(_py, dict_ptr, iter_name, iter_self_bits(_py)) };
+            let next_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.next_name,
+                b"__next__",
+            );
+            let next_bits = builtin_func_bits(_py, next_slot, next_fn, 1);
+            unsafe { dict_set_in_place(_py, dict_ptr, next_name, next_bits) };
         }
         class_bits
     })

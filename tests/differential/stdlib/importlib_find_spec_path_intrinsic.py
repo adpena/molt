@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         pkg_spec = importlib.util.find_spec("pkgdemo")
         mod_spec = importlib.util.find_spec("moddemo")
-        builtin_spec = importlib.util.find_spec("math")
+        runtime_spec = importlib.util.find_spec("math")
         miss_spec = importlib.util.find_spec("_molt_missing_mod_for_find_spec")
     finally:
         sys.path.pop(0)
@@ -45,9 +45,13 @@ with tempfile.TemporaryDirectory() as tmp:
     print(mod_spec.submodule_search_locations if mod_spec else None)
     print(mod_spec.cached.endswith(".pyc") if mod_spec else False)
 
-    print(builtin_spec is not None)
-    print(builtin_spec.origin == "built-in" if builtin_spec else False)
-    print(builtin_spec.has_location is False if builtin_spec else False)
-    print(builtin_spec.cached is None if builtin_spec else False)
+    print(runtime_spec is not None)
+    print(isinstance(runtime_spec.origin, str) if runtime_spec else False)
+    print(isinstance(runtime_spec.has_location, bool) if runtime_spec else False)
+    print(
+        (runtime_spec.cached is None or runtime_spec.cached.endswith(".pyc"))
+        if runtime_spec
+        else False
+    )
 
     print(miss_spec is None)

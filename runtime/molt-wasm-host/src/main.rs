@@ -74,10 +74,10 @@ fn resolve_precompiled_path(wasm_path: &Path, override_env: &str) -> Option<Path
     if !precompiled_enabled() {
         return None;
     }
-    if let Ok(path) = env::var(override_env) {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
+    if let Ok(path) = env::var(override_env)
+        && !path.is_empty()
+    {
+        return Some(PathBuf::from(path));
     }
     Some(wasm_path.with_extension("cwasm"))
 }
@@ -88,14 +88,14 @@ fn load_or_compile_module(
     label: &str,
     override_env: &str,
 ) -> Result<Module> {
-    if let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env) {
-        if precompiled.exists() {
-            debug_log(|| format!("loading {label} precompiled: {precompiled:?}"));
-            match unsafe { Module::deserialize_file(engine, &precompiled) } {
-                Ok(module) => return Ok(module),
-                Err(err) => {
-                    debug_log(|| format!("precompiled load failed ({label}): {err}"));
-                }
+    if let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env)
+        && precompiled.exists()
+    {
+        debug_log(|| format!("loading {label} precompiled: {precompiled:?}"));
+        match unsafe { Module::deserialize_file(engine, &precompiled) } {
+            Ok(module) => return Ok(module),
+            Err(err) => {
+                debug_log(|| format!("precompiled load failed ({label}): {err}"));
             }
         }
     }
@@ -106,16 +106,16 @@ fn load_or_compile_module(
     let module = Module::new(engine, wasm_bytes)
         .with_context(|| format!("compile {label} {wasm_path:?}"))?;
     debug_log(|| format!("compiled {label} module in {:?}", compile_start.elapsed()));
-    if precompiled_write_enabled() {
-        if let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env) {
-            match module.serialize() {
-                Ok(bytes) => {
-                    let _ = fs::write(&precompiled, bytes);
-                    debug_log(|| format!("wrote {label} precompiled: {precompiled:?}"));
-                }
-                Err(err) => {
-                    debug_log(|| format!("serialize {label} failed: {err}"));
-                }
+    if precompiled_write_enabled()
+        && let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env)
+    {
+        match module.serialize() {
+            Ok(bytes) => {
+                let _ = fs::write(&precompiled, bytes);
+                debug_log(|| format!("wrote {label} precompiled: {precompiled:?}"));
+            }
+            Err(err) => {
+                debug_log(|| format!("serialize {label} failed: {err}"));
             }
         }
     }
@@ -157,7 +157,7 @@ fn build_engine() -> Result<Engine> {
         config.cranelift_opt_level(OptLevel::None);
         debug_log(|| "wasmtime opt level set to none".to_string());
     }
-    Ok(Engine::new(&config)?)
+    Engine::new(&config)
 }
 
 struct HostState {
@@ -412,10 +412,9 @@ fn resolve_worker_cmd() -> Result<Vec<String>> {
 fn resolve_timeout_ms() -> u64 {
     if let Ok(raw) =
         env::var("MOLT_WASM_DB_TIMEOUT_MS").or_else(|_| env::var("MOLT_DB_QUERY_TIMEOUT_MS"))
+        && let Ok(val) = raw.parse::<u64>()
     {
-        if let Ok(val) = raw.parse::<u64>() {
-            return val;
-        }
+        return val;
     }
     250
 }
@@ -713,10 +712,10 @@ fn merge_limits(
                 (None, Some(b)) => Some(b),
                 (None, None) => None,
             };
-            if let Some(max) = max {
-                if min > max {
-                    bail!("incompatible {label} limits: min {min} > max {max}");
-                }
+            if let Some(max) = max
+                && min > max
+            {
+                bail!("incompatible {label} limits: min {min} > max {max}");
             }
             Ok(Some(Limits { min, max }))
         }
@@ -1108,7 +1107,7 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
             return None;
         }
         let file = unsafe { std::fs::File::from_raw_fd(duped) };
-        return Some(Stdio::from(file));
+        Some(Stdio::from(file))
     }
     #[cfg(windows)]
     {
@@ -1683,10 +1682,10 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
                 let state = caller.data_mut();
                 if let Some(worker) = state.db_worker.as_ref() {
                     for req_id in cancel_ids {
-                        if let Some(pending) = state.db_pending.get_mut(&req_id) {
-                            if send_worker_cancel(&worker.stdin, req_id).is_ok() {
-                                pending.cancel_sent = true;
-                            }
+                        if let Some(pending) = state.db_pending.get_mut(&req_id)
+                            && send_worker_cancel(&worker.stdin, req_id).is_ok()
+                        {
+                            pending.cancel_sent = true;
                         }
                     }
                 }
@@ -1706,8 +1705,8 @@ fn ptr_from_i64(ptr: i64) -> Result<usize, i32> {
 #[cfg(unix)]
 fn local_tm_for_secs(secs: i64) -> Option<libc::tm> {
     let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
-    let mut ts = secs as libc::time_t;
-    let ptr = unsafe { libc::localtime_r(&mut ts, tm.as_mut_ptr()) };
+    let ts = secs as libc::time_t;
+    let ptr = unsafe { libc::localtime_r(&ts, tm.as_mut_ptr()) };
     if ptr.is_null() {
         return None;
     }
@@ -1793,9 +1792,9 @@ fn timezone_profile_now() -> Option<(i64, String, String)> {
 fn host_time_timezone() -> i64 {
     #[cfg(unix)]
     {
-        return timezone_profile_now()
+        timezone_profile_now()
             .map(|profile| profile.0)
-            .unwrap_or(i64::MIN);
+            .unwrap_or(i64::MIN)
     }
     #[cfg(not(unix))]
     {
@@ -1806,7 +1805,7 @@ fn host_time_timezone() -> i64 {
 fn host_time_local_offset(secs: i64) -> i64 {
     #[cfg(unix)]
     {
-        return local_offset_west_seconds_for(secs).unwrap_or(i64::MIN);
+        local_offset_west_seconds_for(secs).unwrap_or(i64::MIN)
     }
     #[cfg(not(unix))]
     {
@@ -1825,7 +1824,7 @@ fn host_time_tzname(which: i32) -> Option<String> {
         if which == 0 {
             return Some(profile.1);
         }
-        return Some(profile.2);
+        Some(profile.2)
     }
     #[cfg(not(unix))]
     {
@@ -2549,12 +2548,8 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         );
                     }
                     if out_anc_len_ptr != 0 {
-                        let _ = write_u32(
-                            &mut caller,
-                            &memory,
-                            out_anc_len_ptr,
-                            msg.msg_controllen as u32,
-                        );
+                        let _ =
+                            write_u32(&mut caller, &memory, out_anc_len_ptr, msg.msg_controllen);
                     }
                     rc
                 }
@@ -2836,7 +2831,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
         &mut *store,
         |_caller: Caller<'_, HostState>, fd: i64| -> i32 {
             if fd < 0 {
-                return -(libc::EBADF as i32);
+                return -libc::EBADF;
             }
             #[cfg(unix)]
             {
@@ -2844,7 +2839,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 if rc == 0 {
                     return 0;
                 }
-                return -map_io_error(&std::io::Error::last_os_error());
+                -map_io_error(&std::io::Error::last_os_error())
             }
             #[cfg(windows)]
             {
@@ -3451,10 +3446,11 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
                     Ok(entry) => entry,
                     Err(errno) => return -errno,
                 };
-                if entry.queue.is_empty() && !entry.closed {
-                    if let Err(errno) = ws_drain_incoming(entry) {
-                        return -errno;
-                    }
+                if entry.queue.is_empty()
+                    && !entry.closed
+                    && let Err(errno) = ws_drain_incoming(entry)
+                {
+                    return -errno;
                 }
                 if let Some(front) = entry.queue.front() {
                     if front.len() > cap {
@@ -3494,10 +3490,10 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
             let events = events as u32;
             let mut ready = 0u32;
             if (events & IO_EVENT_READ) != 0 {
-                if entry.queue.is_empty() {
-                    if let Err(errno) = ws_drain_incoming(entry) {
-                        return -errno;
-                    }
+                if entry.queue.is_empty()
+                    && let Err(errno) = ws_drain_incoming(entry)
+                {
+                    return -errno;
                 }
                 if !entry.queue.is_empty() {
                     ready |= IO_EVENT_READ;
@@ -4037,27 +4033,26 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
         {
             let state = caller.data_mut();
             for (handle, entry) in state.process_manager.processes.iter_mut() {
-                if entry.exit_code.is_none() {
-                    if let Ok(Some(status)) = entry.child.try_wait() {
-                        let code = exit_code_from_status(status);
-                        entry.exit_code = Some(code);
-                        exited.push((*handle, code));
-                    }
+                if entry.exit_code.is_none()
+                    && let Ok(Some(status)) = entry.child.try_wait()
+                {
+                    let code = exit_code_from_status(status);
+                    entry.exit_code = Some(code);
+                    exited.push((*handle, code));
                 }
             }
         }
-        if !exited.is_empty() {
-            if let Some(func) = caller
+        if !exited.is_empty()
+            && let Some(func) = caller
                 .get_export("molt_process_host_notify")
                 .and_then(Extern::into_func)
-            {
-                for (handle, code) in exited {
-                    let _ = func.call(
-                        &mut caller,
-                        &[Val::I64(handle as i64), Val::I32(code)],
-                        &mut [],
-                    );
-                }
+        {
+            for (handle, code) in exited {
+                let _ = func.call(
+                    &mut caller,
+                    &[Val::I64(handle as i64), Val::I32(code)],
+                    &mut [],
+                );
             }
         }
         0

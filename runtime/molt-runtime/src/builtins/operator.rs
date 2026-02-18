@@ -49,24 +49,24 @@ fn operator_class(
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                let layout_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.molt_layout_size,
-                    b"__molt_layout_size__",
-                );
-                let layout_bits = MoltObject::from_int(layout_size).bits();
-                let call_bits = builtin_func_bits(_py, call_slot, call_fn, 2);
-                let call_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.call_name,
-                    b"__call__",
-                );
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, layout_name, layout_bits);
-                    dict_set_in_place(_py, dict_ptr, call_name, call_bits);
-                }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let layout_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.molt_layout_size,
+                b"__molt_layout_size__",
+            );
+            let layout_bits = MoltObject::from_int(layout_size).bits();
+            let call_bits = builtin_func_bits(_py, call_slot, call_fn, 2);
+            let call_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.call_name,
+                b"__call__",
+            );
+            unsafe {
+                dict_set_in_place(_py, dict_ptr, layout_name, layout_bits);
+                dict_set_in_place(_py, dict_ptr, call_name, call_bits);
             }
         }
         class_bits

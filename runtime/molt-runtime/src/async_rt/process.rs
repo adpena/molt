@@ -842,10 +842,10 @@ pub unsafe extern "C" fn molt_process_spawn(
                 }
             };
 
-            if stdin_stream != 0 {
-                if let Some(stdin) = child.stdin.take() {
-                    spawn_process_writer(stdin, stdin_stream);
-                }
+            if stdin_stream != 0
+                && let Some(stdin) = child.stdin.take()
+            {
+                spawn_process_writer(stdin, stdin_stream);
             }
             if stdout_stream != 0 {
                 if let Some(reader) = merged_stdout_reader.take() {
@@ -854,10 +854,10 @@ pub unsafe extern "C" fn molt_process_spawn(
                     spawn_process_reader(stdout, stdout_stream);
                 }
             }
-            if stderr_stream != 0 {
-                if let Some(stderr) = child.stderr.take() {
-                    spawn_process_reader(stderr, stderr_stream);
-                }
+            if stderr_stream != 0
+                && let Some(stderr) = child.stderr.take()
+            {
+                spawn_process_reader(stderr, stderr_stream);
             }
 
             let pid = child.id();
@@ -1630,10 +1630,10 @@ struct MoltProcessHandle {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for ProcessState {
     fn drop(&mut self) {
-        if self.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING {
-            if let Ok(mut guard) = self.child.lock() {
-                let _ = guard.kill();
-            }
+        if self.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING
+            && let Ok(mut guard) = self.child.lock()
+        {
+            let _ = guard.kill();
         }
         if self.stdin_stream != 0 {
             unsafe {

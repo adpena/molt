@@ -86,12 +86,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
             trace_shutdown("io_poller_shutdown_done");
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if thread_pool_started {
-            if let Some(pool) = state.thread_pool.get() {
-                trace_shutdown("thread_pool_shutdown_start");
-                pool.shutdown();
-                trace_shutdown("thread_pool_shutdown_done");
-            }
+        if thread_pool_started && let Some(pool) = state.thread_pool.get() {
+            trace_shutdown("thread_pool_shutdown_start");
+            pool.shutdown();
+            trace_shutdown("thread_pool_shutdown_done");
         }
         trace_shutdown("workers_shutdown_done");
     }
@@ -213,10 +211,10 @@ fn clear_fn_ptr_code_map(_py: &PyToken<'_>, state: &RuntimeState) {
 }
 
 fn clear_async_hang_probe(state: &RuntimeState) {
-    if let Some(Some(probe)) = state.async_hang_probe.get() {
-        if let Ok(mut guard) = probe.pending_counts.lock() {
-            guard.clear();
-        }
+    if let Some(Some(probe)) = state.async_hang_probe.get()
+        && let Ok(mut guard) = probe.pending_counts.lock()
+    {
+        guard.clear();
     }
 }
 

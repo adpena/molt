@@ -33,18 +33,18 @@ macro_rules! file_handle_require_attached {
 
 fn resolve_file_handle_ptr(_py: &PyToken<'_>, obj_bits: u64) -> Result<*mut MoltFileHandle, u64> {
     let obj = obj_from_bits(obj_bits);
-    if let Some(ptr) = obj.as_ptr() {
-        if unsafe { object_type_id(ptr) } == TYPE_ID_FILE_HANDLE {
-            let handle_ptr = unsafe { file_handle_ptr(ptr) };
-            if handle_ptr.is_null() {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "file handle missing",
-                ));
-            }
-            return Ok(handle_ptr);
+    if let Some(ptr) = obj.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_FILE_HANDLE
+    {
+        let handle_ptr = unsafe { file_handle_ptr(ptr) };
+        if handle_ptr.is_null() {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "file handle missing",
+            ));
         }
+        return Ok(handle_ptr);
     }
     let name_bits = intern_static_name(_py, &HANDLE_ATTR_NAME, b"_handle");
     let missing = missing_bits(_py);
@@ -54,12 +54,12 @@ fn resolve_file_handle_ptr(_py: &PyToken<'_>, obj_bits: u64) -> Result<*mut Molt
     }
     if !is_missing_bits(_py, attr_bits) {
         let mut resolved = None;
-        if let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() {
-            if unsafe { object_type_id(attr_ptr) } == TYPE_ID_FILE_HANDLE {
-                let handle_ptr = unsafe { file_handle_ptr(attr_ptr) };
-                if !handle_ptr.is_null() {
-                    resolved = Some(handle_ptr);
-                }
+        if let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr()
+            && unsafe { object_type_id(attr_ptr) } == TYPE_ID_FILE_HANDLE
+        {
+            let handle_ptr = unsafe { file_handle_ptr(attr_ptr) };
+            if !handle_ptr.is_null() {
+                resolved = Some(handle_ptr);
             }
         }
         dec_ref_bits(_py, attr_bits);
@@ -602,10 +602,10 @@ unsafe fn buffered_read_bytes(
         let mut out: Vec<u8> = Vec::new();
         let mut at_eof = false;
         let mut remaining = size;
-        if let Some(rem) = remaining {
-            if rem == 0 {
-                return Ok((out, false));
-            }
+        if let Some(rem) = remaining
+            && rem == 0
+        {
+            return Ok((out, false));
         }
         if !handle.write_buf.is_empty() {
             flush_write_buffer(_py, handle, backend)?;
@@ -797,10 +797,10 @@ pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits
             let backend_state = Arc::clone(&handle.state);
             {
                 let mut guard = backend_state.backend.lock().unwrap();
-                if let Some(backend) = guard.as_mut() {
-                    if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                        return bits;
-                    }
+                if let Some(backend) = guard.as_mut()
+                    && let Err(bits) = flush_write_buffer(_py, handle, backend)
+                {
+                    return bits;
                 }
             }
             file_handle_close_ptr(ptr);
@@ -1310,24 +1310,24 @@ fn path_from_bits_with_flavor(
                     dec_ref_bits(_py, res_bits);
                     return Ok((std::path::PathBuf::from(text), PathFlavor::Str));
                 }
-                if let Some(res_ptr) = res_obj.as_ptr() {
-                    if object_type_id(res_ptr) == TYPE_ID_BYTES {
-                        let len = bytes_len(res_ptr);
-                        let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::ffi::OsStringExt;
-                            let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                            dec_ref_bits(_py, res_bits);
-                            return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                        }
-                        #[cfg(windows)]
-                        {
-                            let path = std::str::from_utf8(bytes)
-                                .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                            dec_ref_bits(_py, res_bits);
-                            return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                        }
+                if let Some(res_ptr) = res_obj.as_ptr()
+                    && object_type_id(res_ptr) == TYPE_ID_BYTES
+                {
+                    let len = bytes_len(res_ptr);
+                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::ffi::OsStringExt;
+                        let path = std::ffi::OsString::from_vec(bytes.to_vec());
+                        dec_ref_bits(_py, res_bits);
+                        return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
+                    }
+                    #[cfg(windows)]
+                    {
+                        let path = std::str::from_utf8(bytes)
+                            .map_err(|_| "open path bytes must be utf-8".to_string())?;
+                        dec_ref_bits(_py, res_bits);
+                        return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
                     }
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
@@ -1878,10 +1878,9 @@ fn path_isabs_text(path: &str, sep: char) -> bool {
 }
 
 fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
-    fn parse_char_class(
-        pat: &[char],
-        mut idx: usize,
-    ) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+    type GlobCharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
+
+    fn parse_char_class(pat: &[char], mut idx: usize) -> Option<GlobCharClassParse> {
         if idx >= pat.len() || pat[idx] != '[' {
             return None;
         }
@@ -1953,22 +1952,23 @@ fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
             matched_from_star = ni;
             continue;
         }
-        if pi < pat_chars.len() && pat_chars[pi] == '[' {
-            if let Some((singles, ranges, negate, next_idx)) = parse_char_class(&pat_chars, pi) {
-                let hit = char_class_hit(name_chars[ni], &singles, &ranges, negate);
-                if hit {
-                    pi = next_idx;
-                    ni += 1;
-                    continue;
-                }
-                if let Some(star) = star_idx {
-                    matched_from_star += 1;
-                    ni = matched_from_star;
-                    pi = star;
-                    continue;
-                }
-                return false;
+        if pi < pat_chars.len()
+            && pat_chars[pi] == '['
+            && let Some((singles, ranges, negate, next_idx)) = parse_char_class(&pat_chars, pi)
+        {
+            let hit = char_class_hit(name_chars[ni], &singles, &ranges, negate);
+            if hit {
+                pi = next_idx;
+                ni += 1;
+                continue;
             }
+            if let Some(star) = star_idx {
+                matched_from_star += 1;
+                ni = matched_from_star;
+                pi = star;
+                continue;
+            }
+            return false;
         }
         if pi < pat_chars.len() && (pat_chars[pi] == '?' || pat_chars[pi] == name_chars[ni]) {
             pi += 1;
@@ -2129,11 +2129,9 @@ fn glob_dir_fd_arg_from_bits(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<Glob
 
 #[cfg(unix)]
 fn glob_text_to_path(text: &str, bytes_mode: bool) -> std::path::PathBuf {
-    if bytes_mode {
-        if let Some(raw) = raw_from_bytes_text(text) {
-            use std::os::unix::ffi::OsStringExt;
-            return std::path::PathBuf::from(std::ffi::OsString::from_vec(raw));
-        }
+    if bytes_mode && let Some(raw) = raw_from_bytes_text(text) {
+        use std::os::unix::ffi::OsStringExt;
+        return std::path::PathBuf::from(std::ffi::OsString::from_vec(raw));
     }
     std::path::PathBuf::from(text)
 }
@@ -2171,12 +2169,11 @@ fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
             buf.as_mut_ptr() as *mut libc::c_char,
         )
     };
-    if rc != -1 {
-        if let Some(nul_idx) = buf.iter().position(|byte| *byte == 0) {
-            if nul_idx > 0 {
-                return Some(bytes_text_from_raw(&buf[..nul_idx]));
-            }
-        }
+    if rc != -1
+        && let Some(nul_idx) = buf.iter().position(|byte| *byte == 0)
+        && nul_idx > 0
+    {
+        return Some(bytes_text_from_raw(&buf[..nul_idx]));
     }
     for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
         if let Ok(path) = std::fs::read_link(&candidate) {
@@ -2494,6 +2491,7 @@ fn glob_listdir_text(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn glob1_text(
     _py: &PyToken<'_>,
     dirname: &str,
@@ -2598,6 +2596,7 @@ fn glob2_text(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn glob_iglob_text(
     _py: &PyToken<'_>,
     pathname: &str,
@@ -2714,6 +2713,7 @@ fn glob_iglob_text(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn glob_matches_text(
     _py: &PyToken<'_>,
     pathname: &str,
@@ -2793,10 +2793,12 @@ fn glob_split_on_seps(pat: &str, seps: &[char]) -> Vec<String> {
     out
 }
 
+type GlobTranslateCharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
+
 fn glob_translate_parse_char_class(
     pat: &[char],
     mut idx: usize,
-) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+) -> Option<GlobTranslateCharClassParse> {
     if idx >= pat.len() || pat[idx] != '[' {
         return None;
     }
@@ -3365,29 +3367,29 @@ fn open_arg_path(_py: &PyToken<'_>, file_bits: u64) -> Result<(std::path::PathBu
                     dec_ref_bits(_py, res_bits);
                     return Ok((std::path::PathBuf::from(text), name_bits));
                 }
-                if let Some(res_ptr) = res_obj.as_ptr() {
-                    if object_type_id(res_ptr) == TYPE_ID_BYTES {
-                        let len = bytes_len(res_ptr);
-                        let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                        let name_ptr = alloc_bytes(_py, bytes);
-                        if name_ptr.is_null() {
-                            return Err("open failed".to_string());
-                        }
-                        let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::ffi::OsStringExt;
-                            let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                            dec_ref_bits(_py, res_bits);
-                            return Ok((std::path::PathBuf::from(path), name_bits));
-                        }
-                        #[cfg(windows)]
-                        {
-                            let path = std::str::from_utf8(bytes)
-                                .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                            dec_ref_bits(_py, res_bits);
-                            return Ok((std::path::PathBuf::from(path), name_bits));
-                        }
+                if let Some(res_ptr) = res_obj.as_ptr()
+                    && object_type_id(res_ptr) == TYPE_ID_BYTES
+                {
+                    let len = bytes_len(res_ptr);
+                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
+                    let name_ptr = alloc_bytes(_py, bytes);
+                    if name_ptr.is_null() {
+                        return Err("open failed".to_string());
+                    }
+                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::ffi::OsStringExt;
+                        let path = std::ffi::OsString::from_vec(bytes.to_vec());
+                        dec_ref_bits(_py, res_bits);
+                        return Ok((std::path::PathBuf::from(path), name_bits));
+                    }
+                    #[cfg(windows)]
+                    {
+                        let path = std::str::from_utf8(bytes)
+                            .map_err(|_| "open path bytes must be utf-8".to_string())?;
+                        dec_ref_bits(_py, res_bits);
+                        return Ok((std::path::PathBuf::from(path), name_bits));
                     }
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
@@ -5452,10 +5454,11 @@ pub extern "C" fn molt_path_expanduser(path_bits: u64) -> u64 {
         if home.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
             let drive = std::env::var("HOMEDRIVE").ok();
             let homepath = std::env::var("HOMEPATH").ok();
-            if let (Some(drive), Some(homepath)) = (drive, homepath) {
-                if !drive.is_empty() && !homepath.is_empty() {
-                    home = Some(format!("{drive}{homepath}"));
-                }
+            if let (Some(drive), Some(homepath)) = (drive, homepath)
+                && !drive.is_empty()
+                && !homepath.is_empty()
+            {
+                home = Some(format!("{drive}{homepath}"));
             }
         }
         let out = if let Some(mut home) = home {
@@ -5761,17 +5764,17 @@ pub extern "C" fn molt_glob(
             }
         };
 
-        if let Some((_, root_dir_flavor)) = root_dir.as_ref() {
-            if *root_dir_flavor != pathname_flavor {
-                let msg = if path_isabs_text(&pathname, sep) {
-                    "Can't mix strings and bytes in path components"
-                } else if pathname_flavor == PathFlavor::Bytes {
-                    "cannot use a bytes pattern on a string-like object"
-                } else {
-                    "cannot use a string pattern on a bytes-like object"
-                };
-                return raise_exception::<_>(_py, "TypeError", msg);
-            }
+        if let Some((_, root_dir_flavor)) = root_dir.as_ref()
+            && *root_dir_flavor != pathname_flavor
+        {
+            let msg = if path_isabs_text(&pathname, sep) {
+                "Can't mix strings and bytes in path components"
+            } else if pathname_flavor == PathFlavor::Bytes {
+                "cannot use a bytes pattern on a string-like object"
+            } else {
+                "cannot use a string pattern on a bytes-like object"
+            };
+            return raise_exception::<_>(_py, "TypeError", msg);
         }
 
         let dir_fd = match glob_dir_fd_arg_from_bits(_py, dir_fd_bits) {
@@ -7551,18 +7554,18 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let text = match text_backend_read(_py, handle, backend, size) {
-                        Ok(text) => text,
-                        Err(bits) => return bits,
-                    };
-                    let out_ptr = alloc_string(_py, text.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let text = match text_backend_read(_py, handle, backend, size) {
+                    Ok(text) => text,
+                    Err(bits) => return bits,
+                };
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             if handle.text {
                 let errors = handle
@@ -7601,10 +7604,8 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 loop {
                     let mut buf = Vec::new();
                     let multibyte = text_encoding_is_multibyte(encoding_kind);
-                    if !multibyte {
-                        if let Some(pending) = handle.pending_byte.take() {
-                            buf.push(pending);
-                        }
+                    if !multibyte && let Some(pending) = handle.pending_byte.take() {
+                        buf.push(pending);
                     }
                     let mut pending_utf8_needed = 0usize;
                     if !handle.text_pending_bytes.is_empty() {
@@ -7621,10 +7622,10 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                     if text_encoding_is_variable(encoding_kind) {
                         byte_limit = None;
                     }
-                    if let Some(rem) = byte_limit {
-                        if pending_utf8_needed > rem {
-                            byte_limit = Some(pending_utf8_needed);
-                        }
+                    if let Some(rem) = byte_limit
+                        && pending_utf8_needed > rem
+                    {
+                        byte_limit = Some(pending_utf8_needed);
                     }
                     let (mut more, at_eof) =
                         match file_read1_bytes(_py, handle, backend, byte_limit) {
@@ -7790,18 +7791,18 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let text = match text_backend_read(_py, handle, backend, size) {
-                        Ok(text) => text,
-                        Err(bits) => return bits,
-                    };
-                    let out_ptr = alloc_string(_py, text.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let text = match text_backend_read(_py, handle, backend, size) {
+                    Ok(text) => text,
+                    Err(bits) => return bits,
+                };
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             if handle.text {
                 let errors = handle
@@ -7844,10 +7845,8 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                 }
                 let mut buf = Vec::new();
                 let multibyte = text_encoding_is_multibyte(encoding_kind);
-                if !multibyte {
-                    if let Some(pending) = handle.pending_byte.take() {
-                        buf.push(pending);
-                    }
+                if !multibyte && let Some(pending) = handle.pending_byte.take() {
+                    buf.push(pending);
                 }
                 let mut pending_utf8_needed = 0usize;
                 if !handle.text_pending_bytes.is_empty() {
@@ -7864,10 +7863,10 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                 if text_encoding_is_variable(encoding_kind) {
                     byte_limit = None;
                 }
-                if let Some(rem) = byte_limit {
-                    if pending_utf8_needed > rem {
-                        byte_limit = Some(pending_utf8_needed);
-                    }
+                if let Some(rem) = byte_limit
+                    && pending_utf8_needed > rem
+                {
+                    byte_limit = Some(pending_utf8_needed);
                 }
                 let (mut more, at_eof) = match file_read1_bytes(_py, handle, backend, byte_limit) {
                     Ok(more) => more,
@@ -7993,18 +7992,18 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let text = match text_backend_read(_py, handle, backend, None) {
-                        Ok(text) => text,
-                        Err(bits) => return bits,
-                    };
-                    let out_ptr = alloc_string(_py, text.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let text = match text_backend_read(_py, handle, backend, None) {
+                    Ok(text) => text,
+                    Err(bits) => return bits,
+                };
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             if handle.text {
                 let errors = handle
@@ -8023,10 +8022,8 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
                 }
                 let mut buf = Vec::new();
                 let multibyte = text_encoding_is_multibyte(encoding_kind);
-                if !multibyte {
-                    if let Some(pending) = handle.pending_byte.take() {
-                        buf.push(pending);
-                    }
+                if !multibyte && let Some(pending) = handle.pending_byte.take() {
+                    buf.push(pending);
                 }
                 if !handle.text_pending_bytes.is_empty() {
                     let pending = std::mem::take(&mut handle.text_pending_bytes);
@@ -8323,32 +8320,32 @@ fn file_readline_bytes(
                     }
                 }
                 Some("\r\n") => {
-                    if byte == b'\r' {
-                        if let Some(next) = unsafe { handle_read_byte(_py, handle, backend) }? {
-                            if next == b'\n' {
-                                if push_text_byte(
-                                    &mut out,
-                                    b'\r',
-                                    text_kind,
-                                    size,
-                                    &mut char_count,
-                                    &mut utf8_state,
-                                ) {
-                                    handle.pending_byte = Some(next);
-                                    break;
-                                }
-                                push_text_byte(
-                                    &mut out,
-                                    b'\n',
-                                    text_kind,
-                                    size,
-                                    &mut char_count,
-                                    &mut utf8_state,
-                                );
+                    if byte == b'\r'
+                        && let Some(next) = unsafe { handle_read_byte(_py, handle, backend) }?
+                    {
+                        if next == b'\n' {
+                            if push_text_byte(
+                                &mut out,
+                                b'\r',
+                                text_kind,
+                                size,
+                                &mut char_count,
+                                &mut utf8_state,
+                            ) {
+                                handle.pending_byte = Some(next);
                                 break;
                             }
-                            handle.pending_byte = Some(next);
+                            push_text_byte(
+                                &mut out,
+                                b'\n',
+                                text_kind,
+                                size,
+                                &mut char_count,
+                                &mut utf8_state,
+                            );
+                            break;
                         }
+                        handle.pending_byte = Some(next);
                     }
                     if push_text_byte(
                         &mut out,
@@ -8379,10 +8376,10 @@ fn file_readline_bytes(
             if byte == b'\n' {
                 break;
             }
-            if let Some(limit) = size {
-                if out.len() >= limit {
-                    break;
-                }
+            if let Some(limit) = size
+                && out.len() >= limit
+            {
+                break;
             }
         }
     }
@@ -8551,18 +8548,18 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let text = match text_backend_readline(_py, handle, backend, size) {
-                        Ok(text) => text,
-                        Err(bits) => return bits,
-                    };
-                    let out_ptr = alloc_string(_py, text.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let text = match text_backend_readline(_py, handle, backend, size) {
+                    Ok(text) => text,
+                    Err(bits) => return bits,
+                };
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             let mut pending_out: Vec<u8> = Vec::new();
             let mut remaining = size;
@@ -8603,10 +8600,10 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
             }
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             let text = handle.text;
             let newline_owned = if text {
@@ -8628,39 +8625,38 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
             } else {
                 None
             };
-            if text {
-                if let Some(kind_value) = encoding_kind {
-                    if text_encoding_is_multibyte(kind_value) {
-                        let mut kind = kind_value;
-                        let errors_owned = handle
-                            .errors
-                            .clone()
-                            .unwrap_or_else(|| "strict".to_string());
-                        let errors = errors_owned.as_str();
-                        if let Err(msg) = validate_decode_error_handler(errors) {
-                            return raise_exception::<_>(_py, "LookupError", &msg);
-                        }
-                        let line = match read_line_multibyte(
-                            _py,
-                            handle,
-                            backend,
-                            newline,
-                            remaining,
-                            &mut encoding_label,
-                            &mut kind,
-                            errors,
-                        ) {
-                            Ok(line) => line,
-                            Err(bits) => return bits,
-                        };
-                        pending_out.extend_from_slice(&line);
-                        let out_ptr = alloc_string(_py, &pending_out);
-                        if out_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(out_ptr).bits();
-                    }
+            if text
+                && let Some(kind_value) = encoding_kind
+                && text_encoding_is_multibyte(kind_value)
+            {
+                let mut kind = kind_value;
+                let errors_owned = handle
+                    .errors
+                    .clone()
+                    .unwrap_or_else(|| "strict".to_string());
+                let errors = errors_owned.as_str();
+                if let Err(msg) = validate_decode_error_handler(errors) {
+                    return raise_exception::<_>(_py, "LookupError", &msg);
                 }
+                let line = match read_line_multibyte(
+                    _py,
+                    handle,
+                    backend,
+                    newline,
+                    remaining,
+                    &mut encoding_label,
+                    &mut kind,
+                    errors,
+                ) {
+                    Ok(line) => line,
+                    Err(bits) => return bits,
+                };
+                pending_out.extend_from_slice(&line);
+                let out_ptr = alloc_string(_py, &pending_out);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             let bytes = match file_readline_bytes(
                 _py,
@@ -8779,47 +8775,47 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let mut lines: Vec<u64> = Vec::new();
-                    let mut total = 0usize;
-                    loop {
-                        let text = match text_backend_readline(_py, handle, backend, None) {
-                            Ok(text) => text,
-                            Err(bits) => return bits,
-                        };
-                        if text.is_empty() {
-                            break;
-                        }
-                        total = total.saturating_add(text.chars().count());
-                        let line_ptr = alloc_string(_py, text.as_bytes());
-                        if line_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        lines.push(MoltObject::from_ptr(line_ptr).bits());
-                        if let Some(limit) = hint {
-                            if total >= limit {
-                                break;
-                            }
-                        }
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let mut lines: Vec<u64> = Vec::new();
+                let mut total = 0usize;
+                loop {
+                    let text = match text_backend_readline(_py, handle, backend, None) {
+                        Ok(text) => text,
+                        Err(bits) => return bits,
+                    };
+                    if text.is_empty() {
+                        break;
                     }
-                    let list_ptr = alloc_list(_py, lines.as_slice());
-                    if list_ptr.is_null() {
-                        for bits in lines {
-                            dec_ref_bits(_py, bits);
-                        }
+                    total = total.saturating_add(text.chars().count());
+                    let line_ptr = alloc_string(_py, text.as_bytes());
+                    if line_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
+                    lines.push(MoltObject::from_ptr(line_ptr).bits());
+                    if let Some(limit) = hint
+                        && total >= limit
+                    {
+                        break;
+                    }
+                }
+                let list_ptr = alloc_list(_py, lines.as_slice());
+                if list_ptr.is_null() {
                     for bits in lines {
                         dec_ref_bits(_py, bits);
                     }
-                    return MoltObject::from_ptr(list_ptr).bits();
+                    return MoltObject::none().bits();
                 }
+                for bits in lines {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::from_ptr(list_ptr).bits();
             }
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             let text = handle.text;
             let newline_owned = if text {
@@ -8842,51 +8838,51 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
             let mut total = 0usize;
             loop {
                 if text {
-                    if let Some(kind_value) = encoding_kind {
-                        if text_encoding_is_multibyte(kind_value) {
-                            let mut kind = kind_value;
-                            let errors_owned = handle
-                                .errors
-                                .clone()
-                                .unwrap_or_else(|| "strict".to_string());
-                            let errors = errors_owned.as_str();
-                            if let Err(msg) = validate_decode_error_handler(errors) {
-                                return raise_exception::<_>(_py, "LookupError", &msg);
-                            }
-                            let line = match read_line_multibyte(
-                                _py,
-                                handle,
-                                backend,
-                                newline,
-                                None,
-                                &mut encoding_label,
-                                &mut kind,
-                                errors,
-                            ) {
-                                Ok(line) => line,
-                                Err(bits) => return bits,
-                            };
-                            encoding_kind = Some(kind);
-                            if line.is_empty() {
-                                break;
-                            }
-                            let char_count = match std::str::from_utf8(&line) {
-                                Ok(text) => text.chars().count(),
-                                Err(_) => line.len(),
-                            };
-                            let line_ptr = alloc_string(_py, &line);
-                            if line_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            total = total.saturating_add(char_count);
-                            lines.push(MoltObject::from_ptr(line_ptr).bits());
-                            if let Some(limit) = hint {
-                                if total >= limit {
-                                    break;
-                                }
-                            }
-                            continue;
+                    if let Some(kind_value) = encoding_kind
+                        && text_encoding_is_multibyte(kind_value)
+                    {
+                        let mut kind = kind_value;
+                        let errors_owned = handle
+                            .errors
+                            .clone()
+                            .unwrap_or_else(|| "strict".to_string());
+                        let errors = errors_owned.as_str();
+                        if let Err(msg) = validate_decode_error_handler(errors) {
+                            return raise_exception::<_>(_py, "LookupError", &msg);
                         }
+                        let line = match read_line_multibyte(
+                            _py,
+                            handle,
+                            backend,
+                            newline,
+                            None,
+                            &mut encoding_label,
+                            &mut kind,
+                            errors,
+                        ) {
+                            Ok(line) => line,
+                            Err(bits) => return bits,
+                        };
+                        encoding_kind = Some(kind);
+                        if line.is_empty() {
+                            break;
+                        }
+                        let char_count = match std::str::from_utf8(&line) {
+                            Ok(text) => text.chars().count(),
+                            Err(_) => line.len(),
+                        };
+                        let line_ptr = alloc_string(_py, &line);
+                        if line_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        total = total.saturating_add(char_count);
+                        lines.push(MoltObject::from_ptr(line_ptr).bits());
+                        if let Some(limit) = hint
+                            && total >= limit
+                        {
+                            break;
+                        }
+                        continue;
                     }
                     let mut pending_out: Vec<u8> = Vec::new();
                     let mut line_complete = false;
@@ -9003,10 +8999,10 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                     total = total.saturating_add(bytes.len());
                     lines.push(MoltObject::from_ptr(line_ptr).bits());
                 }
-                if let Some(limit) = hint {
-                    if total >= limit {
-                        break;
-                    }
+                if let Some(limit) = hint
+                    && total >= limit
+                {
+                    break;
                 }
             }
             let list_ptr = alloc_list(_py, lines.as_slice());
@@ -9145,10 +9141,10 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             if unread_bytes(handle) == 0 {
                 let buf_size = handle.buffer_size as usize;
@@ -9208,10 +9204,10 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             if handle.class_bits == builtins.string_io {
                 let text = match text_backend_getvalue(_py, backend) {
@@ -9312,10 +9308,10 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             if handle.text {
                 let buffer_bits = handle.buffer_bits;
@@ -9327,26 +9323,26 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                     );
                 }
                 let buffer_obj = obj_from_bits(buffer_bits);
-                if let Some(buffer_ptr) = buffer_obj.as_ptr() {
-                    if object_type_id(buffer_ptr) == TYPE_ID_FILE_HANDLE {
-                        let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
-                        if !buffer_handle_ptr.is_null() {
-                            let buffer_handle = &mut *buffer_handle_ptr;
-                            let mut prefix = Vec::new();
-                            if let Some(pending) = handle.pending_byte.take() {
-                                prefix.push(pending);
-                            }
-                            if !handle.text_pending_bytes.is_empty() {
-                                prefix.extend_from_slice(&handle.text_pending_bytes);
-                                handle.text_pending_bytes.clear();
-                            }
-                            handle.text_pending_text.clear();
-                            buffer_handle.pending_byte = None;
-                            buffer_handle.read_buf = std::mem::take(&mut handle.read_buf);
-                            buffer_handle.read_pos = handle.read_pos;
-                            handle.read_pos = 0;
-                            prepend_read_buffer(buffer_handle, &prefix);
+                if let Some(buffer_ptr) = buffer_obj.as_ptr()
+                    && object_type_id(buffer_ptr) == TYPE_ID_FILE_HANDLE
+                {
+                    let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
+                    if !buffer_handle_ptr.is_null() {
+                        let buffer_handle = &mut *buffer_handle_ptr;
+                        let mut prefix = Vec::new();
+                        if let Some(pending) = handle.pending_byte.take() {
+                            prefix.push(pending);
                         }
+                        if !handle.text_pending_bytes.is_empty() {
+                            prefix.extend_from_slice(&handle.text_pending_bytes);
+                            handle.text_pending_bytes.clear();
+                        }
+                        handle.text_pending_text.clear();
+                        buffer_handle.pending_byte = None;
+                        buffer_handle.read_buf = std::mem::take(&mut handle.read_buf);
+                        buffer_handle.read_pos = handle.read_pos;
+                        handle.read_pos = 0;
+                        prepend_read_buffer(buffer_handle, &prefix);
                     }
                 }
                 handle.buffer_bits = MoltObject::none().bits();
@@ -9438,10 +9434,10 @@ pub extern "C" fn molt_file_reconfigure(
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             if let Err(bits) = backend_flush(_py, backend) {
                 return bits;
@@ -9451,21 +9447,21 @@ pub extern "C" fn molt_file_reconfigure(
             let missing = missing_bits(_py);
             let mut new_encoding = handle.encoding.clone();
             let mut new_encoding_original = handle.encoding_original.clone();
-            if encoding_bits != missing {
-                if let Some(encoding) = reconfigure_arg_type(_py, encoding_bits, "encoding") {
-                    let (label, _kind) = match normalize_text_encoding(&encoding) {
-                        Ok(val) => val,
-                        Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
-                    };
-                    new_encoding = Some(label.clone());
-                    new_encoding_original = Some(label);
-                }
+            if encoding_bits != missing
+                && let Some(encoding) = reconfigure_arg_type(_py, encoding_bits, "encoding")
+            {
+                let (label, _kind) = match normalize_text_encoding(&encoding) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
+                };
+                new_encoding = Some(label.clone());
+                new_encoding_original = Some(label);
             }
             let mut new_errors = handle.errors.clone();
-            if errors_bits != missing {
-                if let Some(errors) = reconfigure_arg_type(_py, errors_bits, "errors") {
-                    new_errors = Some(errors);
-                }
+            if errors_bits != missing
+                && let Some(errors) = reconfigure_arg_type(_py, errors_bits, "errors")
+            {
+                new_errors = Some(errors);
             }
             let mut new_newline = handle.newline.clone();
             if newline_bits != missing {
@@ -9566,10 +9562,10 @@ pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             if handle.text {
                 if let MoltFileBackend::Text(_) = backend {
@@ -9658,10 +9654,10 @@ pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits
                 };
                 return raise_exception::<_>(_py, "UnsupportedOperation", msg);
             }
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             let mut seek_offset = offset;
             if whence == 1 {
@@ -9727,14 +9723,14 @@ pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let pos = match text_backend_tell(_py, backend) {
-                        Ok(pos) => pos,
-                        Err(bits) => return bits,
-                    };
-                    return MoltObject::from_int(pos).bits();
-                }
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let pos = match text_backend_tell(_py, backend) {
+                    Ok(pos) => pos,
+                    Err(bits) => return bits,
+                };
+                return MoltObject::from_int(pos).bits();
             }
             let pos = match backend_tell(_py, backend) {
                 Ok(pos) => pos,
@@ -9850,39 +9846,38 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let size = if obj_from_bits(size_bits).is_none() {
-                        match text_backend_tell(_py, backend) {
-                            Ok(pos) => pos as usize,
-                            Err(bits) => return bits,
-                        }
-                    } else {
-                        let val = match to_i64(obj_from_bits(size_bits)) {
-                            Some(val) => val,
-                            None => {
-                                let type_name = class_name_for_error(type_of_bits(_py, size_bits));
-                                let msg = format!(
-                                    "'{type_name}' object cannot be interpreted as an integer"
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
-                        };
-                        if val < 0 {
-                            return raise_exception::<_>(_py, "OSError", "Invalid argument");
-                        }
-                        val as usize
-                    };
-                    if let Err(bits) = text_backend_truncate(_py, backend, size) {
-                        return bits;
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let size = if obj_from_bits(size_bits).is_none() {
+                    match text_backend_tell(_py, backend) {
+                        Ok(pos) => pos as usize,
+                        Err(bits) => return bits,
                     }
-                    return MoltObject::from_int(size as i64).bits();
-                }
-            }
-            if !handle.write_buf.is_empty() {
-                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
+                } else {
+                    let val = match to_i64(obj_from_bits(size_bits)) {
+                        Some(val) => val,
+                        None => {
+                            let type_name = class_name_for_error(type_of_bits(_py, size_bits));
+                            let msg =
+                                format!("'{type_name}' object cannot be interpreted as an integer");
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                    };
+                    if val < 0 {
+                        return raise_exception::<_>(_py, "OSError", "Invalid argument");
+                    }
+                    val as usize
+                };
+                if let Err(bits) = text_backend_truncate(_py, backend, size) {
                     return bits;
                 }
+                return MoltObject::from_int(size as i64).bits();
+            }
+            if !handle.write_buf.is_empty()
+                && let Err(bits) = flush_write_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             let size = if obj_from_bits(size_bits).is_none() {
                 let pos = match backend_tell(_py, backend) {
@@ -10187,29 +10182,29 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
             let data_obj = obj_from_bits(data_bits);
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let text = match string_obj_to_owned(data_obj) {
-                        Some(text) => text,
-                        None => {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "write expects str for text mode",
-                            );
-                        }
-                    };
-                    let written = match text_backend_write(_py, handle, backend, &text) {
-                        Ok(count) => count,
-                        Err(bits) => return bits,
-                    };
-                    return MoltObject::from_int(written as i64).bits();
-                }
+            if handle.text
+                && let MoltFileBackend::Text(_) = backend
+            {
+                let text = match string_obj_to_owned(data_obj) {
+                    Some(text) => text,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "write expects str for text mode",
+                        );
+                    }
+                };
+                let written = match text_backend_write(_py, handle, backend, &text) {
+                    Ok(count) => count,
+                    Err(bits) => return bits,
+                };
+                return MoltObject::from_int(written as i64).bits();
             }
-            if unread_bytes(handle) > 0 {
-                if let Err(bits) = rewind_read_buffer(_py, handle, backend) {
-                    return bits;
-                }
+            if unread_bytes(handle) > 0
+                && let Err(bits) = rewind_read_buffer(_py, handle, backend)
+            {
+                return bits;
             }
             let (bytes, written_len, flush_newline): (Vec<u8>, usize, bool) = if handle.text {
                 let Some(data_ptr) = data_obj.as_ptr() else {
@@ -10318,19 +10313,15 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                     }
                     written += n;
                 }
-                if should_flush {
-                    if let Err(bits) = backend_flush(_py, backend) {
-                        return bits;
-                    }
+                if should_flush && let Err(bits) = backend_flush(_py, backend) {
+                    return bits;
                 }
             } else {
                 handle.write_buf.extend_from_slice(&bytes);
                 let need_flush =
                     should_flush || handle.write_buf.len() >= handle.buffer_size as usize;
-                if need_flush {
-                    if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                        return bits;
-                    }
+                if need_flush && let Err(bits) = flush_write_buffer(_py, handle, backend) {
+                    return bits;
                 }
             }
             MoltObject::from_int(written_len as i64).bits()

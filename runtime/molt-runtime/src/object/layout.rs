@@ -201,26 +201,22 @@ pub(crate) unsafe fn function_dict_bits(ptr: *mut u8) -> u64 {
 pub(crate) unsafe fn function_name_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
     unsafe {
         let dict_bits = function_dict_bits(ptr);
-        if dict_bits != 0 {
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let qual_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.qualname_name,
-                        b"__qualname__",
-                    );
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_bits) {
-                        return bits;
-                    }
-                    let name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.name_name,
-                        b"__name__",
-                    );
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                        return bits;
-                    }
-                }
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && object_type_id(dict_ptr) == TYPE_ID_DICT
+        {
+            let qual_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.qualname_name,
+                b"__qualname__",
+            );
+            if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_bits) {
+                return bits;
+            }
+            let name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__");
+            if let Some(bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
+                return bits;
             }
         }
         MoltObject::none().bits()

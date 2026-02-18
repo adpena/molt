@@ -725,55 +725,56 @@ pub(crate) unsafe fn dataclass_set_class_raw(
             object_set_class_bits(_py, ptr, class_bits);
             if class_bits != 0 {
                 let class_obj = obj_from_bits(class_bits);
-                if let Some(class_ptr) = class_obj.as_ptr() {
-                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                        let flags_name =
-                            attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
-                        if let Some(flags_name) = flags_name {
-                            if let Some(flags_bits) =
-                                class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                            {
-                                let flags_obj = obj_from_bits(flags_bits);
-                                let flags_ptr = flags_obj.as_ptr();
-                                if let Some(flags_ptr) = flags_ptr {
-                                    let type_id = object_type_id(flags_ptr);
-                                    if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                                        let elems = seq_vec_ref(flags_ptr);
-                                        let mut out = Vec::with_capacity(elems.len());
-                                        for &elem_bits in elems.iter() {
-                                            let elem_obj = obj_from_bits(elem_bits);
-                                            let Some(val) = to_i64(elem_obj) else {
-                                                out.clear();
-                                                break;
-                                            };
-                                            if val < 0 || val > u8::MAX as i64 {
-                                                out.clear();
-                                                break;
-                                            }
-                                            out.push(val as u8);
+                if let Some(class_ptr) = class_obj.as_ptr()
+                    && object_type_id(class_ptr) == TYPE_ID_TYPE
+                {
+                    let flags_name =
+                        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
+                    if let Some(flags_name) = flags_name {
+                        if let Some(flags_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                        {
+                            let flags_obj = obj_from_bits(flags_bits);
+                            let flags_ptr = flags_obj.as_ptr();
+                            if let Some(flags_ptr) = flags_ptr {
+                                let type_id = object_type_id(flags_ptr);
+                                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                                    let elems = seq_vec_ref(flags_ptr);
+                                    let mut out = Vec::with_capacity(elems.len());
+                                    for &elem_bits in elems.iter() {
+                                        let elem_obj = obj_from_bits(elem_bits);
+                                        let Some(val) = to_i64(elem_obj) else {
+                                            out.clear();
+                                            break;
+                                        };
+                                        if val < 0 || val > u8::MAX as i64 {
+                                            out.clear();
+                                            break;
                                         }
-                                        if !out.is_empty() {
-                                            (*desc_ptr).field_flags = out;
-                                        }
+                                        out.push(val as u8);
+                                    }
+                                    if !out.is_empty() {
+                                        (*desc_ptr).field_flags = out;
                                     }
                                 }
                             }
-                            dec_ref_bits(_py, flags_name);
                         }
-                        let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
-                        if let Some(hash_name) = hash_name {
-                            if let Some(hash_bits) =
-                                class_attr_lookup_raw_mro(_py, class_ptr, hash_name)
+                        dec_ref_bits(_py, flags_name);
+                    }
+                    let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
+                    if let Some(hash_name) = hash_name {
+                        if let Some(hash_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, hash_name)
+                        {
+                            let hash_obj = obj_from_bits(hash_bits);
+                            if let Some(val) = to_i64(hash_obj)
+                                && val >= 0
+                                && val <= u8::MAX as i64
                             {
-                                let hash_obj = obj_from_bits(hash_bits);
-                                if let Some(val) = to_i64(hash_obj) {
-                                    if val >= 0 && val <= u8::MAX as i64 {
-                                        (*desc_ptr).hash_mode = val as u8;
-                                    }
-                                }
+                                (*desc_ptr).hash_mode = val as u8;
                             }
-                            dec_ref_bits(_py, hash_name);
                         }
+                        dec_ref_bits(_py, hash_name);
                     }
                 }
             }
@@ -1359,19 +1360,17 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
-        if let Some(count) = to_i64(lhs) {
-            if let Some(ptr) = rhs.as_ptr() {
-                if let Some(bits) = repeat_sequence(_py, ptr, count) {
-                    return bits;
-                }
-            }
+        if let Some(count) = to_i64(lhs)
+            && let Some(ptr) = rhs.as_ptr()
+            && let Some(bits) = repeat_sequence(_py, ptr, count)
+        {
+            return bits;
         }
-        if let Some(count) = to_i64(rhs) {
-            if let Some(ptr) = lhs.as_ptr() {
-                if let Some(bits) = repeat_sequence(_py, ptr, count) {
-                    return bits;
-                }
-            }
+        if let Some(count) = to_i64(rhs)
+            && let Some(ptr) = lhs.as_ptr()
+            && let Some(bits) = repeat_sequence(_py, ptr, count)
+        {
+            return bits;
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             let res = l_big * r_big;
@@ -1766,18 +1765,18 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
                 }
                 return bigint_bits(_py, res);
             }
-            if r_big.is_negative() {
-                if let Some(lf) = l_big.to_f64() {
-                    let rf = r_big.to_f64().unwrap_or(f64::NEG_INFINITY);
-                    if lf == 0.0 && rf < 0.0 {
-                        return raise_exception::<_>(
-                            _py,
-                            "ZeroDivisionError",
-                            "0.0 cannot be raised to a negative power",
-                        );
-                    }
-                    return MoltObject::from_float(lf.powf(rf)).bits();
+            if r_big.is_negative()
+                && let Some(lf) = l_big.to_f64()
+            {
+                let rf = r_big.to_f64().unwrap_or(f64::NEG_INFINITY);
+                if lf == 0.0 && rf < 0.0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ZeroDivisionError",
+                        "0.0 cannot be raised to a negative power",
+                    );
                 }
+                return MoltObject::from_float(lf.powf(rf)).bits();
             }
             return raise_exception::<_>(_py, "OverflowError", "exponent too large");
         }
@@ -1917,35 +1916,34 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
             }
             return bigint_bits(_py, result);
         }
-        if !val.is_int() && !val.is_bool() && !val.is_float() {
-            if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-                unsafe {
-                    let round_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.round_name,
-                        b"__round__",
-                    );
-                    if let Some(call_bits) = attr_lookup_ptr(_py, ptr, round_name_bits) {
-                        let ndigits_obj = obj_from_bits(ndigits_bits);
-                        let want_arg = has_ndigits && !ndigits_obj.is_none();
-                        let arity = callable_arity(_py, call_bits).unwrap_or(0);
-                        let res_bits = if arity <= 1 {
-                            if want_arg {
-                                call_callable1(_py, call_bits, ndigits_bits)
-                            } else {
-                                call_callable0(_py, call_bits)
-                            }
+        if !val.is_int()
+            && !val.is_bool()
+            && !val.is_float()
+            && let Some(ptr) = maybe_ptr_from_bits(val_bits)
+        {
+            unsafe {
+                let round_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.round_name, b"__round__");
+                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, round_name_bits) {
+                    let ndigits_obj = obj_from_bits(ndigits_bits);
+                    let want_arg = has_ndigits && !ndigits_obj.is_none();
+                    let arity = callable_arity(_py, call_bits).unwrap_or(0);
+                    let res_bits = if arity <= 1 {
+                        if want_arg {
+                            call_callable1(_py, call_bits, ndigits_bits)
                         } else {
-                            let arg_bits = if want_arg {
-                                ndigits_bits
-                            } else {
-                                MoltObject::none().bits()
-                            };
-                            call_callable1(_py, call_bits, arg_bits)
+                            call_callable0(_py, call_bits)
+                        }
+                    } else {
+                        let arg_bits = if want_arg {
+                            ndigits_bits
+                        } else {
+                            MoltObject::none().bits()
                         };
-                        dec_ref_bits(_py, call_bits);
-                        return res_bits;
-                    }
+                        call_callable1(_py, call_bits, arg_bits)
+                    };
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
                 }
             }
         }
@@ -2334,14 +2332,14 @@ fn collect_union_args(_py: &PyToken<'_>, bits: u64, args: &mut Vec<u64>) {
             if object_type_id(ptr) == TYPE_ID_UNION {
                 let args_bits = union_type_args_bits(ptr);
                 let args_obj = obj_from_bits(args_bits);
-                if let Some(args_ptr) = args_obj.as_ptr() {
-                    if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                        let elems = seq_vec_ref(args_ptr);
-                        for &elem_bits in elems.iter() {
-                            append_union_arg(_py, args, elem_bits);
-                        }
-                        return;
+                if let Some(args_ptr) = args_obj.as_ptr()
+                    && object_type_id(args_ptr) == TYPE_ID_TUPLE
+                {
+                    let elems = seq_vec_ref(args_ptr);
+                    for &elem_bits in elems.iter() {
+                        append_union_arg(_py, args, elem_bits);
                     }
+                    return;
                 }
                 append_union_arg(_py, args, args_bits);
                 return;
@@ -2519,15 +2517,15 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
                     let class_bits = object_class_bits(ptr);
                     let exact_dict = class_bits == 0 || class_bits == builtins.dict;
                     if exact_dict {
-                        if let Some(rhs_ptr) = obj_from_bits(b).as_ptr() {
-                            if dict_like_bits_from_ptr(_py, rhs_ptr).is_some() {
-                                let _ = molt_dict_update(a, b);
-                                if exception_pending(_py) {
-                                    return MoltObject::none().bits();
-                                }
-                                inc_ref_bits(_py, a);
-                                return a;
+                        if let Some(rhs_ptr) = obj_from_bits(b).as_ptr()
+                            && dict_like_bits_from_ptr(_py, rhs_ptr).is_some()
+                        {
+                            let _ = molt_dict_update(a, b);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
                             }
+                            inc_ref_bits(_py, a);
+                            return a;
                         }
                         return raise_unsupported_inplace(_py, "|=", a, b);
                     }
@@ -3191,24 +3189,23 @@ fn rich_compare_type_bool(
 ) -> Option<CompareBoolOutcome> {
     unsafe {
         let mut saw_type = false;
-        if let Some(lhs_ptr) = lhs.as_ptr() {
-            if object_type_id(lhs_ptr) == TYPE_ID_TYPE {
-                saw_type = true;
-                if let Some(outcome) =
-                    rich_compare_type_method(_py, lhs_ptr, rhs.bits(), op_name_bits)
-                {
-                    return Some(outcome);
-                }
+        if let Some(lhs_ptr) = lhs.as_ptr()
+            && object_type_id(lhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) = rich_compare_type_method(_py, lhs_ptr, rhs.bits(), op_name_bits)
+            {
+                return Some(outcome);
             }
         }
-        if let Some(rhs_ptr) = rhs.as_ptr() {
-            if object_type_id(rhs_ptr) == TYPE_ID_TYPE {
-                saw_type = true;
-                if let Some(outcome) =
-                    rich_compare_type_method(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
-                {
-                    return Some(outcome);
-                }
+        if let Some(rhs_ptr) = rhs.as_ptr()
+            && object_type_id(rhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+            {
+                return Some(outcome);
             }
         }
         if saw_type {
@@ -3227,24 +3224,24 @@ fn rich_compare_type_value(
 ) -> Option<CompareValueOutcome> {
     unsafe {
         let mut saw_type = false;
-        if let Some(lhs_ptr) = lhs.as_ptr() {
-            if object_type_id(lhs_ptr) == TYPE_ID_TYPE {
-                saw_type = true;
-                if let Some(outcome) =
-                    rich_compare_type_method_value(_py, lhs_ptr, rhs.bits(), op_name_bits)
-                {
-                    return Some(outcome);
-                }
+        if let Some(lhs_ptr) = lhs.as_ptr()
+            && object_type_id(lhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method_value(_py, lhs_ptr, rhs.bits(), op_name_bits)
+            {
+                return Some(outcome);
             }
         }
-        if let Some(rhs_ptr) = rhs.as_ptr() {
-            if object_type_id(rhs_ptr) == TYPE_ID_TYPE {
-                saw_type = true;
-                if let Some(outcome) =
-                    rich_compare_type_method_value(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
-                {
-                    return Some(outcome);
-                }
+        if let Some(rhs_ptr) = rhs.as_ptr()
+            && object_type_id(rhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method_value(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+            {
+                return Some(outcome);
             }
         }
         if saw_type {
@@ -3544,16 +3541,15 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
             let should_call_rhs = rhs_type_bits != lhs_type_bits
                 && rhs_has_custom_ne
                 && (rhs_is_subclass || lhs_ne_raw.is_none() || rhs_differs_from_lhs);
-            if should_call_rhs {
-                if let (Some(rhs_ptr), Some(rhs_tp), Some(rhs_raw)) =
+            if should_call_rhs
+                && let (Some(rhs_ptr), Some(rhs_tp), Some(rhs_raw)) =
                     (rhs.as_ptr(), rhs_type_ptr, rhs_ne_raw)
-                {
-                    unsafe {
-                        match call_dunder_raw(_py, rhs_raw, rhs_tp, Some(rhs_ptr), a) {
-                            BinaryDunderOutcome::Value(bits) => return bits,
-                            BinaryDunderOutcome::Error => return MoltObject::none().bits(),
-                            BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
-                        }
+            {
+                unsafe {
+                    match call_dunder_raw(_py, rhs_raw, rhs_tp, Some(rhs_ptr), a) {
+                        BinaryDunderOutcome::Value(bits) => return bits,
+                        BinaryDunderOutcome::Error => return MoltObject::none().bits(),
+                        BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
                     }
                 }
             }
@@ -3875,13 +3871,12 @@ fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
         {
             digits = rest;
         }
-    } else if base_val == 2 {
-        if let Some(rest) = digits
+    } else if base_val == 2
+        && let Some(rest) = digits
             .strip_prefix("0b")
             .or_else(|| digits.strip_prefix("0B"))
-        {
-            digits = rest;
-        }
+    {
+        digits = rest;
     }
     let digits = digits.replace('_', "");
     if digits.is_empty() {
@@ -4658,17 +4653,16 @@ fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
         .filter(|val| !val.is_empty())
         .unwrap_or_else(|| "molt_runtime_feedback.json".to_string());
     let path = std::path::Path::new(&out_path);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "molt_runtime_feedback_error stage=create_dir path={} err={}",
-                    path.display(),
-                    err
-                );
-                return;
-            }
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "molt_runtime_feedback_error stage=create_dir path={} err={}",
+            path.display(),
+            err
+        );
+        return;
     }
     let encoded = match serde_json::to_string_pretty(payload) {
         Ok(value) => value,
@@ -5087,10 +5081,10 @@ fn prod_ints_unboxed(elems: &[i64], acc: i64) -> i64 {
     if prod == 0 {
         return 0;
     }
-    if prod == 1 {
-        if let Some(result) = prod_ints_unboxed_trivial(elems) {
-            return result;
-        }
+    if prod == 1
+        && let Some(result) = prod_ints_unboxed_trivial(elems)
+    {
+        return result;
     }
     for &val in elems {
         if val == 0 {
@@ -7542,23 +7536,20 @@ pub extern "C" fn molt_sys_set_version_info(
         let default_info = default_sys_version_info();
         {
             let mut guard = state.sys_version_info.lock().unwrap();
-            if let Some(existing) = guard.as_ref() {
-                if existing != &info && existing != &default_info {
-                    return raise_exception::<_>(
-                        _py,
-                        "RuntimeError",
-                        "sys.version_info already set",
-                    );
-                }
+            if let Some(existing) = guard.as_ref()
+                && existing != &info
+                && existing != &default_info
+            {
+                return raise_exception::<_>(_py, "RuntimeError", "sys.version_info already set");
             }
             *guard = Some(info.clone());
         }
         {
             let mut guard = state.sys_version.lock().unwrap();
-            if let Some(existing) = guard.as_ref() {
-                if existing != &version {
-                    return raise_exception::<_>(_py, "RuntimeError", "sys.version already set");
-                }
+            if let Some(existing) = guard.as_ref()
+                && existing != &version
+            {
+                return raise_exception::<_>(_py, "RuntimeError", "sys.version already set");
             }
             *guard = Some(version.clone());
         }
@@ -7570,32 +7561,32 @@ pub extern "C" fn molt_sys_set_version_info(
         if trace_sys_version() {
             eprintln!("molt sys version: sys module cached={}", sys_bits.is_some());
         }
-        if let Some(bits) = sys_bits {
-            if let Some(sys_ptr) = obj_from_bits(bits).as_ptr() {
-                unsafe {
-                    let dict_bits = module_dict_bits(sys_ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        let version_info_bits = molt_sys_version_info();
-                        let version_bits = molt_sys_version();
-                        let version_info_key = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.sys_version_info,
-                            b"version_info",
-                        );
-                        let version_key = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.sys_version,
-                            b"version",
-                        );
-                        dict_set_in_place(_py, dict_ptr, version_info_key, version_info_bits);
-                        dict_set_in_place(_py, dict_ptr, version_key, version_bits);
-                        dec_ref_bits(_py, version_info_key);
-                        dec_ref_bits(_py, version_key);
-                        dec_ref_bits(_py, version_info_bits);
-                        dec_ref_bits(_py, version_bits);
-                        if trace_sys_version() {
-                            eprintln!("molt sys version: sys dict updated");
-                        }
+        if let Some(bits) = sys_bits
+            && let Some(sys_ptr) = obj_from_bits(bits).as_ptr()
+        {
+            unsafe {
+                let dict_bits = module_dict_bits(sys_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    let version_info_bits = molt_sys_version_info();
+                    let version_bits = molt_sys_version();
+                    let version_info_key = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.sys_version_info,
+                        b"version_info",
+                    );
+                    let version_key = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.sys_version,
+                        b"version",
+                    );
+                    dict_set_in_place(_py, dict_ptr, version_info_key, version_info_bits);
+                    dict_set_in_place(_py, dict_ptr, version_key, version_bits);
+                    dec_ref_bits(_py, version_info_key);
+                    dec_ref_bits(_py, version_key);
+                    dec_ref_bits(_py, version_info_bits);
+                    dec_ref_bits(_py, version_bits);
+                    if trace_sys_version() {
+                        eprintln!("molt sys version: sys dict updated");
                     }
                 }
             }
@@ -7799,7 +7790,7 @@ pub extern "C" fn molt_signal_raise(sig_bits: u64) -> u64 {
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
-            return MoltObject::none().bits();
+            MoltObject::none().bits()
         }
         #[cfg(any(not(unix), target_arch = "wasm32"))]
         {
@@ -9426,10 +9417,10 @@ fn traceback_frames(
     let mut current_bits = tb_bits;
     let mut depth = 0usize;
     while !obj_from_bits(current_bits).is_none() {
-        if let Some(max) = limit {
-            if out.len() >= max {
-                break;
-            }
+        if let Some(max) = limit
+            && out.len() >= max
+        {
+            break;
         }
         if depth > 512 {
             break;
@@ -9444,22 +9435,22 @@ fn traceback_frames(
             let mut line = 0i64;
             let mut next_bits = MoltObject::none().bits();
             let mut had_tb_fields = false;
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
-                        frame_bits = bits;
-                        had_tb_fields = true;
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
+                    frame_bits = bits;
+                    had_tb_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
+                    if let Some(val) = to_i64(obj_from_bits(bits)) {
+                        line = val;
                     }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
-                        if let Some(val) = to_i64(obj_from_bits(bits)) {
-                            line = val;
-                        }
-                        had_tb_fields = true;
-                    }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
-                        next_bits = bits;
-                        had_tb_fields = true;
-                    }
+                    had_tb_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
+                    next_bits = bits;
+                    had_tb_fields = true;
                 }
             }
             (frame_bits, line, next_bits, had_tb_fields)
@@ -9473,32 +9464,27 @@ fn traceback_frames(
             let mut frame_line = line;
             if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
                 let dict_bits = instance_dict_bits(frame_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits) {
-                            if let Some(val) = to_i64(obj_from_bits(bits)) {
-                                frame_line = val;
-                            }
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                {
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits)
+                        && let Some(val) = to_i64(obj_from_bits(bits))
+                    {
+                        frame_line = val;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)
+                        && let Some(code_ptr) = obj_from_bits(bits).as_ptr()
+                        && object_type_id(code_ptr) == TYPE_ID_CODE
+                    {
+                        let filename_bits = code_filename_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                            filename = name;
                         }
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) {
-                            if let Some(code_ptr) = obj_from_bits(bits).as_ptr() {
-                                if object_type_id(code_ptr) == TYPE_ID_CODE {
-                                    let filename_bits = code_filename_bits(code_ptr);
-                                    if let Some(name) =
-                                        string_obj_to_owned(obj_from_bits(filename_bits))
-                                    {
-                                        filename = name;
-                                    }
-                                    let name_bits = code_name_bits(code_ptr);
-                                    if let Some(name) =
-                                        string_obj_to_owned(obj_from_bits(name_bits))
-                                    {
-                                        if !name.is_empty() {
-                                            func_name = name;
-                                        }
-                                    }
-                                }
-                            }
+                        let name_bits = code_name_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
+                            && !name.is_empty()
+                        {
+                            func_name = name;
                         }
                     }
                 }
@@ -9720,12 +9706,12 @@ fn traceback_format_exception_only_line(
             if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
                 let mut kind = "Exception".to_string();
                 let class_bits = exception_class_bits(exc_ptr);
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                        let name_bits = class_name_bits(class_ptr);
-                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
-                            kind = name;
-                        }
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                    && object_type_id(class_ptr) == TYPE_ID_TYPE
+                {
+                    let name_bits = class_name_bits(class_ptr);
+                    if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                        kind = name;
                     }
                 }
                 let message = format_exception_message(_py, exc_ptr);
@@ -9959,11 +9945,11 @@ struct TracebackExceptionChainNode {
 }
 
 fn traceback_split_molt_symbol(name: &str) -> (String, String) {
-    if let Some((module_hint, func)) = name.split_once("__") {
-        if !module_hint.is_empty() {
-            let func_name = if func.is_empty() { name } else { func };
-            return (format!("<molt:{module_hint}>"), func_name.to_string());
-        }
+    if let Some((module_hint, func)) = name.split_once("__")
+        && !module_hint.is_empty()
+    {
+        let func_name = if func.is_empty() { name } else { func };
+        return (format!("<molt:{module_hint}>"), func_name.to_string());
     }
     ("<molt>".to_string(), name.to_string())
 }
@@ -10019,22 +10005,22 @@ fn traceback_payload_from_frame_chain(
             let mut lineno = 0i64;
             let mut back_bits = MoltObject::none().bits();
             let mut had_frame_fields = false;
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_name) {
-                        code_bits = bits;
-                        had_frame_fields = true;
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_name) {
+                    code_bits = bits;
+                    had_frame_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_name) {
+                    if let Some(value) = to_i64(obj_from_bits(bits)) {
+                        lineno = value;
                     }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_name) {
-                        if let Some(value) = to_i64(obj_from_bits(bits)) {
-                            lineno = value;
-                        }
-                        had_frame_fields = true;
-                    }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_back_name) {
-                        back_bits = bits;
-                        had_frame_fields = true;
-                    }
+                    had_frame_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_back_name) {
+                    back_bits = bits;
+                    had_frame_fields = true;
                 }
             }
             (code_bits, lineno, back_bits, had_frame_fields)
@@ -10053,10 +10039,10 @@ fn traceback_payload_from_frame_chain(
                         filename = value;
                     }
                     let name_bits = code_name_bits(code_ptr);
-                    if let Some(value) = string_obj_to_owned(obj_from_bits(name_bits)) {
-                        if !value.is_empty() {
-                            name = value;
-                        }
+                    if let Some(value) = string_obj_to_owned(obj_from_bits(name_bits))
+                        && !value.is_empty()
+                    {
+                        name = value;
                     }
                 }
             }
@@ -10076,10 +10062,10 @@ fn traceback_payload_from_frame_chain(
         depth += 1;
     }
     out.reverse();
-    if let Some(max) = limit {
-        if out.len() > max {
-            return out[out.len() - max..].to_vec();
-        }
+    if let Some(max) = limit
+        && out.len() > max
+    {
+        return out[out.len() - max..].to_vec();
     }
     out
 }
@@ -10308,10 +10294,10 @@ fn traceback_payload_from_entries(
     for bits in elems {
         if let Some(frame) = traceback_payload_from_entry(_py, bits) {
             out.push(frame);
-            if let Some(max) = limit {
-                if out.len() >= max {
-                    break;
-                }
+            if let Some(max) = limit
+                && out.len() >= max
+            {
+                break;
             }
         }
     }
@@ -11071,10 +11057,10 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
                     }
                     TYPE_ID_BOUND_METHOD => {
                         let bound_func_bits = bound_method_func_bits(func_ptr);
-                        if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr() {
-                            if object_type_id(bound_ptr) == TYPE_ID_FUNCTION {
-                                code_bits = ensure_function_code_bits(_py, bound_ptr);
-                            }
+                        if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
+                            && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
+                        {
+                            code_bits = ensure_function_code_bits(_py, bound_ptr);
                         }
                     }
                     _ => {}
@@ -11159,24 +11145,19 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
                 let type_id = object_type_id(obj_ptr);
                 if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
                     let class_bits = object_class_bits(obj_ptr);
-                    if class_bits != 0 {
-                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                            if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                let format_bits = intern_static_name(
-                                    _py,
-                                    &runtime_state(_py).interned.format_name,
-                                    b"__format__",
-                                );
-                                if let Some(call_bits) = class_attr_lookup(
-                                    _py,
-                                    class_ptr,
-                                    class_ptr,
-                                    Some(obj_ptr),
-                                    format_bits,
-                                ) {
-                                    return call_callable1(_py, call_bits, spec_bits);
-                                }
-                            }
+                    if class_bits != 0
+                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                    {
+                        let format_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.format_name,
+                            b"__format__",
+                        );
+                        if let Some(call_bits) =
+                            class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), format_bits)
+                        {
+                            return call_callable1(_py, call_bits, spec_bits);
                         }
                     }
                 }
@@ -11386,16 +11367,16 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
             let value = unsafe { *complex_ref(ptr) };
             return MoltObject::from_float(value.re.hypot(value.im)).bits();
         }
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__abs__") {
-                unsafe {
-                    let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
-                    dec_ref_bits(_py, name_bits);
-                    if let Some(call_bits) = call_bits {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        return res_bits;
-                    }
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits)
+            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__abs__")
+        {
+            unsafe {
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                dec_ref_bits(_py, name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
                 }
             }
         }
@@ -11828,7 +11809,7 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let strict_bits = MoltObject::from_bool(strict).bits();
+        let _strict_bits = MoltObject::from_bool(strict).bits();
         let iterables_obj = obj_from_bits(iterables_bits);
         let Some(iterables_ptr) = iterables_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "zip expects a tuple");
@@ -12275,7 +12256,7 @@ unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
 
         let builtins = builtin_classes(_py);
         let target_class_bits = if maybe_ptr_from_bits(obj_bits)
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE)
         {
             obj_bits
         } else {
@@ -12335,13 +12316,11 @@ unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
             }
-        } else if target_class_bits == builtins.none_type {
-            if !add_name(&b"__bool__"[..]) {
-                for owned in extra_owned {
-                    dec_ref_bits(_py, owned);
-                }
-                return MoltObject::none().bits();
+        } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
             }
+            return MoltObject::none().bits();
         }
 
         // Hide names that CPython deliberately excludes from dir() output (even though the
@@ -12542,41 +12521,37 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 let mut override_bits: u64 = 0;
 
                 let dict_bits = instance_dict_bits(obj_ptr);
-                if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
-                            {
-                                inc_ref_bits(_py, val_bits);
-                                override_bits = val_bits;
-                            }
-                        }
-                    }
+                if dict_bits != 0
+                    && !obj_from_bits(dict_bits).is_none()
+                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
+                {
+                    inc_ref_bits(_py, val_bits);
+                    override_bits = val_bits;
                 }
 
                 if override_bits == 0 {
                     let class_bits = type_of_bits(_py, obj_bits);
-                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                        if let Some(attr_bits) =
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && let Some(attr_bits) =
                             class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
-                        {
-                            let bound_opt =
-                                descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
-                            dec_ref_bits(_py, attr_bits);
+                    {
+                        let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
+                        dec_ref_bits(_py, attr_bits);
 
-                            if exception_pending(_py) {
-                                // `descriptor_bind` can create a temporary bound object; avoid leaks.
-                                if let Some(bound_bits) = bound_opt {
-                                    if !obj_from_bits(bound_bits).is_none() {
-                                        dec_ref_bits(_py, bound_bits);
-                                    }
-                                }
-                                return MoltObject::none().bits();
+                        if exception_pending(_py) {
+                            // `descriptor_bind` can create a temporary bound object; avoid leaks.
+                            if let Some(bound_bits) = bound_opt
+                                && !obj_from_bits(bound_bits).is_none()
+                            {
+                                dec_ref_bits(_py, bound_bits);
                             }
+                            return MoltObject::none().bits();
+                        }
 
-                            if let Some(bound_bits) = bound_opt {
-                                override_bits = bound_bits;
-                            }
+                        if let Some(bound_bits) = bound_opt {
+                            override_bits = bound_bits;
                         }
                     }
                 }
@@ -12612,13 +12587,11 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
             if !seen.insert(name_str.to_string()) {
                 return true;
             }
-            unsafe {
-                let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
-                    return false;
-                };
-                extra_owned.push(bits);
-                names.push(bits);
-            }
+            let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
+                return false;
+            };
+            extra_owned.push(bits);
+            names.push(bits);
             true
         };
 
@@ -12659,7 +12632,7 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
         {
             obj_bits
         } else {
-            unsafe { type_of_bits(_py, obj_bits) }
+            type_of_bits(_py, obj_bits)
         };
 
         if target_class_bits == builtins.int || target_class_bits == builtins.bool {
@@ -12715,13 +12688,11 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
             }
-        } else if target_class_bits == builtins.none_type {
-            if !add_name(&b"__bool__"[..]) {
-                for owned in extra_owned {
-                    dec_ref_bits(_py, owned);
-                }
-                return MoltObject::none().bits();
+        } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
             }
+            return MoltObject::none().bits();
         }
 
         // Hide names that CPython deliberately excludes from dir() output (even though the
@@ -12853,11 +12824,10 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
-            if obj.is_int() || obj.is_bool() {
-                if let Some(func_bits) = crate::builtins::methods::int_method_bits(_py, &attr_name)
-                {
-                    return crate::molt_bound_method_new(func_bits, obj_bits);
-                }
+            if (obj.is_int() || obj.is_bool())
+                && let Some(func_bits) = crate::builtins::methods::int_method_bits(_py, &attr_name)
+            {
+                return crate::molt_bound_method_new(func_bits, obj_bits);
             }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
@@ -13221,17 +13191,17 @@ pub extern "C" fn molt_print_builtin(
                     return MoltObject::none().bits();
                 }
             };
-            if let Some(bits) = sep_bits_opt {
-                if string_bits_is_empty(bits) {
-                    dec_ref_bits(_py, bits);
-                    sep_bits_opt = None;
-                }
+            if let Some(bits) = sep_bits_opt
+                && string_bits_is_empty(bits)
+            {
+                dec_ref_bits(_py, bits);
+                sep_bits_opt = None;
             }
-            if let Some(bits) = end_bits_opt {
-                if string_bits_is_empty(bits) {
-                    dec_ref_bits(_py, bits);
-                    end_bits_opt = None;
-                }
+            if let Some(bits) = end_bits_opt
+                && string_bits_is_empty(bits)
+            {
+                dec_ref_bits(_py, bits);
+                end_bits_opt = None;
             }
 
             let mut resolved_file_bits = file_bits;
@@ -13296,13 +13266,13 @@ pub extern "C" fn molt_print_builtin(
                     None
                 };
                 for (idx, &val_bits) in elems.iter().enumerate() {
-                    if idx > 0 {
-                        if let Some(bytes) = sep_bytes.as_deref() {
-                            if bytes.contains(&b'\n') {
-                                wrote_newline = true;
-                            }
-                            let _ = stdout.write_all(bytes);
+                    if idx > 0
+                        && let Some(bytes) = sep_bytes.as_deref()
+                    {
+                        if bytes.contains(&b'\n') {
+                            wrote_newline = true;
                         }
+                        let _ = stdout.write_all(bytes);
                     }
                     let str_bits = molt_str_from_obj(val_bits);
                     if exception_pending(_py) {
@@ -13379,29 +13349,29 @@ pub extern "C" fn molt_print_builtin(
             }
 
             for (idx, &val_bits) in elems.iter().enumerate() {
-                if idx > 0 {
-                    if let Some(bits) = sep_bits {
-                        if use_file_handle {
-                            let _ = molt_file_write(resolved_file_bits, bits);
-                        } else {
-                            let res_bits = call_callable1(_py, write_bits, bits);
-                            dec_ref_bits(_py, res_bits);
+                if idx > 0
+                    && let Some(bits) = sep_bits
+                {
+                    if use_file_handle {
+                        let _ = molt_file_write(resolved_file_bits, bits);
+                    } else {
+                        let res_bits = call_callable1(_py, write_bits, bits);
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    if exception_pending(_py) {
+                        if !use_file_handle {
+                            dec_ref_bits(_py, write_bits);
                         }
-                        if exception_pending(_py) {
-                            if !use_file_handle {
-                                dec_ref_bits(_py, write_bits);
-                            }
-                            if let Some(bits) = sep_bits {
-                                dec_ref_bits(_py, bits);
-                            }
-                            if let Some(bits) = end_bits {
-                                dec_ref_bits(_py, bits);
-                            }
-                            if file_from_sys {
-                                dec_ref_bits(_py, resolved_file_bits);
-                            }
-                            return MoltObject::none().bits();
+                        if let Some(bits) = sep_bits {
+                            dec_ref_bits(_py, bits);
                         }
+                        if let Some(bits) = end_bits {
+                            dec_ref_bits(_py, bits);
+                        }
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
                     }
                 }
                 let str_bits = molt_str_from_obj(val_bits);
@@ -16088,10 +16058,10 @@ fn utf8_cache_get_or_build(
     if bytes.len() < UTF8_CACHE_MIN_LEN || bytes.is_ascii() {
         return None;
     }
-    if let Ok(store) = runtime_state(_py).utf8_index_cache.lock() {
-        if let Some(cache) = store.get(key) {
-            return Some(cache);
-        }
+    if let Ok(store) = runtime_state(_py).utf8_index_cache.lock()
+        && let Some(cache) = store.get(key)
+    {
+        return Some(cache);
     }
     let cache = Arc::new(build_utf8_cache(bytes));
     if let Ok(mut store) = runtime_state(_py).utf8_index_cache.lock() {
@@ -16121,10 +16091,10 @@ fn utf8_count_cache_shard(key: usize) -> usize {
 
 fn utf8_count_cache_remove(_py: &PyToken<'_>, key: usize) {
     let shard = utf8_count_cache_shard(key);
-    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard) {
-        if let Ok(mut guard) = store.lock() {
-            guard.remove(key);
-        }
+    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard)
+        && let Ok(mut guard) = store.lock()
+    {
+        guard.remove(key);
     }
 }
 
@@ -16199,10 +16169,10 @@ fn utf8_count_cache_store(
         hay_len: hay_bytes.len(),
     });
     let shard = utf8_count_cache_shard(key);
-    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard) {
-        if let Ok(mut guard) = store.lock() {
-            guard.insert(key, cache.clone());
-        }
+    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard)
+        && let Ok(mut guard) = store.lock()
+    {
+        guard.insert(key, cache.clone());
     }
     UTF8_COUNT_TLS.with(|cell| {
         *cell.borrow_mut() = Some(Utf8CountCacheEntry { key, cache });
@@ -16233,10 +16203,10 @@ fn utf8_count_cache_upgrade_prefix(
         hay_len: cache.hay_len,
     });
     let shard = utf8_count_cache_shard(key);
-    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard) {
-        if let Ok(mut guard) = store.lock() {
-            guard.insert(key, upgraded.clone());
-        }
+    if let Some(store) = runtime_state(_py).utf8_count_cache.get(shard)
+        && let Ok(mut guard) = store.lock()
+    {
+        guard.insert(key, upgraded.clone());
     }
     UTF8_COUNT_TLS.with(|cell| {
         *cell.borrow_mut() = Some(Utf8CountCacheEntry {
@@ -16350,10 +16320,10 @@ pub(crate) fn utf8_codepoint_count_cached(
     if bytes.is_ascii() {
         return bytes.len() as i64;
     }
-    if let Some(key) = cache_key {
-        if let Some(cache) = utf8_cache_get_or_build(_py, key, bytes) {
-            return *cache.prefix.last().unwrap_or(&0);
-        }
+    if let Some(key) = cache_key
+        && let Some(cache) = utf8_cache_get_or_build(_py, key, bytes)
+    {
+        return *cache.prefix.last().unwrap_or(&0);
     }
     utf8_count_prefix_blocked(bytes, bytes.len())
 }
@@ -16371,10 +16341,10 @@ fn utf8_byte_to_char_index_cached(
         return byte_idx.min(bytes.len()) as i64;
     }
     let prefix_len = byte_idx.min(bytes.len());
-    if let Some(key) = cache_key {
-        if let Some(cache) = utf8_cache_get_or_build(_py, key, bytes) {
-            return utf8_count_prefix_cached(bytes, &cache, prefix_len);
-        }
+    if let Some(key) = cache_key
+        && let Some(cache) = utf8_cache_get_or_build(_py, key, bytes)
+    {
+        return utf8_count_prefix_cached(bytes, &cache, prefix_len);
     }
     utf8_count_prefix_blocked(bytes, prefix_len)
 }
@@ -16467,27 +16437,27 @@ fn utf8_char_to_byte_index_cached(
         return bytes.len();
     }
     let target = char_idx as usize;
-    if let Some(key) = cache_key {
-        if let Some(cache) = utf8_cache_get_or_build(_py, key, bytes) {
-            let mut lo = 0usize;
-            let mut hi = cache.prefix.len().saturating_sub(1);
-            while lo < hi {
-                let mid = (lo + hi).div_ceil(2);
-                if (cache.prefix.get(mid).copied().unwrap_or(0) as usize) <= target {
-                    lo = mid;
-                } else {
-                    hi = mid.saturating_sub(1);
-                }
+    if let Some(key) = cache_key
+        && let Some(cache) = utf8_cache_get_or_build(_py, key, bytes)
+    {
+        let mut lo = 0usize;
+        let mut hi = cache.prefix.len().saturating_sub(1);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if (cache.prefix.get(mid).copied().unwrap_or(0) as usize) <= target {
+                lo = mid;
+            } else {
+                hi = mid.saturating_sub(1);
             }
-            let mut count = cache.prefix.get(lo).copied().unwrap_or(0) as usize;
-            let mut idx = cache.offsets.get(lo).copied().unwrap_or(0);
-            while idx < bytes.len() && count < target {
-                let width = utf8_char_width(bytes[idx]);
-                idx = idx.saturating_add(width);
-                count = count.saturating_add(1);
-            }
-            return idx.min(bytes.len());
         }
+        let mut count = cache.prefix.get(lo).copied().unwrap_or(0) as usize;
+        let mut idx = cache.offsets.get(lo).copied().unwrap_or(0);
+        while idx < bytes.len() && count < target {
+            let width = utf8_char_width(bytes[idx]);
+            idx = idx.saturating_add(width);
+            count = count.saturating_add(1);
+        }
+        return idx.min(bytes.len());
     }
     utf8_char_to_byte_index_scan(bytes, target)
 }
@@ -18440,7 +18410,8 @@ fn bytes_decode_impl(
             None => return MoltObject::none().bits(),
         };
         let bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-        let out_bits = match decode_bytes_text(&encoding, &errors, bytes) {
+
+        match decode_bytes_text(&encoding, &errors, bytes) {
             Ok((text_bytes, _label)) => {
                 let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
@@ -18450,15 +18421,15 @@ fn bytes_decode_impl(
             }
             Err(DecodeTextError::UnknownEncoding(name)) => {
                 let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                raise_exception::<_>(_py, "LookupError", &msg)
             }
             Err(DecodeTextError::UnknownErrorHandler(name)) => {
                 let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                raise_exception::<_>(_py, "LookupError", &msg)
             }
             Err(DecodeTextError::Failure(DecodeFailure::Byte { pos, byte, message }, label)) => {
                 let msg = decode_error_byte(&label, byte, pos, message);
-                return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
             }
             Err(DecodeTextError::Failure(
                 DecodeFailure::Range {
@@ -18469,14 +18440,13 @@ fn bytes_decode_impl(
                 label,
             )) => {
                 let msg = decode_error_range(&label, start, end, message);
-                return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
             }
             Err(DecodeTextError::Failure(DecodeFailure::UnknownErrorHandler(name), _label)) => {
                 let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                raise_exception::<_>(_py, "LookupError", &msg)
             }
-        };
-        out_bits
+        }
     }
 }
 
@@ -19622,10 +19592,10 @@ fn unicode_escape_codepoint(code: u32) -> String {
 }
 
 fn unicode_name_escape(code: u32) -> String {
-    if let Some(ch) = char::from_u32(code) {
-        if let Some(name) = unicode_names2::name(ch) {
-            return format!("\\N{{{name}}}");
-        }
+    if let Some(ch) = char::from_u32(code)
+        && let Some(name) = unicode_names2::name(ch)
+    {
+        return format!("\\N{{{name}}}");
     }
     unicode_escape_codepoint(code)
 }
@@ -25179,17 +25149,17 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
-            if type_id == TYPE_ID_MEMORYVIEW {
-                if let Some(out) = memoryview_collect_bytes(ptr) {
-                    let out_ptr = match kind {
-                        BytesCtorKind::Bytes => alloc_bytes(_py, &out),
-                        BytesCtorKind::Bytearray => alloc_bytearray(_py, &out),
-                    };
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+            if type_id == TYPE_ID_MEMORYVIEW
+                && let Some(out) = memoryview_collect_bytes(ptr)
+            {
+                let out_ptr = match kind {
+                    BytesCtorKind::Bytes => alloc_bytes(_py, &out),
+                    BytesCtorKind::Bytearray => alloc_bytearray(_py, &out),
+                };
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                return MoltObject::from_ptr(out_ptr).bits();
             }
             if type_id == TYPE_ID_BIGINT {
                 let big = bigint_ref(ptr);
@@ -25877,18 +25847,14 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
                     if ndim == 0 {
-                        if let Some(tup_ptr) = key.as_ptr() {
-                            if object_type_id(tup_ptr) == TYPE_ID_TUPLE {
-                                let elems = seq_vec_ref(tup_ptr);
-                                if elems.is_empty() {
-                                    let val = memoryview_read_scalar(
-                                        _py,
-                                        base,
-                                        memoryview_offset(ptr),
-                                        fmt,
-                                    );
-                                    return val.unwrap_or_else(|| MoltObject::none().bits());
-                                }
+                        if let Some(tup_ptr) = key.as_ptr()
+                            && object_type_id(tup_ptr) == TYPE_ID_TUPLE
+                        {
+                            let elems = seq_vec_ref(tup_ptr);
+                            if elems.is_empty() {
+                                let val =
+                                    memoryview_read_scalar(_py, base, memoryview_offset(ptr), fmt);
+                                return val.unwrap_or_else(|| MoltObject::none().bits());
                             }
                         }
                         return raise_exception::<_>(
@@ -25897,129 +25863,128 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "invalid indexing of 0-dim memory",
                         );
                     }
-                    if let Some(tup_ptr) = key.as_ptr() {
-                        if object_type_id(tup_ptr) == TYPE_ID_TUPLE {
-                            let elems = seq_vec_ref(tup_ptr);
-                            let mut has_slice = false;
-                            let mut all_slice = true;
-                            for &elem_bits in elems.iter() {
-                                let elem_obj = obj_from_bits(elem_bits);
-                                if let Some(elem_ptr) = elem_obj.as_ptr() {
-                                    if object_type_id(elem_ptr) == TYPE_ID_SLICE {
-                                        has_slice = true;
-                                    } else {
-                                        all_slice = false;
-                                    }
+                    if let Some(tup_ptr) = key.as_ptr()
+                        && object_type_id(tup_ptr) == TYPE_ID_TUPLE
+                    {
+                        let elems = seq_vec_ref(tup_ptr);
+                        let mut has_slice = false;
+                        let mut all_slice = true;
+                        for &elem_bits in elems.iter() {
+                            let elem_obj = obj_from_bits(elem_bits);
+                            if let Some(elem_ptr) = elem_obj.as_ptr() {
+                                if object_type_id(elem_ptr) == TYPE_ID_SLICE {
+                                    has_slice = true;
                                 } else {
                                     all_slice = false;
                                 }
+                            } else {
+                                all_slice = false;
                             }
-                            if has_slice {
-                                if all_slice {
-                                    return raise_exception::<_>(
-                                        _py,
-                                        "NotImplementedError",
-                                        "multi-dimensional slicing is not implemented",
-                                    );
-                                }
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    "memoryview: invalid slice key",
-                                );
-                            }
-                            if elems.len() < ndim {
+                        }
+                        if has_slice {
+                            if all_slice {
                                 return raise_exception::<_>(
                                     _py,
                                     "NotImplementedError",
-                                    "multi-dimensional sub-views are not implemented",
+                                    "multi-dimensional slicing is not implemented",
                                 );
                             }
-                            if elems.len() > ndim {
-                                let msg = format!(
-                                    "cannot index {}-dimension view with {}-element tuple",
-                                    ndim,
-                                    elems.len()
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
-                            if shape.len() != strides.len() {
-                                return MoltObject::none().bits();
-                            }
-                            let mut pos = memoryview_offset(ptr);
-                            for (dim, &elem_bits) in elems.iter().enumerate() {
-                                let Some(idx) = index_i64_with_overflow(
-                                    _py,
-                                    elem_bits,
-                                    "memoryview: invalid slice key",
-                                    None,
-                                ) else {
-                                    return MoltObject::none().bits();
-                                };
-                                let mut i = idx;
-                                let dim_len = shape[dim];
-                                let dim_len_i64 = dim_len as i64;
-                                if i < 0 {
-                                    i += dim_len_i64;
-                                }
-                                if i < 0 || i >= dim_len_i64 {
-                                    let msg =
-                                        format!("index out of bounds on dimension {}", dim + 1);
-                                    return raise_exception::<_>(_py, "IndexError", &msg);
-                                }
-                                pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
-                            }
-                            if pos < 0 || pos + fmt.itemsize as isize > base.len() as isize {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "IndexError",
-                                    "index out of bounds on dimension 1",
-                                );
-                            }
-                            let val = memoryview_read_scalar(_py, base, pos, fmt);
-                            return val.unwrap_or_else(|| MoltObject::none().bits());
-                        }
-                    }
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let len = shape[0];
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let base_offset = memoryview_offset(ptr);
-                            let base_stride = strides[0];
-                            let itemsize = memoryview_itemsize(ptr);
-                            let new_offset = base_offset + start * base_stride;
-                            let new_stride = base_stride * step;
-                            let new_len = range_len_i64(start as i64, stop as i64, step as i64);
-                            let new_len = new_len.max(0) as usize;
-                            let mut new_shape = shape.to_vec();
-                            let mut new_strides = strides.to_vec();
-                            if !new_shape.is_empty() {
-                                new_shape[0] = new_len as isize;
-                                new_strides[0] = new_stride;
-                            }
-                            let out_ptr = alloc_memoryview_shaped(
+                            return raise_exception::<_>(
                                 _py,
-                                memoryview_owner_bits(ptr),
-                                new_offset,
-                                itemsize,
-                                memoryview_readonly(ptr),
-                                memoryview_format_bits(ptr),
-                                new_shape,
-                                new_strides,
+                                "TypeError",
+                                "memoryview: invalid slice key",
                             );
-                            if out_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(out_ptr).bits();
                         }
+                        if elems.len() < ndim {
+                            return raise_exception::<_>(
+                                _py,
+                                "NotImplementedError",
+                                "multi-dimensional sub-views are not implemented",
+                            );
+                        }
+                        if elems.len() > ndim {
+                            let msg = format!(
+                                "cannot index {}-dimension view with {}-element tuple",
+                                ndim,
+                                elems.len()
+                            );
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                        if shape.len() != strides.len() {
+                            return MoltObject::none().bits();
+                        }
+                        let mut pos = memoryview_offset(ptr);
+                        for (dim, &elem_bits) in elems.iter().enumerate() {
+                            let Some(idx) = index_i64_with_overflow(
+                                _py,
+                                elem_bits,
+                                "memoryview: invalid slice key",
+                                None,
+                            ) else {
+                                return MoltObject::none().bits();
+                            };
+                            let mut i = idx;
+                            let dim_len = shape[dim];
+                            let dim_len_i64 = dim_len as i64;
+                            if i < 0 {
+                                i += dim_len_i64;
+                            }
+                            if i < 0 || i >= dim_len_i64 {
+                                let msg = format!("index out of bounds on dimension {}", dim + 1);
+                                return raise_exception::<_>(_py, "IndexError", &msg);
+                            }
+                            pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
+                        }
+                        if pos < 0 || pos + fmt.itemsize as isize > base.len() as isize {
+                            return raise_exception::<_>(
+                                _py,
+                                "IndexError",
+                                "index out of bounds on dimension 1",
+                            );
+                        }
+                        let val = memoryview_read_scalar(_py, base, pos, fmt);
+                        return val.unwrap_or_else(|| MoltObject::none().bits());
+                    }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let len = shape[0];
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let base_offset = memoryview_offset(ptr);
+                        let base_stride = strides[0];
+                        let itemsize = memoryview_itemsize(ptr);
+                        let new_offset = base_offset + start * base_stride;
+                        let new_stride = base_stride * step;
+                        let new_len = range_len_i64(start as i64, stop as i64, step as i64);
+                        let new_len = new_len.max(0) as usize;
+                        let mut new_shape = shape.to_vec();
+                        let mut new_strides = strides.to_vec();
+                        if !new_shape.is_empty() {
+                            new_shape[0] = new_len as isize;
+                            new_strides[0] = new_stride;
+                        }
+                        let out_ptr = alloc_memoryview_shaped(
+                            _py,
+                            memoryview_owner_bits(ptr),
+                            new_offset,
+                            itemsize,
+                            memoryview_readonly(ptr),
+                            memoryview_format_bits(ptr),
+                            new_shape,
+                            new_strides,
+                        );
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out_ptr).bits();
                     }
                     if ndim > 1 {
                         return raise_exception::<_>(
@@ -26063,84 +26028,84 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     || type_id == TYPE_ID_BYTES
                     || type_id == TYPE_ID_BYTEARRAY
                 {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let bytes = if type_id == TYPE_ID_STRING {
-                                std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr))
-                            } else {
-                                std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr))
-                            };
-                            let len = if type_id == TYPE_ID_STRING {
-                                utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize)) as isize
-                            } else {
-                                bytes.len() as isize
-                            };
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let out_ptr = if step == 1 {
-                                let s = start as usize;
-                                let e = stop as usize;
-                                if s >= e {
-                                    if type_id == TYPE_ID_STRING {
-                                        alloc_string(_py, &[])
-                                    } else if type_id == TYPE_ID_BYTES {
-                                        alloc_bytes(_py, &[])
-                                    } else {
-                                        alloc_bytearray(_py, &[])
-                                    }
-                                } else if type_id == TYPE_ID_STRING {
-                                    let start_byte = utf8_char_to_byte_index_cached(
-                                        _py,
-                                        bytes,
-                                        s as i64,
-                                        Some(ptr as usize),
-                                    );
-                                    let end_byte = utf8_char_to_byte_index_cached(
-                                        _py,
-                                        bytes,
-                                        e as i64,
-                                        Some(ptr as usize),
-                                    );
-                                    alloc_string(_py, &bytes[start_byte..end_byte])
-                                } else if type_id == TYPE_ID_BYTES {
-                                    alloc_bytes(_py, &bytes[s..e])
-                                } else {
-                                    alloc_bytearray(_py, &bytes[s..e])
-                                }
-                            } else {
-                                let indices = collect_slice_indices(start, stop, step);
-                                let mut out = Vec::with_capacity(indices.len());
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let bytes = if type_id == TYPE_ID_STRING {
+                            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr))
+                        } else {
+                            std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr))
+                        };
+                        let len = if type_id == TYPE_ID_STRING {
+                            utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize)) as isize
+                        } else {
+                            bytes.len() as isize
+                        };
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let out_ptr = if step == 1 {
+                            let s = start as usize;
+                            let e = stop as usize;
+                            if s >= e {
                                 if type_id == TYPE_ID_STRING {
-                                    for idx in indices {
-                                        if let Some(code) = wtf8_codepoint_at(bytes, idx) {
-                                            push_wtf8_codepoint(&mut out, code.to_u32());
-                                        }
-                                    }
-                                } else {
-                                    for idx in indices {
-                                        out.push(bytes[idx]);
-                                    }
-                                }
-                                if type_id == TYPE_ID_STRING {
-                                    alloc_string(_py, &out)
+                                    alloc_string(_py, &[])
                                 } else if type_id == TYPE_ID_BYTES {
-                                    alloc_bytes(_py, &out)
+                                    alloc_bytes(_py, &[])
                                 } else {
-                                    alloc_bytearray(_py, &out)
+                                    alloc_bytearray(_py, &[])
                                 }
-                            };
-                            if out_ptr.is_null() {
-                                return MoltObject::none().bits();
+                            } else if type_id == TYPE_ID_STRING {
+                                let start_byte = utf8_char_to_byte_index_cached(
+                                    _py,
+                                    bytes,
+                                    s as i64,
+                                    Some(ptr as usize),
+                                );
+                                let end_byte = utf8_char_to_byte_index_cached(
+                                    _py,
+                                    bytes,
+                                    e as i64,
+                                    Some(ptr as usize),
+                                );
+                                alloc_string(_py, &bytes[start_byte..end_byte])
+                            } else if type_id == TYPE_ID_BYTES {
+                                alloc_bytes(_py, &bytes[s..e])
+                            } else {
+                                alloc_bytearray(_py, &bytes[s..e])
                             }
-                            return MoltObject::from_ptr(out_ptr).bits();
+                        } else {
+                            let indices = collect_slice_indices(start, stop, step);
+                            let mut out = Vec::with_capacity(indices.len());
+                            if type_id == TYPE_ID_STRING {
+                                for idx in indices {
+                                    if let Some(code) = wtf8_codepoint_at(bytes, idx) {
+                                        push_wtf8_codepoint(&mut out, code.to_u32());
+                                    }
+                                }
+                            } else {
+                                for idx in indices {
+                                    out.push(bytes[idx]);
+                                }
+                            }
+                            if type_id == TYPE_ID_STRING {
+                                alloc_string(_py, &out)
+                            } else if type_id == TYPE_ID_BYTES {
+                                alloc_bytes(_py, &out)
+                            } else {
+                                alloc_bytearray(_py, &out)
+                            }
+                        };
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
                         }
+                        return MoltObject::from_ptr(out_ptr).bits();
                     }
                     let type_err = if type_id == TYPE_ID_STRING {
                         format!(
@@ -26209,40 +26174,40 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return MoltObject::from_int(bytes[i as usize] as i64).bits();
                 }
                 if type_id == TYPE_ID_LIST {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let elems = seq_vec_ref(ptr);
-                            let len = elems.len() as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let out_ptr = if step == 1 {
-                                let s = start as usize;
-                                let e = stop as usize;
-                                if s >= e {
-                                    alloc_list(_py, &[])
-                                } else {
-                                    alloc_list(_py, &elems[s..e])
-                                }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let elems = seq_vec_ref(ptr);
+                        let len = elems.len() as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let out_ptr = if step == 1 {
+                            let s = start as usize;
+                            let e = stop as usize;
+                            if s >= e {
+                                alloc_list(_py, &[])
                             } else {
-                                let indices = collect_slice_indices(start, stop, step);
-                                let mut out = Vec::with_capacity(indices.len());
-                                for idx in indices {
-                                    out.push(elems[idx]);
-                                }
-                                alloc_list(_py, out.as_slice())
-                            };
-                            if out_ptr.is_null() {
-                                return MoltObject::none().bits();
+                                alloc_list(_py, &elems[s..e])
                             }
-                            return MoltObject::from_ptr(out_ptr).bits();
+                        } else {
+                            let indices = collect_slice_indices(start, stop, step);
+                            let mut out = Vec::with_capacity(indices.len());
+                            for idx in indices {
+                                out.push(elems[idx]);
+                            }
+                            alloc_list(_py, out.as_slice())
+                        };
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
                         }
+                        return MoltObject::from_ptr(out_ptr).bits();
                     }
                     let idx = if let Some(i) = to_i64(key) {
                         i
@@ -26297,40 +26262,40 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return val;
                 }
                 if type_id == TYPE_ID_TUPLE {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let elems = seq_vec_ref(ptr);
-                            let len = elems.len() as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let out_ptr = if step == 1 {
-                                let s = start as usize;
-                                let e = stop as usize;
-                                if s >= e {
-                                    alloc_tuple(_py, &[])
-                                } else {
-                                    alloc_tuple(_py, &elems[s..e])
-                                }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let elems = seq_vec_ref(ptr);
+                        let len = elems.len() as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let out_ptr = if step == 1 {
+                            let s = start as usize;
+                            let e = stop as usize;
+                            if s >= e {
+                                alloc_tuple(_py, &[])
                             } else {
-                                let indices = collect_slice_indices(start, stop, step);
-                                let mut out = Vec::with_capacity(indices.len());
-                                for idx in indices {
-                                    out.push(elems[idx]);
-                                }
-                                alloc_tuple(_py, out.as_slice())
-                            };
-                            if out_ptr.is_null() {
-                                return MoltObject::none().bits();
+                                alloc_tuple(_py, &elems[s..e])
                             }
-                            return MoltObject::from_ptr(out_ptr).bits();
+                        } else {
+                            let indices = collect_slice_indices(start, stop, step);
+                            let mut out = Vec::with_capacity(indices.len());
+                            for idx in indices {
+                                out.push(elems[idx]);
+                            }
+                            alloc_tuple(_py, out.as_slice())
+                        };
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
                         }
+                        return MoltObject::from_ptr(out_ptr).bits();
                     }
                     let idx = if let Some(i) = to_i64(key) {
                         i
@@ -26375,43 +26340,40 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return val;
                 }
                 if type_id == TYPE_ID_RANGE {
-                    if let Some((start_i64, stop_i64, step_i64)) = range_components_i64(ptr) {
-                        if let Some(mut idx_i64) = to_i64(key) {
-                            if idx_i64 < 0 {
-                                let len = range_len_i128(start_i64, stop_i64, step_i64);
-                                let adj = (idx_i64 as i128) + len;
-                                if adj < 0 {
+                    if let Some((start_i64, stop_i64, step_i64)) = range_components_i64(ptr)
+                        && let Some(mut idx_i64) = to_i64(key)
+                    {
+                        if idx_i64 < 0 {
+                            let len = range_len_i128(start_i64, stop_i64, step_i64);
+                            let adj = (idx_i64 as i128) + len;
+                            if adj < 0 {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "IndexError",
+                                    "range object index out of range",
+                                );
+                            }
+                            idx_i64 = match i64::try_from(adj) {
+                                Ok(v) => v,
+                                Err(_) => {
                                     return raise_exception::<_>(
                                         _py,
                                         "IndexError",
                                         "range object index out of range",
                                     );
                                 }
-                                idx_i64 = match i64::try_from(adj) {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return raise_exception::<_>(
-                                            _py,
-                                            "IndexError",
-                                            "range object index out of range",
-                                        );
-                                    }
-                                };
-                            }
-                            if let Some(value) = range_value_at_index_i64(
-                                start_i64,
-                                stop_i64,
-                                step_i64,
-                                idx_i64 as i128,
-                            ) {
-                                return MoltObject::from_int(value).bits();
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "IndexError",
-                                "range object index out of range",
-                            );
+                            };
                         }
+                        if let Some(value) =
+                            range_value_at_index_i64(start_i64, stop_i64, step_i64, idx_i64 as i128)
+                        {
+                            return MoltObject::from_int(value).bits();
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "IndexError",
+                            "range object index out of range",
+                        );
                     }
                     let type_err = format!(
                         "range indices must be integers or slices, not {}",
@@ -26445,23 +26407,22 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         inc_ref_bits(_py, val);
                         return val;
                     }
-                    if object_type_id(ptr) != TYPE_ID_DICT {
-                        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__missing__") {
-                            if let Some(call_bits) =
-                                attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
-                            {
-                                dec_ref_bits(_py, name_bits);
-                                let res = call_callable1(_py, call_bits, key_bits);
-                                dec_ref_bits(_py, call_bits);
-                                if exception_pending(_py) {
-                                    return MoltObject::none().bits();
-                                }
-                                return res;
-                            }
+                    if object_type_id(ptr) != TYPE_ID_DICT
+                        && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__missing__")
+                    {
+                        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
+                        {
                             dec_ref_bits(_py, name_bits);
+                            let res = call_callable1(_py, call_bits, key_bits);
+                            dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
                             }
+                            return res;
+                        }
+                        dec_ref_bits(_py, name_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
                         }
                     }
                     return raise_key_error_with_key(_py, key_bits);
@@ -26474,24 +26435,23 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let msg = format!("'{}' object is not subscriptable", view_name);
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
-                if type_id == TYPE_ID_TYPE {
-                    if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__") {
-                        if let Some(call_bits) =
-                            class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
-                        {
-                            dec_ref_bits(_py, name_bits);
-                            exception_stack_push();
-                            let res = call_callable1(_py, call_bits, key_bits);
-                            dec_ref_bits(_py, call_bits);
-                            if exception_pending(_py) {
-                                exception_stack_pop(_py);
-                                return MoltObject::none().bits();
-                            }
-                            exception_stack_pop(_py);
-                            return res;
-                        }
+                if type_id == TYPE_ID_TYPE
+                    && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__")
+                {
+                    if let Some(call_bits) = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
+                    {
                         dec_ref_bits(_py, name_bits);
+                        exception_stack_push();
+                        let res = call_callable1(_py, call_bits, key_bits);
+                        dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            exception_stack_pop(_py);
+                            return MoltObject::none().bits();
+                        }
+                        exception_stack_pop(_py);
+                        return res;
                     }
+                    dec_ref_bits(_py, name_bits);
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
@@ -26533,67 +26493,67 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let len = list_len(ptr) as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let new_items = match collect_iterable_values(
-                                _py,
-                                val_bits,
-                                "must assign iterable to extended slice",
-                            ) {
-                                Some(items) => items,
-                                None => return MoltObject::none().bits(),
-                            };
-                            let elems = seq_vec(ptr);
-                            if step == 1 {
-                                let s = start as usize;
-                                let mut e = stop as usize;
-                                if s > e {
-                                    e = s;
-                                }
-                                for &item in new_items.iter() {
-                                    inc_ref_bits(_py, item);
-                                }
-                                let removed: Vec<u64> =
-                                    elems.splice(s..e, new_items.iter().copied()).collect();
-                                for old_bits in removed {
-                                    dec_ref_bits(_py, old_bits);
-                                }
-                                return obj_bits;
-                            }
-                            let indices = collect_slice_indices(start, stop, step);
-                            if indices.len() != new_items.len() {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    &format!(
-                                        "attempt to assign sequence of size {} to extended slice of size {}",
-                                        new_items.len(),
-                                        indices.len()
-                                    ),
-                                );
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let len = list_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let new_items = match collect_iterable_values(
+                            _py,
+                            val_bits,
+                            "must assign iterable to extended slice",
+                        ) {
+                            Some(items) => items,
+                            None => return MoltObject::none().bits(),
+                        };
+                        let elems = seq_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
                             }
                             for &item in new_items.iter() {
                                 inc_ref_bits(_py, item);
                             }
-                            for (idx, &item) in indices.iter().zip(new_items.iter()) {
-                                let old_bits = elems[*idx];
-                                if old_bits != item {
-                                    dec_ref_bits(_py, old_bits);
-                                    elems[*idx] = item;
-                                }
+                            let removed: Vec<u64> =
+                                elems.splice(s..e, new_items.iter().copied()).collect();
+                            for old_bits in removed {
+                                dec_ref_bits(_py, old_bits);
                             }
                             return obj_bits;
                         }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if indices.len() != new_items.len() {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                &format!(
+                                    "attempt to assign sequence of size {} to extended slice of size {}",
+                                    new_items.len(),
+                                    indices.len()
+                                ),
+                            );
+                        }
+                        for &item in new_items.iter() {
+                            inc_ref_bits(_py, item);
+                        }
+                        for (idx, &item) in indices.iter().zip(new_items.iter()) {
+                            let old_bits = elems[*idx];
+                            if old_bits != item {
+                                dec_ref_bits(_py, old_bits);
+                                elems[*idx] = item;
+                            }
+                        }
+                        return obj_bits;
                     }
                     let idx = if let Some(i) = to_i64(key) {
                         i
@@ -26650,49 +26610,49 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     return MoltObject::none().bits();
                 }
                 if type_id == TYPE_ID_BYTEARRAY {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let len = bytes_len(ptr) as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let src_bytes = match collect_bytearray_assign_bytes(_py, val_bits) {
-                                Some(bytes) => bytes,
-                                None => return MoltObject::none().bits(),
-                            };
-                            let elems = bytearray_vec(ptr);
-                            if step == 1 {
-                                let s = start as usize;
-                                let mut e = stop as usize;
-                                if s > e {
-                                    e = s;
-                                }
-                                elems.splice(s..e, src_bytes.iter().copied());
-                                return obj_bits;
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let len = bytes_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let src_bytes = match collect_bytearray_assign_bytes(_py, val_bits) {
+                            Some(bytes) => bytes,
+                            None => return MoltObject::none().bits(),
+                        };
+                        let elems = bytearray_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
                             }
-                            let indices = collect_slice_indices(start, stop, step);
-                            if indices.len() != src_bytes.len() {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    &format!(
-                                        "attempt to assign bytes of size {} to extended slice of size {}",
-                                        src_bytes.len(),
-                                        indices.len()
-                                    ),
-                                );
-                            }
-                            for (idx, byte) in indices.iter().zip(src_bytes.iter()) {
-                                elems[*idx] = *byte;
-                            }
+                            elems.splice(s..e, src_bytes.iter().copied());
                             return obj_bits;
                         }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if indices.len() != src_bytes.len() {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                &format!(
+                                    "attempt to assign bytes of size {} to extended slice of size {}",
+                                    src_bytes.len(),
+                                    indices.len()
+                                ),
+                            );
+                        }
+                        for (idx, byte) in indices.iter().zip(src_bytes.iter()) {
+                            elems[*idx] = *byte;
+                        }
+                        return obj_bits;
                     }
                     let type_err = format!(
                         "bytearray indices must be integers or slices, not {}",
@@ -26751,22 +26711,22 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let ndim = shape.len();
                     let data = bytearray_vec(owner_ptr);
                     if ndim == 0 {
-                        if let Some(tup_ptr) = key.as_ptr() {
-                            if object_type_id(tup_ptr) == TYPE_ID_TUPLE {
-                                let elems = seq_vec_ref(tup_ptr);
-                                if elems.is_empty() {
-                                    let ok = memoryview_write_scalar(
-                                        _py,
-                                        data.as_mut_slice(),
-                                        memoryview_offset(ptr),
-                                        fmt,
-                                        val_bits,
-                                    );
-                                    if ok.is_none() {
-                                        return MoltObject::none().bits();
-                                    }
-                                    return obj_bits;
+                        if let Some(tup_ptr) = key.as_ptr()
+                            && object_type_id(tup_ptr) == TYPE_ID_TUPLE
+                        {
+                            let elems = seq_vec_ref(tup_ptr);
+                            if elems.is_empty() {
+                                let ok = memoryview_write_scalar(
+                                    _py,
+                                    data.as_mut_slice(),
+                                    memoryview_offset(ptr),
+                                    fmt,
+                                    val_bits,
+                                );
+                                if ok.is_none() {
+                                    return MoltObject::none().bits();
                                 }
+                                return obj_bits;
                             }
                         }
                         return raise_exception::<_>(
@@ -26775,162 +26735,147 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "invalid indexing of 0-dim memory",
                         );
                     }
-                    if let Some(tup_ptr) = key.as_ptr() {
-                        if object_type_id(tup_ptr) == TYPE_ID_TUPLE {
-                            let elems = seq_vec_ref(tup_ptr);
-                            let mut has_slice = false;
-                            let mut all_slice = true;
-                            for &elem_bits in elems.iter() {
-                                let elem_obj = obj_from_bits(elem_bits);
-                                if let Some(elem_ptr) = elem_obj.as_ptr() {
-                                    if object_type_id(elem_ptr) == TYPE_ID_SLICE {
-                                        has_slice = true;
-                                    } else {
-                                        all_slice = false;
-                                    }
+                    if let Some(tup_ptr) = key.as_ptr()
+                        && object_type_id(tup_ptr) == TYPE_ID_TUPLE
+                    {
+                        let elems = seq_vec_ref(tup_ptr);
+                        let mut has_slice = false;
+                        let mut all_slice = true;
+                        for &elem_bits in elems.iter() {
+                            let elem_obj = obj_from_bits(elem_bits);
+                            if let Some(elem_ptr) = elem_obj.as_ptr() {
+                                if object_type_id(elem_ptr) == TYPE_ID_SLICE {
+                                    has_slice = true;
                                 } else {
                                     all_slice = false;
                                 }
+                            } else {
+                                all_slice = false;
                             }
-                            if has_slice {
-                                if all_slice {
-                                    return raise_exception::<_>(
-                                        _py,
-                                        "NotImplementedError",
-                                        "memoryview slice assignments are currently restricted to ndim = 1",
-                                    );
-                                }
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    "memoryview: invalid slice key",
-                                );
-                            }
-                            if elems.len() < ndim {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "NotImplementedError",
-                                    "sub-views are not implemented",
-                                );
-                            }
-                            if elems.len() > ndim {
-                                let msg = format!(
-                                    "cannot index {}-dimension view with {}-element tuple",
-                                    ndim,
-                                    elems.len()
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
-                            if shape.len() != strides.len() {
-                                return MoltObject::none().bits();
-                            }
-                            let mut pos = memoryview_offset(ptr);
-                            for (dim, &elem_bits) in elems.iter().enumerate() {
-                                let Some(idx) = index_i64_with_overflow(
-                                    _py,
-                                    elem_bits,
-                                    "memoryview: invalid slice key",
-                                    None,
-                                ) else {
-                                    return MoltObject::none().bits();
-                                };
-                                let mut i = idx;
-                                let dim_len = shape[dim];
-                                let dim_len_i64 = dim_len as i64;
-                                if i < 0 {
-                                    i += dim_len_i64;
-                                }
-                                if i < 0 || i >= dim_len_i64 {
-                                    let msg =
-                                        format!("index out of bounds on dimension {}", dim + 1);
-                                    return raise_exception::<_>(_py, "IndexError", &msg);
-                                }
-                                pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
-                            }
-                            if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "IndexError",
-                                    "index out of bounds on dimension 1",
-                                );
-                            }
-                            let ok = memoryview_write_scalar(
-                                _py,
-                                data.as_mut_slice(),
-                                pos,
-                                fmt,
-                                val_bits,
-                            );
-                            if ok.is_none() {
-                                return MoltObject::none().bits();
-                            }
-                            return obj_bits;
                         }
-                    }
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            if ndim != 1 {
+                        if has_slice {
+                            if all_slice {
                                 return raise_exception::<_>(
                                     _py,
                                     "NotImplementedError",
                                     "memoryview slice assignments are currently restricted to ndim = 1",
                                 );
                             }
-                            let len = shape[0];
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "memoryview: invalid slice key",
+                            );
+                        }
+                        if elems.len() < ndim {
+                            return raise_exception::<_>(
+                                _py,
+                                "NotImplementedError",
+                                "sub-views are not implemented",
+                            );
+                        }
+                        if elems.len() > ndim {
+                            let msg = format!(
+                                "cannot index {}-dimension view with {}-element tuple",
+                                ndim,
+                                elems.len()
+                            );
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                        if shape.len() != strides.len() {
+                            return MoltObject::none().bits();
+                        }
+                        let mut pos = memoryview_offset(ptr);
+                        for (dim, &elem_bits) in elems.iter().enumerate() {
+                            let Some(idx) = index_i64_with_overflow(
+                                _py,
+                                elem_bits,
+                                "memoryview: invalid slice key",
+                                None,
+                            ) else {
+                                return MoltObject::none().bits();
                             };
-                            let indices = collect_slice_indices(start, stop, step);
-                            let elem_count = indices.len();
-                            let val_obj = obj_from_bits(val_bits);
-                            let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
-                                let src_type = object_type_id(src_ptr);
-                                if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
-                                    if fmt.code != b'B' {
-                                        return raise_exception::<_>(
-                                            _py,
-                                            "ValueError",
-                                            "memoryview assignment: lvalue and rvalue have different structures",
-                                        );
-                                    }
-                                    bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec()
-                                } else if src_type == TYPE_ID_MEMORYVIEW {
-                                    let src_fmt = match memoryview_format_from_bits(
-                                        memoryview_format_bits(src_ptr),
-                                    ) {
-                                        Some(fmt) => fmt,
-                                        None => return MoltObject::none().bits(),
-                                    };
-                                    let src_shape = memoryview_shape(src_ptr).unwrap_or(&[]);
-                                    if src_fmt.code != fmt.code
-                                        || src_shape.len() != 1
-                                        || src_shape[0] as usize != elem_count
-                                    {
-                                        return raise_exception::<_>(
-                                            _py,
-                                            "ValueError",
-                                            "memoryview assignment: lvalue and rvalue have different structures",
-                                        );
-                                    }
-                                    match memoryview_collect_bytes(src_ptr) {
-                                        Some(buf) => buf,
-                                        None => return MoltObject::none().bits(),
-                                    }
-                                } else {
+                            let mut i = idx;
+                            let dim_len = shape[dim];
+                            let dim_len_i64 = dim_len as i64;
+                            if i < 0 {
+                                i += dim_len_i64;
+                            }
+                            if i < 0 || i >= dim_len_i64 {
+                                let msg = format!("index out of bounds on dimension {}", dim + 1);
+                                return raise_exception::<_>(_py, "IndexError", &msg);
+                            }
+                            pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
+                        }
+                        if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
+                            return raise_exception::<_>(
+                                _py,
+                                "IndexError",
+                                "index out of bounds on dimension 1",
+                            );
+                        }
+                        let ok =
+                            memoryview_write_scalar(_py, data.as_mut_slice(), pos, fmt, val_bits);
+                        if ok.is_none() {
+                            return MoltObject::none().bits();
+                        }
+                        return obj_bits;
+                    }
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        if ndim != 1 {
+                            return raise_exception::<_>(
+                                _py,
+                                "NotImplementedError",
+                                "memoryview slice assignments are currently restricted to ndim = 1",
+                            );
+                        }
+                        let len = shape[0];
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let indices = collect_slice_indices(start, stop, step);
+                        let elem_count = indices.len();
+                        let val_obj = obj_from_bits(val_bits);
+                        let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
+                            let src_type = object_type_id(src_ptr);
+                            if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
+                                if fmt.code != b'B' {
                                     return raise_exception::<_>(
                                         _py,
-                                        "TypeError",
-                                        &format!(
-                                            "a bytes-like object is required, not '{}'",
-                                            type_name(_py, val_obj)
-                                        ),
+                                        "ValueError",
+                                        "memoryview assignment: lvalue and rvalue have different structures",
                                     );
+                                }
+                                bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec()
+                            } else if src_type == TYPE_ID_MEMORYVIEW {
+                                let src_fmt = match memoryview_format_from_bits(
+                                    memoryview_format_bits(src_ptr),
+                                ) {
+                                    Some(fmt) => fmt,
+                                    None => return MoltObject::none().bits(),
+                                };
+                                let src_shape = memoryview_shape(src_ptr).unwrap_or(&[]);
+                                if src_fmt.code != fmt.code
+                                    || src_shape.len() != 1
+                                    || src_shape[0] as usize != elem_count
+                                {
+                                    return raise_exception::<_>(
+                                        _py,
+                                        "ValueError",
+                                        "memoryview assignment: lvalue and rvalue have different structures",
+                                    );
+                                }
+                                match memoryview_collect_bytes(src_ptr) {
+                                    Some(buf) => buf,
+                                    None => return MoltObject::none().bits(),
                                 }
                             } else {
                                 return raise_exception::<_>(
@@ -26941,33 +26886,41 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                         type_name(_py, val_obj)
                                     ),
                                 );
-                            };
-                            let expected = elem_count * fmt.itemsize;
-                            if src_bytes.len() != expected {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "ValueError",
-                                    "memoryview assignment: lvalue and rvalue have different structures",
-                                );
                             }
-                            let base_offset = memoryview_offset(ptr);
-                            let base_stride = strides[0];
-                            let mut pos = base_offset + start * base_stride;
-                            let step_stride = base_stride * step;
-                            let mut idx = 0usize;
-                            while idx < src_bytes.len() {
-                                if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
-                                    return MoltObject::none().bits();
-                                }
-                                let start = pos as usize;
-                                let end = start + fmt.itemsize;
-                                data[start..end]
-                                    .copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
-                                idx += fmt.itemsize;
-                                pos += step_stride;
-                            }
-                            return obj_bits;
+                        } else {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                &format!(
+                                    "a bytes-like object is required, not '{}'",
+                                    type_name(_py, val_obj)
+                                ),
+                            );
+                        };
+                        let expected = elem_count * fmt.itemsize;
+                        if src_bytes.len() != expected {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "memoryview assignment: lvalue and rvalue have different structures",
+                            );
                         }
+                        let base_offset = memoryview_offset(ptr);
+                        let base_stride = strides[0];
+                        let mut pos = base_offset + start * base_stride;
+                        let step_stride = base_stride * step;
+                        let mut idx = 0usize;
+                        while idx < src_bytes.len() {
+                            if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
+                                return MoltObject::none().bits();
+                            }
+                            let start = pos as usize;
+                            let end = start + fmt.itemsize;
+                            data[start..end].copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
+                            idx += fmt.itemsize;
+                            pos += step_stride;
+                        }
+                        return obj_bits;
                     }
                     if ndim != 1 {
                         return raise_exception::<_>(
@@ -27023,23 +26976,22 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             );
                         }
                         let builtins = builtin_classes(_py);
-                        if issubclass_bits(class_bits, builtins.dict) {
-                            if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__setitem__")
-                            {
-                                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
-                                    dec_ref_bits(_py, name_bits);
-                                    exception_stack_push();
-                                    let _ = call_callable2(_py, call_bits, key_bits, val_bits);
-                                    dec_ref_bits(_py, call_bits);
-                                    if exception_pending(_py) {
-                                        exception_stack_pop(_py);
-                                        return MoltObject::none().bits();
-                                    }
-                                    exception_stack_pop(_py);
-                                    return obj_bits;
-                                }
+                        if issubclass_bits(class_bits, builtins.dict)
+                            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__setitem__")
+                        {
+                            if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
                                 dec_ref_bits(_py, name_bits);
+                                exception_stack_push();
+                                let _ = call_callable2(_py, call_bits, key_bits, val_bits);
+                                dec_ref_bits(_py, call_bits);
+                                if exception_pending(_py) {
+                                    exception_stack_pop(_py);
+                                    return MoltObject::none().bits();
+                                }
+                                exception_stack_pop(_py);
+                                return obj_bits;
                             }
+                            dec_ref_bits(_py, name_bits);
                         }
                     }
                 }
@@ -27128,45 +27080,45 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let len = list_len(ptr) as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let elems = seq_vec(ptr);
-                            if step == 1 {
-                                let s = start as usize;
-                                let mut e = stop as usize;
-                                if s > e {
-                                    e = s;
-                                }
-                                let removed: Vec<u64> = elems.drain(s..e).collect();
-                                for old_bits in removed {
-                                    dec_ref_bits(_py, old_bits);
-                                }
-                                return obj_bits;
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let len = list_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let elems = seq_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
                             }
-                            let indices = collect_slice_indices(start, stop, step);
-                            if step > 0 {
-                                for &idx in indices.iter().rev() {
-                                    let old_bits = elems.remove(idx);
-                                    dec_ref_bits(_py, old_bits);
-                                }
-                            } else {
-                                for &idx in indices.iter() {
-                                    let old_bits = elems.remove(idx);
-                                    dec_ref_bits(_py, old_bits);
-                                }
+                            let removed: Vec<u64> = elems.drain(s..e).collect();
+                            for old_bits in removed {
+                                dec_ref_bits(_py, old_bits);
                             }
                             return obj_bits;
                         }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if step > 0 {
+                            for &idx in indices.iter().rev() {
+                                let old_bits = elems.remove(idx);
+                                dec_ref_bits(_py, old_bits);
+                            }
+                        } else {
+                            for &idx in indices.iter() {
+                                let old_bits = elems.remove(idx);
+                                dec_ref_bits(_py, old_bits);
+                            }
+                        }
+                        return obj_bits;
                     }
                     let key_type = type_name(_py, key);
                     if debug_index_enabled() {
@@ -27200,40 +27152,40 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_BYTEARRAY {
-                    if let Some(slice_ptr) = key.as_ptr() {
-                        if object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                            let len = bytes_len(ptr) as isize;
-                            let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                            let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                            let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                            let (start, stop, step) = match normalize_slice_indices(
-                                _py, len, start_obj, stop_obj, step_obj,
-                            ) {
-                                Ok(vals) => vals,
-                                Err(err) => return slice_error(_py, err),
-                            };
-                            let elems = bytearray_vec(ptr);
-                            if step == 1 {
-                                let s = start as usize;
-                                let mut e = stop as usize;
-                                if s > e {
-                                    e = s;
-                                }
-                                elems.drain(s..e);
-                                return obj_bits;
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        let len = bytes_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) = match normalize_slice_indices(
+                            _py, len, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(vals) => vals,
+                            Err(err) => return slice_error(_py, err),
+                        };
+                        let elems = bytearray_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
                             }
-                            let indices = collect_slice_indices(start, stop, step);
-                            if step > 0 {
-                                for &idx in indices.iter().rev() {
-                                    elems.remove(idx);
-                                }
-                            } else {
-                                for &idx in indices.iter() {
-                                    elems.remove(idx);
-                                }
-                            }
+                            elems.drain(s..e);
                             return obj_bits;
                         }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if step > 0 {
+                            for &idx in indices.iter().rev() {
+                                elems.remove(idx);
+                            }
+                        } else {
+                            for &idx in indices.iter() {
+                                elems.remove(idx);
+                            }
+                        }
+                        return obj_bits;
                     }
                     let type_err = format!(
                         "bytearray indices must be integers or slices, not {}",
@@ -27392,11 +27344,8 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                 match type_id {
                     TYPE_ID_LIST => {
                         let mut idx = 0usize;
-                        loop {
-                            let elem_bits = match list_elem_at(ptr, idx) {
-                                Some(val) => val,
-                                None => break,
-                            };
+                        while let Some(val) = list_elem_at(ptr, idx) {
+                            let elem_bits = val;
                             inc_ref_bits(_py, elem_bits);
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                                 Some(val) => val,
@@ -27755,20 +27704,20 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 let exc_bits = molt_exception_last();
                                 let exc_obj = obj_from_bits(exc_bits);
                                 let mut is_index_error = false;
-                                if let Some(exc_ptr) = exc_obj.as_ptr() {
-                                    if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                                        let kind_bits = exception_kind_bits(exc_ptr);
-                                        let kind_obj = obj_from_bits(kind_bits);
-                                        if let Some(kind_ptr) = kind_obj.as_ptr() {
-                                            if object_type_id(kind_ptr) == TYPE_ID_STRING {
-                                                let bytes = std::slice::from_raw_parts(
-                                                    string_bytes(kind_ptr),
-                                                    string_len(kind_ptr),
-                                                );
-                                                if bytes == b"IndexError" {
-                                                    is_index_error = true;
-                                                }
-                                            }
+                                if let Some(exc_ptr) = exc_obj.as_ptr()
+                                    && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
+                                {
+                                    let kind_bits = exception_kind_bits(exc_ptr);
+                                    let kind_obj = obj_from_bits(kind_bits);
+                                    if let Some(kind_ptr) = kind_obj.as_ptr()
+                                        && object_type_id(kind_ptr) == TYPE_ID_STRING
+                                    {
+                                        let bytes = std::slice::from_raw_parts(
+                                            string_bytes(kind_ptr),
+                                            string_len(kind_ptr),
+                                        );
+                                        if bytes == b"IndexError" {
+                                            is_index_error = true;
                                         }
                                     }
                                 }
@@ -28355,12 +28304,11 @@ unsafe fn dict_inc_in_place(
         if let (Some(current), Some(delta)) = (
             obj_from_bits(current_bits).as_int(),
             obj_from_bits(delta_bits).as_int(),
-        ) {
-            if let Some(sum) = current.checked_add(delta) {
-                let sum_bits = MoltObject::from_int(sum).bits();
-                dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
-                return !exception_pending(_py);
-            }
+        ) && let Some(sum) = current.checked_add(delta)
+        {
+            let sum_bits = MoltObject::from_int(sum).bits();
+            dict_set_in_place(_py, dict_ptr, key_bits, sum_bits);
+            return !exception_pending(_py);
         }
 
         let sum_bits = molt_add(current_bits, delta_bits);
@@ -29767,11 +29715,11 @@ pub(crate) unsafe fn tuple_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) ->
 pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
     unsafe {
         let obj = obj_from_bits(other_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            if object_type_id(ptr) == TYPE_ID_FROZENSET {
-                inc_ref_bits(_py, other_bits);
-                return Some(other_bits);
-            }
+        if let Some(ptr) = obj.as_ptr()
+            && object_type_id(ptr) == TYPE_ID_FROZENSET
+        {
+            inc_ref_bits(_py, other_bits);
+            return Some(other_bits);
         }
         let iter_bits = molt_iter(other_bits);
         if obj_from_bits(iter_bits).is_none() {
@@ -30653,10 +30601,8 @@ pub(crate) unsafe fn enumerate_new_impl(
         let index_bits = if let Some(start_bits) = start_opt {
             let start_obj = obj_from_bits(start_bits);
             let mut is_int_like = start_obj.is_int() || start_obj.is_bool();
-            if !is_int_like {
-                if let Some(ptr) = start_obj.as_ptr() {
-                    is_int_like = object_type_id(ptr) == TYPE_ID_BIGINT;
-                }
+            if !is_int_like && let Some(ptr) = start_obj.as_ptr() {
+                is_int_like = object_type_id(ptr) == TYPE_ID_BIGINT;
             }
             if !is_int_like {
                 return raise_exception::<_>(_py, "TypeError", "enumerate() start must be an int");
@@ -30873,15 +30819,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return res_bits;
                     }
                     let res_obj = obj_from_bits(res_bits);
-                    if let Some(res_ptr) = res_obj.as_ptr() {
-                        if object_type_id(res_ptr) == TYPE_ID_TUPLE {
-                            let elems = seq_vec_ref(res_ptr);
-                            if elems.len() >= 2 {
-                                let done = is_truthy(_py, obj_from_bits(elems[1]));
-                                if done {
-                                    let closed_bits = MoltObject::from_bool(true).bits();
-                                    *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
-                                }
+                    if let Some(res_ptr) = res_obj.as_ptr()
+                        && object_type_id(res_ptr) == TYPE_ID_TUPLE
+                    {
+                        let elems = seq_vec_ref(res_ptr);
+                        if elems.len() >= 2 {
+                            let done = is_truthy(_py, obj_from_bits(elems[1]));
+                            if done {
+                                let closed_bits = MoltObject::from_bool(true).bits();
+                                *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
                             }
                         }
                     }
@@ -31561,49 +31507,48 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         && target_type != TYPE_ID_DICT_KEYS_VIEW
                         && target_type != TYPE_ID_DICT_VALUES_VIEW
                         && target_type != TYPE_ID_DICT_ITEMS_VIEW
+                        && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__")
                     {
-                        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
-                            if let Some(call_bits) =
-                                attr_lookup_ptr_allow_missing(_py, target_ptr, name_bits)
-                            {
-                                dec_ref_bits(_py, name_bits);
-                                exception_stack_push();
-                                let idx_bits = MoltObject::from_int(idx as i64).bits();
-                                let val_bits = call_callable1(_py, call_bits, idx_bits);
-                                dec_ref_bits(_py, call_bits);
-                                if exception_pending(_py) {
-                                    let exc_bits = molt_exception_last();
-                                    let kind_bits = molt_exception_kind(exc_bits);
-                                    let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                                    dec_ref_bits(_py, kind_bits);
-                                    if kind.as_deref() == Some("IndexError") {
-                                        molt_exception_clear();
-                                        exception_stack_pop(_py);
-                                        let none_bits = MoltObject::none().bits();
-                                        let done_bits = MoltObject::from_bool(true).bits();
-                                        let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                                        if tuple_ptr.is_null() {
-                                            dec_ref_bits(_py, exc_bits);
-                                            return MoltObject::none().bits();
-                                        }
+                        if let Some(call_bits) =
+                            attr_lookup_ptr_allow_missing(_py, target_ptr, name_bits)
+                        {
+                            dec_ref_bits(_py, name_bits);
+                            exception_stack_push();
+                            let idx_bits = MoltObject::from_int(idx as i64).bits();
+                            let val_bits = call_callable1(_py, call_bits, idx_bits);
+                            dec_ref_bits(_py, call_bits);
+                            if exception_pending(_py) {
+                                let exc_bits = molt_exception_last();
+                                let kind_bits = molt_exception_kind(exc_bits);
+                                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+                                dec_ref_bits(_py, kind_bits);
+                                if kind.as_deref() == Some("IndexError") {
+                                    molt_exception_clear();
+                                    exception_stack_pop(_py);
+                                    let none_bits = MoltObject::none().bits();
+                                    let done_bits = MoltObject::from_bool(true).bits();
+                                    let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                                    if tuple_ptr.is_null() {
                                         dec_ref_bits(_py, exc_bits);
-                                        return MoltObject::from_ptr(tuple_ptr).bits();
+                                        return MoltObject::none().bits();
                                     }
                                     dec_ref_bits(_py, exc_bits);
-                                    exception_stack_pop(_py);
-                                    return MoltObject::none().bits();
+                                    return MoltObject::from_ptr(tuple_ptr).bits();
                                 }
+                                dec_ref_bits(_py, exc_bits);
                                 exception_stack_pop(_py);
-                                iter_set_index(ptr, idx + 1);
-                                let done_bits = MoltObject::from_bool(false).bits();
-                                let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                                if tuple_ptr.is_null() {
-                                    return MoltObject::none().bits();
-                                }
-                                return MoltObject::from_ptr(tuple_ptr).bits();
+                                return MoltObject::none().bits();
                             }
-                            dec_ref_bits(_py, name_bits);
+                            exception_stack_pop(_py);
+                            iter_set_index(ptr, idx + 1);
+                            let done_bits = MoltObject::from_bool(false).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
                         }
+                        dec_ref_bits(_py, name_bits);
                     }
                 }
                 let (len, next_val, needs_drop) = if let Some(target_ptr) = target_obj.as_ptr() {
@@ -32524,11 +32469,8 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let mut count = 0i64;
                     let mut idx = 0usize;
-                    loop {
-                        let elem_bits = match list_elem_at(ptr, idx) {
-                            Some(val) => val,
-                            None => break,
-                        };
+                    while let Some(val) = list_elem_at(ptr, idx) {
+                        let elem_bits = val;
                         inc_ref_bits(_py, elem_bits);
                         let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                             Some(val) => val,
@@ -32826,29 +32768,28 @@ fn format_type_name_for_alias(_py: &PyToken<'_>, type_ptr: *mut u8) -> Option<St
         let mut module_name: Option<String> = None;
         if !exception_pending(_py) {
             let dict_bits = class_dict_bits(type_ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__") {
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key) {
-                            if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
-                                module_name = Some(val);
-                            }
-                        }
-                    }
-                    if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__") {
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key) {
-                            if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
-                                qualname = val;
-                            }
-                        }
-                    }
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
+                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
+                    && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
+                {
+                    module_name = Some(val);
+                }
+                if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
+                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key)
+                    && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
+                {
+                    qualname = val;
                 }
             }
         }
-        if let Some(module) = module_name {
-            if !module.is_empty() && module != "builtins" {
-                return Some(format!("{module}.{qualname}"));
-            }
+        if let Some(module) = module_name
+            && !module.is_empty()
+            && module != "builtins"
+        {
+            return Some(format!("{module}.{qualname}"));
         }
         Some(qualname)
     }
@@ -32861,12 +32802,11 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         let origin_obj = obj_from_bits(origin_bits);
         let render_arg = |arg_bits: u64| {
             let arg_obj = obj_from_bits(arg_bits);
-            if let Some(arg_ptr) = arg_obj.as_ptr() {
-                if object_type_id(arg_ptr) == TYPE_ID_TYPE {
-                    if let Some(name) = format_type_name_for_alias(_py, arg_ptr) {
-                        return name;
-                    }
-                }
+            if let Some(arg_ptr) = arg_obj.as_ptr()
+                && object_type_id(arg_ptr) == TYPE_ID_TYPE
+                && let Some(name) = format_type_name_for_alias(_py, arg_ptr)
+            {
+                return name;
             }
             format_obj(_py, arg_obj)
         };
@@ -32909,28 +32849,27 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         let args_bits = union_type_args_bits(ptr);
         let render_arg = |arg_bits: u64| {
             let arg_obj = obj_from_bits(arg_bits);
-            if let Some(arg_ptr) = arg_obj.as_ptr() {
-                if object_type_id(arg_ptr) == TYPE_ID_TYPE {
-                    if let Some(name) = format_type_name_for_alias(_py, arg_ptr) {
-                        return name;
-                    }
-                }
+            if let Some(arg_ptr) = arg_obj.as_ptr()
+                && object_type_id(arg_ptr) == TYPE_ID_TYPE
+                && let Some(name) = format_type_name_for_alias(_py, arg_ptr)
+            {
+                return name;
             }
             format_obj(_py, arg_obj)
         };
         let mut out = String::new();
         let args_obj = obj_from_bits(args_bits);
-        if let Some(args_ptr) = args_obj.as_ptr() {
-            if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(args_ptr);
-                for (idx, elem_bits) in elems.iter().enumerate() {
-                    if idx > 0 {
-                        out.push_str(" | ");
-                    }
-                    out.push_str(&render_arg(*elem_bits));
+        if let Some(args_ptr) = args_obj.as_ptr()
+            && object_type_id(args_ptr) == TYPE_ID_TUPLE
+        {
+            let elems = seq_vec_ref(args_ptr);
+            for (idx, elem_bits) in elems.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(" | ");
                 }
-                return out;
+                out.push_str(&render_arg(*elem_bits));
             }
+            return out;
         }
         out.push_str(&render_arg(args_bits));
         out
@@ -33323,31 +33262,28 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 let mut module_name: Option<String> = None;
                 if !exception_pending(_py) {
                     let dict_bits = class_dict_bits(ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
-                            {
-                                if let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key) {
-                                    if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
-                                        module_name = Some(val);
-                                    }
-                                }
-                            }
-                            if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
-                            {
-                                if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key) {
-                                    if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
-                                        qualname = val;
-                                    }
-                                }
-                            }
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    {
+                        if let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
+                            && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
+                            && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
+                        {
+                            module_name = Some(val);
+                        }
+                        if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
+                            && let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key)
+                            && let Some(val) = string_obj_to_owned(obj_from_bits(bits))
+                        {
+                            qualname = val;
                         }
                     }
                 }
-                if let Some(module) = module_name {
-                    if !module.is_empty() && module != "builtins" {
-                        return format!("<class '{module}.{qualname}'>");
-                    }
+                if let Some(module) = module_name
+                    && !module.is_empty()
+                    && module != "builtins"
+                {
+                    return format!("<class '{module}.{qualname}'>");
                 }
                 return format!("<class '{qualname}'>");
             }
@@ -33506,42 +33442,42 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
             {
                 let dict_bits = dict_view_dict_bits(ptr);
                 let dict_obj = obj_from_bits(dict_bits);
-                if let Some(dict_ptr) = dict_obj.as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let pairs = dict_order(dict_ptr);
-                        let mut out = if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                            String::from("dict_keys([")
-                        } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
-                            String::from("dict_values([")
-                        } else {
-                            String::from("dict_items([")
-                        };
-                        let mut idx = 0;
-                        let mut first = true;
-                        while idx + 1 < pairs.len() {
-                            if !first {
-                                out.push_str(", ");
-                            }
-                            first = false;
-                            if type_id == TYPE_ID_DICT_ITEMS_VIEW {
-                                out.push('(');
-                                out.push_str(&format_obj(_py, obj_from_bits(pairs[idx])));
-                                out.push_str(", ");
-                                out.push_str(&format_obj(_py, obj_from_bits(pairs[idx + 1])));
-                                out.push(')');
-                            } else {
-                                let val = if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                                    pairs[idx]
-                                } else {
-                                    pairs[idx + 1]
-                                };
-                                out.push_str(&format_obj(_py, obj_from_bits(val)));
-                            }
-                            idx += 2;
+                if let Some(dict_ptr) = dict_obj.as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                {
+                    let pairs = dict_order(dict_ptr);
+                    let mut out = if type_id == TYPE_ID_DICT_KEYS_VIEW {
+                        String::from("dict_keys([")
+                    } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
+                        String::from("dict_values([")
+                    } else {
+                        String::from("dict_items([")
+                    };
+                    let mut idx = 0;
+                    let mut first = true;
+                    while idx + 1 < pairs.len() {
+                        if !first {
+                            out.push_str(", ");
                         }
-                        out.push_str("])");
-                        return out;
+                        first = false;
+                        if type_id == TYPE_ID_DICT_ITEMS_VIEW {
+                            out.push('(');
+                            out.push_str(&format_obj(_py, obj_from_bits(pairs[idx])));
+                            out.push_str(", ");
+                            out.push_str(&format_obj(_py, obj_from_bits(pairs[idx + 1])));
+                            out.push(')');
+                        } else {
+                            let val = if type_id == TYPE_ID_DICT_KEYS_VIEW {
+                                pairs[idx]
+                            } else {
+                                pairs[idx + 1]
+                            };
+                            out.push_str(&format_obj(_py, obj_from_bits(val)));
+                        }
+                        idx += 2;
                     }
+                    out.push_str("])");
+                    return out;
                 }
             }
             if type_id == TYPE_ID_ITER {
@@ -33704,18 +33640,18 @@ fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
             align = Some(c1);
             chars.next();
         }
-    } else if let Some(c1) = first {
-        if matches!(c1, '<' | '>' | '^' | '=') {
-            align = Some(c1);
-            chars.next();
-        }
+    } else if let Some(c1) = first
+        && matches!(c1, '<' | '>' | '^' | '=')
+    {
+        align = Some(c1);
+        chars.next();
     }
 
-    if let Some(ch) = chars.peek().copied() {
-        if matches!(ch, '+' | '-' | ' ') {
-            sign = Some(ch);
-            chars.next();
-        }
+    if let Some(ch) = chars.peek().copied()
+        && matches!(ch, '+' | '-' | ' ')
+    {
+        sign = Some(ch);
+        chars.next();
     }
 
     if matches!(chars.peek(), Some('#')) {
@@ -33748,11 +33684,11 @@ fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
         )
     };
 
-    if let Some(ch) = chars.peek().copied() {
-        if ch == ',' || ch == '_' {
-            grouping = Some(ch);
-            chars.next();
-        }
+    if let Some(ch) = chars.peek().copied()
+        && (ch == ',' || ch == '_')
+    {
+        grouping = Some(ch);
+        chars.next();
     }
 
     let mut precision = None;
@@ -33876,11 +33812,11 @@ fn normalize_exponent(text: &str, upper: bool) -> String {
     let (mantissa, exp) = text.split_at(exp_pos);
     let mut exp_text = &exp[1..];
     let mut sign = '+';
-    if let Some(first) = exp_text.chars().next() {
-        if first == '+' || first == '-' {
-            sign = first;
-            exp_text = &exp_text[1..];
-        }
+    if let Some(first) = exp_text.chars().next()
+        && (first == '+' || first == '-')
+    {
+        sign = first;
+        exp_text = &exp_text[1..];
     }
     let digits = if exp_text.is_empty() { "0" } else { exp_text };
     let mut padded = String::from(digits);
@@ -33956,10 +33892,10 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     let mut prefix = String::new();
     if negative {
         prefix.push('-');
-    } else if let Some(sign) = spec.sign {
-        if sign == '+' || sign == ' ' {
-            prefix.push(sign);
-        }
+    } else if let Some(sign) = spec.sign
+        && (sign == '+' || sign == ' ')
+    {
+        prefix.push(sign);
     }
     if spec.alternate {
         match ty {
@@ -33999,10 +33935,10 @@ fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, 
     let mut prefix = String::new();
     if val.is_sign_negative() {
         prefix.push('-');
-    } else if let Some(sign) = spec.sign {
-        if sign == '+' || sign == ' ' {
-            prefix.push(sign);
-        }
+    } else if let Some(sign) = spec.sign
+        && (sign == '+' || sign == ' ')
+    {
+        prefix.push(sign);
     }
     let abs_val = val.abs();
     let prec = spec.precision.unwrap_or(6);
@@ -34042,18 +33978,19 @@ fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, 
     if spec.alternate && !body.contains('.') && !body.contains('E') && !body.contains('e') {
         body.push('.');
     }
-    if let Some(sep) = spec.grouping {
-        if !body.contains('e') && !body.contains('E') {
-            let mut parts = body.splitn(2, '.');
-            let int_part = parts.next().unwrap_or("");
-            let frac_part = parts.next();
-            let grouped = apply_grouping(int_part, 3, sep);
-            body = if let Some(frac) = frac_part {
-                format!("{grouped}.{frac}")
-            } else {
-                grouped
-            };
-        }
+    if let Some(sep) = spec.grouping
+        && !body.contains('e')
+        && !body.contains('E')
+    {
+        let mut parts = body.splitn(2, '.');
+        let int_part = parts.next().unwrap_or("");
+        let frac_part = parts.next();
+        let grouped = apply_grouping(int_part, 3, sep);
+        body = if let Some(frac) = frac_part {
+            format!("{grouped}.{frac}")
+        } else {
+            grouped
+        };
     }
     if ty == '%' {
         body.push('%');
@@ -34095,11 +34032,11 @@ fn format_complex_with_spec(
         ty = Some('g');
         grouping = None;
     }
-    if let Some(code) = ty {
-        if !matches!(code, 'e' | 'E' | 'f' | 'F' | 'g' | 'G') {
-            let msg = format!("Unknown format code '{code}' for object of type 'complex'");
-            return Err(("ValueError", Cow::Owned(msg)));
-        }
+    if let Some(code) = ty
+        && !matches!(code, 'e' | 'E' | 'f' | 'F' | 'g' | 'G')
+    {
+        let msg = format!("Unknown format code '{code}' for object of type 'complex'");
+        return Err(("ValueError", Cow::Owned(msg)));
     }
     if spec.fill == '0' {
         return Err((
@@ -34158,10 +34095,10 @@ fn format_complex_with_spec(
             let mut prefix = String::new();
             if re.is_sign_negative() {
                 prefix.push('-');
-            } else if let Some(sign) = spec.sign {
-                if sign == '+' || sign == ' ' {
-                    prefix.push(sign);
-                }
+            } else if let Some(sign) = spec.sign
+                && (sign == '+' || sign == ' ')
+            {
+                prefix.push(sign);
             }
             format!("{prefix}{real_text}")
         } else {
@@ -34407,10 +34344,10 @@ pub(crate) fn class_break_cycles(_py: &PyToken<'_>, bits: u64) {
         class_set_annotations_bits(_py, ptr, 0u64);
         class_set_annotate_bits(_py, ptr, 0u64);
         let dict_bits = class_dict_bits(ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                dict_clear_in_place(_py, dict_ptr);
-            }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && object_type_id(dict_ptr) == TYPE_ID_DICT
+        {
+            dict_clear_in_place(_py, dict_ptr);
         }
     }
 }
@@ -34782,16 +34719,15 @@ unsafe fn call_binary_dunder(
             && lhs_op_raw.is_none_or(|lhs_raw| lhs_raw != rhs_rop_raw.unwrap());
 
         let mut tried_rhs = false;
-        if prefer_rhs {
-            if let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
+        if prefer_rhs
+            && let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
                 (rhs_ptr, rhs_type_ptr, rhs_rop_raw)
-            {
-                tried_rhs = true;
-                match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
-                    BinaryDunderOutcome::Value(bits) => return Some(bits),
-                    BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
-                    BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
-                }
+        {
+            tried_rhs = true;
+            match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
+                BinaryDunderOutcome::Value(bits) => return Some(bits),
+                BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
+                BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
             }
         }
 
@@ -34805,15 +34741,14 @@ unsafe fn call_binary_dunder(
             }
         }
 
-        if !tried_rhs {
-            if let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
+        if !tried_rhs
+            && let (Some(rhs_ptr), Some(rhs_type_ptr), Some(rhs_raw)) =
                 (rhs_ptr, rhs_type_ptr, rhs_rop_raw)
-            {
-                match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
-                    BinaryDunderOutcome::Value(bits) => return Some(bits),
-                    BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
-                    BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
-                }
+        {
+            match call_dunder_raw(_py, rhs_raw, rhs_type_ptr, Some(rhs_ptr), lhs_bits) {
+                BinaryDunderOutcome::Value(bits) => return Some(bits),
+                BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
+                BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
             }
         }
         None
@@ -34855,10 +34790,10 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
     if lhs.is_none() && rhs.is_none() {
         return true;
     }
-    if lhs.is_float() || rhs.is_float() {
-        if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
-            return lf == rf;
-        }
+    if (lhs.is_float() || rhs.is_float())
+        && let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs))
+    {
+        return lf == rf;
     }
     if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
         return l_big == r_big;
@@ -35927,36 +35862,35 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
         let class_bits = type_of_bits(_py, obj.bits());
         let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
-        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-            if object_type_id(class_ptr) == TYPE_ID_TYPE && !default_type_hashable {
-                let dict_bits = class_dict_bits(class_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let hash_entry = dict_get_in_place(_py, dict_ptr, hash_name_bits);
-                        if exception_pending(_py) {
-                            return Some(0);
-                        }
-                        if let Some(hash_bits) = hash_entry {
-                            if obj_from_bits(hash_bits).is_none() {
-                                let name = type_name(_py, obj);
-                                let msg = format!("unhashable type: '{name}'");
-                                return Some(raise_exception::<i64>(_py, "TypeError", &msg));
-                            }
-                        } else if dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some() {
-                            let name = type_name(_py, obj);
-                            let msg = format!("unhashable type: '{name}'");
-                            return Some(raise_exception::<i64>(_py, "TypeError", &msg));
-                        }
-                        if exception_pending(_py) {
-                            return Some(0);
-                        }
+        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+            && object_type_id(class_ptr) == TYPE_ID_TYPE
+            && !default_type_hashable
+        {
+            let dict_bits = class_dict_bits(class_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                let hash_entry = dict_get_in_place(_py, dict_ptr, hash_name_bits);
+                if exception_pending(_py) {
+                    return Some(0);
+                }
+                if let Some(hash_bits) = hash_entry {
+                    if obj_from_bits(hash_bits).is_none() {
+                        let name = type_name(_py, obj);
+                        let msg = format!("unhashable type: '{name}'");
+                        return Some(raise_exception::<i64>(_py, "TypeError", &msg));
                     }
+                } else if dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some() {
+                    let name = type_name(_py, obj);
+                    let msg = format!("unhashable type: '{name}'");
+                    return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+                }
+                if exception_pending(_py) {
+                    return Some(0);
                 }
             }
         }
-        let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, obj_ptr, hash_name_bits) else {
-            return None;
-        };
+        let call_bits = attr_lookup_ptr_allow_missing(_py, obj_ptr, hash_name_bits)?;
         if obj_from_bits(call_bits).is_none() {
             dec_ref_bits(_py, call_bits);
             if default_type_hashable {
@@ -36135,12 +36069,8 @@ unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
     unsafe {
         let a_obj = obj_from_bits(a_bits);
         let b_obj = obj_from_bits(b_bits);
-        let Some(a_ptr) = a_obj.as_ptr() else {
-            return None;
-        };
-        let Some(b_ptr) = b_obj.as_ptr() else {
-            return None;
-        };
+        let a_ptr = a_obj.as_ptr()?;
+        let b_ptr = b_obj.as_ptr()?;
         if object_type_id(a_ptr) != TYPE_ID_STRING || object_type_id(b_ptr) != TYPE_ID_STRING {
             return None;
         }
@@ -36412,6 +36342,7 @@ pub(crate) unsafe fn dict_set_in_place(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn dict_set_in_place_preserving_pending(
     _py: &PyToken<'_>,
     ptr: *mut u8,

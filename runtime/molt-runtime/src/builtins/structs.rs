@@ -254,11 +254,11 @@ fn format_obj_to_owned(_py: &PyToken<'_>, format_obj: MoltObject) -> Result<Stri
         ));
     };
     let type_id = unsafe { object_type_id(ptr) };
-    if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-        if let Some(bytes) = unsafe { bytes_like_slice_raw(ptr) } {
-            let out: String = bytes.iter().map(|b| *b as char).collect();
-            return Ok(out);
-        }
+    if (type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY)
+        && let Some(bytes) = unsafe { bytes_like_slice_raw(ptr) }
+    {
+        let out: String = bytes.iter().map(|b| *b as char).collect();
+        return Ok(out);
     }
     let type_label = type_name(_py, format_obj);
     Err(format!(

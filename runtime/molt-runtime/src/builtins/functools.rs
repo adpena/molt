@@ -104,16 +104,16 @@ fn functools_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size:
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                let layout_name = intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.molt_layout_size,
-                    b"__molt_layout_size__",
-                );
-                let layout_bits = MoltObject::from_int(layout_size).bits();
-                unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
-            }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let layout_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.molt_layout_size,
+                b"__molt_layout_size__",
+            );
+            let layout_bits = MoltObject::from_int(layout_size).bits();
+            unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
         }
         class_bits
     })
@@ -777,33 +777,31 @@ pub extern "C" fn molt_functools_update_wrapper(
                         crate::molt_exception_clear();
                         continue;
                     }
-                    if target_bits != missing && source_bits != missing {
-                        if let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() {
-                            unsafe {
-                                if object_type_id(target_ptr) == TYPE_ID_DICT {
-                                    let _order = dict_order(target_ptr);
-                                    let source_ptr = obj_from_bits(source_bits).as_ptr();
-                                    if let Some(source_ptr) = source_ptr {
-                                        if object_type_id(source_ptr) == TYPE_ID_DICT {
-                                            let src_order = dict_order(source_ptr);
-                                            let mut idx = 0;
-                                            while idx + 1 < src_order.len() {
-                                                let key_bits = src_order[idx];
-                                                let val_bits = src_order[idx + 1];
-                                                if let Some(key_str) =
-                                                    string_obj_to_owned(obj_from_bits(key_bits))
-                                                {
-                                                    if key_str.starts_with("__molt_") {
-                                                        idx += 2;
-                                                        continue;
-                                                    }
-                                                }
-                                                dict_set_in_place(
-                                                    _py, target_ptr, key_bits, val_bits,
-                                                );
-                                                idx += 2;
-                                            }
+                    if target_bits != missing
+                        && source_bits != missing
+                        && let Some(target_ptr) = obj_from_bits(target_bits).as_ptr()
+                    {
+                        unsafe {
+                            if object_type_id(target_ptr) == TYPE_ID_DICT {
+                                let _order = dict_order(target_ptr);
+                                let source_ptr = obj_from_bits(source_bits).as_ptr();
+                                if let Some(source_ptr) = source_ptr
+                                    && object_type_id(source_ptr) == TYPE_ID_DICT
+                                {
+                                    let src_order = dict_order(source_ptr);
+                                    let mut idx = 0;
+                                    while idx + 1 < src_order.len() {
+                                        let key_bits = src_order[idx];
+                                        let val_bits = src_order[idx + 1];
+                                        if let Some(key_str) =
+                                            string_obj_to_owned(obj_from_bits(key_bits))
+                                            && key_str.starts_with("__molt_")
+                                        {
+                                            idx += 2;
+                                            continue;
                                         }
+                                        dict_set_in_place(_py, target_ptr, key_bits, val_bits);
+                                        idx += 2;
                                     }
                                 }
                             }
@@ -1385,18 +1383,19 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
             let type_bits = crate::type_of_bits(_py, val_bits);
             parts.push(type_bits);
         }
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
-                unsafe {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let order = dict_order(dict_ptr);
-                        let mut idx = 0;
-                        while idx + 1 < order.len() {
-                            let val_bits = order[idx + 1];
-                            let type_bits = crate::type_of_bits(_py, val_bits);
-                            parts.push(type_bits);
-                            idx += 2;
-                        }
+        if kwargs_bits != 0
+            && !obj_from_bits(kwargs_bits).is_none()
+            && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
+        {
+            unsafe {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    let order = dict_order(dict_ptr);
+                    let mut idx = 0;
+                    while idx + 1 < order.len() {
+                        let val_bits = order[idx + 1];
+                        let type_bits = crate::type_of_bits(_py, val_bits);
+                        parts.push(type_bits);
+                        idx += 2;
                     }
                 }
             }
@@ -1447,20 +1446,21 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
                     let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
                 }
             }
-            if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-                if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
-                    unsafe {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            let order = dict_order(dict_ptr);
-                            let mut idx = 0;
-                            while idx + 1 < order.len() {
-                                let _ = crate::molt_callargs_push_kw(
-                                    builder_bits,
-                                    order[idx],
-                                    order[idx + 1],
-                                );
-                                idx += 2;
-                            }
+            if kwargs_bits != 0
+                && !obj_from_bits(kwargs_bits).is_none()
+                && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
+            {
+                unsafe {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        let order = dict_order(dict_ptr);
+                        let mut idx = 0;
+                        while idx + 1 < order.len() {
+                            let _ = crate::molt_callargs_push_kw(
+                                builder_bits,
+                                order[idx],
+                                order[idx + 1],
+                            );
+                            idx += 2;
                         }
                     }
                 }
@@ -1514,20 +1514,18 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
                 let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
             }
         }
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
-                unsafe {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let order = dict_order(dict_ptr);
-                        let mut idx = 0;
-                        while idx + 1 < order.len() {
-                            let _ = crate::molt_callargs_push_kw(
-                                builder_bits,
-                                order[idx],
-                                order[idx + 1],
-                            );
-                            idx += 2;
-                        }
+        if kwargs_bits != 0
+            && !obj_from_bits(kwargs_bits).is_none()
+            && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
+        {
+            unsafe {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    let order = dict_order(dict_ptr);
+                    let mut idx = 0;
+                    while idx + 1 < order.len() {
+                        let _ =
+                            crate::molt_callargs_push_kw(builder_bits, order[idx], order[idx + 1]);
+                        idx += 2;
                     }
                 }
             }
@@ -1545,14 +1543,14 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             let order = unsafe { &mut *order_ptr };
             order.push(key_bits);
             inc_ref_bits(_py, key_bits);
-            if let Some(maxsize) = maxsize {
-                if order.len() > maxsize.max(0) as usize {
-                    let oldest = order.remove(0);
-                    unsafe {
-                        let _ = crate::dict_del_in_place(_py, cache_ptr, oldest);
-                    }
-                    dec_ref_bits(_py, oldest);
+            if let Some(maxsize) = maxsize
+                && order.len() > maxsize.max(0) as usize
+            {
+                let oldest = order.remove(0);
+                unsafe {
+                    let _ = crate::dict_del_in_place(_py, cache_ptr, oldest);
                 }
+                dec_ref_bits(_py, oldest);
             }
         }
         dec_ref_bits(_py, key_bits);

@@ -988,11 +988,12 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             }
             if payload_len >= 3 {
                 let deadline_obj = obj_from_bits(*payload_ptr.add(2));
-                if let Some(deadline) = to_f64(deadline_obj) {
-                    if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
-                        runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
-                        return raise_exception::<i64>(_py, "TimeoutError", "timed out");
-                    }
+                if let Some(deadline) = to_f64(deadline_obj)
+                    && deadline.is_finite()
+                    && monotonic_now_secs(_py) >= deadline
+                {
+                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
             }
             pending_bits_i64()

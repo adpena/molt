@@ -110,25 +110,25 @@ fn daemon_cache_limit_bytes() -> usize {
 
 fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
     let cache_key = job.cache_key.trim().to_string();
-    if !cache_key.is_empty() {
-        if let Some(bytes) = cache.get_cloned(&cache_key) {
-            match write_output(&job.output, &bytes) {
-                Ok(()) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: true,
-                        cached: true,
-                        message: None,
-                    };
-                }
-                Err(err) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: false,
-                        cached: false,
-                        message: Some(format!("failed to write cached output: {err}")),
-                    };
-                }
+    if !cache_key.is_empty()
+        && let Some(bytes) = cache.get_cloned(&cache_key)
+    {
+        match write_output(&job.output, &bytes) {
+            Ok(()) => {
+                return DaemonJobResponse {
+                    id: job.id,
+                    ok: true,
+                    cached: true,
+                    message: None,
+                };
+            }
+            Err(err) => {
+                return DaemonJobResponse {
+                    id: job.id,
+                    ok: false,
+                    cached: false,
+                    message: Some(format!("failed to write cached output: {err}")),
+                };
             }
         }
     }
@@ -164,10 +164,10 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
 
 fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     let output_path = Path::new(path);
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let base_name = output_path
         .file_name()
@@ -212,10 +212,10 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
     if socket.exists() {
         let _ = std::fs::remove_file(socket);
     }
-    if let Some(parent) = socket.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = socket.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let listener = UnixListener::bind(socket)?;

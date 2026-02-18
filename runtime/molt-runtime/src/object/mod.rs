@@ -1067,7 +1067,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             {
                 // Debug-only: cached builtin function objects must not be freed while still cached.
                 // When they do hit zero, capture a backtrace to identify the incorrect owner.
-                let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
+                let freed_fn_ptr = crate::function_fn_ptr(ptr);
                 let obj_init_subclass_ptr =
                     crate::molt_object_init_subclass as *const () as usize as u64;
                 let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
@@ -1088,8 +1088,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 )
             {
                 // Debug-only: when chasing refcount bugs, print which function is being freed.
-                let freed_fn_ptr = unsafe { crate::function_fn_ptr(ptr) };
-                let name_bits = unsafe { crate::function_name_bits(py, ptr) };
+                let freed_fn_ptr = crate::function_fn_ptr(ptr);
+                let name_bits = crate::function_name_bits(py, ptr);
                 let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
                     .unwrap_or_else(|| "<function>".to_string());
                 let bt = std::backtrace::Backtrace::force_capture();
@@ -1098,7 +1098,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     name, freed_fn_ptr, ptr as usize,
                 );
             }
-            if unsafe { maybe_run_object_finalizer(py, ptr, header) } {
+            if maybe_run_object_finalizer(py, ptr, header) {
                 return;
             }
             weakref_clear_for_ptr(py, ptr);
@@ -1577,28 +1577,28 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if poll_fn != 0 {
                         task_cancel_message_clear(py, ptr);
                     }
-                    let class_bits = unsafe { object_class_bits(ptr) };
+                    let class_bits = object_class_bits(ptr);
                     let builtins = builtin_classes_if_initialized(py);
-                    if let Some(builtins) = builtins {
-                        if class_bits != 0 && issubclass_bits(class_bits, builtins.dict) {
-                            let payload = unsafe { object_payload_size(ptr) };
-                            let slot = PtrSlot(ptr);
-                            let mut storage =
-                                runtime_state(py).dict_subclass_storage.lock().unwrap();
-                            if let Some(bits) = storage.remove(&slot) {
-                                if bits != 0 && !obj_from_bits(bits).is_none() {
-                                    dec_ref_bits(py, bits);
-                                }
-                            }
-                            drop(storage);
-                            if payload >= 2 * std::mem::size_of::<u64>() {
-                                let storage_ptr = unsafe {
-                                    ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64
-                                };
-                                let storage_bits = unsafe { *storage_ptr };
-                                if storage_bits != 0 && !obj_from_bits(storage_bits).is_none() {
-                                    dec_ref_bits(py, storage_bits);
-                                }
+                    if let Some(builtins) = builtins
+                        && class_bits != 0
+                        && issubclass_bits(class_bits, builtins.dict)
+                    {
+                        let payload = object_payload_size(ptr);
+                        let slot = PtrSlot(ptr);
+                        let mut storage = runtime_state(py).dict_subclass_storage.lock().unwrap();
+                        if let Some(bits) = storage.remove(&slot)
+                            && bits != 0
+                            && !obj_from_bits(bits).is_none()
+                        {
+                            dec_ref_bits(py, bits);
+                        }
+                        drop(storage);
+                        if payload >= 2 * std::mem::size_of::<u64>() {
+                            let storage_ptr =
+                                ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64;
+                            let storage_bits = *storage_ptr;
+                            if storage_bits != 0 && !obj_from_bits(storage_bits).is_none() {
+                                dec_ref_bits(py, storage_bits);
                             }
                         }
                     }

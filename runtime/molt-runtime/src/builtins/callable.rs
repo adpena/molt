@@ -99,31 +99,25 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                         b"__call__",
                     );
                     let dict_bits = instance_dict_bits(ptr);
-                    if dict_bits != 0 {
-                        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                                if let Some(found_bits) =
-                                    dict_get_in_place(_py, dict_ptr, call_bits)
-                                {
-                                    if !obj_from_bits(found_bits).is_none() {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
+                    if dict_bits != 0
+                        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                        && let Some(found_bits) = dict_get_in_place(_py, dict_ptr, call_bits)
+                        && !obj_from_bits(found_bits).is_none()
+                    {
+                        return true;
                     }
                     let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                            if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                if let Some(found_bits) =
-                                    class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
-                                {
-                                    return !obj_from_bits(found_bits).is_none();
-                                }
-                                return false;
-                            }
+                    if class_bits != 0
+                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                    {
+                        if let Some(found_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
+                        {
+                            return !obj_from_bits(found_bits).is_none();
                         }
+                        return false;
                     }
                     false
                 }
@@ -136,33 +130,27 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     let desc_ptr = dataclass_desc_ptr(ptr);
                     if !desc_ptr.is_null() && !(*desc_ptr).slots {
                         let dict_bits = dataclass_dict_bits(ptr);
-                        if dict_bits != 0 {
-                            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                                    if let Some(found_bits) =
-                                        dict_get_in_place(_py, dict_ptr, call_bits)
-                                    {
-                                        if !obj_from_bits(found_bits).is_none() {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
+                        if dict_bits != 0
+                            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                            && object_type_id(dict_ptr) == TYPE_ID_DICT
+                            && let Some(found_bits) = dict_get_in_place(_py, dict_ptr, call_bits)
+                            && !obj_from_bits(found_bits).is_none()
+                        {
+                            return true;
                         }
                     }
                     if !desc_ptr.is_null() {
                         let class_bits = (*desc_ptr).class_bits;
-                        if class_bits != 0 {
-                            if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                                if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                    if let Some(found_bits) =
-                                        class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
-                                    {
-                                        return !obj_from_bits(found_bits).is_none();
-                                    }
-                                    return false;
-                                }
+                        if class_bits != 0
+                            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                            && object_type_id(class_ptr) == TYPE_ID_TYPE
+                        {
+                            if let Some(found_bits) =
+                                class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
+                            {
+                                return !obj_from_bits(found_bits).is_none();
                             }
+                            return false;
                         }
                     }
                     false

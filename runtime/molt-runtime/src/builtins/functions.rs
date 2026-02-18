@@ -119,14 +119,12 @@ fn email_message_bits_from_id(_py: &crate::PyToken<'_>, id: u64) -> u64 {
 }
 
 fn email_message_id_from_bits(_py: &crate::PyToken<'_>, message_bits: u64) -> Result<u64, u64> {
-    if let Some(text) = string_obj_to_owned(obj_from_bits(message_bits)) {
-        if let Some(raw) = text.strip_prefix("molt-email-message-") {
-            if let Ok(id) = raw.parse::<u64>() {
-                if id > 0 {
-                    return Ok(id);
-                }
-            }
-        }
+    if let Some(text) = string_obj_to_owned(obj_from_bits(message_bits))
+        && let Some(raw) = text.strip_prefix("molt-email-message-")
+        && let Ok(id) = raw.parse::<u64>()
+        && id > 0
+    {
+        return Ok(id);
     }
     let Some(raw) = to_i64(obj_from_bits(message_bits)) else {
         return Err(raise_exception::<u64>(
@@ -508,6 +506,7 @@ fn re_charclass_matches_impl(
     if negated { !hit } else { hit }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn re_charclass_advance_impl(
     text: &str,
     pos: i64,
@@ -1610,7 +1609,7 @@ fn pickle_parse_int_bits(_py: &crate::PyToken<'_>, text: &str) -> Result<u64, u6
 }
 
 fn pickle_parse_long_line_bits(_py: &crate::PyToken<'_>, text: &str) -> Result<u64, u64> {
-    let trimmed = text.trim_end_matches(|c| c == 'L' || c == 'l');
+    let trimmed = text.trim_end_matches(['L', 'l']);
     let Some(text_bits) = alloc_string_bits(_py, trimmed) else {
         return Err(MoltObject::none().bits());
     };
@@ -2295,10 +2294,10 @@ fn pickle_option_callable_bits(
 }
 
 fn pickle_input_to_bytes(_py: &crate::PyToken<'_>, data_bits: u64) -> Result<Vec<u8>, u64> {
-    if let Some(ptr) = obj_from_bits(data_bits).as_ptr() {
-        if let Some(raw) = unsafe { bytes_like_slice(ptr) } {
-            return Ok(raw.to_vec());
-        }
+    if let Some(ptr) = obj_from_bits(data_bits).as_ptr()
+        && let Some(raw) = unsafe { bytes_like_slice(ptr) }
+    {
+        return Ok(raw.to_vec());
     }
     if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
         return Ok(text.into_bytes());
@@ -2500,10 +2499,7 @@ fn pickle_lookup_extension_code(
     module: &str,
     name: &str,
 ) -> Result<Option<i64>, u64> {
-    let registry_bits = match pickle_resolve_global_bits(_py, "copyreg", "_extension_registry") {
-        Ok(bits) => bits,
-        Err(err_bits) => return Err(err_bits),
-    };
+    let registry_bits = pickle_resolve_global_bits(_py, "copyreg", "_extension_registry")?;
     let Some(registry_ptr) = obj_from_bits(registry_bits).as_ptr() else {
         dec_ref_bits(_py, registry_bits);
         return Ok(None);
@@ -2574,23 +2570,23 @@ fn pickle_emit_global_ref(
     };
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, name_bits);
-    if state.protocol >= 2 {
-        if let Some(code) = pickle_lookup_extension_code(_py, &module_name, &attr_name)? {
-            if code <= u8::MAX as i64 {
-                state.push(PICKLE_OP_EXT1);
-                state.push(code as u8);
-                return Ok(true);
-            }
-            if code <= u16::MAX as i64 {
-                state.push(PICKLE_OP_EXT2);
-                state.extend(&(code as u16).to_le_bytes());
-                return Ok(true);
-            }
-            if code <= u32::MAX as i64 {
-                state.push(PICKLE_OP_EXT4);
-                state.extend(&(code as u32).to_le_bytes());
-                return Ok(true);
-            }
+    if state.protocol >= 2
+        && let Some(code) = pickle_lookup_extension_code(_py, &module_name, &attr_name)?
+    {
+        if code <= u8::MAX as i64 {
+            state.push(PICKLE_OP_EXT1);
+            state.push(code as u8);
+            return Ok(true);
+        }
+        if code <= u16::MAX as i64 {
+            state.push(PICKLE_OP_EXT2);
+            state.extend(&(code as u16).to_le_bytes());
+            return Ok(true);
+        }
+        if code <= u32::MAX as i64 {
+            state.push(PICKLE_OP_EXT4);
+            state.extend(&(code as u32).to_le_bytes());
+            return Ok(true);
         }
     }
     if state.protocol >= PICKLE_PROTO_4 {
@@ -2740,13 +2736,13 @@ fn pickle_dump_maybe_persistent(
     if obj_from_bits(pid_bits).is_none() {
         return Ok(false);
     }
-    if state.protocol == 0 {
-        if let Some(pid_text) = string_obj_to_owned(obj_from_bits(pid_bits)) {
-            state.push(PICKLE_OP_PERSID);
-            state.extend(pid_text.as_bytes());
-            state.push(b'\n');
-            return Ok(true);
-        }
+    if state.protocol == 0
+        && let Some(pid_text) = string_obj_to_owned(obj_from_bits(pid_bits))
+    {
+        state.push(PICKLE_OP_PERSID);
+        state.extend(pid_text.as_bytes());
+        state.push(b'\n');
+        return Ok(true);
     }
     pickle_dump_obj_binary(_py, state, pid_bits, false)?;
     state.push(PICKLE_OP_BINPERSID);
@@ -2758,14 +2754,14 @@ fn pickle_buffer_value_to_bytes(
     value_bits: u64,
     context: &str,
 ) -> Result<u64, u64> {
-    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
-        if let Some(raw) = unsafe { bytes_like_slice(ptr) } {
-            let out_ptr = crate::alloc_bytes(_py, raw);
-            if out_ptr.is_null() {
-                return Err(MoltObject::none().bits());
-            }
-            return Ok(MoltObject::from_ptr(out_ptr).bits());
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr()
+        && let Some(raw) = unsafe { bytes_like_slice(ptr) }
+    {
+        let out_ptr = crate::alloc_bytes(_py, raw);
+        if out_ptr.is_null() {
+            return Err(MoltObject::none().bits());
         }
+        return Ok(MoltObject::from_ptr(out_ptr).bits());
     }
     let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
     Err(pickle_raise(_py, &msg))
@@ -2925,10 +2921,10 @@ fn pickle_reduce_value(
     state: &mut PickleDumpState,
     obj_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if let Some(dispatch_bits) = state.dispatch_table_bits {
-        if let Some(reduced) = pickle_dispatch_reducer_from_table(_py, dispatch_bits, obj_bits)? {
-            return Ok(Some(reduced));
-        }
+    if let Some(dispatch_bits) = state.dispatch_table_bits
+        && let Some(reduced) = pickle_dispatch_reducer_from_table(_py, dispatch_bits, obj_bits)?
+    {
+        return Ok(Some(reduced));
     }
     if let Some(reduce_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce_ex__")? {
         let out_bits = unsafe {
@@ -3164,30 +3160,30 @@ fn pickle_dump_reduce_value(
     } else {
         None
     };
-    if let Some(state_bits) = state_bits {
-        if !obj_from_bits(state_bits).is_none() {
-            if let Some(state_setter_bits) = state_setter_bits {
-                if !obj_from_bits(state_setter_bits).is_none() {
-                    let Some(obj_bits) = obj_bits else {
-                        return Err(pickle_raise(
-                            _py,
-                            "pickle reducer state_setter requires object context",
-                        ));
-                    };
-                    pickle_dump_obj_binary(_py, state, state_setter_bits, true)?;
-                    pickle_dump_obj_binary(_py, state, obj_bits, true)?;
-                    pickle_dump_obj_binary(_py, state, state_bits, true)?;
-                    state.push(PICKLE_OP_TUPLE2);
-                    state.push(PICKLE_OP_REDUCE);
-                    state.push(PICKLE_OP_POP);
-                } else {
-                    pickle_dump_obj_binary(_py, state, state_bits, true)?;
-                    state.push(PICKLE_OP_BUILD);
-                }
+    if let Some(state_bits) = state_bits
+        && !obj_from_bits(state_bits).is_none()
+    {
+        if let Some(state_setter_bits) = state_setter_bits {
+            if !obj_from_bits(state_setter_bits).is_none() {
+                let Some(obj_bits) = obj_bits else {
+                    return Err(pickle_raise(
+                        _py,
+                        "pickle reducer state_setter requires object context",
+                    ));
+                };
+                pickle_dump_obj_binary(_py, state, state_setter_bits, true)?;
+                pickle_dump_obj_binary(_py, state, obj_bits, true)?;
+                pickle_dump_obj_binary(_py, state, state_bits, true)?;
+                state.push(PICKLE_OP_TUPLE2);
+                state.push(PICKLE_OP_REDUCE);
+                state.push(PICKLE_OP_POP);
             } else {
                 pickle_dump_obj_binary(_py, state, state_bits, true)?;
                 state.push(PICKLE_OP_BUILD);
             }
+        } else {
+            pickle_dump_obj_binary(_py, state, state_bits, true)?;
+            state.push(PICKLE_OP_BUILD);
         }
     }
     if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
@@ -3354,15 +3350,13 @@ fn pickle_dataclass_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result
 
     if !unsafe { (*desc_ptr).slots } {
         let dict_bits = unsafe { crate::dataclass_dict_bits(ptr) };
-        if dict_bits != 0 {
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                    if !unsafe { crate::dict_order(dict_ptr).is_empty() } {
-                        inc_ref_bits(_py, dict_bits);
-                        return Ok(Some(dict_bits));
-                    }
-                }
-            }
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+        {
+            inc_ref_bits(_py, dict_bits);
+            return Ok(Some(dict_bits));
         }
     }
 
@@ -3392,23 +3386,22 @@ fn pickle_dataclass_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result
     }
 
     let extra_bits = unsafe { crate::dataclass_dict_bits(ptr) };
-    if extra_bits != 0 {
-        if let Some(extra_ptr) = obj_from_bits(extra_bits).as_ptr() {
-            if unsafe { object_type_id(extra_ptr) } == TYPE_ID_DICT {
-                let pairs = unsafe { crate::dict_order(extra_ptr).to_vec() };
-                let mut idx = 0usize;
-                while idx + 1 < pairs.len() {
-                    unsafe {
-                        crate::dict_set_in_place(_py, state_ptr, pairs[idx], pairs[idx + 1]);
-                    }
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, state_bits);
-                        return Err(MoltObject::none().bits());
-                    }
-                    wrote_any = true;
-                    idx += 2;
-                }
+    if extra_bits != 0
+        && let Some(extra_ptr) = obj_from_bits(extra_bits).as_ptr()
+        && unsafe { object_type_id(extra_ptr) } == TYPE_ID_DICT
+    {
+        let pairs = unsafe { crate::dict_order(extra_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            unsafe {
+                crate::dict_set_in_place(_py, state_ptr, pairs[idx], pairs[idx + 1]);
             }
+            if exception_pending(_py) {
+                dec_ref_bits(_py, state_bits);
+                return Err(MoltObject::none().bits());
+            }
+            wrote_any = true;
+            idx += 2;
         }
     }
 
@@ -3504,15 +3497,13 @@ fn pickle_object_slot_state_bits(
 fn pickle_object_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, u64> {
     let mut dict_state_bits: Option<u64> = None;
     let dict_bits = unsafe { crate::instance_dict_bits(ptr) };
-    if dict_bits != 0 {
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
-                && !unsafe { crate::dict_order(dict_ptr).is_empty() }
-            {
-                inc_ref_bits(_py, dict_bits);
-                dict_state_bits = Some(dict_bits);
-            }
-        }
+    if dict_bits != 0
+        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+        && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+    {
+        inc_ref_bits(_py, dict_bits);
+        dict_state_bits = Some(dict_bits);
     }
 
     let slot_state_bits = pickle_object_slot_state_bits(_py, ptr)?;
@@ -3621,10 +3612,10 @@ fn pickle_dump_default_instance(
     if !obj_from_bits(args_bits).is_none() {
         dec_ref_bits(_py, args_bits);
     }
-    if let Some(bits) = kwargs_bits {
-        if !obj_from_bits(bits).is_none() {
-            dec_ref_bits(_py, bits);
-        }
+    if let Some(bits) = kwargs_bits
+        && !obj_from_bits(bits).is_none()
+    {
+        dec_ref_bits(_py, bits);
     }
     result.map(|()| true)
 }
@@ -4204,41 +4195,41 @@ fn pickle_apply_build(
     }
     let mut dict_state_bits = state_bits;
     let mut slot_state_bits: Option<u64> = None;
-    if let Some(state_ptr) = obj_from_bits(state_bits).as_ptr() {
-        if unsafe { object_type_id(state_ptr) } == TYPE_ID_TUPLE {
-            let fields = unsafe { seq_vec_ref(state_ptr) };
-            if fields.len() == 2 {
-                dict_state_bits = fields[0];
-                slot_state_bits = Some(fields[1]);
-            }
+    if let Some(state_ptr) = obj_from_bits(state_bits).as_ptr()
+        && unsafe { object_type_id(state_ptr) } == TYPE_ID_TUPLE
+    {
+        let fields = unsafe { seq_vec_ref(state_ptr) };
+        if fields.len() == 2 {
+            dict_state_bits = fields[0];
+            slot_state_bits = Some(fields[1]);
         }
     }
     pickle_apply_dict_state(_py, inst_bits, dict_state_bits)?;
-    if let Some(slot_bits) = slot_state_bits {
-        if !obj_from_bits(slot_bits).is_none() {
-            let Some(slot_ptr) = obj_from_bits(slot_bits).as_ptr() else {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.loads: BUILD slot state must be dict",
-                ));
-            };
-            if unsafe { object_type_id(slot_ptr) } != TYPE_ID_DICT {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.loads: BUILD slot state must be dict",
-                ));
+    if let Some(slot_bits) = slot_state_bits
+        && !obj_from_bits(slot_bits).is_none()
+    {
+        let Some(slot_ptr) = obj_from_bits(slot_bits).as_ptr() else {
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: BUILD slot state must be dict",
+            ));
+        };
+        if unsafe { object_type_id(slot_ptr) } != TYPE_ID_DICT {
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: BUILD slot state must be dict",
+            ));
+        }
+        let pairs = unsafe { crate::dict_order(slot_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            let key_bits = pairs[idx];
+            let value_bits = pairs[idx + 1];
+            let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
             }
-            let pairs = unsafe { crate::dict_order(slot_ptr).to_vec() };
-            let mut idx = 0usize;
-            while idx + 1 < pairs.len() {
-                let key_bits = pairs[idx];
-                let value_bits = pairs[idx + 1];
-                let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
-                if exception_pending(_py) {
-                    return Err(MoltObject::none().bits());
-                }
-                idx += 2;
-            }
+            idx += 2;
         }
     }
     Ok(inst_bits)
@@ -4913,7 +4904,7 @@ pub extern "C" fn molt_pickle_loads_core(
                         };
                         values.push(bits);
                     }
-                    if values.len() % 2 != 0 {
+                    if !values.len().is_multiple_of(2) {
                         return pickle_raise(_py, "pickle.loads: dict has odd number of items");
                     }
                     let ptr = alloc_dict_with_pairs(_py, values.as_slice());
@@ -4972,7 +4963,7 @@ pub extern "C" fn molt_pickle_loads_core(
                         };
                         values.push(bits);
                     }
-                    if values.len() % 2 != 0 {
+                    if !values.len().is_multiple_of(2) {
                         return pickle_raise(
                             _py,
                             "pickle.loads: setitems has odd number of values",
@@ -5405,10 +5396,9 @@ fn shlex_quote_impl(input: &str) -> String {
     format!("'{escaped}'")
 }
 
-fn fnmatch_parse_char_class(
-    pat: &[char],
-    mut idx: usize,
-) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+type CharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
+
+fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<CharClassParse> {
     if idx >= pat.len() || pat[idx] != '[' {
         return None;
     }
@@ -5491,24 +5481,24 @@ fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
             ni += 1;
             continue;
         }
-        if pi < pat_chars.len() && pat_chars[pi] == '[' {
-            if let Some((singles, ranges, negate, next_idx)) =
+        if pi < pat_chars.len()
+            && pat_chars[pi] == '['
+            && let Some((singles, ranges, negate, next_idx)) =
                 fnmatch_parse_char_class(&pat_chars, pi)
-            {
-                let hit = fnmatch_char_class_hit(name_chars[ni], &singles, &ranges, negate);
-                if hit {
-                    pi = next_idx;
-                    ni += 1;
-                    continue;
-                }
-                if let Some(star) = star_idx {
-                    matched_from_star += 1;
-                    ni = matched_from_star;
-                    pi = star;
-                    continue;
-                }
-                return false;
+        {
+            let hit = fnmatch_char_class_hit(name_chars[ni], &singles, &ranges, negate);
+            if hit {
+                pi = next_idx;
+                ni += 1;
+                continue;
             }
+            if let Some(star) = star_idx {
+                matched_from_star += 1;
+                ni = matched_from_star;
+                pi = star;
+                continue;
+            }
+            return false;
         }
         if pi < pat_chars.len() && pat_chars[pi] == name_chars[ni] {
             pi += 1;
@@ -5973,11 +5963,9 @@ fn urllib_split_netloc(rest: &str) -> (String, String) {
 fn urllib_split_query_fragment(rest: &str, allow_fragments: bool) -> (String, String, String) {
     let mut working = rest.to_string();
     let mut fragment = String::new();
-    if allow_fragments {
-        if let Some(idx) = working.find('#') {
-            fragment = working[idx + 1..].to_string();
-            working.truncate(idx);
-        }
+    if allow_fragments && let Some(idx) = working.find('#') {
+        fragment = working[idx + 1..].to_string();
+        working.truncate(idx);
     }
     let mut query = String::new();
     if let Some(idx) = working.find('?') {
@@ -6147,18 +6135,16 @@ fn urllib_urlencode_impl(
         let key_enc = urllib_quote_plus_impl(&key_text, safe);
         let value_obj = obj_from_bits(item_fields[1]);
         let mut wrote_pair = false;
-        if doseq {
-            if let Some(value_ptr) = value_obj.as_ptr() {
-                let value_type = unsafe { object_type_id(value_ptr) };
-                if value_type == TYPE_ID_LIST || value_type == TYPE_ID_TUPLE {
-                    let seq = unsafe { seq_vec_ref(value_ptr) };
-                    for value_bits in seq.iter().copied() {
-                        let value_text = crate::format_obj_str(_py, obj_from_bits(value_bits));
-                        let value_enc = urllib_quote_plus_impl(&value_text, safe);
-                        out_pairs.push(format!("{key_enc}={value_enc}"));
-                    }
-                    wrote_pair = true;
+        if doseq && let Some(value_ptr) = value_obj.as_ptr() {
+            let value_type = unsafe { object_type_id(value_ptr) };
+            if value_type == TYPE_ID_LIST || value_type == TYPE_ID_TUPLE {
+                let seq = unsafe { seq_vec_ref(value_ptr) };
+                for value_bits in seq.iter().copied() {
+                    let value_text = crate::format_obj_str(_py, obj_from_bits(value_bits));
+                    let value_enc = urllib_quote_plus_impl(&value_text, safe);
+                    out_pairs.push(format!("{key_enc}={value_enc}"));
                 }
+                wrote_pair = true;
             }
         }
         if !wrote_pair {
@@ -6235,11 +6221,11 @@ fn urllib_request_attr_optional(
     let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
-        if let Some(exc_name) = urllib_request_pending_exception_kind_name(_py) {
-            if exc_name == "AttributeError" {
-                clear_exception(_py);
-                return Ok(None);
-            }
+        if let Some(exc_name) = urllib_request_pending_exception_kind_name(_py)
+            && exc_name == "AttributeError"
+        {
+            clear_exception(_py);
+            return Ok(None);
         }
         return Err(MoltObject::none().bits());
     }
@@ -6810,9 +6796,7 @@ fn http_server_date_time_string_from_bits(
                 "timestamp must be float or None",
             ));
         };
-        if !value.is_finite() {
-            0
-        } else if value < 0.0 {
+        if !value.is_finite() || value < 0.0 {
             0
         } else {
             value as i64
@@ -7095,7 +7079,7 @@ fn urllib_data_base64_decode(input: &[u8]) -> Result<Vec<u8>, String> {
     if compact.is_empty() {
         return Ok(Vec::new());
     }
-    if compact.len() % 4 != 0 {
+    if !compact.len().is_multiple_of(4) {
         return Err("Invalid base64 data URL payload".to_string());
     }
     let mut out: Vec<u8> = Vec::with_capacity(compact.len() / 4 * 3);
@@ -7304,21 +7288,21 @@ fn urllib_cookiejar_parse_set_cookie(
                 }
             }
             "path" => {
-                if let Some(value) = value_opt {
-                    if !value.is_empty() {
-                        path = if value.starts_with('/') {
-                            value.to_string()
-                        } else {
-                            format!("/{value}")
-                        };
-                    }
+                if let Some(value) = value_opt
+                    && !value.is_empty()
+                {
+                    path = if value.starts_with('/') {
+                        value.to_string()
+                    } else {
+                        format!("/{value}")
+                    };
                 }
             }
             "max-age" => {
-                if let Some(value) = value_opt {
-                    if value == "0" {
-                        delete_cookie = true;
-                    }
+                if let Some(value) = value_opt
+                    && value == "0"
+                {
+                    delete_cookie = true;
                 }
             }
             _ => {}
@@ -7616,23 +7600,24 @@ fn urllib_http_host_matches_no_proxy(host: &str, no_proxy: &str) -> bool {
 
 fn urllib_http_parse_host_port(netloc: &str, default_port: u16) -> (String, u16) {
     let without_user = netloc.rsplit('@').next().unwrap_or(netloc);
-    if without_user.starts_with('[') {
-        if let Some(end) = without_user.find(']') {
-            let host = without_user[1..end].to_string();
-            if let Some(port_part) = without_user[end + 1..].strip_prefix(':') {
-                if let Ok(port) = port_part.parse::<u16>() {
-                    return (host, port);
-                }
-            }
-            return (host, default_port);
+    if without_user.starts_with('[')
+        && let Some(end) = without_user.find(']')
+    {
+        let host = without_user[1..end].to_string();
+        if let Some(port_part) = without_user[end + 1..].strip_prefix(':')
+            && let Ok(port) = port_part.parse::<u16>()
+        {
+            return (host, port);
         }
+        return (host, default_port);
     }
-    if let Some((host, port_part)) = without_user.rsplit_once(':') {
-        if !host.is_empty() && !port_part.is_empty() && !host.contains(':') {
-            if let Ok(port) = port_part.parse::<u16>() {
-                return (host.to_string(), port);
-            }
-        }
+    if let Some((host, port_part)) = without_user.rsplit_once(':')
+        && !host.is_empty()
+        && !port_part.is_empty()
+        && !host.contains(':')
+        && let Ok(port) = port_part.parse::<u16>()
+    {
+        return (host.to_string(), port);
     }
     (without_user.to_string(), default_port)
 }
@@ -8036,10 +8021,10 @@ fn urllib_http_find_proxy_for_scheme(
         proxy = env_state_get(&env_key).or_else(|| env_state_get(&env_key.to_ascii_uppercase()));
     }
     let no_proxy = env_state_get("no_proxy").or_else(|| env_state_get("NO_PROXY"));
-    if let (Some(rule), Some(_proxy_url)) = (no_proxy.as_deref(), proxy.as_ref()) {
-        if urllib_http_host_matches_no_proxy(host, rule) {
-            proxy = None;
-        }
+    if let (Some(rule), Some(_proxy_url)) = (no_proxy.as_deref(), proxy.as_ref())
+        && urllib_http_host_matches_no_proxy(host, rule)
+    {
+        proxy = None;
     }
     Ok(proxy)
 }
@@ -8201,9 +8186,9 @@ fn urllib_http_find_header<'a>(headers: &'a [(String, String)], name: &str) -> O
     None
 }
 
-fn urllib_http_parse_response_bytes(
-    raw: &[u8],
-) -> Result<(i64, String, Vec<(String, String)>, Vec<u8>), String> {
+type HttpResponseParts = (i64, String, Vec<(String, String)>, Vec<u8>);
+
+fn urllib_http_parse_response_bytes(raw: &[u8]) -> Result<HttpResponseParts, String> {
     let marker = b"\r\n\r\n";
     let Some(split) = raw.windows(marker.len()).position(|w| w == marker) else {
         return Err("Malformed HTTP response".to_string());
@@ -8290,7 +8275,7 @@ fn urllib_http_try_inmemory_dispatch(
     req: &UrllibHttpRequest,
     request_target: &str,
     host_header: &str,
-) -> Result<Option<(i64, String, Vec<(String, String)>, Vec<u8>)>, u64> {
+) -> Result<Option<HttpResponseParts>, u64> {
     let module_name_ptr = alloc_string(_py, b"socketserver");
     if module_name_ptr.is_null() {
         return Err(MoltObject::none().bits());
@@ -8418,7 +8403,7 @@ fn urllib_http_send_request(
     req: &UrllibHttpRequest,
     request_target: &str,
     host_header: &str,
-) -> Result<(i64, String, Vec<(String, String)>, Vec<u8>), std::io::Error> {
+) -> Result<HttpResponseParts, std::io::Error> {
     let request = urllib_http_build_request_bytes(req, request_target, host_header);
     let mut raw = Vec::new();
     {
@@ -8433,10 +8418,9 @@ fn urllib_http_send_request(
         if let Err(err) = stream.read_to_end(&mut raw) {
             if (err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock)
                 && !raw.is_empty()
+                && let Ok(parsed) = urllib_http_parse_response_bytes(&raw)
             {
-                if let Ok(parsed) = urllib_http_parse_response_bytes(&raw) {
-                    return Ok(parsed);
-                }
+                return Ok(parsed);
             }
             return Err(err);
         }
@@ -8954,11 +8938,11 @@ fn email_parse_simple_message(raw: &str) -> MoltEmailMessage {
     let mut last_header: Option<usize> = None;
     for line in header_block.lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(idx) = last_header {
-                if let Some((_, value)) = message.headers.get_mut(idx) {
-                    value.push(' ');
-                    value.push_str(line.trim());
-                }
+            if let Some(idx) = last_header
+                && let Some((_, value)) = message.headers.get_mut(idx)
+            {
+                value.push(' ');
+                value.push_str(line.trim());
             }
             continue;
         }
@@ -9052,33 +9036,6 @@ fn email_weekday_name_mon0(mon0: i64) -> &'static str {
     }
 }
 
-fn email_day_of_year0(year: i64, month: i64, day: i64) -> i64 {
-    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-    let month_lengths = [
-        31i64,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut sum = 0i64;
-    let month_index = usize::try_from(month.saturating_sub(1)).unwrap_or(0);
-    for len in month_lengths
-        .iter()
-        .take(month_index.min(month_lengths.len()))
-    {
-        sum += *len;
-    }
-    sum + day.saturating_sub(1)
-}
-
 fn email_parse_datetime_like(value: &str) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
     let mut text = value.trim();
     if let Some(comma) = text.find(',') {
@@ -9139,13 +9096,13 @@ fn email_utils_parse_addresses(values: &[String]) -> Vec<(String, String)> {
             if entry.is_empty() {
                 continue;
             }
-            if let (Some(start), Some(end)) = (entry.rfind('<'), entry.rfind('>')) {
-                if start < end {
-                    let name = entry[..start].trim().trim_matches('"').to_string();
-                    let addr = entry[start + 1..end].trim().to_string();
-                    out.push((name, addr));
-                    continue;
-                }
+            if let (Some(start), Some(end)) = (entry.rfind('<'), entry.rfind('>'))
+                && start < end
+            {
+                let name = entry[..start].trim().trim_matches('"').to_string();
+                let addr = entry[start + 1..end].trim().to_string();
+                out.push((name, addr));
+                continue;
             }
             out.push((String::new(), entry.to_string()));
         }

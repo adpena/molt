@@ -754,41 +754,39 @@ struct FakeDbConn;
 
 fn load_compiled_entries(path: Option<PathBuf>) -> Result<HashMap<String, CompiledEntry>, String> {
     let mut compiled = HashMap::new();
-    if let Some(path) = path {
-        if let Ok(text) = fs::read_to_string(&path) {
-            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(exports) = manifest.get("exports").and_then(|v| v.as_array()) {
-                    for entry in exports {
-                        let name = entry
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        let codec_in = entry
-                            .get("codec_in")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("msgpack")
-                            .to_string();
-                        let codec_out = entry
-                            .get("codec_out")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("msgpack")
-                            .to_string();
-                        if name.is_empty() || name.starts_with("__") {
-                            continue;
-                        }
-                        compiled.insert(
-                            name.clone(),
-                            CompiledEntry {
-                                name,
-                                codec_in,
-                                codec_out,
-                            },
-                        );
-                    }
-                }
+    if let Some(path) = path
+        && let Ok(text) = fs::read_to_string(&path)
+        && let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text)
+        && let Some(exports) = manifest.get("exports").and_then(|v| v.as_array())
+    {
+        for entry in exports {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let codec_in = entry
+                .get("codec_in")
+                .and_then(|v| v.as_str())
+                .unwrap_or("msgpack")
+                .to_string();
+            let codec_out = entry
+                .get("codec_out")
+                .and_then(|v| v.as_str())
+                .unwrap_or("msgpack")
+                .to_string();
+            if name.is_empty() || name.starts_with("__") {
+                continue;
             }
+            compiled.insert(
+                name.clone(),
+                CompiledEntry {
+                    name,
+                    codec_in,
+                    codec_out,
+                },
+            );
         }
     }
     Ok(compiled)
@@ -995,10 +993,10 @@ fn cancelled_error() -> ExecError {
 }
 
 fn check_timeout(exec_start: Instant, timeout: Option<Duration>) -> Result<(), ExecError> {
-    if let Some(limit) = timeout {
-        if exec_start.elapsed() > limit {
-            return Err(timeout_error());
-        }
+    if let Some(limit) = timeout
+        && exec_start.elapsed() > limit
+    {
+        return Err(timeout_error());
     }
     Ok(())
 }
@@ -1991,15 +1989,15 @@ fn infer_array_shape(
 
 fn infer_range_element_type(range: &DbRange, name: &str) -> Result<ArrowColumnType, ExecError> {
     let mut current: Option<ArrowColumnType> = None;
-    if let Some(bound) = range.lower.as_ref() {
-        if let Some(next) = infer_arrow_value_type(&bound.value, name)? {
-            current = Some(merge_arrow_types(current, next, name)?);
-        }
+    if let Some(bound) = range.lower.as_ref()
+        && let Some(next) = infer_arrow_value_type(&bound.value, name)?
+    {
+        current = Some(merge_arrow_types(current, next, name)?);
     }
-    if let Some(bound) = range.upper.as_ref() {
-        if let Some(next) = infer_arrow_value_type(&bound.value, name)? {
-            current = Some(merge_arrow_types(current, next, name)?);
-        }
+    if let Some(bound) = range.upper.as_ref()
+        && let Some(next) = infer_arrow_value_type(&bound.value, name)?
+    {
+        current = Some(merge_arrow_types(current, next, name)?);
     }
     Ok(current.unwrap_or(ArrowColumnType::Null))
 }
@@ -4192,10 +4190,10 @@ fn handle_request(
             "db_rows_affected".to_string(),
             db_result.rows_affected.into(),
         );
-        if let Some(last_id) = db_result.last_insert_id {
-            if last_id >= 0 {
-                metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
-            }
+        if let Some(last_id) = db_result.last_insert_id
+            && last_id >= 0
+        {
+            metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
         }
         metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
         metrics.insert(
@@ -4214,22 +4212,22 @@ fn handle_request(
             metrics.insert("db_tag".to_string(), MetricValue::from(tag));
         }
     }
-    if let Some(limit) = timeout {
-        if exec_start.elapsed() > limit {
-            return (
-                wire,
-                ResponseEnvelope {
-                    request_id,
-                    status: "Timeout".to_string(),
-                    codec: "raw".to_string(),
-                    payload: None,
-                    metrics: Some(metrics),
-                    error: Some("Request timed out".to_string()),
-                    entry: Some(envelope.entry.clone()),
-                    compiled: Some(compiled_flag),
-                },
-            );
-        }
+    if let Some(limit) = timeout
+        && exec_start.elapsed() > limit
+    {
+        return (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Timeout".to_string(),
+                codec: "raw".to_string(),
+                payload: None,
+                metrics: Some(metrics),
+                error: Some("Request timed out".to_string()),
+                entry: Some(envelope.entry.clone()),
+                compiled: Some(compiled_flag),
+            },
+        );
     }
 
     let response = match result {
@@ -4428,10 +4426,10 @@ async fn handle_request_async(
             "db_rows_affected".to_string(),
             db_result.rows_affected.into(),
         );
-        if let Some(last_id) = db_result.last_insert_id {
-            if last_id >= 0 {
-                metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
-            }
+        if let Some(last_id) = db_result.last_insert_id
+            && last_id >= 0
+        {
+            metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
         }
         metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
         metrics.insert(
@@ -4450,22 +4448,22 @@ async fn handle_request_async(
             metrics.insert("db_tag".to_string(), MetricValue::from(tag));
         }
     }
-    if let Some(limit) = timeout {
-        if exec_start.elapsed() > limit {
-            return (
-                wire,
-                ResponseEnvelope {
-                    request_id,
-                    status: "Timeout".to_string(),
-                    codec: "raw".to_string(),
-                    payload: None,
-                    metrics: Some(metrics),
-                    error: Some("Request timed out".to_string()),
-                    entry: Some(entry_name),
-                    compiled: Some(compiled_flag),
-                },
-            );
-        }
+    if let Some(limit) = timeout
+        && exec_start.elapsed() > limit
+    {
+        return (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Timeout".to_string(),
+                codec: "raw".to_string(),
+                payload: None,
+                metrics: Some(metrics),
+                error: Some("Request timed out".to_string()),
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        );
     }
 
     match result {

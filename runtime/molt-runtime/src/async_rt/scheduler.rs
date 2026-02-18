@@ -202,10 +202,11 @@ fn asyncio_running_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     let tid = crate::concurrency::current_thread_id();
     let mut guard = asyncio_running_loop_map(_py).lock().unwrap();
     if obj_from_bits(loop_bits).is_none() {
-        if let Some(old_bits) = guard.remove(&tid) {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = guard.remove(&tid)
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
         return MoltObject::none().bits();
     }
@@ -213,10 +214,11 @@ fn asyncio_running_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     let old_bits = guard.insert(tid, loop_bits);
     if old_bits != Some(loop_bits) {
         inc_ref_bits(_py, loop_bits);
-        if let Some(old_bits) = old_bits {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = old_bits
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
     }
     MoltObject::none().bits()
@@ -250,10 +252,11 @@ fn asyncio_event_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     let tid = crate::concurrency::current_thread_id();
     let mut guard = asyncio_event_loop_map(_py).lock().unwrap();
     if obj_from_bits(loop_bits).is_none() {
-        if let Some(old_bits) = guard.remove(&tid) {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = guard.remove(&tid)
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
         return MoltObject::none().bits();
     }
@@ -261,10 +264,11 @@ fn asyncio_event_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
     let old_bits = guard.insert(tid, loop_bits);
     if old_bits != Some(loop_bits) {
         inc_ref_bits(_py, loop_bits);
-        if let Some(old_bits) = old_bits {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = old_bits
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
     }
     MoltObject::none().bits()
@@ -298,20 +302,22 @@ fn asyncio_task_registry_set_impl(_py: &PyToken<'_>, token_bits: u64, task_bits:
     };
     let mut guard = asyncio_task_map(_py).lock().unwrap();
     if obj_from_bits(task_bits).is_none() {
-        if let Some(old_bits) = guard.remove(&token_id) {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = guard.remove(&token_id)
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
         return MoltObject::none().bits();
     }
     let old_bits = guard.insert(token_id, task_bits);
     if old_bits != Some(task_bits) {
         inc_ref_bits(_py, task_bits);
-        if let Some(old_bits) = old_bits {
-            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
-                dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = old_bits
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
         }
     }
     MoltObject::none().bits()
@@ -422,10 +428,11 @@ fn asyncio_task_registry_move_impl(
     let Some(old_bits) = guard.remove(&old_token) else {
         return MoltObject::from_bool(false).bits();
     };
-    if let Some(replaced_bits) = guard.insert(new_token, old_bits) {
-        if replaced_bits != 0 && !obj_from_bits(replaced_bits).is_none() {
-            dec_ref_bits(_py, replaced_bits);
-        }
+    if let Some(replaced_bits) = guard.insert(new_token, old_bits)
+        && replaced_bits != 0
+        && !obj_from_bits(replaced_bits).is_none()
+    {
+        dec_ref_bits(_py, replaced_bits);
     }
     MoltObject::from_bool(true).bits()
 }
@@ -1208,20 +1215,20 @@ pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
     }
     let mut guard = fn_ptr_code_map(_py).lock().unwrap();
     if code_bits == 0 {
-        if let Some(old_bits) = guard.remove(&fn_ptr) {
-            if old_bits != 0 {
-                crate::dec_ref_bits(_py, old_bits);
-            }
+        if let Some(old_bits) = guard.remove(&fn_ptr)
+            && old_bits != 0
+        {
+            crate::dec_ref_bits(_py, old_bits);
         }
         return;
     }
     let old_bits = guard.insert(fn_ptr, code_bits);
     if old_bits != Some(code_bits) {
         crate::inc_ref_bits(_py, code_bits);
-        if let Some(old) = old_bits {
-            if old != 0 {
-                crate::dec_ref_bits(_py, old);
-            }
+        if let Some(old) = old_bits
+            && old != 0
+        {
+            crate::dec_ref_bits(_py, old);
         }
     }
 }
@@ -1301,19 +1308,19 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
             inc_ref_ptr(_py, awaited_ptr);
         }
     }
-    if let Some(prev_key) = prev {
-        if prev_key != awaited_key {
-            if let Some(waiters) = awaiters_map.get_mut(&prev_key) {
-                if let Some(pos) = waiters.iter().position(|val| *val == waiter_key) {
-                    waiters.swap_remove(pos);
-                }
-                if waiters.is_empty() {
-                    awaiters_map.remove(&prev_key);
-                }
+    if let Some(prev_key) = prev
+        && prev_key != awaited_key
+    {
+        if let Some(waiters) = awaiters_map.get_mut(&prev_key) {
+            if let Some(pos) = waiters.iter().position(|val| *val == waiter_key) {
+                waiters.swap_remove(pos);
             }
-            unsafe {
-                dec_ref_ptr(_py, prev_key.0);
+            if waiters.is_empty() {
+                awaiters_map.remove(&prev_key);
             }
+        }
+        unsafe {
+            dec_ref_ptr(_py, prev_key.0);
         }
     }
     let waiters = awaiters_map.entry(awaited_key).or_default();
@@ -1640,15 +1647,15 @@ pub(crate) fn block_on_wait_spec(
                         timeout,
                     });
                 }
-                if poll_fn == thread_poll_fn_addr() {
-                    if let Some(state) = thread_task_state(_py, cursor) {
-                        return Some(BlockOnWaitSpec::Thread { state, timeout });
-                    }
+                if poll_fn == thread_poll_fn_addr()
+                    && let Some(state) = thread_task_state(_py, cursor)
+                {
+                    return Some(BlockOnWaitSpec::Thread { state, timeout });
                 }
-                if poll_fn == process_poll_fn_addr() {
-                    if let Some(state) = process_task_state(_py, cursor) {
-                        return Some(BlockOnWaitSpec::Process { state, timeout });
-                    }
+                if poll_fn == process_poll_fn_addr()
+                    && let Some(state) = process_task_state(_py, cursor)
+                {
+                    return Some(BlockOnWaitSpec::Process { state, timeout });
                 }
                 None
             }

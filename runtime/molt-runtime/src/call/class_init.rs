@@ -26,12 +26,12 @@ unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8
             if pair.len() != 2 {
                 continue;
             }
-            if let Some(offset) = obj_from_bits(pair[1]).as_int() {
-                if offset >= 0 {
-                    let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
-                    if end > max_end {
-                        max_end = end;
-                    }
+            if let Some(offset) = obj_from_bits(pair[1]).as_int()
+                && offset >= 0
+            {
+                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
+                if end > max_end {
+                    max_end = end;
                 }
             }
         }
@@ -104,30 +104,27 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         let mut size = 0usize;
         let mut has_own_layout = false;
         let mut own_has_offsets = false;
-        if let Some(class_dict_ptr) = class_dict_ptr {
-            if object_type_id(class_dict_ptr) == TYPE_ID_DICT {
-                if let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits) {
-                    if let Some(val) = obj_from_bits(size_bits).as_int() {
-                        if val > 0 {
-                            has_own_layout = true;
-                            size = val as usize;
-                        }
-                    }
-                }
-                if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits)
-                {
-                    own_has_offsets = obj_from_bits(offsets_bits)
-                        .as_ptr()
-                        .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
-                }
+        if let Some(class_dict_ptr) = class_dict_ptr
+            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
+        {
+            if let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits)
+                && let Some(val) = obj_from_bits(size_bits).as_int()
+                && val > 0
+            {
+                has_own_layout = true;
+                size = val as usize;
+            }
+            if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits) {
+                own_has_offsets = obj_from_bits(offsets_bits)
+                    .as_ptr()
+                    .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
             }
         }
-        if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits) {
-            if let Some(val) = obj_from_bits(size_bits).as_int() {
-                if val > 0 {
-                    size = size.max(val as usize);
-                }
-            }
+        if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits)
+            && let Some(val) = obj_from_bits(size_bits).as_int()
+            && val > 0
+        {
+            size = size.max(val as usize);
         }
         let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits);
         let needs_recompute = !has_own_layout
@@ -146,14 +143,13 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         if issubclass_bits(class_bits, builtins.dict) && size < 16 {
             size = 16;
         }
-        if needs_recompute {
-            if let Some(class_dict_ptr) = class_dict_ptr {
-                if object_type_id(class_dict_ptr) == TYPE_ID_DICT {
-                    let size_bits = MoltObject::from_int(size as i64).bits();
-                    dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
-                    class_bump_layout_version(class_ptr);
-                }
-            }
+        if needs_recompute
+            && let Some(class_dict_ptr) = class_dict_ptr
+            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
+        {
+            let size_bits = MoltObject::from_int(size as i64).bits();
+            dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
+            class_bump_layout_version(class_ptr);
         }
         size
     }
@@ -283,14 +279,13 @@ pub(crate) unsafe fn call_class_init_with_args(
             &runtime_state(_py).interned.abstractmethods_name,
             b"__abstractmethods__",
         );
-        if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, class_ptr, abstract_name_bits) {
-            if !obj_from_bits(abstract_bits).is_none()
-                && is_truthy(_py, obj_from_bits(abstract_bits))
-            {
-                let class_name = class_name_for_error(class_bits);
-                let msg = format!("Can't instantiate abstract class {class_name}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, class_ptr, abstract_name_bits)
+            && !obj_from_bits(abstract_bits).is_none()
+            && is_truthy(_py, obj_from_bits(abstract_bits))
+        {
+            let class_name = class_name_for_error(class_bits);
+            let msg = format!("Can't instantiate abstract class {class_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if issubclass_bits(class_bits, builtins.base_exception) {
             let new_name_bits =
@@ -298,12 +293,11 @@ pub(crate) unsafe fn call_class_init_with_args(
             let inst_bits =
                 if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
                     let mut tuple_new = false;
-                    if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
-                        if object_type_id(new_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(new_ptr) == fn_addr!(molt_exception_new_bound)
-                        {
-                            tuple_new = true;
-                        }
+                    if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr()
+                        && object_type_id(new_ptr) == TYPE_ID_FUNCTION
+                        && function_fn_ptr(new_ptr) == fn_addr!(molt_exception_new_bound)
+                    {
+                        tuple_new = true;
                     }
                     let inst_bits = if tuple_new {
                         let args_ptr = alloc_tuple(_py, args);
@@ -363,14 +357,14 @@ pub(crate) unsafe fn call_class_init_with_args(
                 return inst_bits;
             };
             let mut tuple_init = false;
-            if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr() {
-                if object_type_id(init_ptr) == TYPE_ID_FUNCTION {
-                    let fn_ptr = function_fn_ptr(init_ptr);
-                    if fn_ptr == fn_addr!(molt_exception_init)
-                        || fn_ptr == fn_addr!(molt_exceptiongroup_init)
-                    {
-                        tuple_init = true;
-                    }
+            if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
+                && object_type_id(init_ptr) == TYPE_ID_FUNCTION
+            {
+                let fn_ptr = function_fn_ptr(init_ptr);
+                if fn_ptr == fn_addr!(molt_exception_init)
+                    || fn_ptr == fn_addr!(molt_exceptiongroup_init)
+                {
+                    tuple_init = true;
                 }
             }
             if tuple_init {
@@ -703,7 +697,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                     };
                     let bytes_obj = obj_from_bits(bytes_bits);
                     let out_bits = if let Some(bytes_ptr) = bytes_obj.as_ptr() {
-                        let bytes = unsafe { bytes_like_slice(bytes_ptr) }.unwrap_or(&[]);
+                        let bytes = bytes_like_slice(bytes_ptr).unwrap_or(&[]);
                         match decode_bytes_text(&encoding, &errors, bytes) {
                             Ok((text_bytes, _label)) => {
                                 let ptr = alloc_string(_py, &text_bytes);
@@ -782,12 +776,11 @@ pub(crate) unsafe fn call_class_init_with_args(
                     } else {
                         new_bits
                     };
-                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr() {
-                        if object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
-                        {
-                            default_new = true;
-                        }
+                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr()
+                        && object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
+                        && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
+                    {
+                        default_new = true;
                     }
                 }
                 let inst_bits = if default_new {
@@ -846,22 +839,22 @@ pub(crate) unsafe fn call_class_init_with_args(
         else {
             return inst_bits;
         };
-        if default_new && !args.is_empty() {
-            if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr() {
-                let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
-                    bound_method_func_bits(init_ptr)
-                } else {
-                    init_bits
-                };
-                if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr() {
-                    if object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
-                        && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
-                    {
-                        let class_name = class_name_for_error(class_bits);
-                        let msg = format!("{class_name}() takes no arguments");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                }
+        if default_new
+            && !args.is_empty()
+            && let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
+        {
+            let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
+                bound_method_func_bits(init_ptr)
+            } else {
+                init_bits
+            };
+            if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr()
+                && object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
+                && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
+            {
+                let class_name = class_name_for_error(class_bits);
+                let msg = format!("{class_name}() takes no arguments");
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
         let builder_bits = molt_callargs_new(args.len() as u64, 0);
@@ -906,12 +899,10 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                         let Some(code_ptr) = obj_from_bits(frame.code_bits).as_ptr() else {
                             return false;
                         };
-                        unsafe {
-                            if object_type_id(code_ptr) != TYPE_ID_CODE {
-                                return false;
-                            }
-                            code_argcount(code_ptr) > 0
+                        if object_type_id(code_ptr) != TYPE_ID_CODE {
+                            return false;
                         }
+                        code_argcount(code_ptr) > 0
                     });
                     let msg = if has_pos_args {
                         "super(): __class__ cell not found"

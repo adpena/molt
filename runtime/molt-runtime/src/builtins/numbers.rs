@@ -392,15 +392,15 @@ pub(crate) fn compare_numbers(lhs: MoltObject, rhs: MoltObject) -> Option<Orderi
     if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
         return Some(l_big.cmp(&r_big));
     }
-    if let Some(ptr) = bigint_ptr_from_bits(lhs.bits()) {
-        if let Some(f) = to_f64(rhs) {
-            return compare_bigint_float(unsafe { bigint_ref(ptr) }, f);
-        }
+    if let Some(ptr) = bigint_ptr_from_bits(lhs.bits())
+        && let Some(f) = to_f64(rhs)
+    {
+        return compare_bigint_float(unsafe { bigint_ref(ptr) }, f);
     }
-    if let Some(ptr) = bigint_ptr_from_bits(rhs.bits()) {
-        if let Some(f) = to_f64(lhs) {
-            return compare_bigint_float(unsafe { bigint_ref(ptr) }, f).map(Ordering::reverse);
-        }
+    if let Some(ptr) = bigint_ptr_from_bits(rhs.bits())
+        && let Some(f) = to_f64(lhs)
+    {
+        return compare_bigint_float(unsafe { bigint_ref(ptr) }, f).map(Ordering::reverse);
     }
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
         return lf.partial_cmp(&rf);

@@ -105,10 +105,11 @@ pub(crate) unsafe fn memoryview_nbytes(ptr: *mut u8) -> usize {
     unsafe {
         let shape = memoryview_shape(ptr).unwrap_or(&[]);
         let itemsize = memoryview_itemsize(ptr);
-        if let Some(total) = memoryview_nbytes_big(shape, itemsize) {
-            if total >= 0 && total <= usize::MAX as i128 {
-                return total as usize;
-            }
+        if let Some(total) = memoryview_nbytes_big(shape, itemsize)
+            && total >= 0
+            && total <= usize::MAX as i128
+        {
+            return total as usize;
         }
         0
     }

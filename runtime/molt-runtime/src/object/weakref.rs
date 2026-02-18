@@ -134,14 +134,13 @@ fn unregister_weakref(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<WeakRefEnt
     let weak_slot = PtrSlot(weak_ptr);
     let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
     let entry = registry.by_ref.remove(&weak_slot);
-    if let Some(entry) = entry.as_ref() {
-        if !entry.target.0.is_null() {
-            if let Some(list) = registry.by_target.get_mut(&entry.target) {
-                list.retain(|slot| *slot != weak_slot);
-                if list.is_empty() {
-                    registry.by_target.remove(&entry.target);
-                }
-            }
+    if let Some(entry) = entry.as_ref()
+        && !entry.target.0.is_null()
+        && let Some(list) = registry.by_target.get_mut(&entry.target)
+    {
+        list.retain(|slot| *slot != weak_slot);
+        if list.is_empty() {
+            registry.by_target.remove(&entry.target);
         }
     }
     entry
@@ -206,10 +205,10 @@ fn target_bound_in_module_globals(_py: &PyToken<'_>, target_ptr: *mut u8) -> boo
             if pair.len() < 2 {
                 continue;
             }
-            if let Some(ptr) = obj_from_bits(pair[1]).as_ptr() {
-                if ptr == target_ptr {
-                    return true;
-                }
+            if let Some(ptr) = obj_from_bits(pair[1]).as_ptr()
+                && ptr == target_ptr
+            {
+                return true;
             }
         }
     }
@@ -436,10 +435,10 @@ pub extern "C" fn molt_weakref_register(
                 return raise_exception::<_>(_py, "TypeError", "weakref callback must be callable");
             }
         }
-        if let Some(entry) = unregister_weakref(_py, weak_ptr) {
-            if !obj_from_bits(entry.callback_bits).is_none() {
-                dec_ref_bits(_py, entry.callback_bits);
-            }
+        if let Some(entry) = unregister_weakref(_py, weak_ptr)
+            && !obj_from_bits(entry.callback_bits).is_none()
+        {
+            dec_ref_bits(_py, entry.callback_bits);
         }
         if !obj_from_bits(callback_bits).is_none() {
             inc_ref_bits(_py, callback_bits);
@@ -505,12 +504,12 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
                     target_ptr = ptr::null_mut();
                 }
             }
-            if let Some(target_slot) = prune_target {
-                if let Some(list) = registry.by_target.get_mut(&target_slot) {
-                    list.retain(|slot| *slot != weak_slot);
-                    if list.is_empty() {
-                        registry.by_target.remove(&target_slot);
-                    }
+            if let Some(target_slot) = prune_target
+                && let Some(list) = registry.by_target.get_mut(&target_slot)
+            {
+                list.retain(|slot| *slot != weak_slot);
+                if list.is_empty() {
+                    registry.by_target.remove(&target_slot);
                 }
             }
             target_ptr
@@ -559,10 +558,10 @@ pub extern "C" fn molt_weakref_drop(weak_bits: u64) -> u64 {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        if let Some(entry) = unregister_weakref(_py, weak_ptr) {
-            if !obj_from_bits(entry.callback_bits).is_none() {
-                dec_ref_bits(_py, entry.callback_bits);
-            }
+        if let Some(entry) = unregister_weakref(_py, weak_ptr)
+            && !obj_from_bits(entry.callback_bits).is_none()
+        {
+            dec_ref_bits(_py, entry.callback_bits);
         }
         MoltObject::none().bits()
     })

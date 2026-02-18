@@ -49,11 +49,11 @@ unsafe fn raise_call_arity_mismatch(
     unsafe {
         let mut msg = format!("call arity mismatch (expected {expected}, got {got})");
         let name_bits = function_name_bits(_py, func_ptr);
-        if name_bits != 0 {
-            if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
-                msg.push_str(" for ");
-                msg.push_str(&name);
-            }
+        if name_bits != 0
+            && let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
+        {
+            msg.push_str(" for ");
+            msg.push_str(&name);
         }
         raise_exception::<_>(_py, "TypeError", &msg)
     }
@@ -212,27 +212,27 @@ unsafe fn compute_function_task_trampoline_needed(_py: &PyToken<'_>, func_ptr: *
         let interned = &runtime_state(_py).interned;
         let gen_name =
             intern_static_name(_py, &interned.molt_is_generator, b"__molt_is_generator__");
-        if let Some(bits) = function_attr_bits(_py, func_ptr, gen_name) {
-            if is_truthy(_py, obj_from_bits(bits)) {
-                return true;
-            }
+        if let Some(bits) = function_attr_bits(_py, func_ptr, gen_name)
+            && is_truthy(_py, obj_from_bits(bits))
+        {
+            return true;
         }
         let coro_name =
             intern_static_name(_py, &interned.molt_is_coroutine, b"__molt_is_coroutine__");
-        if let Some(bits) = function_attr_bits(_py, func_ptr, coro_name) {
-            if is_truthy(_py, obj_from_bits(bits)) {
-                return true;
-            }
+        if let Some(bits) = function_attr_bits(_py, func_ptr, coro_name)
+            && is_truthy(_py, obj_from_bits(bits))
+        {
+            return true;
         }
         let asyncgen_name = intern_static_name(
             _py,
             &interned.molt_is_async_generator,
             b"__molt_is_async_generator__",
         );
-        if let Some(bits) = function_attr_bits(_py, func_ptr, asyncgen_name) {
-            if is_truthy(_py, obj_from_bits(bits)) {
-                return true;
-            }
+        if let Some(bits) = function_attr_bits(_py, func_ptr, asyncgen_name)
+            && is_truthy(_py, obj_from_bits(bits))
+        {
+            return true;
         }
         false
     }
