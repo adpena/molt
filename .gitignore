@@ -7,6 +7,7 @@ __pycache__/
 dist/
 build/
 var/
+Volumes/
 *.egg-info/
 .DS_Store
 target/

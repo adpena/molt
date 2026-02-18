@@ -688,8 +688,8 @@ def contents(package: str | object) -> list[str]:
 
 
 def is_resource(package: str | object, name: str) -> bool:
-    _validate_resource_name(name)
     root = files(package)
+    _validate_resource_name(name)
     return root.joinpath(name).is_file()
 
 
@@ -699,16 +699,18 @@ def open_text(
     encoding: str = "utf-8",
     errors: str = "strict",
 ):
+    root = files(package)
     _validate_resource_name(resource)
-    path = files(package).joinpath(resource)
+    path = root.joinpath(resource)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(resource)
     return path.open("r", encoding=encoding, errors=errors)
 
 
 def open_binary(package: str | object, resource: str):
+    root = files(package)
     _validate_resource_name(resource)
-    path = files(package).joinpath(resource)
+    path = root.joinpath(resource)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(resource)
     return path.open("rb")
@@ -720,16 +722,18 @@ def read_text(
     encoding: str = "utf-8",
     errors: str = "strict",
 ) -> str:
+    root = files(package)
     _validate_resource_name(resource)
-    path = files(package).joinpath(resource)
+    path = root.joinpath(resource)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(resource)
     return path.read_text(encoding=encoding, errors=errors)
 
 
 def read_binary(package: str | object, resource: str) -> bytes:
+    root = files(package)
     _validate_resource_name(resource)
-    path = files(package).joinpath(resource)
+    path = root.joinpath(resource)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(resource)
     return path.read_bytes()

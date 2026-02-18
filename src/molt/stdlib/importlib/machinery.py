@@ -4,6 +4,24 @@ from __future__ import annotations
 
 
 class MoltLoader:
+    def create_module(self, _spec: "ModuleSpec"):
+        return None
+
+    def exec_module(self, module) -> None:
+        _ensure_intrinsics()
+        module_name = _coerce_module_name(module, self)
+        imported = _MOLT_MODULE_IMPORT(module_name)
+        imported_dict = getattr(imported, "__dict__", None)
+        if isinstance(imported, dict):
+            module.__dict__.update(imported)
+            return
+        if isinstance(imported_dict, dict):
+            module.__dict__.update(imported_dict)
+            return
+        raise TypeError(
+            f"import returned non-module payload: {type(imported).__name__}"
+        )
+
     def __repr__(self) -> str:
         return "<MoltLoader>"
 
@@ -102,6 +120,14 @@ class SourceFileLoader:
             package_root=package_root,
         )
         _exec_restricted(module, source, path)
+        _stabilize_module_state_after_exec(
+            module,
+            loader=self,
+            origin=path,
+            is_package=is_package,
+            module_package=module_package,
+            package_root=package_root,
+        )
 
 
 class ZipSourceLoader:
@@ -170,6 +196,14 @@ class ZipSourceLoader:
             package_root=package_root,
         )
         _exec_restricted(module, source, origin)
+        _stabilize_module_state_after_exec(
+            module,
+            loader=self,
+            origin=origin,
+            is_package=is_package,
+            module_package=module_package,
+            package_root=package_root,
+        )
 
 
 class ExtensionFileLoader:
@@ -221,6 +255,14 @@ class ExtensionFileLoader:
             raise RuntimeError(
                 "invalid importlib extension execution intrinsic result: expected None"
             )
+        _stabilize_module_state_after_exec(
+            module,
+            loader=self,
+            origin=self.path,
+            is_package=bool(is_package),
+            module_package=module_package,
+            package_root=package_root,
+        )
 
 
 class SourcelessFileLoader:
@@ -248,6 +290,8 @@ class SourcelessFileLoader:
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
+        if _is_archive_member_path(self.path):
+            raise NotADirectoryError(self.path)
         module_name = _coerce_module_name(module, self)
         spec_has_locations = _module_spec_is_package(module)
         payload = _sourceless_loader_payload(
@@ -285,6 +329,14 @@ class SourcelessFileLoader:
             raise RuntimeError(
                 "invalid importlib sourceless execution intrinsic result: expected None"
             )
+        _stabilize_module_state_after_exec(
+            module,
+            loader=self,
+            origin=self.path,
+            is_package=bool(is_package),
+            module_package=module_package,
+            package_root=package_root,
+        )
 
 
 class _MoltResourceReader:
@@ -396,6 +448,53 @@ def _set_module_state(
     import sys as _sys
 
     _sys.modules[module_name] = module
+
+
+def _is_archive_member_path(path: str) -> bool:
+    normalized = _normalize_path(path)
+    return ".zip/" in normalized
+
+
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(entry, str) for entry in value)
+
+
+def _stabilize_module_state_after_exec(
+    module,
+    *,
+    loader: object,
+    origin: str,
+    is_package: bool,
+    module_package: str,
+    package_root: str | None,
+) -> None:
+    spec = getattr(module, "__spec__", None)
+    if spec is not None:
+        spec.loader = loader
+        spec.origin = origin
+        spec.has_location = True
+    module.__loader__ = loader
+    module.__file__ = origin
+    module.__cached__ = None
+    module.__package__ = module_package
+    if is_package:
+        if not isinstance(package_root, str):
+            raise RuntimeError("invalid importlib package root for package module")
+        module_path = getattr(module, "__path__", None)
+        if not _is_str_list(module_path):
+            module_path = [package_root]
+            module.__path__ = module_path
+        if spec is not None:
+            locations = getattr(spec, "submodule_search_locations", None)
+            if not _is_str_list(locations):
+                spec.submodule_search_locations = list(module_path)
+    else:
+        module_path = getattr(module, "__path__", None)
+        if type(module_path) is object:
+            try:
+                del module.__path__
+            except Exception:
+                pass
 
 
 class PathFinder:
@@ -603,6 +702,7 @@ _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD = None
 _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD = None
 _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = None
 _MOLT_EXCEPTION_CLEAR = None
+_MOLT_MODULE_IMPORT = None
 
 
 def _ensure_intrinsics() -> None:
@@ -617,6 +717,7 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD
     global _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE
     global _MOLT_EXCEPTION_CLEAR
+    global _MOLT_MODULE_IMPORT
     if _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD is not None:
         return
     _require_intrinsic("molt_stdlib_probe", globals())
@@ -651,6 +752,7 @@ def _ensure_intrinsics() -> None:
         "molt_importlib_module_spec_is_package", globals()
     )
     _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
+    _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
 
 
 __all__ = [

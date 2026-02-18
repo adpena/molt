@@ -1719,7 +1719,9 @@ def _collect_imports(
     needs_typing = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
     module_string_constants: dict[str, str] = {}
+    helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_param_import_positions: dict[str, set[int]] = {}
+    helper_import_arg_exprs: dict[str, tuple[list[str], list[ast.expr]]] = {}
     (
         package_override_set,
         package_override,
@@ -1740,11 +1742,80 @@ def _collect_imports(
                 return ".".join(reversed(parts))
         return None
 
-    def _resolve_string_constant(node: ast.expr) -> str | None:
+    def _resolve_string_sequence(
+        node: ast.expr, bindings: dict[str, object], seen: set[str]
+    ) -> list[str] | None:
+        if isinstance(node, (ast.Tuple, ast.List)):
+            out: list[str] = []
+            for element in node.elts:
+                value = _resolve_string_constant(element, bindings, seen)
+                if value is None:
+                    return None
+                out.append(value)
+            return out
+        if isinstance(node, ast.Name):
+            bound = bindings.get(node.id)
+            if isinstance(bound, list) and all(isinstance(item, str) for item in bound):
+                return list(cast(list[str], bound))
+        return None
+
+    def _resolve_string_constant(
+        node: ast.expr,
+        bindings: dict[str, object] | None = None,
+        seen: set[str] | None = None,
+    ) -> str | None:
+        bindings = bindings or {}
+        seen = seen or set()
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         if isinstance(node, ast.Name):
+            bound = bindings.get(node.id)
+            if isinstance(bound, str):
+                return bound
             return module_string_constants.get(node.id)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = _resolve_string_constant(node.left, bindings, seen)
+            right = _resolve_string_constant(node.right, bindings, seen)
+            if left is not None and right is not None:
+                return left + right
+            return None
+        if isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "join"
+                and len(node.args) == 1
+            ):
+                sep = _resolve_string_constant(node.func.value, bindings, seen)
+                if sep is None:
+                    return None
+                items = _resolve_string_sequence(node.args[0], bindings, seen)
+                if items is None:
+                    return None
+                return sep.join(items)
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                if func_name in seen:
+                    return None
+                helper = helper_string_functions.get(func_name)
+                if helper is None:
+                    return None
+                params, expr = helper
+                if len(node.args) != len(params) or node.keywords:
+                    return None
+                child_bindings: dict[str, object] = dict(bindings)
+                for param, arg in zip(params, node.args):
+                    scalar = _resolve_string_constant(arg, bindings, seen)
+                    if scalar is not None:
+                        child_bindings[param] = scalar
+                        continue
+                    seq = _resolve_string_sequence(arg, bindings, seen)
+                    if seq is not None:
+                        child_bindings[param] = seq
+                        continue
+                    return None
+                return _resolve_string_constant(
+                    expr, child_bindings, seen | {func_name}
+                )
         return None
 
     if include_nested and isinstance(tree, ast.Module):
@@ -1759,6 +1830,23 @@ def _collect_imports(
                 value = _resolve_string_constant(stmt.value) if stmt.value else None
                 if value is not None:
                     module_string_constants[stmt.target.id] = value
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
+                    continue
+                ret_expr = stmt.body[0].value
+                if ret_expr is None:
+                    continue
+                params = [
+                    arg.arg
+                    for arg in (
+                        list(stmt.args.posonlyargs)
+                        + list(stmt.args.args)
+                        + list(stmt.args.kwonlyargs)
+                    )
+                ]
+                if stmt.args.vararg is not None or stmt.args.kwarg is not None:
+                    continue
+                helper_string_functions[stmt.name] = (params, ret_expr)
 
         for stmt in tree.body:
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1788,6 +1876,11 @@ def _collect_imports(
                 }:
                     continue
                 first = node.args[0]
+                helper_entry = helper_import_arg_exprs.get(stmt.name)
+                if helper_entry is None:
+                    helper_import_arg_exprs[stmt.name] = (params, [first])
+                else:
+                    helper_entry[1].append(first)
                 if isinstance(first, ast.Name) and first.id in param_set:
                     pos = params.index(first.id)
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
@@ -1800,11 +1893,30 @@ def _collect_imports(
                     continue
                 positions = helper_param_import_positions.get(node.func.id)
                 if not positions:
-                    continue
+                    positions = set()
                 for pos in positions:
-                    if pos >= len(node.args):
+                    if pos < len(node.args):
+                        resolved = _resolve_string_constant(node.args[pos])
+                        if resolved is not None:
+                            imports.append(resolved)
+                helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
+                if helper_expr_entry is None:
+                    continue
+                params, exprs = helper_expr_entry
+                if len(node.args) < len(params):
+                    continue
+                call_bindings: dict[str, object] = {}
+                for idx, param in enumerate(params):
+                    arg = node.args[idx]
+                    scalar = _resolve_string_constant(arg)
+                    if scalar is not None:
+                        call_bindings[param] = scalar
                         continue
-                    resolved = _resolve_string_constant(node.args[pos])
+                    seq = _resolve_string_sequence(arg, {}, set())
+                    if seq is not None:
+                        call_bindings[param] = seq
+                for expr in exprs:
+                    resolved = _resolve_string_constant(expr, call_bindings, set())
                     if resolved is not None:
                         imports.append(resolved)
 
@@ -2207,7 +2319,14 @@ def _roots_for_module(
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    for name in ("builtins", "sys", "types"):
+    for name in (
+        "builtins",
+        "sys",
+        "types",
+        "importlib",
+        "importlib.util",
+        "importlib.machinery",
+    ):
         path = _resolve_module_path(name, [stdlib_root])
         if path is not None:
             module_graph.setdefault(name, path)
@@ -3360,6 +3479,15 @@ def _artifact_needs_rebuild(
         stored_rustc = stored_fingerprint.get("rustc")
         return stored_rustc is None or stored_rustc != rustc
     return False
+
+
+def _is_valid_wasm_binary(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            magic = handle.read(8)
+    except OSError:
+        return False
+    return magic == b"\x00asm\x01\x00\x00\x00"
 
 
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
@@ -4661,6 +4789,65 @@ def _configure_wasm_cc_env(env: dict[str, str]) -> None:
             return
 
 
+def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
+    return target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+
+
+def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
+    return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
+
+
+def _run_runtime_wasm_cargo_build(
+    *,
+    cmd: list[str],
+    root: Path,
+    env: dict[str, str],
+    cargo_timeout: float | None,
+    profile_dir: str,
+    target_root_override: Path | None = None,
+    json_output: bool,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    build_env = env.copy()
+    if target_root_override is not None:
+        build_env["CARGO_TARGET_DIR"] = str(target_root_override)
+        target_root = target_root_override
+    else:
+        target_root = _cargo_target_root(root)
+    src = _wasm_runtime_artifact_path(target_root, profile_dir)
+    try:
+        src.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    build = subprocess.run(
+        cmd,
+        cwd=root,
+        env=build_env,
+        timeout=cargo_timeout,
+        check=False,
+        text=True,
+    )
+    wrapper = build_env.get("RUSTC_WRAPPER", "")
+    if build.returncode != 0 and wrapper and Path(wrapper).name == "sccache":
+        retry_env = build_env.copy()
+        retry_env.pop("RUSTC_WRAPPER", None)
+        if not json_output:
+            print(
+                "Runtime wasm build: sccache wrapper failure detected; retrying without sccache.",
+                file=sys.stderr,
+            )
+        build = subprocess.run(
+            cmd,
+            cwd=root,
+            env=retry_env,
+            timeout=cargo_timeout,
+            check=False,
+            text=True,
+        )
+    return build, src
+
+
 def _ensure_runtime_wasm(
     runtime_wasm: Path,
     *,
@@ -4672,17 +4859,28 @@ def _ensure_runtime_wasm(
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    if reloc:
+    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
+    if use_legacy_wasm_flags:
+        if reloc:
+            flags = (
+                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+                " -C relocation-model=pic"
+            )
+        else:
+            flags = (
+                "-C link-arg=--import-memory -C link-arg=--import-table"
+                " -C link-arg=--growable-table"
+            )
+    else:
         flags = (
             "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
             " -C relocation-model=pic"
+            if reloc
+            else ""
         )
-    else:
-        flags = (
-            "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
-        )
-    rustflags = f"{env.get('RUSTFLAGS', '')} {flags}".strip()
+    rustflags = env.get("RUSTFLAGS", "").strip()
+    if flags:
+        rustflags = f"{rustflags} {flags}".strip()
     fingerprint = _runtime_fingerprint(
         root,
         cargo_profile=cargo_profile,
@@ -4700,13 +4898,28 @@ def _ensure_runtime_wasm(
             if fingerprint_path.exists()
             else None
         )
-        if not _artifact_needs_rebuild(runtime_wasm, fingerprint, stored_fingerprint):
+        needs_rebuild = _artifact_needs_rebuild(
+            runtime_wasm, fingerprint, stored_fingerprint
+        )
+        if not needs_rebuild and _is_valid_wasm_binary(runtime_wasm):
             return True
+        if not needs_rebuild and not json_output:
+            print(
+                "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
+                file=sys.stderr,
+            )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
-        _append_rustflags(env, flags)
-        _configure_wasm_cc_env(env)
-        _maybe_enable_sccache(env)
+        if flags:
+            _append_rustflags(env, flags)
+        if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
+            _configure_wasm_cc_env(env)
+        env["CARGO_INCREMENTAL"] = "0"
+        if os.environ.get("MOLT_WASM_ALLOW_SCCACHE") == "1":
+            _maybe_enable_sccache(env)
+        else:
+            env.pop("RUSTC_WRAPPER", None)
+        profile_dir = _cargo_profile_dir(cargo_profile)
         cmd = [
             "cargo",
             "build",
@@ -4718,13 +4931,13 @@ def _ensure_runtime_wasm(
             "wasm32-wasip1",
         ]
         try:
-            build = _run_cargo_with_sccache_retry(
-                cmd,
-                cwd=root,
+            build, src = _run_runtime_wasm_cargo_build(
+                cmd=cmd,
+                root=root,
                 env=env,
-                timeout=cargo_timeout,
+                cargo_timeout=cargo_timeout,
+                profile_dir=profile_dir,
                 json_output=json_output,
-                label="Runtime wasm build",
             )
         except subprocess.TimeoutExpired:
             if not json_output:
@@ -4737,14 +4950,8 @@ def _ensure_runtime_wasm(
             return False
         if build.returncode != 0:
             if not json_output:
-                err = build.stderr.strip() or build.stdout.strip()
-                if err:
-                    print(err, file=sys.stderr)
                 print("Runtime wasm build failed", file=sys.stderr)
             return False
-        profile_dir = _cargo_profile_dir(cargo_profile)
-        target_root = _cargo_target_root(root)
-        src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         if not src.exists():
             if not json_output:
                 print(
@@ -4752,8 +4959,123 @@ def _ensure_runtime_wasm(
                     file=sys.stderr,
                 )
             return False
+        if not _is_valid_wasm_binary(src):
+            if not json_output:
+                print(
+                    f"Runtime wasm build produced invalid artifact: {src}; retrying with isolated target dir.",
+                    file=sys.stderr,
+                )
+            recovery_target_root = _wasm_runtime_recovery_target_root(
+                _cargo_target_root(root)
+            )
+            try:
+                build, recovery_src = _run_runtime_wasm_cargo_build(
+                    cmd=cmd,
+                    root=root,
+                    env=env,
+                    cargo_timeout=cargo_timeout,
+                    profile_dir=profile_dir,
+                    target_root_override=recovery_target_root,
+                    json_output=json_output,
+                )
+            except subprocess.TimeoutExpired:
+                if not json_output:
+                    timeout_note = (
+                        f"Runtime wasm recovery build timed out after {cargo_timeout:.1f}s."
+                        if cargo_timeout is not None
+                        else "Runtime wasm recovery build timed out."
+                    )
+                    print(timeout_note, file=sys.stderr)
+                return False
+            if build.returncode != 0:
+                if not json_output:
+                    print("Runtime wasm recovery build failed", file=sys.stderr)
+                return False
+            if not recovery_src.exists():
+                if not json_output:
+                    print(
+                        "Runtime wasm recovery build succeeded but artifact is missing.",
+                        file=sys.stderr,
+                    )
+                return False
+            if not _is_valid_wasm_binary(recovery_src):
+                fallback_profile = os.environ.get(
+                    "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast"
+                ).strip()
+                can_try_fallback_profile = (
+                    cargo_profile == "release"
+                    and fallback_profile
+                    and fallback_profile != cargo_profile
+                    and _CARGO_PROFILE_NAME_RE.match(fallback_profile) is not None
+                )
+                if not can_try_fallback_profile:
+                    if not json_output:
+                        print(
+                            f"Runtime wasm recovery build produced invalid artifact: {recovery_src}",
+                            file=sys.stderr,
+                        )
+                    return False
+                if not json_output:
+                    print(
+                        "Runtime wasm release profile produced invalid artifacts; "
+                        f"retrying with fallback profile {fallback_profile}.",
+                        file=sys.stderr,
+                    )
+                fallback_profile_dir = _cargo_profile_dir(fallback_profile)
+                fallback_cmd = cmd.copy()
+                fallback_cmd[5] = fallback_profile
+                fallback_target_root = recovery_target_root.parent / (
+                    f"{recovery_target_root.name}-{fallback_profile}"
+                )
+                try:
+                    build, fallback_src = _run_runtime_wasm_cargo_build(
+                        cmd=fallback_cmd,
+                        root=root,
+                        env=env,
+                        cargo_timeout=cargo_timeout,
+                        profile_dir=fallback_profile_dir,
+                        target_root_override=fallback_target_root,
+                        json_output=json_output,
+                    )
+                except subprocess.TimeoutExpired:
+                    if not json_output:
+                        timeout_note = (
+                            f"Runtime wasm fallback build timed out after {cargo_timeout:.1f}s."
+                            if cargo_timeout is not None
+                            else "Runtime wasm fallback build timed out."
+                        )
+                        print(timeout_note, file=sys.stderr)
+                    return False
+                if build.returncode != 0:
+                    if not json_output:
+                        print("Runtime wasm fallback build failed", file=sys.stderr)
+                    return False
+                if not fallback_src.exists():
+                    if not json_output:
+                        print(
+                            "Runtime wasm fallback build succeeded but artifact is missing.",
+                            file=sys.stderr,
+                        )
+                    return False
+                if not _is_valid_wasm_binary(fallback_src):
+                    if not json_output:
+                        print(
+                            f"Runtime wasm fallback build produced invalid artifact: {fallback_src}",
+                            file=sys.stderr,
+                        )
+                    return False
+                src = fallback_src
+            else:
+                src = recovery_src
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, runtime_wasm)
+        if not _is_valid_wasm_binary(runtime_wasm):
+            if not json_output:
+                print(
+                    f"Copied runtime wasm artifact is invalid: {runtime_wasm}",
+                    file=sys.stderr,
+                )
+            return False
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6159,7 +6481,14 @@ def build(
         return intrinsic_enforced
     core_paths = [
         path
-        for name in ("builtins", "sys")
+        for name in (
+            "builtins",
+            "sys",
+            "types",
+            "importlib",
+            "importlib.util",
+            "importlib.machinery",
+        )
         if (path := module_graph.get(name)) is not None
     ]
     for core_path in core_paths:

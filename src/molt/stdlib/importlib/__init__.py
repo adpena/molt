@@ -70,9 +70,14 @@ def _import_via_spec(resolved: str):
         raise ModuleNotFoundError(f"No module named '{resolved}'")
 
     module = util.module_from_spec(spec)
-    modules[resolved] = module
+    loader = getattr(spec, "loader", None)
+    loader_cls = getattr(machinery, "MoltLoader", None)
+    preseed_modules = not (
+        loader is not None and loader_cls is not None and isinstance(loader, loader_cls)
+    )
+    if preseed_modules:
+        modules[resolved] = module
     try:
-        loader = getattr(spec, "loader", None)
         if loader is not None:
             if hasattr(loader, "exec_module"):
                 loader.exec_module(module)
@@ -80,6 +85,8 @@ def _import_via_spec(resolved: str):
                 loaded = loader.load_module(resolved)
                 if loaded is not None:
                     module = loaded
+        if not preseed_modules:
+            modules[resolved] = module
         return modules.get(resolved, module)
     except Exception:
         modules.pop(resolved, None)
@@ -88,7 +95,11 @@ def _import_via_spec(resolved: str):
 
 def _module_import_with_fallback(resolved: str):
     try:
-        return _MOLT_MODULE_IMPORT(resolved)
+        mod = _MOLT_MODULE_IMPORT(resolved)
+        if mod is not None:
+            return mod
+        _MOLT_EXCEPTION_CLEAR()
+        return _import_via_spec(resolved)
     except TypeError as exc:
         # Some dynamic modules may not round-trip through the direct runtime import
         # return path yet; fall back to the intrinsic-backed spec/loader flow.
@@ -127,6 +138,46 @@ def reload(module):
     name = getattr(module, "__name__", None)
     if not name:
         raise ImportError("module has no __name__")
+    modules = _runtime_modules()
+    module_file = getattr(module, "__file__", None)
+    module_spec = getattr(module, "__spec__", None)
+    module_loader = getattr(module_spec, "loader", None) if module_spec else None
+    if isinstance(module_file, str):
+        locations = getattr(module, "__path__", None)
+        submodule_search_locations = None
+        if isinstance(locations, (list, tuple)):
+            submodule_search_locations = list(locations)
+        loader_override = module_loader
+        loader_cls = getattr(machinery, "MoltLoader", None)
+        if (
+            loader_override is not None
+            and loader_cls is not None
+            and isinstance(loader_override, loader_cls)
+        ):
+            loader_override = None
+        spec = util.spec_from_file_location(
+            name,
+            module_file,
+            loader=loader_override,
+            submodule_search_locations=submodule_search_locations,
+        )
+        if (
+            spec is not None
+            and spec.loader is not None
+            and hasattr(spec.loader, "exec_module")
+        ):
+            spec.loader.exec_module(module)
+            modules[name] = module
+            return module
+    if module_loader is not None and hasattr(module_loader, "exec_module"):
+        modules.pop(name, None)
+        try:
+            module_loader.exec_module(module)
+        except Exception:
+            modules[name] = module
+            raise
+        modules[name] = module
+        return module
     spec = util.find_spec(name, None)
     if spec is not None and spec.loader is not None:
         if hasattr(spec.loader, "exec_module"):
@@ -134,6 +185,5 @@ def reload(module):
             return module
         if hasattr(spec.loader, "load_module"):
             return spec.loader.load_module(name)
-    modules = _runtime_modules()
     modules.pop(name, None)
     return import_module(name)

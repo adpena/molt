@@ -1,27 +1,30 @@
 """Errno constants for Molt.
 
-In compiled code, errno constants come from the runtime via `_molt_errno_constants()`.
-Missing intrinsics are a hard error (no host fallback).
+In compiled code, errno constants come from the runtime via `molt_errno_constants`.
+Missing or invalid intrinsic payloads are a hard error (no host fallback).
 """
-
-from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-def _load_errno_constants() -> tuple[dict[str, int], dict[int, str]]:
+def _load_errno_constants():
     intrinsic = _require_intrinsic("molt_errno_constants", globals())
-    try:
-        res = intrinsic()
-    except Exception:
-        res = None
-    if isinstance(res, tuple) and len(res) == 2:
-        left, right = res
-        if isinstance(left, dict) and isinstance(right, dict):
-            return left, right
-    raise RuntimeError("errno intrinsics unavailable")
+    payload = intrinsic()
+    if not isinstance(payload, tuple):
+        raise RuntimeError("errno intrinsics unavailable")
+    if len(payload) != 2:
+        raise RuntimeError("errno intrinsics unavailable")
+    constants_map = payload[0]
+    errorcode_map = payload[1]
+    if not isinstance(constants_map, dict):
+        raise RuntimeError("errno intrinsics unavailable")
+    if not isinstance(errorcode_map, dict):
+        raise RuntimeError("errno intrinsics unavailable")
+    return constants_map, errorcode_map
 
 
-constants, errorcode = _load_errno_constants()
+_errno_payload = _load_errno_constants()
+constants = _errno_payload[0]
+errorcode = _errno_payload[1]
 globals().update(constants)
-__all__ = sorted(constants) + ["errorcode"]
+__all__ = sorted(constants.keys()) + ["errorcode"]
