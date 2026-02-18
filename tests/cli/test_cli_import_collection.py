@@ -55,7 +55,14 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     cli._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
         path
-        for name in ("builtins", "sys")
+        for name in (
+            "builtins",
+            "sys",
+            "types",
+            "importlib",
+            "importlib.util",
+            "importlib.machinery",
+        )
         if (path := module_graph.get(name)) is not None
     ]
     for core_path in core_paths:
@@ -118,12 +125,30 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     assert "pathlib" in imports
 
 
+def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "def _module_name(parts):\n"
+        "    return ''.join(parts)\n"
+        "def _load(parts):\n"
+        "    return importlib.import_module(_module_name(parts))\n"
+        "_load(('ma', 'th'))\n"
+        "_load(('sy', 's'))\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "math" in imports
+    assert "sys" in imports
+
+
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")
     graph = _discover_with_core_modules(entry)
     assert "builtins" in graph
     assert "sys" in graph
+    assert "importlib" in graph
+    assert "importlib.util" in graph
+    assert "importlib.machinery" in graph
     assert "warnings" not in graph
     assert "re" not in graph
     assert "dataclasses" not in graph
@@ -157,7 +182,14 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     cli._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
         path
-        for name in ("builtins", "sys")
+        for name in (
+            "builtins",
+            "sys",
+            "types",
+            "importlib",
+            "importlib.util",
+            "importlib.machinery",
+        )
         if (path := module_graph.get(name)) is not None
     ]
     for core_path in core_paths:

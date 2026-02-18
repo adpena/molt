@@ -666,6 +666,9 @@ unsafe fn runpy_import_module_bits(_py: &PyToken<'_>, name: &str) -> Result<u64,
             }
 
             if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
+                if let Some(bits) = runpy_import_intrinsic_module(_py, &name_text)? {
+                    return Ok(bits);
+                }
                 match runpy_import_via_builtins(_py, &name_text) {
                     Ok(Some(bits)) => return Ok(bits),
                     Ok(None) => {}
@@ -698,6 +701,135 @@ unsafe fn runpy_import_module_bits(_py: &PyToken<'_>, name: &str) -> Result<u64,
                 Ok(MoltObject::none().bits())
             }
         }
+    }
+}
+
+unsafe fn runpy_import_intrinsic_module(_py: &PyToken<'_>, name: &str) -> Result<Option<u64>, u64> {
+    unsafe {
+        if name != "errno" {
+            return Ok(None);
+        }
+        let name_ptr = alloc_string(_py, b"errno");
+        if name_ptr.is_null() {
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let module_bits = molt_module_new(name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, name_bits);
+            return Err(MoltObject::none().bits());
+        }
+        let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        };
+        let module_dict_bits = module_dict_bits(module_ptr);
+        let Some(module_dict_ptr) = obj_from_bits(module_dict_bits).as_ptr() else {
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno module dict unavailable",
+            ));
+        };
+        if object_type_id(module_dict_ptr) != TYPE_ID_DICT {
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno module dict unavailable",
+            ));
+        }
+        let payload_bits = crate::molt_errno_constants();
+        if exception_pending(_py) {
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(MoltObject::none().bits());
+        }
+        let Some(payload_ptr) = obj_from_bits(payload_bits).as_ptr() else {
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        };
+        if object_type_id(payload_ptr) != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        }
+        let payload_items = seq_vec_ref(payload_ptr);
+        if payload_items.len() != 2 {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        }
+        let constants_bits = payload_items[0];
+        let errorcode_bits = payload_items[1];
+        let Some(constants_ptr) = obj_from_bits(constants_bits).as_ptr() else {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        };
+        let Some(errorcode_ptr) = obj_from_bits(errorcode_bits).as_ptr() else {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        };
+        if object_type_id(constants_ptr) != TYPE_ID_DICT
+            || object_type_id(errorcode_ptr) != TYPE_ID_DICT
+        {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "errno constants unavailable",
+            ));
+        }
+        dict_copy_entries(_py, constants_ptr, module_dict_ptr);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(MoltObject::none().bits());
+        }
+        dict_set_str_key_bits(_py, module_dict_ptr, "errorcode", errorcode_bits)?;
+        let cache_result = molt_module_cache_set(name_bits, module_bits);
+        if obj_from_bits(cache_result).is_none() && exception_pending(_py) {
+            dec_ref_bits(_py, payload_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(MoltObject::none().bits());
+        }
+        dec_ref_bits(_py, payload_bits);
+        dec_ref_bits(_py, name_bits);
+        Ok(Some(module_bits))
     }
 }
 
