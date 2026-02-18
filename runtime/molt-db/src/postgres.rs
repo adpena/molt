@@ -95,10 +95,10 @@ impl StatementCache {
         }
         self.entries.insert(key.clone(), stmt);
         self.order.push_back(key.clone());
-        if self.order.len() > self.capacity {
-            if let Some(evict) = self.order.pop_front() {
-                self.entries.remove(&evict);
-            }
+        if self.order.len() > self.capacity
+            && let Some(evict) = self.order.pop_front()
+        {
+            self.entries.remove(&evict);
         }
     }
 }
@@ -237,22 +237,22 @@ impl PgPool {
                 .pool
                 .acquire(Some(self.config.max_wait), cancel)
                 .await?;
-            if let Some(max_idle) = self.config.max_idle {
-                if conn.as_ref().idle_for() > max_idle {
-                    conn.discard();
-                    continue;
-                }
+            if let Some(max_idle) = self.config.max_idle
+                && conn.as_ref().idle_for() > max_idle
+            {
+                conn.discard();
+                continue;
             }
-            if let Some(interval) = self.config.health_check_interval {
-                if conn.as_ref().idle_for() > interval {
-                    match conn.as_ref().ping().await {
-                        Ok(()) => {
-                            conn.as_ref().touch();
-                        }
-                        Err(_) => {
-                            conn.discard();
-                            continue;
-                        }
+            if let Some(interval) = self.config.health_check_interval
+                && conn.as_ref().idle_for() > interval
+            {
+                match conn.as_ref().ping().await {
+                    Ok(()) => {
+                        conn.as_ref().touch();
+                    }
+                    Err(_) => {
+                        conn.discard();
+                        continue;
                     }
                 }
             }

@@ -1966,15 +1966,13 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                 let current_tb_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_SLOT_CUR_TB);
 
                 let out = match callback_kind {
-                    ExitStackCallbackKind::Exit => unsafe {
-                        call_callable3(
-                            _py,
-                            callback.callback_bits,
-                            current_type_bits,
-                            current_exc_bits,
-                            current_tb_bits,
-                        )
-                    },
+                    ExitStackCallbackKind::Exit => call_callable3(
+                        _py,
+                        callback.callback_bits,
+                        current_type_bits,
+                        current_exc_bits,
+                        current_tb_bits,
+                    ),
                     ExitStackCallbackKind::SyncCallback => {
                         callback.release_refs(_py);
                         return raise_exception::<i64>(

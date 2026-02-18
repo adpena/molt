@@ -203,48 +203,47 @@ pub extern "C" fn molt_type_new(
         }
         let mut qualname_bits = 0u64;
         let mut qualname_owned = false;
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                let qualname_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.qualname_name,
-                    b"__qualname__",
-                );
-                if let Some(val_bits) =
-                    unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) }
-                {
-                    qualname_bits = val_bits;
-                    // We're about to delete __qualname__ from the class dict; hold a strong
-                    // reference so we can safely move it into the class qualname slot.
-                    inc_ref_bits(_py, qualname_bits);
-                    qualname_owned = true;
-                    unsafe {
-                        dict_del_in_place(_py, dict_ptr, qualname_name_bits);
-                    }
-                    if exception_pending(_py) {
-                        if qualname_owned {
-                            dec_ref_bits(_py, qualname_bits);
-                        }
-                        if bases_owned {
-                            dec_ref_bits(_py, bases_tuple_bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let qualname_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.qualname_name,
+                b"__qualname__",
+            );
+            if let Some(val_bits) = unsafe { dict_get_in_place(_py, dict_ptr, qualname_name_bits) }
+            {
+                qualname_bits = val_bits;
+                // We're about to delete __qualname__ from the class dict; hold a strong
+                // reference so we can safely move it into the class qualname slot.
+                inc_ref_bits(_py, qualname_bits);
+                qualname_owned = true;
+                unsafe {
+                    dict_del_in_place(_py, dict_ptr, qualname_name_bits);
                 }
-                if let Some(classcell_bits) = attr_name_bits_from_bytes(_py, b"__classcell__") {
-                    unsafe {
-                        dict_del_in_place(_py, dict_ptr, classcell_bits);
+                if exception_pending(_py) {
+                    if qualname_owned {
+                        dec_ref_bits(_py, qualname_bits);
                     }
-                    dec_ref_bits(_py, classcell_bits);
-                    if exception_pending(_py) {
-                        if qualname_owned {
-                            dec_ref_bits(_py, qualname_bits);
-                        }
-                        if bases_owned {
-                            dec_ref_bits(_py, bases_tuple_bits);
-                        }
-                        return MoltObject::none().bits();
+                    if bases_owned {
+                        dec_ref_bits(_py, bases_tuple_bits);
                     }
+                    return MoltObject::none().bits();
+                }
+            }
+            if let Some(classcell_bits) = attr_name_bits_from_bytes(_py, b"__classcell__") {
+                unsafe {
+                    dict_del_in_place(_py, dict_ptr, classcell_bits);
+                }
+                dec_ref_bits(_py, classcell_bits);
+                if exception_pending(_py) {
+                    if qualname_owned {
+                        dec_ref_bits(_py, qualname_bits);
+                    }
+                    if bases_owned {
+                        dec_ref_bits(_py, bases_tuple_bits);
+                    }
+                    return MoltObject::none().bits();
                 }
             }
         }
@@ -292,15 +291,15 @@ pub extern "C" fn molt_type_new(
 
         let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
         let kwargs_obj = obj_from_bits(kwargs_bits);
-        if !kwargs_obj.is_none() {
-            if let Some(kwargs_ptr) = kwargs_obj.as_ptr() {
-                unsafe {
-                    if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                        let entries = dict_order(kwargs_ptr).clone();
-                        for pair in entries.chunks(2) {
-                            if pair.len() == 2 {
-                                kw_pairs.push((pair[0], pair[1]));
-                            }
+        if !kwargs_obj.is_none()
+            && let Some(kwargs_ptr) = kwargs_obj.as_ptr()
+        {
+            unsafe {
+                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
+                    let entries = dict_order(kwargs_ptr).clone();
+                    for pair in entries.chunks(2) {
+                        if pair.len() == 2 {
+                            kw_pairs.push((pair[0], pair[1]));
                         }
                     }
                 }
@@ -706,18 +705,15 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 updated = true;
             }
             let dict_bits = class_dict_bits(class_ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let bases_name = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.bases_name,
-                        b"__bases__",
-                    );
-                    let mro_name =
-                        intern_static_name(_py, &runtime_state(_py).interned.mro_name, b"__mro__");
-                    dict_set_in_place(_py, dict_ptr, bases_name, bases_bits);
-                    dict_set_in_place(_py, dict_ptr, mro_name, mro_bits);
-                }
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                let bases_name =
+                    intern_static_name(_py, &runtime_state(_py).interned.bases_name, b"__bases__");
+                let mro_name =
+                    intern_static_name(_py, &runtime_state(_py).interned.mro_name, b"__mro__");
+                dict_set_in_place(_py, dict_ptr, bases_name, bases_bits);
+                dict_set_in_place(_py, dict_ptr, mro_name, mro_bits);
             }
             if updated {
                 class_bump_layout_version(class_ptr);
@@ -1792,16 +1788,16 @@ fn types_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size: i64
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                let layout_name = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.molt_layout_size,
-                    b"__molt_layout_size__",
-                );
-                let layout_bits = MoltObject::from_int(layout_size).bits();
-                unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
-            }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let layout_name = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.molt_layout_size,
+                b"__molt_layout_size__",
+            );
+            let layout_bits = MoltObject::from_int(layout_size).bits();
+            unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
         }
         class_bits
     })

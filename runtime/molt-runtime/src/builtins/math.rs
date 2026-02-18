@@ -2532,9 +2532,7 @@ fn statistics_mode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> {
         return None;
     }
     let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
-    let Some(counts_ptr) = obj_from_bits(counts_bits).as_ptr() else {
-        return None;
-    };
+    let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut best_bits = values[0];
     let mut best_count: i64 = 0;
     unsafe {
@@ -2592,9 +2590,7 @@ fn statistics_multimode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> 
         return Some(MoltObject::from_ptr(list_ptr).bits());
     }
     let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
-    let Some(counts_ptr) = obj_from_bits(counts_bits).as_ptr() else {
-        return None;
-    };
+    let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut first_seen: Vec<u64> = Vec::new();
     let mut max_count: i64 = 0;
     unsafe {
@@ -2661,7 +2657,7 @@ fn statistics_multimode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> 
         if list_ptr.is_null() {
             return None;
         }
-        return Some(MoltObject::from_ptr(list_ptr).bits());
+        Some(MoltObject::from_ptr(list_ptr).bits())
     }
 }
 
@@ -2746,7 +2742,7 @@ fn statistics_harmonic_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<f
         );
         return None;
     }
-    if values.iter().any(|v| *v == 0.0) {
+    if values.contains(&0.0) {
         return Some(0.0);
     }
     let denom = values.iter().fold(0.0_f64, |acc, v| acc + (1.0 / *v));
@@ -2771,7 +2767,7 @@ fn statistics_geometric_mean_value(_py: &PyToken<'_>, data_bits: u64) -> Option<
         );
         return None;
     }
-    if values.iter().any(|v| *v == 0.0) {
+    if values.contains(&0.0) {
         return Some(0.0);
     }
     let sum_logs = values.iter().fold(0.0_f64, |acc, v| acc + math_log(*v));

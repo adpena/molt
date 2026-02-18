@@ -1438,13 +1438,12 @@ pub(crate) fn splitlines_string_to_list(
             continue;
         }
         let mut break_end = idx + ch.len_utf8();
-        if ch == '\r' {
-            if let Some(&(next_idx, next_ch)) = iter.peek() {
-                if next_ch == '\n' {
-                    iter.next();
-                    break_end = next_idx + next_ch.len_utf8();
-                }
-            }
+        if ch == '\r'
+            && let Some(&(next_idx, next_ch)) = iter.peek()
+            && next_ch == '\n'
+        {
+            iter.next();
+            break_end = next_idx + next_ch.len_utf8();
         }
         let end = idx;
         let part = if keepends {

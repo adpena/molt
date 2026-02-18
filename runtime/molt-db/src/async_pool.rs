@@ -108,10 +108,10 @@ impl<T> AsyncPool<T> {
     ) -> Result<AsyncPooled<T>, AsyncAcquireError> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
         loop {
-            if let Some(token) = cancel {
-                if token.is_cancelled() {
-                    return Err(AsyncAcquireError::Cancelled);
-                }
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Err(AsyncAcquireError::Cancelled);
             }
             let item = {
                 let mut state = self.state.lock().unwrap();

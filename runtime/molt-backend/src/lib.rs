@@ -31,8 +31,6 @@ const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
-const HEADER_FLAGS_OFFSET: i32 = -8;
-const HEADER_HAS_PTRS_FLAG: i64 = 1;
 
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
@@ -61,11 +59,11 @@ fn ensure_block_in_layout(builder: &mut FunctionBuilder, block: Block) {
     if builder.func.layout.is_block_inserted(block) {
         return;
     }
-    if let Some(current) = builder.current_block() {
-        if builder.func.layout.is_block_inserted(current) {
-            builder.insert_block_after(block, current);
-            return;
-        }
+    if let Some(current) = builder.current_block()
+        && builder.func.layout.is_block_inserted(current)
+    {
+        builder.insert_block_after(block, current);
+        return;
     }
     builder.func.layout.append_block(block);
 }
@@ -80,10 +78,10 @@ fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
 }
 
 fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
-    if let Some(block) = builder.current_block() {
-        if block_has_terminator(builder, block) {
-            *is_block_filled = true;
-        }
+    if let Some(block) = builder.current_block()
+        && block_has_terminator(builder, block)
+    {
+        *is_block_filled = true;
     }
 }
 
@@ -153,13 +151,6 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, masked, tag)
 }
 
-fn is_ptr_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
-    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
-    let masked = builder.ins().band(val, mask);
-    builder.ins().icmp(IntCC::Equal, masked, tag)
-}
-
 fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -207,20 +198,6 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
     // block-local tracked-value carry if callers do not explicitly propagate tracking.
     // The runtime ref helpers already no-op for non-pointer boxed values.
     let _ = builder.ins().call(obj_ref_fn, &[val]);
-}
-
-fn emit_mark_has_ptrs(builder: &mut FunctionBuilder, obj_ptr: Value) {
-    let header_ptr = builder
-        .ins()
-        .iadd_imm(obj_ptr, i64::from(HEADER_FLAGS_OFFSET));
-    let flags = builder
-        .ins()
-        .load(types::I64, MemFlags::new(), header_ptr, 0);
-    let mask = builder.ins().iconst(types::I64, HEADER_HAS_PTRS_FLAG);
-    let new_flags = builder.ins().bor(flags, mask);
-    builder
-        .ins()
-        .store(MemFlags::new(), new_flags, header_ptr, 0);
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -606,19 +583,19 @@ fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
         }
     }
     for op in ops {
-        if let Some(out) = &op.out {
-            if out != "none" {
-                names.insert(out.clone());
-                if op.kind == "const_str" || op.kind == "const_bytes" {
-                    names.insert(format!("{}_ptr", out));
-                    names.insert(format!("{}_len", out));
-                }
+        if let Some(out) = &op.out
+            && out != "none"
+        {
+            names.insert(out.clone());
+            if op.kind == "const_str" || op.kind == "const_bytes" {
+                names.insert(format!("{}_ptr", out));
+                names.insert(format!("{}_len", out));
             }
         }
-        if let Some(var) = &op.var {
-            if var != "none" {
-                names.insert(var.clone());
-            }
+        if let Some(var) = &op.var
+            && var != "none"
+        {
+            names.insert(var.clone());
         }
         if let Some(args) = &op.args {
             for name in args {
@@ -967,13 +944,13 @@ impl SimpleBackend {
                                 "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
                                 _ => TrampolineKind::Plain,
                             };
-                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind) {
-                                if prev != kind {
-                                    panic!(
-                                        "conflicting task kinds for {func_name}: {:?} vs {:?}",
-                                        prev, kind
-                                    );
-                                }
+                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
+                                && prev != kind
+                            {
+                                panic!(
+                                    "conflicting task kinds for {func_name}: {:?} vs {:?}",
+                                    prev, kind
+                                );
                             }
                         }
                     }
@@ -1388,7 +1365,7 @@ impl SimpleBackend {
 
         let mut vars: HashMap<String, Variable> = HashMap::new();
         let var_names = collect_var_names(&func_ir.params, &func_ir.ops);
-        for (_idx, name) in var_names.iter().enumerate() {
+        for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
             vars.insert(name.clone(), var);
         }
@@ -1420,7 +1397,6 @@ impl SimpleBackend {
         let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
-        let mut last_out: Option<(String, Value)> = None;
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -1653,21 +1629,18 @@ impl SimpleBackend {
                     _ => continue,
                 }
             }
-            if !is_block_filled {
-                if let Some(stride) = trace_stride {
-                    if op_idx % stride == 0 {
-                        if let (Some(name_var), Some(len_var), Some(trace_fn)) =
-                            (trace_name_var, trace_len_var, trace_func)
-                        {
-                            let name_bits = builder.use_var(name_var);
-                            let len_bits = builder.use_var(len_var);
-                            let idx_bits = builder.ins().iconst(types::I64, op_idx as i64);
-                            builder
-                                .ins()
-                                .call(trace_fn, &[name_bits, len_bits, idx_bits]);
-                        }
-                    }
-                }
+            if !is_block_filled
+                && let Some(stride) = trace_stride
+                && op_idx % stride == 0
+                && let (Some(name_var), Some(len_var), Some(trace_fn)) =
+                    (trace_name_var, trace_len_var, trace_func)
+            {
+                let name_bits = builder.use_var(name_var);
+                let len_bits = builder.use_var(len_var);
+                let idx_bits = builder.ins().iconst(types::I64, op_idx as i64);
+                builder
+                    .ins()
+                    .call(trace_fn, &[name_bits, len_bits, idx_bits]);
             }
             let out_name = op.out.clone();
             let mut output_is_ptr = false;
@@ -8205,19 +8178,19 @@ impl SimpleBackend {
                         let obj = builder.inst_results(call)[0];
                         let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
-                        if let Some(arg_names) = args {
-                            if !arg_names.is_empty() {
-                                for (idx, arg_name) in arg_names.iter().enumerate() {
-                                    let val = var_get(&mut builder, &vars, arg_name)
-                                        .expect("Arg not found");
-                                    builder.ins().store(
-                                        MemFlags::new(),
-                                        *val,
-                                        obj_ptr,
-                                        (idx * 8) as i32,
-                                    );
-                                    builder.ins().call(local_inc_ref_obj, &[*val]);
-                                }
+                        if let Some(arg_names) = args
+                            && !arg_names.is_empty()
+                        {
+                            for (idx, arg_name) in arg_names.iter().enumerate() {
+                                let val =
+                                    var_get(&mut builder, &vars, arg_name).expect("Arg not found");
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    *val,
+                                    obj_ptr,
+                                    (idx * 8) as i32,
+                                );
+                                builder.ins().call(local_inc_ref_obj, &[*val]);
                             }
                         }
                         let out_name = op.out.unwrap();
@@ -8647,33 +8620,31 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
-                    if !is_block_filled {
-                        if let Some(block) = builder.current_block() {
-                            if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    let val =
-                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                            panic!(
-                                                "Tracked obj var not found in {} op {}: {}",
-                                                func_ir.name, op_idx, name
-                                            )
-                                        });
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                    if !is_block_filled && let Some(block) = builder.current_block() {
+                        if let Some(names) = block_tracked_obj.get_mut(&block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                let val =
+                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked obj var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
-                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    let val =
-                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                            panic!(
-                                                "Tracked ptr var not found in {} op {}: {}",
-                                                func_ir.name, op_idx, name
-                                            )
-                                        });
-                                    builder.ins().call(local_dec_ref, &[*val]);
-                                }
+                        }
+                        if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                let val =
+                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked ptr var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                                builder.ins().call(local_dec_ref, &[*val]);
                             }
                         }
                     }
@@ -8970,10 +8941,10 @@ impl SimpleBackend {
                     let src = *var_get(&mut builder, &vars, src_name)
                         .expect("inc_ref/borrow source not found");
                     builder.ins().call(local_inc_ref_obj, &[src]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            def_var_named(&mut builder, &vars, out_name.clone(), src);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        def_var_named(&mut builder, &vars, out_name.clone(), src);
                     }
                 }
                 "dec_ref" | "release" => {
@@ -8984,11 +8955,11 @@ impl SimpleBackend {
                     let src = *var_get(&mut builder, &vars, src_name)
                         .expect("dec_ref/release source not found");
                     builder.ins().call(local_dec_ref_obj, &[src]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let none_bits = builder.ins().iconst(types::I64, box_none());
-                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let none_bits = builder.ins().iconst(types::I64, box_none());
+                        def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                     }
                 }
                 "box" | "unbox" | "cast" | "widen" => {
@@ -8998,10 +8969,10 @@ impl SimpleBackend {
                         .expect("conversion op requires one source arg");
                     let src = *var_get(&mut builder, &vars, src_name)
                         .expect("conversion source not found");
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            def_var_named(&mut builder, &vars, out_name.clone(), src);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        def_var_named(&mut builder, &vars, out_name.clone(), src);
                     }
                 }
                 "identity_alias" => {
@@ -9011,10 +8982,10 @@ impl SimpleBackend {
                         .expect("identity_alias requires one source arg");
                     let src = *var_get(&mut builder, &vars, src_name)
                         .expect("identity_alias source not found");
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            def_var_named(&mut builder, &vars, out_name.clone(), src);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        def_var_named(&mut builder, &vars, out_name.clone(), src);
                     }
                 }
                 "call_guarded" => {
@@ -10496,11 +10467,11 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[*class_bits, *version_bits]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "isinstance" => {
@@ -10809,11 +10780,11 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "module_get_name" => {
@@ -11059,11 +11030,11 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*prev]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "exception_stack_set_depth" => {
@@ -11079,11 +11050,11 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "exception_last" => {
@@ -11362,8 +11333,8 @@ impl SimpleBackend {
                             carry_ptr.extend(names);
                         }
                         if block == entry_block && loop_depth == 0 {
-                            carry_obj.extend(tracked_obj_vars.drain(..));
-                            carry_ptr.extend(tracked_vars.drain(..));
+                            carry_obj.append(&mut tracked_obj_vars);
+                            carry_ptr.append(&mut tracked_vars);
                         }
                         if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
                             && func_ir.name.contains("_tmp_compress_repro11b__f")
@@ -12539,11 +12510,11 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[obj_ptr, offset_bits, *val]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "store_init" => {
@@ -12566,11 +12537,11 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[obj_ptr, offset_bits, *val]);
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "load" => {
@@ -12745,11 +12716,11 @@ impl SimpleBackend {
                             attr_len,
                         ],
                     );
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "guarded_field_init" => {
@@ -12805,11 +12776,11 @@ impl SimpleBackend {
                             attr_len,
                         ],
                     );
-                    if let Some(out_name) = op.out.as_ref() {
-                        if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
-                            def_var_named(&mut builder, &vars, out_name.clone(), res);
-                        }
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
                     }
                 }
                 "guard_type" | "guard_tag" => {
@@ -13574,22 +13545,6 @@ impl SimpleBackend {
                 _ => {}
             }
 
-            if op.kind != "check_exception" {
-                if let Some(name) = out_name.as_ref() {
-                    if name != "none" {
-                        if let Some(val) = var_get(&mut builder, &vars, name) {
-                            last_out = Some((name.clone(), *val));
-                        } else {
-                            last_out = None;
-                        }
-                    } else {
-                        last_out = None;
-                    }
-                } else {
-                    last_out = None;
-                }
-            }
-
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
             //
             // `tracked_obj_vars`/`tracked_vars` are populated only for values defined in the
@@ -13618,32 +13573,29 @@ impl SimpleBackend {
                 }
             }
 
-            if let Some(name) = out_name.as_ref() {
-                if name != "none" {
-                    if let Some(block) = builder.current_block() {
-                        if block == entry_block && loop_depth == 0 {
-                            if output_is_ptr {
-                                tracked_vars.push(name.clone());
-                            } else {
-                                tracked_obj_vars.push(name.clone());
-                            }
-                            if let Some(val) = var_get(&mut builder, &vars, &name) {
-                                entry_vars.insert(name.clone(), *val);
-                            }
-                        } else {
-                            if output_is_ptr {
-                                block_tracked_ptr
-                                    .entry(block)
-                                    .or_default()
-                                    .push(name.to_string());
-                            } else {
-                                block_tracked_obj
-                                    .entry(block)
-                                    .or_default()
-                                    .push(name.to_string());
-                            }
-                        }
+            if let Some(name) = out_name.as_ref()
+                && name != "none"
+                && let Some(block) = builder.current_block()
+            {
+                if block == entry_block && loop_depth == 0 {
+                    if output_is_ptr {
+                        tracked_vars.push(name.clone());
+                    } else {
+                        tracked_obj_vars.push(name.clone());
                     }
+                    if let Some(val) = var_get(&mut builder, &vars, name) {
+                        entry_vars.insert(name.clone(), *val);
+                    }
+                } else if output_is_ptr {
+                    block_tracked_ptr
+                        .entry(block)
+                        .or_default()
+                        .push(name.to_string());
+                } else {
+                    block_tracked_obj
+                        .entry(block)
+                        .or_default()
+                        .push(name.to_string());
                 }
             }
         }
@@ -13704,16 +13656,16 @@ impl SimpleBackend {
             std::panic::resume_unwind(payload);
         }
 
-        if let Some(config) = should_dump_ir() {
-            if dump_ir_matches(&config, &func_ir.name) {
-                dump_ir_ops(&func_ir, &config.mode);
-            }
+        if let Some(config) = should_dump_ir()
+            && dump_ir_matches(&config, &func_ir.name)
+        {
+            dump_ir_ops(&func_ir, &config.mode);
         }
 
-        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
-            if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter) {
-                eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
-            }
+        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
+            && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
+        {
+            eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
         }
 
         let id = self
@@ -13731,10 +13683,10 @@ impl SimpleBackend {
                     "Backend verification failed in {}: {err_text}",
                     func_ir.name
                 );
-                if let Some(config) = should_dump_ir() {
-                    if dump_ir_matches(&config, &func_ir.name) {
-                        dump_ir_ops(&func_ir, &config.mode);
-                    }
+                if let Some(config) = should_dump_ir()
+                    && dump_ir_matches(&config, &func_ir.name)
+                {
+                    dump_ir_ops(&func_ir, &config.mode);
                 }
                 if let Ok(flag) = std::env::var("MOLT_DUMP_CLIF_ON_ERROR") {
                     let clif = self.ctx.func.display().to_string();
@@ -13767,10 +13719,10 @@ impl SimpleBackend {
             }
             Err(payload) => {
                 eprintln!("Backend panic while defining function {}", func_ir.name);
-                if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
-                    if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter) {
-                        eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
-                    }
+                if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
+                    && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
+                {
+                    eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
                 }
                 std::panic::resume_unwind(payload);
             }

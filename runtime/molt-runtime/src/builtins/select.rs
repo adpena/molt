@@ -497,17 +497,17 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             Err(err) => return err,
         };
         if selector.entries.is_empty() {
-            if let Some(timeout) = timeout {
-                if timeout > 0.0 {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let _release = GilReleaseGuard::new();
-                        thread::sleep(Duration::from_secs_f64(timeout));
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        std::hint::spin_loop();
-                    }
+            if let Some(timeout) = timeout
+                && timeout > 0.0
+            {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let _release = GilReleaseGuard::new();
+                    thread::sleep(Duration::from_secs_f64(timeout));
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    std::hint::spin_loop();
                 }
             }
             let ptr = alloc_list(_py, &[]);

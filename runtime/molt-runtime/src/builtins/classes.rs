@@ -517,18 +517,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             generic_alias,
             union_type,
         ] {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                if object_type_id(ptr) == TYPE_ID_TYPE {
-                    object_set_class_bits(_py, ptr, type_obj);
-                    inc_ref_bits(_py, type_obj);
-                }
-            }
-        }
-        if let Some(ptr) = obj_from_bits(type_obj).as_ptr() {
-            if object_type_id(ptr) == TYPE_ID_TYPE {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr()
+                && object_type_id(ptr) == TYPE_ID_TYPE
+            {
                 object_set_class_bits(_py, ptr, type_obj);
                 inc_ref_bits(_py, type_obj);
             }
+        }
+        if let Some(ptr) = obj_from_bits(type_obj).as_ptr()
+            && object_type_id(ptr) == TYPE_ID_TYPE
+        {
+            object_set_class_bits(_py, ptr, type_obj);
+            inc_ref_bits(_py, type_obj);
         }
     }
 

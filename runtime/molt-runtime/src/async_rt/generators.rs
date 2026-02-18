@@ -605,10 +605,10 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
                 return generator_raise_from_pending(_py, ptr, exc_bits);
             }
             let res_bits = res as u64;
-            if let Some((_val, done)) = generator_unpack_pair(_py, res_bits) {
-                if done {
-                    generator_set_closed(_py, ptr, true);
-                }
+            if let Some((_val, done)) = generator_unpack_pair(_py, res_bits)
+                && done
+            {
+                generator_set_closed(_py, ptr, true);
             }
             res_bits
         }
@@ -700,10 +700,10 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
                 return generator_raise_from_pending(_py, ptr, exc_bits);
             }
             let res_bits = res as u64;
-            if let Some((_val, done)) = generator_unpack_pair(_py, res_bits) {
-                if done {
-                    generator_set_closed(_py, ptr, true);
-                }
+            if let Some((_val, done)) = generator_unpack_pair(_py, res_bits)
+                && done
+            {
+                generator_set_closed(_py, ptr, true);
             }
             res_bits
         }
@@ -784,10 +784,10 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
             return generator_raise_from_pending(_py, ptr, exc_bits);
         }
         let res_bits = res as u64;
-        if let Some((_val, done)) = generator_unpack_pair(_py, res_bits) {
-            if done {
-                generator_set_closed(_py, ptr, true);
-            }
+        if let Some((_val, done)) = generator_unpack_pair(_py, res_bits)
+            && done
+        {
+            generator_set_closed(_py, ptr, true);
         }
         res_bits
     }
@@ -797,43 +797,40 @@ unsafe fn generator_raise_from_pending(_py: &PyToken<'_>, ptr: *mut u8, exc_bits
     unsafe {
         let mut raise_bits = exc_bits;
         let mut converted = false;
-        if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() {
-            if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                let kind_bits = exception_kind_bits(exc_ptr);
-                if let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) {
-                    if kind == "StopIteration" {
-                        let rt_ptr =
-                            alloc_exception(_py, "RuntimeError", "generator raised StopIteration");
-                        if !rt_ptr.is_null() {
-                            let rt_bits = MoltObject::from_ptr(rt_ptr).bits();
-                            let cause_slot = rt_ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64;
-                            let old_cause = *cause_slot;
-                            if old_cause != exc_bits {
-                                dec_ref_bits(_py, old_cause);
-                                inc_ref_bits(_py, exc_bits);
-                                *cause_slot = exc_bits;
-                            }
-                            let context_slot =
-                                rt_ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
-                            let old_context = *context_slot;
-                            if old_context != exc_bits {
-                                dec_ref_bits(_py, old_context);
-                                inc_ref_bits(_py, exc_bits);
-                                *context_slot = exc_bits;
-                            }
-                            let suppress_bits = MoltObject::from_bool(true).bits();
-                            let suppress_slot =
-                                rt_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                            let old_suppress = *suppress_slot;
-                            if old_suppress != suppress_bits {
-                                dec_ref_bits(_py, old_suppress);
-                                inc_ref_bits(_py, suppress_bits);
-                                *suppress_slot = suppress_bits;
-                            }
-                            raise_bits = rt_bits;
-                            converted = true;
-                        }
+        if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
+            && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
+        {
+            let kind_bits = exception_kind_bits(exc_ptr);
+            if let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits))
+                && kind == "StopIteration"
+            {
+                let rt_ptr = alloc_exception(_py, "RuntimeError", "generator raised StopIteration");
+                if !rt_ptr.is_null() {
+                    let rt_bits = MoltObject::from_ptr(rt_ptr).bits();
+                    let cause_slot = rt_ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_cause = *cause_slot;
+                    if old_cause != exc_bits {
+                        dec_ref_bits(_py, old_cause);
+                        inc_ref_bits(_py, exc_bits);
+                        *cause_slot = exc_bits;
                     }
+                    let context_slot = rt_ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_context = *context_slot;
+                    if old_context != exc_bits {
+                        dec_ref_bits(_py, old_context);
+                        inc_ref_bits(_py, exc_bits);
+                        *context_slot = exc_bits;
+                    }
+                    let suppress_bits = MoltObject::from_bool(true).bits();
+                    let suppress_slot = rt_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_suppress = *suppress_slot;
+                    if old_suppress != suppress_bits {
+                        dec_ref_bits(_py, old_suppress);
+                        inc_ref_bits(_py, suppress_bits);
+                        *suppress_slot = suppress_bits;
+                    }
+                    raise_bits = rt_bits;
+                    converted = true;
                 }
             }
         }
@@ -972,14 +969,14 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
                 dec_ref_bits(_py, exc_bits);
                 return raised;
             }
-            if let Some((_val, done)) = generator_unpack_pair(_py, res) {
-                if !done {
-                    return raise_exception::<_>(
-                        _py,
-                        "RuntimeError",
-                        "generator ignored GeneratorExit",
-                    );
-                }
+            if let Some((_val, done)) = generator_unpack_pair(_py, res)
+                && !done
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "generator ignored GeneratorExit",
+                );
             }
             generator_set_closed(_py, ptr, true);
         }
@@ -1225,38 +1222,38 @@ pub(crate) unsafe fn asyncgen_await_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64
         };
         // Prefer the outer awaitable cached in the async generator's await slots.
         let gen_bits = asyncgen_gen_bits(ptr);
-        if let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) {
-            if object_type_id(gen_ptr) == TYPE_ID_GENERATOR {
-                let poll_fn_addr = (*header_from_obj_ptr(gen_ptr)).poll_fn;
-                let await_offsets: Vec<usize> = {
-                    let registry = runtime_state(_py).asyncgen_locals.lock().unwrap();
-                    match registry.get(&poll_fn_addr) {
-                        Some(entry) => entry
-                            .names
-                            .iter()
-                            .zip(&entry.offsets)
-                            .filter_map(|(name_bits, offset)| {
-                                let name = string_obj_to_owned(obj_from_bits(*name_bits))?;
-                                if name.starts_with("__await_future_") {
-                                    Some(*offset)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect(),
-                        None => Vec::new(),
-                    }
-                };
-                let missing = missing_bits(_py);
-                for offset in await_offsets {
-                    let bits = *generator_slot_ptr(gen_ptr, offset);
-                    let obj = obj_from_bits(bits);
-                    if bits == missing || obj.is_none() {
-                        continue;
-                    }
-                    inc_ref_bits(_py, bits);
-                    return bits;
+        if let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits)
+            && object_type_id(gen_ptr) == TYPE_ID_GENERATOR
+        {
+            let poll_fn_addr = (*header_from_obj_ptr(gen_ptr)).poll_fn;
+            let await_offsets: Vec<usize> = {
+                let registry = runtime_state(_py).asyncgen_locals.lock().unwrap();
+                match registry.get(&poll_fn_addr) {
+                    Some(entry) => entry
+                        .names
+                        .iter()
+                        .zip(&entry.offsets)
+                        .filter_map(|(name_bits, offset)| {
+                            let name = string_obj_to_owned(obj_from_bits(*name_bits))?;
+                            if name.starts_with("__await_future_") {
+                                Some(*offset)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    None => Vec::new(),
                 }
+            };
+            let missing = missing_bits(_py);
+            for offset in await_offsets {
+                let bits = *generator_slot_ptr(gen_ptr, offset);
+                let obj = obj_from_bits(bits);
+                if bits == missing || obj.is_none() {
+                    continue;
+                }
+                inc_ref_bits(_py, bits);
+                return bits;
             }
         }
 
@@ -3390,10 +3387,10 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
                     asyncio_attr_lookup_allow_missing(_py, source_bits, b"_cancel_message");
                 let cancel_msg_bits = cancel_msg_ref.unwrap_or_else(|| MoltObject::none().bits());
                 let out_bits = asyncio_call_method1(_py, target_bits, b"cancel", cancel_msg_bits);
-                if let Some(found_bits) = cancel_msg_ref {
-                    if !obj_from_bits(found_bits).is_none() {
-                        dec_ref_bits(_py, found_bits);
-                    }
+                if let Some(found_bits) = cancel_msg_ref
+                    && !obj_from_bits(found_bits).is_none()
+                {
+                    dec_ref_bits(_py, found_bits);
                 }
                 if !obj_from_bits(out_bits).is_none() {
                     dec_ref_bits(_py, out_bits);
@@ -3790,17 +3787,17 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
 pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj_bits = molt_task_new(poll_fn_addr, closure_size, TASK_KIND_FUTURE);
-        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
-            if let Some(obj_ptr) = resolve_obj_ptr(obj_bits) {
-                unsafe {
-                    let header = header_from_obj_ptr(obj_ptr);
-                    eprintln!(
-                        "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
-                        obj_bits,
-                        poll_fn_addr,
-                        (*header).size
-                    );
-                }
+        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok()
+            && let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
+        {
+            unsafe {
+                let header = header_from_obj_ptr(obj_ptr);
+                eprintln!(
+                    "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
+                    obj_bits,
+                    poll_fn_addr,
+                    (*header).size
+                );
             }
         }
         obj_bits
@@ -4040,13 +4037,12 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
 
             if payload_len >= 1 {
                 let deadline_obj = obj_from_bits(*payload_ptr);
-                if let Some(deadline) = to_f64(deadline_obj) {
-                    if deadline.is_finite()
-                        && deadline > 0.0
-                        && crate::monotonic_now_secs(_py) < deadline
-                    {
-                        return pending_bits_i64();
-                    }
+                if let Some(deadline) = to_f64(deadline_obj)
+                    && deadline.is_finite()
+                    && deadline > 0.0
+                    && crate::monotonic_now_secs(_py) < deadline
+                {
+                    return pending_bits_i64();
                 }
             }
 

@@ -573,10 +573,10 @@ fn parse_text_default(value: &str) -> Option<TextDefaultValue> {
         return Some(TextDefaultValue::String(unescape_text_sig_string(inner)));
     }
 
-    if trimmed.chars().any(|ch| matches!(ch, '.' | 'e' | 'E')) {
-        if let Ok(value) = trimmed.parse::<f64>() {
-            return Some(TextDefaultValue::Float(value));
-        }
+    if trimmed.chars().any(|ch| matches!(ch, '.' | 'e' | 'E'))
+        && let Ok(value) = trimmed.parse::<f64>()
+    {
+        return Some(TextDefaultValue::Float(value));
     }
     if let Ok(value) = trimmed.parse::<i64>() {
         return Some(TextDefaultValue::Int(value));
@@ -978,13 +978,13 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
                 Ok(value) => value,
                 Err(err) => return err,
             };
-            if let Some(arg_names_bits) = molt_args {
-                if !obj_from_bits(arg_names_bits).is_none() {
-                    return match signature_payload_from_molt(_py, obj_bits, arg_names_bits) {
-                        Ok(bits) => bits,
-                        Err(err) => err,
-                    };
-                }
+            if let Some(arg_names_bits) = molt_args
+                && !obj_from_bits(arg_names_bits).is_none()
+            {
+                return match signature_payload_from_molt(_py, obj_bits, arg_names_bits) {
+                    Ok(bits) => bits,
+                    Err(err) => err,
+                };
             }
         }
 
@@ -992,21 +992,21 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
             Ok(value) => value,
             Err(err) => return err,
         };
-        if let Some(code_bits) = code_bits_opt {
-            if !obj_from_bits(code_bits).is_none() {
-                if !is_builtin_fn {
-                    let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => MoltObject::none().bits(),
-                        Err(err) => err,
-                    };
-                    dec_ref_bits(_py, code_bits);
-                    if !obj_from_bits(out).is_none() {
-                        return out;
-                    }
-                } else {
-                    dec_ref_bits(_py, code_bits);
+        if let Some(code_bits) = code_bits_opt
+            && !obj_from_bits(code_bits).is_none()
+        {
+            if !is_builtin_fn {
+                let out = match signature_payload_from_code(_py, obj_bits, code_bits) {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => MoltObject::none().bits(),
+                    Err(err) => err,
+                };
+                dec_ref_bits(_py, code_bits);
+                if !obj_from_bits(out).is_none() {
+                    return out;
                 }
+            } else {
+                dec_ref_bits(_py, code_bits);
             }
         }
 

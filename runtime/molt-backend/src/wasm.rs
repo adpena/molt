@@ -418,13 +418,13 @@ impl WasmBackend {
                                 "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
                                 _ => TrampolineKind::Plain,
                             };
-                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind) {
-                                if prev != kind {
-                                    panic!(
-                                        "conflicting task kinds for {func_name}: {:?} vs {:?}",
-                                        prev, kind
-                                    );
-                                }
+                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
+                                && prev != kind
+                            {
+                                panic!(
+                                    "conflicting task kinds for {func_name}: {:?} vs {:?}",
+                                    prev, kind
+                                );
                             }
                         }
                     }
@@ -1243,25 +1243,25 @@ impl WasmBackend {
                 max_func_arity = max_func_arity.max(func_ir.params.len());
             }
             for op in &func_ir.ops {
-                if !is_poll && (op.kind == "call_func" || op.kind == "invoke_ffi") {
-                    if let Some(args) = &op.args {
-                        if !args.is_empty() {
-                            max_call_arity = max_call_arity.max(args.len() - 1);
-                        }
-                    }
+                if !is_poll
+                    && (op.kind == "call_func" || op.kind == "invoke_ffi")
+                    && let Some(args) = &op.args
+                    && !args.is_empty()
+                {
+                    max_call_arity = max_call_arity.max(args.len() - 1);
                 }
-                if op.kind == "builtin_func" {
-                    if let Some(name) = op.s_value.as_ref() {
-                        let arity = op.value.unwrap_or(0) as usize;
-                        if let Some(prev) = builtin_trampoline_specs.get(name) {
-                            if *prev != arity {
-                                panic!(
-                                    "builtin trampoline arity mismatch for {name}: {prev} vs {arity}"
-                                );
-                            }
-                        } else {
-                            builtin_trampoline_specs.insert(name.clone(), arity);
+                if op.kind == "builtin_func"
+                    && let Some(name) = op.s_value.as_ref()
+                {
+                    let arity = op.value.unwrap_or(0) as usize;
+                    if let Some(prev) = builtin_trampoline_specs.get(name) {
+                        if *prev != arity {
+                            panic!(
+                                "builtin trampoline arity mismatch for {name}: {prev} vs {arity}"
+                            );
                         }
+                    } else {
+                        builtin_trampoline_specs.insert(name.clone(), arity);
                     }
                 }
             }
@@ -2083,7 +2083,7 @@ impl WasmBackend {
         }
 
         let page_size: u64 = 64 * 1024;
-        let required_pages = (self.data_offset as u64 + page_size - 1) / page_size;
+        let required_pages = (self.data_offset as u64).div_ceil(page_size);
         let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
             .ok()
             .and_then(|val| val.parse::<u64>().ok())
@@ -2183,7 +2183,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::LocalSet(args_base_local));
                         }
-                        let mut offset = GEN_CONTROL_SIZE as i32;
+                        let mut offset = GEN_CONTROL_SIZE;
                         if has_closure {
                             func.instruction(&Instruction::LocalGet(base_local));
                             func.instruction(&Instruction::I32Const(offset));
@@ -2325,7 +2325,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::LocalSet(args_base_local));
                         }
-                        let mut offset = GEN_CONTROL_SIZE as i32;
+                        let mut offset = GEN_CONTROL_SIZE;
                         if has_closure {
                             func.instruction(&Instruction::LocalGet(base_local));
                             func.instruction(&Instruction::I32Const(offset));
@@ -5970,11 +5970,11 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
-                        if let Some(out) = op.out.as_ref() {
-                            if out != "none" {
-                                func.instruction(&Instruction::I64Const(box_none()));
-                                func.instruction(&Instruction::LocalSet(locals[out]));
-                            }
+                        if let Some(out) = op.out.as_ref()
+                            && out != "none"
+                        {
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            func.instruction(&Instruction::LocalSet(locals[out]));
                         }
                         func.instruction(&Instruction::End);
 
@@ -6045,11 +6045,11 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
-                        if let Some(out) = op.out.as_ref() {
-                            if out != "none" {
-                                func.instruction(&Instruction::I64Const(box_none()));
-                                func.instruction(&Instruction::LocalSet(locals[out]));
-                            }
+                        if let Some(out) = op.out.as_ref()
+                            && out != "none"
+                        {
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            func.instruction(&Instruction::LocalSet(locals[out]));
                         }
                         func.instruction(&Instruction::End);
 
@@ -6352,11 +6352,11 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
-                        if let Some(out) = op.out.as_ref() {
-                            if out != "none" {
-                                func.instruction(&Instruction::I64Const(box_none()));
-                                func.instruction(&Instruction::LocalSet(locals[out]));
-                            }
+                        if let Some(out) = op.out.as_ref()
+                            && out != "none"
+                        {
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            func.instruction(&Instruction::LocalSet(locals[out]));
                         }
                         func.instruction(&Instruction::End);
 
@@ -6438,11 +6438,11 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
-                        if let Some(out) = op.out.as_ref() {
-                            if out != "none" {
-                                func.instruction(&Instruction::I64Const(box_none()));
-                                func.instruction(&Instruction::LocalSet(locals[out]));
-                            }
+                        if let Some(out) = op.out.as_ref()
+                            && out != "none"
+                        {
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            func.instruction(&Instruction::LocalSet(locals[out]));
                         }
                         func.instruction(&Instruction::End);
 
@@ -6604,12 +6604,12 @@ impl WasmBackend {
                         let src = locals[src_name];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                        if let Some(out_name) = op.out.as_ref() {
-                            if out_name != "none" {
-                                let out = locals[out_name];
-                                func.instruction(&Instruction::LocalGet(src));
-                                func.instruction(&Instruction::LocalSet(out));
-                            }
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let out = locals[out_name];
+                            func.instruction(&Instruction::LocalGet(src));
+                            func.instruction(&Instruction::LocalSet(out));
                         }
                     }
                     "dec_ref" | "release" => {
@@ -6620,12 +6620,12 @@ impl WasmBackend {
                         let src = locals[src_name];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-                        if let Some(out_name) = op.out.as_ref() {
-                            if out_name != "none" {
-                                let out = locals[out_name];
-                                func.instruction(&Instruction::I64Const(box_none()));
-                                func.instruction(&Instruction::LocalSet(out));
-                            }
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let out = locals[out_name];
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            func.instruction(&Instruction::LocalSet(out));
                         }
                     }
                     "box" | "unbox" | "cast" | "widen" => {
@@ -7599,15 +7599,14 @@ impl WasmBackend {
                         control_stack.push(ControlKind::If);
                     }
                     "label" => {
-                        if let Some(label_id) = op.value {
-                            if let Some(top) = label_stack.last().copied() {
-                                if top == label_id {
-                                    label_stack.pop();
-                                    label_depths.remove(&label_id);
-                                    func.instruction(&Instruction::End);
-                                    control_stack.pop();
-                                }
-                            }
+                        if let Some(label_id) = op.value
+                            && let Some(top) = label_stack.last().copied()
+                            && top == label_id
+                        {
+                            label_stack.pop();
+                            label_depths.remove(&label_id);
+                            func.instruction(&Instruction::End);
+                            control_stack.pop();
                         }
                     }
                     "else" => {
@@ -7714,10 +7713,10 @@ impl WasmBackend {
                 block_map_base_local.expect("block map base local missing for stateful wasm");
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if op.kind == "label" || op.kind == "state_label" {
-                    if let Some(label_id) = op.value {
-                        label_to_index.insert(label_id, idx);
-                    }
+                if (op.kind == "label" || op.kind == "state_label")
+                    && let Some(label_id) = op.value
+                {
+                    label_to_index.insert(label_id, idx);
                 }
             }
 
@@ -7773,10 +7772,10 @@ impl WasmBackend {
                         }
                     }
                     "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
-                        if let Some(start_idx) = loop_scan.last().copied() {
-                            if let Some(end_idx) = loop_end_for_start.get(&start_idx).copied() {
-                                loop_break_target.insert(idx, end_idx);
-                            }
+                        if let Some(start_idx) = loop_scan.last().copied()
+                            && let Some(end_idx) = loop_end_for_start.get(&start_idx).copied()
+                        {
+                            loop_break_target.insert(idx, end_idx);
                         }
                     }
                     _ => {}
@@ -8462,10 +8461,10 @@ impl WasmBackend {
                 block_map_base_local.expect("block map base local missing for jumpful wasm");
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if op.kind == "label" {
-                    if let Some(label_id) = op.value {
-                        label_to_index.insert(label_id, idx);
-                    }
+                if op.kind == "label"
+                    && let Some(label_id) = op.value
+                {
+                    label_to_index.insert(label_id, idx);
                 }
             }
 
@@ -8521,10 +8520,10 @@ impl WasmBackend {
                         }
                     }
                     "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
-                        if let Some(start_idx) = loop_scan.last().copied() {
-                            if let Some(end_idx) = loop_end_for_start.get(&start_idx).copied() {
-                                loop_break_target.insert(idx, end_idx);
-                            }
+                        if let Some(start_idx) = loop_scan.last().copied()
+                            && let Some(end_idx) = loop_end_for_start.get(&start_idx).copied()
+                        {
+                            loop_break_target.insert(idx, end_idx);
                         }
                     }
                     _ => {}
@@ -9251,19 +9250,16 @@ fn add_reloc_sections(
                 data_section_index = Some(section_index);
                 section_index += 1;
                 for (segment_index, data) in reader.into_iter().enumerate() {
-                    if let Ok(data) = data {
-                        if let DataKind::Active { offset_expr, .. } = data.kind {
-                            let mut ops = offset_expr.get_operators_reader();
-                            if let Ok((Operator::I32Const { .. }, op_offset)) =
-                                ops.read_with_offset()
-                            {
-                                let offset =
-                                    (op_offset + 1).saturating_sub(data_section_start) as u32;
-                                pending_data.push(PendingReloc::DataAddr {
-                                    offset,
-                                    segment_index: segment_index as u32,
-                                });
-                            }
+                    if let Ok(data) = data
+                        && let DataKind::Active { offset_expr, .. } = data.kind
+                    {
+                        let mut ops = offset_expr.get_operators_reader();
+                        if let Ok((Operator::I32Const { .. }, op_offset)) = ops.read_with_offset() {
+                            let offset = (op_offset + 1).saturating_sub(data_section_start) as u32;
+                            pending_data.push(PendingReloc::DataAddr {
+                                offset,
+                                segment_index: segment_index as u32,
+                            });
                         }
                     }
                 }
@@ -9419,28 +9415,27 @@ fn add_reloc_sections(
             offset,
             segment_index,
         } = reloc
+            && let Some(index) = data_symbol_map.get(segment_index as usize)
         {
-            if let Some(index) = data_symbol_map.get(segment_index as usize) {
-                data_entries.push(RelocEntry {
-                    ty: 4,
-                    offset,
-                    index: *index,
-                    addend: 0,
-                });
-            }
+            data_entries.push(RelocEntry {
+                ty: 4,
+                offset,
+                index: *index,
+                addend: 0,
+            });
         }
     }
 
     for reloc in pending_elem {
-        if let PendingReloc::Function { offset, func_index } = reloc {
-            if let Some(index) = func_symbol_map.get(func_index as usize) {
-                elem_entries.push(RelocEntry {
-                    ty: 0,
-                    offset,
-                    index: *index,
-                    addend: 0,
-                });
-            }
+        if let PendingReloc::Function { offset, func_index } = reloc
+            && let Some(index) = func_symbol_map.get(func_index as usize)
+        {
+            elem_entries.push(RelocEntry {
+                ty: 0,
+                offset,
+                index: *index,
+                addend: 0,
+            });
         }
     }
 
@@ -9455,17 +9450,17 @@ fn add_reloc_sections(
         let reloc_code = encode_reloc_section("reloc.CODE", code_section_index, &code_entries);
         append_custom_section(&mut bytes, &reloc_code);
     }
-    if !data_entries.is_empty() {
-        if let Some(index) = data_section_index {
-            let reloc_data = encode_reloc_section("reloc.DATA", index, &data_entries);
-            append_custom_section(&mut bytes, &reloc_data);
-        }
+    if !data_entries.is_empty()
+        && let Some(index) = data_section_index
+    {
+        let reloc_data = encode_reloc_section("reloc.DATA", index, &data_entries);
+        append_custom_section(&mut bytes, &reloc_data);
     }
-    if !elem_entries.is_empty() {
-        if let Some(index) = element_section_index {
-            let reloc_elem = encode_reloc_section("reloc.ELEM", index, &elem_entries);
-            append_custom_section(&mut bytes, &reloc_elem);
-        }
+    if !elem_entries.is_empty()
+        && let Some(index) = element_section_index
+    {
+        let reloc_elem = encode_reloc_section("reloc.ELEM", index, &elem_entries);
+        append_custom_section(&mut bytes, &reloc_elem);
     }
 
     bytes

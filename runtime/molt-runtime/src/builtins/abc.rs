@@ -238,12 +238,11 @@ fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64
     unsafe {
         if object_type_id(cls_ptr) == TYPE_ID_TYPE {
             let dict_bits = class_dict_bits(cls_ptr);
-            if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(value_bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                        return value_bits;
-                    }
-                }
+            if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits)
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+                && let Some(value_bits) = dict_get_in_place(_py, dict_ptr, name_bits)
+            {
+                return value_bits;
             }
         }
     }

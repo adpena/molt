@@ -1479,8 +1479,11 @@ fn tls_client_connect_native(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+type TlsServerConfigCache = Mutex<HashMap<(String, String), Arc<ServerConfig>>>;
+
+#[cfg(not(target_arch = "wasm32"))]
 fn tls_server_config_cache() -> &'static Mutex<HashMap<(String, String), Arc<ServerConfig>>> {
-    static CACHE: OnceLock<Mutex<HashMap<(String, String), Arc<ServerConfig>>>> = OnceLock::new();
+    static CACHE: OnceLock<TlsServerConfigCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1847,6 +1850,8 @@ pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass runtime-encoded values; returned handle is owned by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     host_bits: u64,
@@ -1912,6 +1917,8 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass a valid socket fd encoded as runtime int bits.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     fd_bits: u64,
@@ -2048,6 +2055,8 @@ pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass a valid socket fd and certificate/key path string bits.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     fd_bits: u64,
@@ -2431,11 +2440,12 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         if payload_len >= 3 {
             // SAFETY: payload length check guarantees index 2 exists.
             let deadline_obj = obj_from_bits(unsafe { *payload_ptr.add(2) });
-            if let Some(deadline) = to_f64(deadline_obj) {
-                if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
-                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
-                }
+            if let Some(deadline) = to_f64(deadline_obj)
+                && deadline.is_finite()
+                && monotonic_now_secs(_py) >= deadline
+            {
+                runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                return raise_exception::<i64>(_py, "TimeoutError", "timed out");
             }
         }
         pending_bits_i64()
@@ -2854,10 +2864,10 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
         if stream.refs.fetch_sub(1, AtomicOrdering::AcqRel) > 1 {
             return;
         }
-        if !stream.closed.load(AtomicOrdering::Relaxed) {
-            if let Some(hook) = stream.close_hook {
-                hook(stream.hook_ctx);
-            }
+        if !stream.closed.load(AtomicOrdering::Relaxed)
+            && let Some(hook) = stream.close_hook
+        {
+            hook(stream.hook_ctx);
         }
         release_ptr(stream_ptr);
         // SAFETY: this is the final ref-counted owner.

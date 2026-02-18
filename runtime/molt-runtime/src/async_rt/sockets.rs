@@ -173,7 +173,7 @@ fn socket_ptr_from_fd(fd: SocketFd) -> Option<*mut u8> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
-    if let Some(fd) = to_i64(obj_from_bits(socket_bits)).or_else(|| {
+    if let Some(fd) = to_i64(obj_from_bits(socket_bits)).or({
         if socket_bits <= i64::MAX as u64 {
             Some(socket_bits as i64)
         } else {
@@ -1727,7 +1727,7 @@ fn socket_wait_ready(
                 .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
             Ok(fd)
         })?;
-        return socket_wait_ready_poll(fd, events, timeout);
+        socket_wait_ready_poll(fd, events, timeout)
     }
     #[cfg(not(unix))]
     {
@@ -2707,7 +2707,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                             if inner.family == libc::AF_UNIX {
                                 let raw_fd = sock.into_raw_fd();
                                 let std_stream =
-                                    unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
+                                    std::os::unix::net::UnixStream::from_raw_fd(raw_fd);
                                 std_stream.set_nonblocking(true)?;
                                 inner.kind = MoltSocketKind::UnixStream(
                                     mio::net::UnixStream::from_std(std_stream),
@@ -2737,9 +2737,8 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                                 #[cfg(unix)]
                                 if inner.family == libc::AF_UNIX {
                                     let raw_fd = sock.into_raw_fd();
-                                    let std_stream = unsafe {
-                                        std::os::unix::net::UnixStream::from_raw_fd(raw_fd)
-                                    };
+                                    let std_stream =
+                                        std::os::unix::net::UnixStream::from_raw_fd(raw_fd);
                                     std_stream.set_nonblocking(true)?;
                                     inner.kind = MoltSocketKind::UnixStream(
                                         mio::net::UnixStream::from_std(std_stream),
@@ -2951,7 +2950,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                             if inner.family == libc::AF_UNIX {
                                 let raw_fd = sock.into_raw_fd();
                                 let std_stream =
-                                    unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
+                                    std::os::unix::net::UnixStream::from_raw_fd(raw_fd);
                                 std_stream.set_nonblocking(true)?;
                                 inner.kind = MoltSocketKind::UnixStream(
                                     mio::net::UnixStream::from_std(std_stream),
@@ -2983,9 +2982,8 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                                 #[cfg(unix)]
                                 if inner.family == libc::AF_UNIX {
                                     let raw_fd = sock.into_raw_fd();
-                                    let std_stream = unsafe {
-                                        std::os::unix::net::UnixStream::from_raw_fd(raw_fd)
-                                    };
+                                    let std_stream =
+                                        std::os::unix::net::UnixStream::from_raw_fd(raw_fd);
                                     std_stream.set_nonblocking(true)?;
                                     inner.kind = MoltSocketKind::UnixStream(
                                         mio::net::UnixStream::from_std(std_stream),
@@ -3223,18 +3221,18 @@ pub unsafe extern "C" fn molt_socket_recv_into(
             let size = to_i64(obj_from_bits(size_bits)).unwrap_or(-1);
             let target_len;
             let mut use_memoryview = false;
-            let type_id = unsafe { object_type_id(buffer_ptr) };
+            let type_id = object_type_id(buffer_ptr);
             if type_id == TYPE_ID_BYTEARRAY {
-                target_len = unsafe { bytearray_len(buffer_ptr) };
+                target_len = bytearray_len(buffer_ptr);
             } else if type_id == TYPE_ID_MEMORYVIEW {
-                if unsafe { memoryview_readonly(buffer_ptr) } {
+                if memoryview_readonly(buffer_ptr) {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
                         "recv_into requires a writable buffer",
                     );
                 }
-                target_len = unsafe { memoryview_len(buffer_ptr) };
+                target_len = memoryview_len(buffer_ptr);
                 use_memoryview = true;
             } else {
                 return raise_exception::<_>(
@@ -3264,16 +3262,14 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                         std::io::Error::new(ErrorKind::NotConnected, "socket closed")
                     })?;
                     if use_memoryview {
-                        if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
+                        if let Some(slice) = memoryview_bytes_slice_mut(buffer_ptr) {
                             let len = size.min(slice.len());
-                            let ret = unsafe {
-                                libc::recv(
-                                    libc_socket(fd),
-                                    slice.as_mut_ptr() as *mut c_void,
-                                    len,
-                                    flags,
-                                )
-                            };
+                            let ret = libc::recv(
+                                libc_socket(fd),
+                                slice.as_mut_ptr() as *mut c_void,
+                                len,
+                                flags,
+                            );
                             if ret >= 0 {
                                 Ok((ret as usize, None))
                             } else {
@@ -3281,14 +3277,12 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                             }
                         } else {
                             let mut tmp = vec![0u8; size];
-                            let ret = unsafe {
-                                libc::recv(
-                                    libc_socket(fd),
-                                    tmp.as_mut_ptr() as *mut c_void,
-                                    tmp.len(),
-                                    flags,
-                                )
-                            };
+                            let ret = libc::recv(
+                                libc_socket(fd),
+                                tmp.as_mut_ptr() as *mut c_void,
+                                tmp.len(),
+                                flags,
+                            );
                             if ret >= 0 {
                                 Ok((ret as usize, Some(tmp)))
                             } else {
@@ -3297,14 +3291,12 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                         }
                     } else {
                         let buf = bytearray_vec(buffer_ptr);
-                        let ret = unsafe {
-                            libc::recv(
-                                libc_socket(fd),
-                                buf.as_mut_ptr() as *mut c_void,
-                                size,
-                                flags,
-                            )
-                        };
+                        let ret = libc::recv(
+                            libc_socket(fd),
+                            buf.as_mut_ptr() as *mut c_void,
+                            size,
+                            flags,
+                        );
                         if ret >= 0 {
                             Ok((ret as usize, None))
                         } else {
@@ -3314,12 +3306,11 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                 });
                 match res {
                     Ok((n, tmp)) => {
-                        if use_memoryview {
-                            if let Some(tmp) = tmp.as_ref() {
-                                if let Err(msg) = memoryview_write_bytes(buffer_ptr, &tmp[..n]) {
-                                    return raise_exception::<u64>(_py, "TypeError", &msg);
-                                }
-                            }
+                        if use_memoryview
+                            && let Some(tmp) = tmp.as_ref()
+                            && let Err(msg) = memoryview_write_bytes(buffer_ptr, &tmp[..n])
+                        {
+                            return raise_exception::<u64>(_py, "TypeError", &msg);
                         }
                         return MoltObject::from_int(n as i64).bits();
                     }
@@ -3573,16 +3564,14 @@ pub unsafe extern "C" fn molt_socket_sendto(
                     let fd = inner.raw_socket().ok_or_else(|| {
                         std::io::Error::new(ErrorKind::NotConnected, "socket closed")
                     })?;
-                    let ret = unsafe {
-                        libc::sendto(
-                            libc_socket(fd),
-                            data_ptr as *const c_void,
-                            data_len,
-                            flags,
-                            sockaddr.as_ptr() as *const libc::sockaddr,
-                            sockaddr.len(),
-                        )
-                    };
+                    let ret = libc::sendto(
+                        libc_socket(fd),
+                        data_ptr as *const c_void,
+                        data_len,
+                        flags,
+                        sockaddr.as_ptr() as *const libc::sockaddr,
+                        sockaddr.len(),
+                    );
                     if ret >= 0 {
                         Ok(ret as usize)
                     } else {
@@ -3832,14 +3821,11 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
             });
             match res {
                 Ok((n, addr, tmp)) => {
-                    if use_memoryview {
-                        if let Some(tmp) = tmp.as_ref() {
-                            if let Err(msg) =
-                                unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..n]) }
-                            {
-                                return raise_exception::<u64>(_py, "TypeError", &msg);
-                            }
-                        }
+                    if use_memoryview
+                        && let Some(tmp) = tmp.as_ref()
+                        && let Err(msg) = unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..n]) }
+                    {
+                        return raise_exception::<u64>(_py, "TypeError", &msg);
                     }
                     let n_bits = MoltObject::from_int(n as i64).bits();
                     let addr_bits = sockaddr_to_bits(_py, &addr);
@@ -3970,7 +3956,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                     })?;
                     #[cfg(unix)]
                     {
-                        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+                        let mut msg: libc::msghdr = std::mem::zeroed();
                         if let Some(addr) = sockaddr.as_ref() {
                             msg.msg_name = addr.as_ptr() as *mut c_void;
                             msg.msg_namelen = addr.len();
@@ -3997,8 +3983,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                                     )
                                 })?;
                         }
-                        let ret =
-                            unsafe { libc::sendmsg(libc_socket(fd), &msg as *const _, flags) };
+                        let ret = libc::sendmsg(libc_socket(fd), &msg as *const _, flags);
                         if ret >= 0 {
                             Ok(ret as usize)
                         } else {
@@ -6660,15 +6645,13 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             let mut cur = res;
             while !cur.is_null() {
                 let ai = &*cur;
-                let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut storage: libc::sockaddr_storage = std::mem::zeroed();
                 let len = ai.ai_addrlen;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        ai.ai_addr as *const u8,
-                        &mut storage as *mut _ as *mut u8,
-                        len as usize,
-                    );
-                }
+                std::ptr::copy_nonoverlapping(
+                    ai.ai_addr as *const u8,
+                    &mut storage as *mut _ as *mut u8,
+                    len as usize,
+                );
                 let sockaddr = sock_addr_from_storage(storage, len);
                 let sockaddr_bits = sockaddr_to_bits(_py, &sockaddr);
                 let canon_bits = if !ai.ai_canonname.is_null() {
@@ -6701,15 +6684,13 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                     break;
                 }
                 let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                unsafe {
-                    molt_list_builder_append(builder_bits, tuple_bits);
-                }
+                molt_list_builder_append(builder_bits, tuple_bits);
                 dec_ref_bits(_py, canon_bits);
                 dec_ref_bits(_py, sockaddr_bits);
                 cur = ai.ai_next;
             }
             libc::freeaddrinfo(res);
-            unsafe { molt_list_builder_finish_owned(builder_bits) }
+            molt_list_builder_finish_owned(builder_bits)
         })
     }
 }
@@ -7360,10 +7341,11 @@ fn socket_collect_reverse_lookup_details(
         if entry.len() < 5 {
             continue;
         }
-        if let Some(canon) = string_obj_to_owned(obj_from_bits(entry[3])) {
-            if canon != primary_name && canon.parse::<IpAddr>().is_err() {
-                socket_push_unique(&mut aliases, canon);
-            }
+        if let Some(canon) = string_obj_to_owned(obj_from_bits(entry[3]))
+            && canon != primary_name
+            && canon.parse::<IpAddr>().is_err()
+        {
+            socket_push_unique(&mut aliases, canon);
         }
         let Some(sockaddr_ptr) = obj_from_bits(entry[4]).as_ptr() else {
             continue;
@@ -7395,10 +7377,10 @@ fn socket_collect_reverse_lookup_details(
             dec_ref_bits(_py, primary_bits);
             if exception_pending(_py) {
                 clear_exception(_py);
-            } else if let Some(host) = string_obj_to_owned(obj_from_bits(fallback_bits)) {
-                if host.parse::<IpAddr>().is_ok() {
-                    socket_push_unique(&mut addresses, host);
-                }
+            } else if let Some(host) = string_obj_to_owned(obj_from_bits(fallback_bits))
+                && host.parse::<IpAddr>().is_ok()
+            {
+                socket_push_unique(&mut addresses, host);
             }
             if !obj_from_bits(fallback_bits).is_none() {
                 dec_ref_bits(_py, fallback_bits);
@@ -7541,11 +7523,11 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
                         if entry.len() < 4 {
                             continue;
                         }
-                        if let Some(canon) = string_obj_to_owned(obj_from_bits(entry[3])) {
-                            if !canon.is_empty() {
-                                resolved = canon;
-                                break;
-                            }
+                        if let Some(canon) = string_obj_to_owned(obj_from_bits(entry[3]))
+                            && !canon.is_empty()
+                        {
+                            resolved = canon;
+                            break;
                         }
                     }
                 }
@@ -7672,11 +7654,10 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
                                             for alias_bits in alias_items {
                                                 if let Some(alias) =
                                                     string_obj_to_owned(obj_from_bits(*alias_bits))
+                                                    && alias.contains('.')
                                                 {
-                                                    if alias.contains('.') {
-                                                        found = Some(alias);
-                                                        break;
-                                                    }
+                                                    found = Some(alias);
+                                                    break;
                                                 }
                                             }
                                             found

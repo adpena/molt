@@ -212,14 +212,13 @@ unsafe fn call_type_with_builder(
             &runtime_state(_py).interned.abstractmethods_name,
             b"__abstractmethods__",
         );
-        if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, call_ptr, abstract_name_bits) {
-            if !obj_from_bits(abstract_bits).is_none()
-                && is_truthy(_py, obj_from_bits(abstract_bits))
-            {
-                let class_name = class_name_for_error(class_bits);
-                let msg = format!("Can't instantiate abstract class {class_name}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, call_ptr, abstract_name_bits)
+            && !obj_from_bits(abstract_bits).is_none()
+            && is_truthy(_py, obj_from_bits(abstract_bits))
+        {
+            let class_name = class_name_for_error(class_bits);
+            let msg = format!("Can't instantiate abstract class {class_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if is_builtin_class_bits(_py, class_bits) {
             let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
@@ -255,12 +254,10 @@ unsafe fn call_type_with_builder(
                             let Some(code_ptr) = obj_from_bits(frame.code_bits).as_ptr() else {
                                 return false;
                             };
-                            unsafe {
-                                if object_type_id(code_ptr) != TYPE_ID_CODE {
-                                    return false;
-                                }
-                                code_argcount(code_ptr) > 0
+                            if object_type_id(code_ptr) != TYPE_ID_CODE {
+                                return false;
                             }
+                            code_argcount(code_ptr) > 0
                         });
                         let msg = if has_pos_args {
                             "super(): __class__ cell not found"
@@ -498,25 +495,23 @@ unsafe fn call_type_with_builder(
                 }
                 return dict_bits;
             }
-            if class_bits == builtins.text_io_wrapper {
-                if let Some(ptr) = args_ptr {
-                    if !(*ptr).kw_names.is_empty() {
-                        if let Some(bound_args) = bind_builtin_class_text_io_wrapper(_py, &*ptr) {
-                            return call_class_init_with_args(_py, call_ptr, &bound_args);
-                        }
-                        return MoltObject::none().bits();
-                    }
+            if class_bits == builtins.text_io_wrapper
+                && let Some(ptr) = args_ptr
+                && !(*ptr).kw_names.is_empty()
+            {
+                if let Some(bound_args) = bind_builtin_class_text_io_wrapper(_py, &*ptr) {
+                    return call_class_init_with_args(_py, call_ptr, &bound_args);
                 }
+                return MoltObject::none().bits();
             }
-            if class_bits == builtins.string_io {
-                if let Some(ptr) = args_ptr {
-                    if !(*ptr).kw_names.is_empty() {
-                        if let Some(bound_args) = bind_builtin_class_string_io(_py, &*ptr) {
-                            return call_class_init_with_args(_py, call_ptr, &bound_args);
-                        }
-                        return MoltObject::none().bits();
-                    }
+            if class_bits == builtins.string_io
+                && let Some(ptr) = args_ptr
+                && !(*ptr).kw_names.is_empty()
+            {
+                if let Some(bound_args) = bind_builtin_class_string_io(_py, &*ptr) {
+                    return call_class_init_with_args(_py, call_ptr, &bound_args);
                 }
+                return MoltObject::none().bits();
             }
             if let Some(ptr) = args_ptr {
                 if !(*ptr).kw_names.is_empty() {
@@ -600,29 +595,25 @@ unsafe fn call_type_with_builder(
         } else {
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-            if let Some(dict_ptr) = obj_from_bits(class_dict_bits(call_ptr)).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(val_bits) =
-                        unsafe { dict_get_in_place(_py, dict_ptr, new_name_bits) }
-                    {
-                        if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
-                            let val_func_bits = if object_type_id(val_ptr) == TYPE_ID_BOUND_METHOD {
-                                bound_method_func_bits(val_ptr)
-                            } else {
-                                val_bits
-                            };
-                            if let Some(val_func_ptr) = obj_from_bits(val_func_bits).as_ptr() {
-                                if object_type_id(val_func_ptr) == TYPE_ID_FUNCTION
-                                    && function_fn_ptr(val_func_ptr)
-                                        == fn_addr!(molt_object_new_bound)
-                                {
-                                    default_new = true;
-                                }
-                            }
+            if let Some(dict_ptr) = obj_from_bits(class_dict_bits(call_ptr)).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, new_name_bits) {
+                    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
+                        let val_func_bits = if object_type_id(val_ptr) == TYPE_ID_BOUND_METHOD {
+                            bound_method_func_bits(val_ptr)
+                        } else {
+                            val_bits
+                        };
+                        if let Some(val_func_ptr) = obj_from_bits(val_func_bits).as_ptr()
+                            && object_type_id(val_func_ptr) == TYPE_ID_FUNCTION
+                            && function_fn_ptr(val_func_ptr) == fn_addr!(molt_object_new_bound)
+                        {
+                            default_new = true;
                         }
-                    } else {
-                        default_new = true;
                     }
+                } else {
+                    default_new = true;
                 }
             }
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
@@ -632,12 +623,11 @@ unsafe fn call_type_with_builder(
                     } else {
                         new_bits
                     };
-                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr() {
-                        if object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
-                        {
-                            default_new = true;
-                        }
+                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr()
+                        && object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
+                        && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
+                    {
+                        default_new = true;
                     }
                 }
                 if default_new {
@@ -744,22 +734,20 @@ unsafe fn call_type_with_builder(
             let args_ptr = callargs_ptr(builder_ptr);
             if !args_ptr.is_null()
                 && (!(*args_ptr).pos.is_empty() || !(*args_ptr).kw_names.is_empty())
+                && let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
             {
-                if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr() {
-                    let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
-                        bound_method_func_bits(init_ptr)
-                    } else {
-                        init_bits
-                    };
-                    if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr() {
-                        if object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
-                        {
-                            let class_name = class_name_for_error(class_bits);
-                            let msg = format!("{class_name}() takes no arguments");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                    }
+                let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
+                    bound_method_func_bits(init_ptr)
+                } else {
+                    init_bits
+                };
+                if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr()
+                    && object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
+                    && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
+                {
+                    let class_name = class_name_for_error(class_bits);
+                    let msg = format!("{class_name}() takes no arguments");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             }
         }
@@ -1395,11 +1383,11 @@ unsafe fn call_bind_ic_dispatch(
                 let cache = call_bind_ic_cache().lock().unwrap();
                 cache.get(&site_id).copied()
             };
-            if let Some(entry) = cached_entry {
-                if let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr) {
-                    profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
-                    return res;
-                }
+            if let Some(entry) = cached_entry
+                && let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr)
+            {
+                profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
+                return res;
             }
         }
 
@@ -1481,19 +1469,19 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             );
             let Some(call_ptr) = call_obj.as_ptr() else {
                 if trace {
-                    if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied()) {
-                        if let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits) {
-                            let (name_bits, file_bits) =
-                                (code_name_bits(code_ptr), code_filename_bits(code_ptr));
-                            let name = string_obj_to_owned(obj_from_bits(name_bits))
-                                .unwrap_or_else(|| "<code>".to_string());
-                            let file = string_obj_to_owned(obj_from_bits(file_bits))
-                                .unwrap_or_else(|| "<file>".to_string());
-                            eprintln!(
-                                "molt call_bind frame name={} file={} line={}",
-                                name, file, frame.line
-                            );
-                        }
+                    if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied())
+                        && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
+                    {
+                        let (name_bits, file_bits) =
+                            (code_name_bits(code_ptr), code_filename_bits(code_ptr));
+                        let name = string_obj_to_owned(obj_from_bits(name_bits))
+                            .unwrap_or_else(|| "<code>".to_string());
+                        let file = string_obj_to_owned(obj_from_bits(file_bits))
+                            .unwrap_or_else(|| "<file>".to_string());
+                        eprintln!(
+                            "molt call_bind frame name={} file={} line={}",
+                            name, file, frame.line
+                        );
                     }
                     let none_flag = call_obj.is_none();
                     let bool_flag = call_obj.as_bool();
@@ -1518,10 +1506,10 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                                 "molt call_bind args pos_len={} kw_len={} first_pos={:?} second_pos={:?}",
                                 pos_len, kw_len, first_pos, second_pos,
                             );
-                            if let Some(bits) = second_pos {
-                                if let Some(s) = string_obj_to_owned(obj_from_bits(bits)) {
-                                    eprintln!("molt call_bind args second_pos_str={}", s);
-                                }
+                            if let Some(bits) = second_pos
+                                && let Some(s) = string_obj_to_owned(obj_from_bits(bits))
+                            {
+                                eprintln!("molt call_bind args second_pos_str={}", s);
                             }
                         } else {
                             eprintln!("molt call_bind args ptr is null");
@@ -1540,27 +1528,25 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 TYPE_ID_TYPE => {
                     let meta_bits = object_class_bits(call_ptr);
-                    if meta_bits != 0 {
-                        if let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr() {
-                            if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                                let call_name_bits = intern_static_name(
-                                    _py,
-                                    &runtime_state(_py).interned.call_name,
-                                    b"__call__",
-                                );
-                                if let Some(call_attr_bits) = class_attr_lookup(
-                                    _py,
-                                    meta_ptr,
-                                    meta_ptr,
-                                    Some(call_ptr),
-                                    call_name_bits,
-                                ) {
-                                    if !is_default_type_call(_py, call_attr_bits) {
-                                        builder_guard.release();
-                                        return molt_call_bind(call_attr_bits, builder_bits);
-                                    }
-                                }
-                            }
+                    if meta_bits != 0
+                        && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
+                        && object_type_id(meta_ptr) == TYPE_ID_TYPE
+                    {
+                        let call_name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.call_name,
+                            b"__call__",
+                        );
+                        if let Some(call_attr_bits) = class_attr_lookup(
+                            _py,
+                            meta_ptr,
+                            meta_ptr,
+                            Some(call_ptr),
+                            call_name_bits,
+                        ) && !is_default_type_call(_py, call_attr_bits)
+                        {
+                            builder_guard.release();
+                            return molt_call_bind(call_attr_bits, builder_bits);
                         }
                     }
                     return call_type_with_builder(
@@ -1634,13 +1620,13 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     b"__molt_bind_kind__",
                 ),
             );
-            if let Some(kind_bits) = bind_kind_bits {
-                if obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN) {
-                    if let Some(bound_args) = bind_builtin_open(_py, args) {
-                        return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
-                    }
-                    return MoltObject::none().bits();
+            if let Some(kind_bits) = bind_kind_bits
+                && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN)
+            {
+                if let Some(bound_args) = bind_builtin_open(_py, args) {
+                    return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
                 }
+                return MoltObject::none().bits();
             }
             if fn_ptr == fn_addr!(dict_update_method) {
                 return bind_builtin_dict_update(_py, args);
@@ -2076,30 +2062,28 @@ unsafe fn bind_builtin_call(
                     "type.__init__"
                 };
                 let self_bits = args.pos.first().copied().unwrap_or(0);
-                let mut self_label = "<unknown>".to_string();
                 let mut meta_label = "<unknown>".to_string();
-                if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
+                let self_label = if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
                     let self_type_id = object_type_id(self_ptr);
                     if self_type_id == TYPE_ID_TYPE {
-                        self_label = string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
+                        let label = string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
                             .unwrap_or_else(|| "<type>".to_string());
                         let meta_bits = object_class_bits(self_ptr);
-                        if meta_bits != 0 {
-                            if let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr() {
-                                if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                                    meta_label = string_obj_to_owned(obj_from_bits(
-                                        class_name_bits(meta_ptr),
-                                    ))
+                        if meta_bits != 0
+                            && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
+                            && object_type_id(meta_ptr) == TYPE_ID_TYPE
+                        {
+                            meta_label =
+                                string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
                                     .unwrap_or_else(|| "<meta>".to_string());
-                                }
-                            }
                         }
+                        label
                     } else {
-                        self_label = format!("<type_id={self_type_id}>");
+                        format!("<type_id={self_type_id}>")
                     }
                 } else {
-                    self_label = type_name(_py, obj_from_bits(self_bits)).to_string();
-                }
+                    type_name(_py, obj_from_bits(self_bits)).to_string()
+                };
                 eprintln!(
                     "molt bind: {} self={} meta={} pos_len={} kw_len={}",
                     kind,

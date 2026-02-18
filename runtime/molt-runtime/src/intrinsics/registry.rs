@@ -54,10 +54,10 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         if set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits) {
             registered = true;
         }
-        if let Some(alias) = alias_name(spec.name) {
-            if set_intrinsic_entry(_py, registry_ptr, &alias, func_bits) {
-                registered = true;
-            }
+        if let Some(alias) = alias_name(spec.name)
+            && set_intrinsic_entry(_py, registry_ptr, &alias, func_bits)
+        {
+            registered = true;
         }
         if registered {
             dec_ref_bits(_py, func_bits);

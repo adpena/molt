@@ -640,16 +640,17 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
             false
         };
         let pending = pending_ptr.is_some() || global_pending;
-        if debug_pending && pending {
-            if let Some(ptr) = pending_ptr {
-                let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
-                eprintln!(
-                    "molt exc pending task=0x{:x} kind={}",
-                    task_key.0 as usize, kind
-                );
-            }
+        if debug_pending
+            && pending
+            && let Some(ptr) = pending_ptr
+        {
+            let kind_bits = unsafe { exception_kind_bits(ptr.0) };
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            eprintln!(
+                "molt exc pending task=0x{:x} kind={}",
+                task_key.0 as usize, kind
+            );
         }
         return pending;
     }
@@ -729,15 +730,14 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 }
 
 pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
-    if let Some(task_key) = current_task_key() {
-        if let Some(ptr) = task_last_exceptions(_py)
+    if let Some(task_key) = current_task_key()
+        && let Some(ptr) = task_last_exceptions(_py)
             .lock()
             .unwrap()
             .get(&task_key)
             .copied()
-        {
-            return Some(MoltObject::from_ptr(ptr.0).bits());
-        }
+    {
+        return Some(MoltObject::from_ptr(ptr.0).bits());
     }
     let guard = runtime_state(_py).last_exception.lock().unwrap();
     guard.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
@@ -837,10 +837,10 @@ pub(crate) fn exception_context_align_depth(_py: &PyToken<'_>, target: usize) {
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         while stack.len() > target {
-            if let Some(bits) = stack.pop() {
-                if !obj_from_bits(bits).is_none() {
-                    dec_ref_bits(_py, bits);
-                }
+            if let Some(bits) = stack.pop()
+                && !obj_from_bits(bits).is_none()
+            {
+                dec_ref_bits(_py, bits);
             }
         }
         while stack.len() < target {
@@ -910,10 +910,10 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
     }
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
-        if let Some(bits) = stack.pop() {
-            if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-            }
+        if let Some(bits) = stack.pop()
+            && !obj_from_bits(bits).is_none()
+        {
+            dec_ref_bits(_py, bits);
         }
     });
     if trace {
@@ -1771,14 +1771,15 @@ struct ExceptionGroupItem {
 
 fn exception_group_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
     let dict_bits = unsafe { exception_dict_bits(ptr) };
-    if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            unsafe {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let key_bits = intern_static_name(_py, &EXC_GROUP_MESSAGE_NAME, b"message");
-                    if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, key_bits) {
-                        return val_bits;
-                    }
+    if !obj_from_bits(dict_bits).is_none()
+        && dict_bits != 0
+        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+    {
+        unsafe {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                let key_bits = intern_static_name(_py, &EXC_GROUP_MESSAGE_NAME, b"message");
+                if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, key_bits) {
+                    return val_bits;
                 }
             }
         }
@@ -2316,10 +2317,10 @@ fn exception_group_split_node(
             match_bits =
                 exception_group_alloc(_py, class_bits, message_bits, list_bits, &match_vals, None);
             dec_ref_bits(_py, list_bits);
-            if let Some(bits) = match_bits {
-                if let Some(new_ptr) = obj_from_bits(bits).as_ptr() {
-                    exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
-                }
+            if let Some(bits) = match_bits
+                && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
+            {
+                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
             }
             for item in match_items.into_iter() {
                 if item.owned {
@@ -2337,10 +2338,10 @@ fn exception_group_split_node(
             rest_bits =
                 exception_group_alloc(_py, class_bits, message_bits, list_bits, &rest_vals, None);
             dec_ref_bits(_py, list_bits);
-            if let Some(bits) = rest_bits {
-                if let Some(new_ptr) = obj_from_bits(bits).as_ptr() {
-                    exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
-                }
+            if let Some(bits) = rest_bits
+                && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
+            {
+                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
             }
             for item in rest_items.into_iter() {
                 if item.owned {
@@ -2371,27 +2372,27 @@ fn exception_group_make_pair_tuple(
         .unwrap_or(none_bits);
     let tuple_ptr = alloc_tuple(_py, &[match_bits, rest_bits]);
     if tuple_ptr.is_null() {
-        if let Some(item) = match_item {
-            if item.owned {
-                dec_ref_bits(_py, item.bits);
-            }
+        if let Some(item) = match_item
+            && item.owned
+        {
+            dec_ref_bits(_py, item.bits);
         }
-        if let Some(item) = rest_item {
-            if item.owned {
-                dec_ref_bits(_py, item.bits);
-            }
+        if let Some(item) = rest_item
+            && item.owned
+        {
+            dec_ref_bits(_py, item.bits);
         }
         return MoltObject::none().bits();
     }
-    if let Some(item) = match_item {
-        if item.owned {
-            dec_ref_bits(_py, item.bits);
-        }
+    if let Some(item) = match_item
+        && item.owned
+    {
+        dec_ref_bits(_py, item.bits);
     }
-    if let Some(item) = rest_item {
-        if item.owned {
-            dec_ref_bits(_py, item.bits);
-        }
+    if let Some(item) = rest_item
+        && item.owned
+    {
+        dec_ref_bits(_py, item.bits);
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -2661,14 +2662,15 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     dec_ref_bits(_py, args_bits);
     if !ptr.is_null() {
         let dict_bits = unsafe { exception_dict_bits(ptr) };
-        if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                unsafe {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let errno_name = intern_static_name(_py, &ERRNO_ATTR_NAME, b"errno");
-                        let errno_bits = MoltObject::from_int(errno).bits();
-                        dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
-                    }
+        if !obj_from_bits(dict_bits).is_none()
+            && dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+        {
+            unsafe {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    let errno_name = intern_static_name(_py, &ERRNO_ATTR_NAME, b"errno");
+                    let errno_bits = MoltObject::from_int(errno).bits();
+                    dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
                 }
             }
         }
@@ -3010,18 +3012,17 @@ pub(crate) fn alloc_exception_from_class_bits(
         let mut dict_bits = MoltObject::none().bits();
         if issubclass_bits(class_bits, oserror_bits) {
             let name = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
-            if oserror_root_name(&name) {
-                if let Some(errno_val) = errno_val {
-                    if let Some(subclass) = oserror_subclass_for_errno(errno_val) {
-                        let mapped_bits = exception_type_bits_from_name(_py, subclass);
-                        if mapped_bits != 0 {
-                            if let Some(mapped_ptr) = obj_from_bits(mapped_bits).as_ptr() {
-                                class_bits = mapped_bits;
-                                class_ptr = mapped_ptr;
-                                kind_bits = class_name_bits(class_ptr);
-                            }
-                        }
-                    }
+            if oserror_root_name(&name)
+                && let Some(errno_val) = errno_val
+                && let Some(subclass) = oserror_subclass_for_errno(errno_val)
+            {
+                let mapped_bits = exception_type_bits_from_name(_py, subclass);
+                if mapped_bits != 0
+                    && let Some(mapped_ptr) = obj_from_bits(mapped_bits).as_ptr()
+                {
+                    class_bits = mapped_bits;
+                    class_ptr = mapped_ptr;
+                    kind_bits = class_name_bits(class_ptr);
                 }
             }
             dict_bits = oserror_attr_dict(_py, errno_val, strerror_bits, filename_bits);
@@ -3045,25 +3046,25 @@ pub(crate) fn alloc_exception_from_class_bits(
                         &CHARACTERS_WRITTEN_ATTR_NAME,
                         b"characters_written",
                     );
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            dict_set_in_place(_py, dict_ptr, name_bits, chars_bits);
-                        }
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    {
+                        dict_set_in_place(_py, dict_ptr, name_bits, chars_bits);
                     }
                 }
             }
         }
-        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits)) {
-            if let Some(kind) = unicode_error_kind(&name) {
-                let fields = match unicode_error_fields_from_args(_py, kind, args_bits) {
-                    Ok(fields) => fields,
-                    Err(()) => {
-                        dec_ref_bits(_py, args_bits);
-                        return std::ptr::null_mut();
-                    }
-                };
-                dict_bits = unicode_error_attr_dict(_py, fields);
-            }
+        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits))
+            && let Some(kind) = unicode_error_kind(&name)
+        {
+            let fields = match unicode_error_fields_from_args(_py, kind, args_bits) {
+                Ok(fields) => fields,
+                Err(()) => {
+                    dec_ref_bits(_py, args_bits);
+                    return std::ptr::null_mut();
+                }
+            };
+            dict_bits = unicode_error_attr_dict(_py, fields);
         }
         let msg_bits = exception_message_from_args(_py, args_bits);
         if obj_from_bits(msg_bits).is_none() {
@@ -3106,12 +3107,12 @@ fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
 fn exception_class_name(ptr: *mut u8) -> String {
     unsafe {
         let class_bits = exception_class_bits(ptr);
-        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-            if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                let name_bits = class_name_bits(class_ptr);
-                if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
-                    return name;
-                }
+        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+            && object_type_id(class_ptr) == TYPE_ID_TYPE
+        {
+            let name_bits = class_name_bits(class_ptr);
+            if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                return name;
             }
         }
         string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr)))
@@ -3154,44 +3155,44 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
         class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(ptr)) };
     }
     let kind = exception_class_name(ptr);
-    if kind == "UnicodeDecodeError" {
-        if let Some(msg) = format_unicode_decode_error(_py, ptr) {
-            return msg;
-        }
+    if kind == "UnicodeDecodeError"
+        && let Some(msg) = format_unicode_decode_error(_py, ptr)
+    {
+        return msg;
     }
-    if kind == "UnicodeEncodeError" {
-        if let Some(msg) = format_unicode_encode_error(_py, ptr) {
-            return msg;
-        }
+    if kind == "UnicodeEncodeError"
+        && let Some(msg) = format_unicode_encode_error(_py, ptr)
+    {
+        return msg;
     }
-    if kind == "HTTPError" {
-        if let (Some(code_bits), Some(msg_bits)) = (
+    if kind == "HTTPError"
+        && let (Some(code_bits), Some(msg_bits)) = (
             exception_dict_attr_bits(_py, ptr, b"code"),
             exception_dict_attr_bits(_py, ptr, b"msg"),
-        ) {
-            let code = format_obj_str(_py, obj_from_bits(code_bits));
-            let msg = format_obj_str(_py, obj_from_bits(msg_bits));
-            return format!("HTTP Error {code}: {msg}");
-        }
+        )
+    {
+        let code = format_obj_str(_py, obj_from_bits(code_bits));
+        let msg = format_obj_str(_py, obj_from_bits(msg_bits));
+        return format!("HTTP Error {code}: {msg}");
     }
-    if kind == "URLError" || kind == "ContentTooShortError" {
-        if let Some(reason_bits) = exception_dict_attr_bits(_py, ptr, b"reason") {
-            let reason = format_obj_str(_py, obj_from_bits(reason_bits));
-            return format!("<urlopen error {reason}>");
-        }
+    if (kind == "URLError" || kind == "ContentTooShortError")
+        && let Some(reason_bits) = exception_dict_attr_bits(_py, ptr, b"reason")
+    {
+        let reason = format_obj_str(_py, obj_from_bits(reason_bits));
+        return format!("<urlopen error {reason}>");
     }
     let base_group_bits = builtin_classes(_py).base_exception_group;
     if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
         let msg_bits = exception_group_message_bits(_py, ptr);
         let msg = format_obj_str(_py, obj_from_bits(msg_bits));
         let mut count = 0usize;
-        if let Some(ex_bits) = exception_group_exceptions_bits(_py, ptr) {
-            if let Some(ex_ptr) = obj_from_bits(ex_bits).as_ptr() {
-                unsafe {
-                    let type_id = object_type_id(ex_ptr);
-                    if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                        count = seq_vec_ref(ex_ptr).len();
-                    }
+        if let Some(ex_bits) = exception_group_exceptions_bits(_py, ptr)
+            && let Some(ex_ptr) = obj_from_bits(ex_bits).as_ptr()
+        {
+            unsafe {
+                let type_id = object_type_id(ex_ptr);
+                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                    count = seq_vec_ref(ex_ptr).len();
                 }
             }
         }
@@ -3347,19 +3348,19 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let mut frame_bits = MoltObject::none().bits();
             let mut line = 0i64;
             let mut next_bits = MoltObject::none().bits();
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
-                        frame_bits = bits;
-                    }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
-                        if let Some(val) = to_i64(obj_from_bits(bits)) {
-                            line = val;
-                        }
-                    }
-                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
-                        next_bits = bits;
-                    }
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
+                    frame_bits = bits;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits)
+                    && let Some(val) = to_i64(obj_from_bits(bits))
+                {
+                    line = val;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
+                    next_bits = bits;
                 }
             }
             (frame_bits, line, next_bits)
@@ -3370,32 +3371,27 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let mut frame_line = line;
             if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
                 let dict_bits = instance_dict_bits(frame_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits) {
-                            if let Some(val) = to_i64(obj_from_bits(bits)) {
-                                frame_line = val;
-                            }
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                {
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits)
+                        && let Some(val) = to_i64(obj_from_bits(bits))
+                    {
+                        frame_line = val;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)
+                        && let Some(code_ptr) = obj_from_bits(bits).as_ptr()
+                        && object_type_id(code_ptr) == TYPE_ID_CODE
+                    {
+                        let filename_bits = code_filename_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                            filename = name;
                         }
-                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) {
-                            if let Some(code_ptr) = obj_from_bits(bits).as_ptr() {
-                                if object_type_id(code_ptr) == TYPE_ID_CODE {
-                                    let filename_bits = code_filename_bits(code_ptr);
-                                    if let Some(name) =
-                                        string_obj_to_owned(obj_from_bits(filename_bits))
-                                    {
-                                        filename = name;
-                                    }
-                                    let name_bits = code_name_bits(code_ptr);
-                                    if let Some(name) =
-                                        string_obj_to_owned(obj_from_bits(name_bits))
-                                    {
-                                        if !name.is_empty() {
-                                            func_name = name;
-                                        }
-                                    }
-                                }
-                            }
+                        let name_bits = code_name_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
+                            && !name.is_empty()
+                        {
+                            func_name = name;
                         }
                     }
                 }
@@ -3464,9 +3460,7 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     crate::gil_assert();
     let prev = FRAME_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
-        let Some(entry) = stack.last_mut() else {
-            return None;
-        };
+        let entry = stack.last_mut()?;
         // Replace and manage refcounts. 0 means "unset".
         let prev = entry.locals_bits;
         entry.locals_bits = 0;
@@ -3476,10 +3470,11 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
         }
         Some(prev)
     });
-    if let Some(prev) = prev {
-        if prev != 0 && !obj_from_bits(prev).is_none() {
-            dec_ref_bits(_py, prev);
-        }
+    if let Some(prev) = prev
+        && prev != 0
+        && !obj_from_bits(prev).is_none()
+    {
+        dec_ref_bits(_py, prev);
     }
 }
 
@@ -3558,11 +3553,11 @@ unsafe fn code_is_module(code_bits: u64) -> bool {
 unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Option<FrameField> {
     unsafe {
         let mut filename: Option<String> = None;
-        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
-            if object_type_id(code_ptr) == TYPE_ID_CODE {
-                let filename_bits = code_filename_bits(code_ptr);
-                filename = string_obj_to_owned(obj_from_bits(filename_bits));
-            }
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr()
+            && object_type_id(code_ptr) == TYPE_ID_CODE
+        {
+            let filename_bits = code_filename_bits(code_ptr);
+            filename = string_obj_to_owned(obj_from_bits(filename_bits));
         }
         let (module_bits, main_bits) = {
             let cache = runtime_state(_py).module_cache.lock().unwrap();
@@ -3600,19 +3595,18 @@ unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Opt
                 }
             }
         }
-        if let Some(main_bits) = main_bits {
-            if let Some(module_ptr) = obj_from_bits(main_bits).as_ptr() {
-                if object_type_id(module_ptr) == TYPE_ID_MODULE {
-                    let dict_bits = module_dict_bits(module_ptr);
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            return Some(FrameField {
-                                bits: dict_bits,
-                                owned: false,
-                            });
-                        }
-                    }
-                }
+        if let Some(main_bits) = main_bits
+            && let Some(module_ptr) = obj_from_bits(main_bits).as_ptr()
+            && object_type_id(module_ptr) == TYPE_ID_MODULE
+        {
+            let dict_bits = module_dict_bits(module_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                return Some(FrameField {
+                    bits: dict_bits,
+                    owned: false,
+                });
             }
         }
         alloc_empty_dict_field(_py)
@@ -3953,13 +3947,11 @@ pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
 }
 
 fn empty_dict_bits(_py: &PyToken<'_>) -> u64 {
-    unsafe {
-        let ptr = alloc_dict_with_pairs(_py, &[]);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+    let ptr = alloc_dict_with_pairs(_py, &[]);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
     }
 }
 
@@ -4009,15 +4001,15 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
                         inc_ref_bits(_py, bits);
                         return bits;
                     }
-                    if let Some(locals_ptr) = obj_from_bits(bits).as_ptr() {
-                        if object_type_id(locals_ptr) == TYPE_ID_DICT {
-                            let pairs = dict_order(locals_ptr).clone();
-                            let out_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
-                            if out_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(out_ptr).bits();
+                    if let Some(locals_ptr) = obj_from_bits(bits).as_ptr()
+                        && object_type_id(locals_ptr) == TYPE_ID_DICT
+                    {
+                        let pairs = dict_order(locals_ptr).clone();
+                        let out_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
                         }
+                        return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
                 // Defensive fallback for non-dict locals payloads.
@@ -4226,31 +4218,27 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                 class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(self_ptr)) };
             }
             let mut unicode_fields = None;
-            if class_bits != 0 {
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    unsafe {
-                        if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                            if let Some(name) =
-                                string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
-                            {
-                                if let Some(kind) = unicode_error_kind(&name) {
-                                    let fields = match unicode_error_fields_from_args(
-                                        _py, kind, norm_bits,
-                                    ) {
-                                        Ok(fields) => fields,
-                                        Err(()) => {
-                                            dec_ref_bits(_py, norm_bits);
-                                            dec_ref_bits(_py, msg_bits);
-                                            if !obj_from_bits(args_bits).is_none() {
-                                                dec_ref_bits(_py, args_bits);
-                                            }
-                                            return MoltObject::none().bits();
-                                        }
-                                    };
-                                    unicode_fields = Some(fields);
+            if class_bits != 0
+                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+            {
+                unsafe {
+                    if object_type_id(class_ptr) == TYPE_ID_TYPE
+                        && let Some(name) =
+                            string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
+                        && let Some(kind) = unicode_error_kind(&name)
+                    {
+                        let fields = match unicode_error_fields_from_args(_py, kind, norm_bits) {
+                            Ok(fields) => fields,
+                            Err(()) => {
+                                dec_ref_bits(_py, norm_bits);
+                                dec_ref_bits(_py, msg_bits);
+                                if !obj_from_bits(args_bits).is_none() {
+                                    dec_ref_bits(_py, args_bits);
                                 }
+                                return MoltObject::none().bits();
                             }
-                        }
+                        };
+                        unicode_fields = Some(fields);
                     }
                 }
             }
@@ -4279,31 +4267,24 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                         }
                     }
                 }
-                if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                            let errno_name =
-                                intern_static_name(_py, &internals::ERRNO_ATTR_NAME, b"errno");
-                            let strerror_name = intern_static_name(
-                                _py,
-                                &internals::STRERROR_ATTR_NAME,
-                                b"strerror",
-                            );
-                            let filename_name = intern_static_name(
-                                _py,
-                                &internals::FILENAME_ATTR_NAME,
-                                b"filename",
-                            );
-                            let errno_bits = match errno_val {
-                                Some(val) => MoltObject::from_int(val).bits(),
-                                None => MoltObject::none().bits(),
-                            };
-                            unsafe {
-                                dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
-                                dict_set_in_place(_py, dict_ptr, strerror_name, strerror_bits);
-                                dict_set_in_place(_py, dict_ptr, filename_name, filename_bits);
-                            }
-                        }
+                if !obj_from_bits(dict_bits).is_none()
+                    && dict_bits != 0
+                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+                {
+                    let errno_name = intern_static_name(_py, &internals::ERRNO_ATTR_NAME, b"errno");
+                    let strerror_name =
+                        intern_static_name(_py, &internals::STRERROR_ATTR_NAME, b"strerror");
+                    let filename_name =
+                        intern_static_name(_py, &internals::FILENAME_ATTR_NAME, b"filename");
+                    let errno_bits = match errno_val {
+                        Some(val) => MoltObject::from_int(val).bits(),
+                        None => MoltObject::none().bits(),
+                    };
+                    unsafe {
+                        dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
+                        dict_set_in_place(_py, dict_ptr, strerror_name, strerror_bits);
+                        dict_set_in_place(_py, dict_ptr, filename_name, filename_bits);
                     }
                 }
             }
@@ -4323,44 +4304,30 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                         }
                     }
                 }
-                if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
-                            let encoding_name = intern_static_name(
-                                _py,
-                                &internals::UNICODE_ENCODING_ATTR_NAME,
-                                b"encoding",
-                            );
-                            let object_name = intern_static_name(
-                                _py,
-                                &internals::UNICODE_OBJECT_ATTR_NAME,
-                                b"object",
-                            );
-                            let start_name = intern_static_name(
-                                _py,
-                                &internals::UNICODE_START_ATTR_NAME,
-                                b"start",
-                            );
-                            let end_name =
-                                intern_static_name(_py, &internals::UNICODE_END_ATTR_NAME, b"end");
-                            let reason_name = intern_static_name(
-                                _py,
-                                &internals::UNICODE_REASON_ATTR_NAME,
-                                b"reason",
-                            );
-                            unsafe {
-                                dict_set_in_place(
-                                    _py,
-                                    dict_ptr,
-                                    encoding_name,
-                                    fields.encoding_bits,
-                                );
-                                dict_set_in_place(_py, dict_ptr, object_name, fields.object_bits);
-                                dict_set_in_place(_py, dict_ptr, start_name, fields.start_bits);
-                                dict_set_in_place(_py, dict_ptr, end_name, fields.end_bits);
-                                dict_set_in_place(_py, dict_ptr, reason_name, fields.reason_bits);
-                            }
-                        }
+                if !obj_from_bits(dict_bits).is_none()
+                    && dict_bits != 0
+                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+                {
+                    let encoding_name = intern_static_name(
+                        _py,
+                        &internals::UNICODE_ENCODING_ATTR_NAME,
+                        b"encoding",
+                    );
+                    let object_name =
+                        intern_static_name(_py, &internals::UNICODE_OBJECT_ATTR_NAME, b"object");
+                    let start_name =
+                        intern_static_name(_py, &internals::UNICODE_START_ATTR_NAME, b"start");
+                    let end_name =
+                        intern_static_name(_py, &internals::UNICODE_END_ATTR_NAME, b"end");
+                    let reason_name =
+                        intern_static_name(_py, &internals::UNICODE_REASON_ATTR_NAME, b"reason");
+                    unsafe {
+                        dict_set_in_place(_py, dict_ptr, encoding_name, fields.encoding_bits);
+                        dict_set_in_place(_py, dict_ptr, object_name, fields.object_bits);
+                        dict_set_in_place(_py, dict_ptr, start_name, fields.start_bits);
+                        dict_set_in_place(_py, dict_ptr, end_name, fields.end_bits);
+                        dict_set_in_place(_py, dict_ptr, reason_name, fields.reason_bits);
                     }
                 }
             }
@@ -5160,58 +5127,59 @@ pub extern "C" fn molt_exception_clear() -> u64 {
         } else {
             MoltObject::none().bits()
         };
-        if debug_clear && !obj_from_bits(cleared_bits).is_none() {
-            if let Some(ptr) = maybe_ptr_from_bits(cleared_bits) {
-                let kind_bits = unsafe { exception_kind_bits(ptr) };
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+        if debug_clear
+            && !obj_from_bits(cleared_bits).is_none()
+            && let Some(ptr) = maybe_ptr_from_bits(cleared_bits)
+        {
+            let kind_bits = unsafe { exception_kind_bits(ptr) };
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
+            let reason_str = reason.unwrap_or("<unset>");
+            eprintln!(
+                "molt exc clear task=0x{:x} kind={} reason={}",
+                task, kind, reason_str
+            );
+            if reason_str == "<unset>" {
+                eprintln!("molt exc clear backtrace (reason unset):");
+                eprintln!("{:?}", Backtrace::force_capture());
+            }
+            let frame = FRAME_STACK.with(|stack| stack.borrow().last().copied());
+            if let Some(frame) = frame
+                && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
+            {
+                let (name_bits, file_bits) =
+                    unsafe { (code_name_bits(code_ptr), code_filename_bits(code_ptr)) };
+                let name = string_obj_to_owned(obj_from_bits(name_bits))
                     .unwrap_or_else(|| "<unknown>".to_string());
-                let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
-                let reason_str = reason.unwrap_or("<unset>");
+                let file = string_obj_to_owned(obj_from_bits(file_bits))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, file_bits);
                 eprintln!(
-                    "molt exc clear task=0x{:x} kind={} reason={}",
-                    task, kind, reason_str
+                    "molt exc clear frame name={} file={} line={}",
+                    name, file, frame.line
                 );
-                if reason_str == "<unset>" {
-                    eprintln!("molt exc clear backtrace (reason unset):");
-                    eprintln!("{:?}", Backtrace::force_capture());
+            }
+            if kind == "GeneratorExit" {
+                let task_ptr = current_task_ptr();
+                if !task_ptr.is_null() {
+                    let (poll_fn, type_id, class_name) = unsafe {
+                        let header = header_from_obj_ptr(task_ptr);
+                        let poll_fn = (*header).poll_fn;
+                        let type_id = object_type_id(task_ptr);
+                        let class_name = class_name_for_error(object_class_bits(task_ptr));
+                        (poll_fn, type_id, class_name)
+                    };
+                    eprintln!(
+                        "molt exc clear ctx task=0x{:x} poll=0x{:x} type_id={} class={}",
+                        task_ptr as usize, poll_fn, type_id, class_name
+                    );
+                } else {
+                    eprintln!("molt exc clear ctx task=none");
                 }
-                let frame = FRAME_STACK.with(|stack| stack.borrow().last().copied());
-                if let Some(frame) = frame {
-                    if let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits) {
-                        let (name_bits, file_bits) =
-                            unsafe { (code_name_bits(code_ptr), code_filename_bits(code_ptr)) };
-                        let name = string_obj_to_owned(obj_from_bits(name_bits))
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        let file = string_obj_to_owned(obj_from_bits(file_bits))
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, file_bits);
-                        eprintln!(
-                            "molt exc clear frame name={} file={} line={}",
-                            name, file, frame.line
-                        );
-                    }
-                }
-                if kind == "GeneratorExit" {
-                    let task_ptr = current_task_ptr();
-                    if !task_ptr.is_null() {
-                        let (poll_fn, type_id, class_name) = unsafe {
-                            let header = header_from_obj_ptr(task_ptr);
-                            let poll_fn = (*header).poll_fn;
-                            let type_id = object_type_id(task_ptr);
-                            let class_name = class_name_for_error(object_class_bits(task_ptr));
-                            (poll_fn, type_id, class_name)
-                        };
-                        eprintln!(
-                            "molt exc clear ctx task=0x{:x} poll=0x{:x} type_id={} class={}",
-                            task_ptr as usize, poll_fn, type_id, class_name
-                        );
-                    } else {
-                        eprintln!("molt exc clear ctx task=none");
-                    }
-                    eprintln!("molt exc clear backtrace (GeneratorExit):");
-                    eprintln!("{:?}", Backtrace::force_capture());
-                }
+                eprintln!("molt exc clear backtrace (GeneratorExit):");
+                eprintln!("{:?}", Backtrace::force_capture());
             }
         }
         clear_exception(_py);
@@ -5232,28 +5200,27 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
         return 0;
     };
-    if let Some(task_key) = current_task_key() {
-        if state
+    if let Some(task_key) = current_task_key()
+        && state
             .task_last_exception_pending
             .load(AtomicOrdering::Relaxed)
-        {
-            let mut guard = state.task_last_exceptions.lock().unwrap();
-            match guard.get(&task_key).copied() {
-                Some(ptr) if exception_slot_is_valid(ptr) => return 1,
-                Some(_) => {
-                    guard.remove(&task_key);
-                    if guard.is_empty() {
-                        state
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
+    {
+        let mut guard = state.task_last_exceptions.lock().unwrap();
+        match guard.get(&task_key).copied() {
+            Some(ptr) if exception_slot_is_valid(ptr) => return 1,
+            Some(_) => {
+                guard.remove(&task_key);
+                if guard.is_empty() {
+                    state
+                        .task_last_exception_pending
+                        .store(false, AtomicOrdering::Relaxed);
                 }
-                None => {
-                    if guard.is_empty() {
-                        state
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
+            }
+            None => {
+                if guard.is_empty() {
+                    state
+                        .task_last_exception_pending
+                        .store(false, AtomicOrdering::Relaxed);
                 }
             }
         }

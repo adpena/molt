@@ -765,7 +765,7 @@ fn split_zip_archive_path(path: &str) -> Option<(String, String)> {
                 continue;
             }
         }
-        if best_idx.map_or(true, |current| idx > current) {
+        if best_idx.is_none_or(|current| idx > current) {
             best_idx = Some(idx);
             best_suffix_len = suffix.len();
         }
@@ -798,8 +798,8 @@ fn zip_archive_entry_exists(path: &str, entry: &str) -> bool {
     let Ok(mut archive) = zip_archive_open(path) else {
         return false;
     };
-    let found = archive.by_name(entry).is_ok();
-    found
+
+    archive.by_name(entry).is_ok()
 }
 
 fn zip_archive_has_prefix(path: &str, prefix: &str) -> bool {
@@ -903,18 +903,18 @@ fn zip_archive_resources_path_payload(
             if rel.is_empty() {
                 continue;
             }
-            if let Some(child) = rel.split('/').next() {
-                if !child.is_empty() {
-                    entries.insert(child.to_string());
-                }
+            if let Some(child) = rel.split('/').next()
+                && !child.is_empty()
+            {
+                entries.insert(child.to_string());
             }
             continue;
         }
 
-        if let Some(child) = name.split('/').next() {
-            if !child.is_empty() {
-                entries.insert(child.to_string());
-            }
+        if let Some(child) = name.split('/').next()
+            && !child.is_empty()
+        {
+            entries.insert(child.to_string());
         }
     }
 
@@ -1365,15 +1365,15 @@ fn importlib_metadata_entry_points_select_payload(
     for path in dist_paths {
         let payload = importlib_metadata_payload(&path);
         for (entry_name, entry_value, entry_group) in payload.entry_points {
-            if let Some(expected_group) = group {
-                if entry_group != expected_group {
-                    continue;
-                }
+            if let Some(expected_group) = group
+                && entry_group != expected_group
+            {
+                continue;
             }
-            if let Some(expected_name) = name {
-                if entry_name != expected_name {
-                    continue;
-                }
+            if let Some(expected_name) = name
+                && entry_name != expected_name
+            {
+                continue;
             }
             out.push((entry_name, entry_value, entry_group));
         }
@@ -1714,15 +1714,14 @@ fn importlib_find_spec_via_path_hooks(
             let entry_bits = alloc_str_bits(_py, entry)?;
             let mut finder_bits = MoltObject::none().bits();
             let mut finder_owned = false;
-            if let Some(cache_ptr) = path_importer_cache_ptr {
-                if let Some(cached_bits) = unsafe { dict_get_in_place(_py, cache_ptr, entry_bits) }
-                {
-                    if obj_from_bits(cached_bits).is_none() {
-                        dec_ref_bits(_py, entry_bits);
-                        continue;
-                    }
-                    finder_bits = cached_bits;
+            if let Some(cache_ptr) = path_importer_cache_ptr
+                && let Some(cached_bits) = unsafe { dict_get_in_place(_py, cache_ptr, entry_bits) }
+            {
+                if obj_from_bits(cached_bits).is_none() {
+                    dec_ref_bits(_py, entry_bits);
+                    continue;
                 }
+                finder_bits = cached_bits;
             }
 
             if obj_from_bits(finder_bits).is_none() {
@@ -1920,21 +1919,20 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
         guard.get("sys").copied()
     };
 
-    if let Some(sys_bits) = sys_bits {
-        if !obj_from_bits(sys_bits).is_none() {
-            modules_bits =
-                importlib_runtime_state_attr_bits(_py, sys_bits, &MODULES_NAME, b"modules")?;
-            meta_path_bits =
-                importlib_runtime_state_attr_bits(_py, sys_bits, &META_PATH_NAME, b"meta_path")?;
-            path_hooks_bits =
-                importlib_runtime_state_attr_bits(_py, sys_bits, &PATH_HOOKS_NAME, b"path_hooks")?;
-            path_importer_cache_bits = importlib_runtime_state_attr_bits(
-                _py,
-                sys_bits,
-                &PATH_IMPORTER_CACHE_NAME,
-                b"path_importer_cache",
-            )?;
-        }
+    if let Some(sys_bits) = sys_bits
+        && !obj_from_bits(sys_bits).is_none()
+    {
+        modules_bits = importlib_runtime_state_attr_bits(_py, sys_bits, &MODULES_NAME, b"modules")?;
+        meta_path_bits =
+            importlib_runtime_state_attr_bits(_py, sys_bits, &META_PATH_NAME, b"meta_path")?;
+        path_hooks_bits =
+            importlib_runtime_state_attr_bits(_py, sys_bits, &PATH_HOOKS_NAME, b"path_hooks")?;
+        path_importer_cache_bits = importlib_runtime_state_attr_bits(
+            _py,
+            sys_bits,
+            &PATH_IMPORTER_CACHE_NAME,
+            b"path_importer_cache",
+        )?;
     }
 
     let keys_and_values: [(&[u8], u64); 4] = [
@@ -1995,17 +1993,15 @@ fn importlib_resources_path_payload(path: &str) -> ImportlibResourcesPathPayload
         is_file = metadata.is_file();
         is_dir = metadata.is_dir();
     }
-    if is_dir {
-        if let Ok(read_dir) = std::fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name == "__init__.py" {
-                    has_init_py = true;
-                }
-                entries.push(name);
+    if is_dir && let Ok(read_dir) = std::fs::read_dir(path) {
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "__init__.py" {
+                has_init_py = true;
             }
-            entries.sort();
+            entries.push(name);
         }
+        entries.sort();
     }
     ImportlibResourcesPathPayload {
         basename,
@@ -2050,11 +2046,12 @@ fn importlib_resources_package_payload(
                     }
                 }
             }
-        } else if spec.is_package && spec.loader_kind == "namespace" {
-            if let Some(locations) = spec.submodule_search_locations {
-                for location in locations {
-                    append_unique_path(&mut roots, &location);
-                }
+        } else if spec.is_package
+            && spec.loader_kind == "namespace"
+            && let Some(locations) = spec.submodule_search_locations
+        {
+            for location in locations {
+                append_unique_path(&mut roots, &location);
             }
         }
     }
@@ -2478,10 +2475,10 @@ fn importlib_resources_module_name_from_bits(
         if !obj_from_bits(name_bits).is_none() {
             dec_ref_bits(_py, name_bits);
         }
-        if let Some(name) = out {
-            if !name.is_empty() {
-                return Ok(name);
-            }
+        if let Some(name) = out
+            && !name.is_empty()
+        {
+            return Ok(name);
         }
     }
 
@@ -2508,10 +2505,10 @@ fn importlib_resources_module_name_from_bits(
             if !obj_from_bits(spec_bits).is_none() {
                 dec_ref_bits(_py, spec_bits);
             }
-            if let Some(name) = out {
-                if !name.is_empty() {
-                    return Ok(name);
-                }
+            if let Some(name) = out
+                && !name.is_empty()
+            {
+                return Ok(name);
             }
         } else if !obj_from_bits(spec_bits).is_none() {
             dec_ref_bits(_py, spec_bits);
@@ -2524,10 +2521,10 @@ fn importlib_resources_module_name_from_bits(
         if !obj_from_bits(package_bits).is_none() {
             dec_ref_bits(_py, package_bits);
         }
-        if let Some(name) = out {
-            if !name.is_empty() {
-                return Ok(name);
-            }
+        if let Some(name) = out
+            && !name.is_empty()
+        {
+            return Ok(name);
         }
     }
 
@@ -3173,10 +3170,9 @@ fn importlib_resources_reader_contents_impl(
         return out;
     }
     if let Some((_root, payload)) = importlib_reader_root_payload_for_parts(_py, reader_bits, &[])?
+        && payload.is_dir
     {
-        if payload.is_dir {
-            return Ok(payload.entries);
-        }
+        return Ok(payload.entries);
     }
     Ok(Vec::new())
 }
@@ -3255,10 +3251,10 @@ fn importlib_resources_reader_resource_path_impl(
     }
     if let Some((joined, payload)) =
         importlib_reader_root_payload_for_parts(_py, reader_bits, &parts)?
+        && payload.is_file
+        && !payload.is_archive_member
     {
-        if payload.is_file && !payload.is_archive_member {
-            return Ok(Some(joined));
-        }
+        return Ok(Some(joined));
     }
     Ok(None)
 }
@@ -3280,10 +3276,9 @@ fn importlib_resources_reader_child_names_impl(
     }
     if let Some((_joined, payload)) =
         importlib_reader_root_payload_for_parts(_py, reader_bits, parts)?
+        && payload.is_dir
     {
-        if payload.is_dir {
-            return Ok(payload.entries);
-        }
+        return Ok(payload.entries);
     }
     let entries = importlib_resources_reader_contents_impl(_py, reader_bits)?;
     let prefix = parts.join("/");
@@ -5975,7 +5970,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if value < 0 || value > 0xFFFF_FFFF_FFFF_i64 {
+            if !(0..=0xFFFF_FFFF_FFFF_i64).contains(&value) {
                 return raise_exception::<_>(
                     _py,
                     "ValueError",
@@ -5991,7 +5986,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if value < 0 || value > 0x3FFF_i64 {
+            if !(0..=0x3FFF_i64).contains(&value) {
                 return raise_exception::<_>(
                     _py,
                     "ValueError",
@@ -6278,7 +6273,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
     {
         #[cfg(target_os = "macos")]
         {
-            return vec![
+            vec![
                 ("AF_APPLETALK", 16_i64),
                 ("AF_DECnet", 12_i64),
                 ("AF_INET", 2_i64),
@@ -6471,88 +6466,91 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
                 ("TCP_MAXSEG", 2_i64),
                 ("TCP_NODELAY", 1_i64),
                 ("TCP_NOTSENT_LOWAT", 513_i64),
+            ]
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut out = vec![
+                ("AF_INET", libc::AF_INET as i64),
+                ("AF_INET6", libc::AF_INET6 as i64),
+                ("SOCK_STREAM", libc::SOCK_STREAM as i64),
+                ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
+                ("SOCK_RAW", libc::SOCK_RAW as i64),
+                ("SOL_SOCKET", libc::SOL_SOCKET as i64),
+                ("SO_REUSEADDR", libc::SO_REUSEADDR as i64),
+                ("SO_KEEPALIVE", libc::SO_KEEPALIVE as i64),
+                ("SO_SNDBUF", libc::SO_SNDBUF as i64),
+                ("SO_RCVBUF", libc::SO_RCVBUF as i64),
+                ("SO_ERROR", libc::SO_ERROR as i64),
+                ("SO_LINGER", libc::SO_LINGER as i64),
+                ("SO_BROADCAST", libc::SO_BROADCAST as i64),
+                ("IPPROTO_TCP", libc::IPPROTO_TCP as i64),
+                ("IPPROTO_UDP", libc::IPPROTO_UDP as i64),
+                ("IPPROTO_IPV6", libc::IPPROTO_IPV6 as i64),
+                ("IPV6_V6ONLY", libc::IPV6_V6ONLY as i64),
+                ("TCP_NODELAY", libc::TCP_NODELAY as i64),
+                ("SHUT_RD", libc::SHUT_RD as i64),
+                ("SHUT_WR", libc::SHUT_WR as i64),
+                ("SHUT_RDWR", libc::SHUT_RDWR as i64),
+                ("AI_PASSIVE", libc::AI_PASSIVE as i64),
+                ("AI_CANONNAME", libc::AI_CANONNAME as i64),
+                ("AI_NUMERICHOST", libc::AI_NUMERICHOST as i64),
+                ("AI_NUMERICSERV", libc::AI_NUMERICSERV as i64),
+                ("NI_NUMERICHOST", libc::NI_NUMERICHOST as i64),
+                ("NI_NUMERICSERV", libc::NI_NUMERICSERV as i64),
+                ("MSG_PEEK", libc::MSG_PEEK as i64),
             ];
-        }
-        let mut out = vec![
-            ("AF_INET", libc::AF_INET as i64),
-            ("AF_INET6", libc::AF_INET6 as i64),
-            ("SOCK_STREAM", libc::SOCK_STREAM as i64),
-            ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
-            ("SOCK_RAW", libc::SOCK_RAW as i64),
-            ("SOL_SOCKET", libc::SOL_SOCKET as i64),
-            ("SO_REUSEADDR", libc::SO_REUSEADDR as i64),
-            ("SO_KEEPALIVE", libc::SO_KEEPALIVE as i64),
-            ("SO_SNDBUF", libc::SO_SNDBUF as i64),
-            ("SO_RCVBUF", libc::SO_RCVBUF as i64),
-            ("SO_ERROR", libc::SO_ERROR as i64),
-            ("SO_LINGER", libc::SO_LINGER as i64),
-            ("SO_BROADCAST", libc::SO_BROADCAST as i64),
-            ("IPPROTO_TCP", libc::IPPROTO_TCP as i64),
-            ("IPPROTO_UDP", libc::IPPROTO_UDP as i64),
-            ("IPPROTO_IPV6", libc::IPPROTO_IPV6 as i64),
-            ("IPV6_V6ONLY", libc::IPV6_V6ONLY as i64),
-            ("TCP_NODELAY", libc::TCP_NODELAY as i64),
-            ("SHUT_RD", libc::SHUT_RD as i64),
-            ("SHUT_WR", libc::SHUT_WR as i64),
-            ("SHUT_RDWR", libc::SHUT_RDWR as i64),
-            ("AI_PASSIVE", libc::AI_PASSIVE as i64),
-            ("AI_CANONNAME", libc::AI_CANONNAME as i64),
-            ("AI_NUMERICHOST", libc::AI_NUMERICHOST as i64),
-            ("AI_NUMERICSERV", libc::AI_NUMERICSERV as i64),
-            ("NI_NUMERICHOST", libc::NI_NUMERICHOST as i64),
-            ("NI_NUMERICSERV", libc::NI_NUMERICSERV as i64),
-            ("MSG_PEEK", libc::MSG_PEEK as i64),
-        ];
-        #[cfg(unix)]
-        {
-            out.push(("AF_UNIX", libc::AF_UNIX as i64));
-        }
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd",
-            target_os = "dragonfly"
-        ))]
-        {
-            out.push(("SCM_RIGHTS", libc::SCM_RIGHTS as i64));
-        }
-        #[cfg(unix)]
-        {
-            if SOCK_NONBLOCK_FLAG != 0 {
-                out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
+            #[cfg(unix)]
+            {
+                out.push(("AF_UNIX", libc::AF_UNIX as i64));
             }
-            if SOCK_CLOEXEC_FLAG != 0 {
-                out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "android",
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "dragonfly"
+            ))]
+            {
+                out.push(("SCM_RIGHTS", libc::SCM_RIGHTS as i64));
             }
+            #[cfg(unix)]
+            {
+                if SOCK_NONBLOCK_FLAG != 0 {
+                    out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
+                }
+                if SOCK_CLOEXEC_FLAG != 0 {
+                    out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
+                }
+            }
+            #[cfg(unix)]
+            {
+                out.push(("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64));
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "android",
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "dragonfly"
+            ))]
+            {
+                out.push(("SO_REUSEPORT", libc::SO_REUSEPORT as i64));
+            }
+            out.push(("EAI_AGAIN", libc::EAI_AGAIN as i64));
+            out.push(("EAI_FAIL", libc::EAI_FAIL as i64));
+            out.push(("EAI_FAMILY", libc::EAI_FAMILY as i64));
+            out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
+            out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
+            out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
+            out
         }
-        #[cfg(unix)]
-        {
-            out.push(("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64));
-        }
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd",
-            target_os = "dragonfly"
-        ))]
-        {
-            out.push(("SO_REUSEPORT", libc::SO_REUSEPORT as i64));
-        }
-        out.push(("EAI_AGAIN", libc::EAI_AGAIN as i64));
-        out.push(("EAI_FAIL", libc::EAI_FAIL as i64));
-        out.push(("EAI_FAMILY", libc::EAI_FAMILY as i64));
-        out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
-        out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
-        out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
-        out
     }
 }
 

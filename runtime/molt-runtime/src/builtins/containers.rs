@@ -592,10 +592,10 @@ pub(crate) unsafe fn dict_view_len(ptr: *mut u8) -> usize {
     unsafe {
         let dict_bits = dict_view_dict_bits(ptr);
         let dict_obj = obj_from_bits(dict_bits);
-        if let Some(dict_ptr) = dict_obj.as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                return dict_len(dict_ptr);
-            }
+        if let Some(dict_ptr) = dict_obj.as_ptr()
+            && object_type_id(dict_ptr) == TYPE_ID_DICT
+        {
+            return dict_len(dict_ptr);
         }
         0
     }
