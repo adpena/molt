@@ -2083,6 +2083,36 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_statistics_normal_dist_new",
+        symbol: "molt_statistics_normal_dist_new",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_normal_dist_inv_cdf",
+        symbol: "molt_statistics_normal_dist_inv_cdf",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_normal_dist_pdf",
+        symbol: "molt_statistics_normal_dist_pdf",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_normal_dist_cdf",
+        symbol: "molt_statistics_normal_dist_cdf",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_normal_dist_zscore",
+        symbol: "molt_statistics_normal_dist_zscore",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_statistics_normal_dist_overlap",
+        symbol: "molt_statistics_normal_dist_overlap",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_decimal_context_new",
         symbol: "molt_decimal_context_new",
         arity: 0,
@@ -2901,6 +2931,56 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_encodings_aliases_map",
         symbol: "molt_encodings_aliases_map",
         arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_a2b_base64",
+        symbol: "molt_binascii_a2b_base64",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_b2a_base64",
+        symbol: "molt_binascii_b2a_base64",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_a2b_hex",
+        symbol: "molt_binascii_a2b_hex",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_b2a_hex",
+        symbol: "molt_binascii_b2a_hex",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_a2b_qp",
+        symbol: "molt_binascii_a2b_qp",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_b2a_qp",
+        symbol: "molt_binascii_b2a_qp",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_a2b_uu",
+        symbol: "molt_binascii_a2b_uu",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_b2a_uu",
+        symbol: "molt_binascii_b2a_uu",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_crc32",
+        symbol: "molt_binascii_crc32",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_binascii_crc_hqx",
+        symbol: "molt_binascii_crc_hqx",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_struct_pack",
@@ -4041,6 +4121,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_zip_source_exec_payload",
         symbol: "molt_importlib_zip_source_exec_payload",
         arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_zip_read_entry",
+        symbol: "molt_importlib_zip_read_entry",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_importlib_read_file",
@@ -5820,6 +5905,24 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_statistics_linear_regression" => {
             Some(crate::molt_statistics_linear_regression as *const () as usize as u64)
         }
+        "molt_statistics_normal_dist_new" => {
+            Some(crate::molt_statistics_normal_dist_new as *const () as usize as u64)
+        }
+        "molt_statistics_normal_dist_inv_cdf" => {
+            Some(crate::molt_statistics_normal_dist_inv_cdf as *const () as usize as u64)
+        }
+        "molt_statistics_normal_dist_pdf" => {
+            Some(crate::molt_statistics_normal_dist_pdf as *const () as usize as u64)
+        }
+        "molt_statistics_normal_dist_cdf" => {
+            Some(crate::molt_statistics_normal_dist_cdf as *const () as usize as u64)
+        }
+        "molt_statistics_normal_dist_zscore" => {
+            Some(crate::molt_statistics_normal_dist_zscore as *const () as usize as u64)
+        }
+        "molt_statistics_normal_dist_overlap" => {
+            Some(crate::molt_statistics_normal_dist_overlap as *const () as usize as u64)
+        }
         "molt_decimal_context_new" => {
             Some(crate::molt_decimal_context_new as *const () as usize as u64)
         }
@@ -6040,6 +6143,20 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_encodings_aliases_map" => {
             Some(crate::molt_encodings_aliases_map as *const () as usize as u64)
         }
+        "molt_binascii_a2b_base64" => {
+            Some(crate::molt_binascii_a2b_base64 as *const () as usize as u64)
+        }
+        "molt_binascii_b2a_base64" => {
+            Some(crate::molt_binascii_b2a_base64 as *const () as usize as u64)
+        }
+        "molt_binascii_a2b_hex" => Some(crate::molt_binascii_a2b_hex as *const () as usize as u64),
+        "molt_binascii_b2a_hex" => Some(crate::molt_binascii_b2a_hex as *const () as usize as u64),
+        "molt_binascii_a2b_qp" => Some(crate::molt_binascii_a2b_qp as *const () as usize as u64),
+        "molt_binascii_b2a_qp" => Some(crate::molt_binascii_b2a_qp as *const () as usize as u64),
+        "molt_binascii_a2b_uu" => Some(crate::molt_binascii_a2b_uu as *const () as usize as u64),
+        "molt_binascii_b2a_uu" => Some(crate::molt_binascii_b2a_uu as *const () as usize as u64),
+        "molt_binascii_crc32" => Some(crate::molt_binascii_crc32 as *const () as usize as u64),
+        "molt_binascii_crc_hqx" => Some(crate::molt_binascii_crc_hqx as *const () as usize as u64),
         "molt_struct_pack" => Some(crate::molt_struct_pack as *const () as usize as u64),
         "molt_struct_unpack" => Some(crate::molt_struct_unpack as *const () as usize as u64),
         "molt_struct_calcsize" => Some(crate::molt_struct_calcsize as *const () as usize as u64),
@@ -6459,6 +6576,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_importlib_zip_source_exec_payload" => {
             Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64)
+        }
+        "molt_importlib_zip_read_entry" => {
+            Some(crate::molt_importlib_zip_read_entry as *const () as usize as u64)
         }
         "molt_importlib_read_file" => {
             Some(crate::molt_importlib_read_file as *const () as usize as u64)
