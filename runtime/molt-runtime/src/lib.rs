@@ -130,6 +130,7 @@ pub(crate) use crate::builtins::classes::{
     builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
 pub use crate::builtins::codecs::*;
+pub use crate::builtins::colorsys::*;
 pub(crate) use crate::builtins::containers::{
     dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
     dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
