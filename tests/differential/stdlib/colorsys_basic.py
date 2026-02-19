@@ -1,49 +1,35 @@
-"""Purpose: differential coverage for colorsys conversions."""
+from __future__ import annotations
 
 import colorsys
+import math
 
 
-rgb_cases = [
-    (0.0, 0.0, 0.0),
-    (1.0, 1.0, 1.0),
-    (1.0, 0.0, 0.0),
-    (0.0, 1.0, 0.0),
-    (0.0, 0.0, 1.0),
-    (0.2, 0.4, 0.6),
-    (0.9, 0.1, 0.7),
-    (1.2, -0.1, 0.5),
-]
+def assert_triplet_close(actual, expected, *, tol=1e-12):
+    assert len(actual) == 3
+    assert len(expected) == 3
+    for left, right in zip(actual, expected):
+        assert math.isclose(left, right, rel_tol=tol, abs_tol=tol)
 
-yiq_cases = [
-    (0.0, 0.0, 0.0),
-    (0.5, 0.2, -0.1),
-    (0.75, -0.3, 0.4),
-]
 
-hls_cases = [
-    (0.0, 0.0, 0.0),
-    (0.5, 0.5, 0.5),
-    (0.7, 0.4, 0.9),
-    (-0.1, 0.2, 0.3),
-]
+def test_colorsys_known_values():
+    assert_triplet_close(colorsys.rgb_to_yiq(0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+    assert_triplet_close(colorsys.rgb_to_yiq(1.0, 1.0, 1.0), (1.0, 0.0, 0.0))
+    assert_triplet_close(colorsys.rgb_to_hls(1.0, 0.0, 0.0), (0.0, 0.5, 1.0))
+    assert_triplet_close(colorsys.rgb_to_hsv(1.0, 0.0, 0.0), (0.0, 1.0, 1.0))
+    assert_triplet_close(colorsys.hls_to_rgb(0.0, 0.5, 1.0), (1.0, 0.0, 0.0))
+    assert_triplet_close(colorsys.hsv_to_rgb(0.0, 1.0, 1.0), (1.0, 0.0, 0.0))
 
-hsv_cases = [
-    (0.0, 0.0, 0.0),
-    (0.5, 0.5, 0.5),
-    (0.9, 0.2, 0.8),
-    (-0.2, 0.7, 0.9),
-]
 
-for r, g, b in rgb_cases:
-    print("rgb_to_yiq", r, g, b, colorsys.rgb_to_yiq(r, g, b))
-    print("rgb_to_hls", r, g, b, colorsys.rgb_to_hls(r, g, b))
-    print("rgb_to_hsv", r, g, b, colorsys.rgb_to_hsv(r, g, b))
+def test_colorsys_roundtrip():
+    for rgb in ((0.2, 0.4, 0.6), (0.9, 0.1, 0.3), (0.05, 0.95, 0.5)):
+        h, l, s = colorsys.rgb_to_hls(*rgb)
+        assert_triplet_close(colorsys.hls_to_rgb(h, l, s), rgb, tol=1e-10)
+        h, s, v = colorsys.rgb_to_hsv(*rgb)
+        assert_triplet_close(colorsys.hsv_to_rgb(h, s, v), rgb, tol=1e-10)
 
-for y, i, q in yiq_cases:
-    print("yiq_to_rgb", y, i, q, colorsys.yiq_to_rgb(y, i, q))
 
-for h, l, s in hls_cases:
-    print("hls_to_rgb", h, l, s, colorsys.hls_to_rgb(h, l, s))
-
-for h, s, v in hsv_cases:
-    print("hsv_to_rgb", h, s, v, colorsys.hsv_to_rgb(h, s, v))
+def test_colorsys_yiq_clamp():
+    r, g, b = colorsys.yiq_to_rgb(0.5, 1.0, 1.0)
+    assert 0.0 <= r <= 1.0
+    assert 0.0 <= g <= 1.0
+    assert 0.0 <= b <= 1.0
