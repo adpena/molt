@@ -1,12 +1,49 @@
-"""Intrinsic-first stdlib module stub for `encodings.euc_kr`."""
+#
+# euc_kr.py: Python Unicode Codec for EUC_KR
+#
+# Written by Hye-Shik Chang <perky@FreeBSD.org>
+#
+
+import _codecs_kr
+import codecs
+import _multibytecodec as mbc
+
+codec = _codecs_kr.getcodec("euc_kr")
+
+
+class Codec(codecs.Codec):
+    encode = codec.encode
+    decode = codec.decode
+
+
+class IncrementalEncoder(mbc.MultibyteIncrementalEncoder, codecs.IncrementalEncoder):
+    codec = codec
+
+
+class IncrementalDecoder(mbc.MultibyteIncrementalDecoder, codecs.IncrementalDecoder):
+    codec = codec
+
+
+class StreamReader(Codec, mbc.MultibyteStreamReader, codecs.StreamReader):
+    codec = codec
+
+
+class StreamWriter(Codec, mbc.MultibyteStreamWriter, codecs.StreamWriter):
+    codec = codec
+
+
+def getregentry():
+    return codecs.CodecInfo(
+        name="euc_kr",
+        encode=Codec().encode,
+        decode=Codec().decode,
+        incrementalencoder=IncrementalEncoder,
+        incrementaldecoder=IncrementalDecoder,
+        streamreader=StreamReader,
+        streamwriter=StreamWriter,
+    )
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings.euc_kr` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "encodings.euc_kr" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )

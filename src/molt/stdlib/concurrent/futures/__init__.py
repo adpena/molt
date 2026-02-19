@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import abc as _abc
 from collections import deque, namedtuple
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -224,14 +223,12 @@ class Future:
             return self._state == _FINISHED and self._exception is not None
 
 
-class Executor(_abc.ABC):
-    @_abc.abstractmethod
-    def submit(
-        self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any
-    ) -> Future: ...
+class Executor:
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        raise NotImplementedError()
 
-    @_abc.abstractmethod
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: ...
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        raise NotImplementedError()
 
     def map(
         self,

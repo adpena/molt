@@ -1,12 +1,56 @@
-"""Intrinsic-first stdlib module stub for `email.generator`."""
+"""Public API surface shim for ``email.generator``."""
+
+from __future__ import annotations
+
+import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+UNDERSCORE = "_"
+NL = "\n"
+NLCRE = re.compile(r"\r\n|\r|\n")
+fcre = re.compile(r"^From ")
+NEWLINE_WITHOUT_FWSP = re.compile(r"\n")
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `email.generator` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "email.generator" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+
+class HeaderWriteError(Exception):
+    pass
+
+
+class Generator:
+    def __init__(
+        self,
+        outfp,
+        mangle_from_: bool | None = None,
+        maxheaderlen: int | None = None,
+        *,
+        policy=None,
+    ):
+        self._fp = outfp
+        self._mangle_from_ = mangle_from_
+        self._maxheaderlen = maxheaderlen
+        self.policy = policy
+
+    def flatten(self, msg, unixfrom: bool = False, linesep: str | None = None):
+        del unixfrom
+        text = str(msg)
+        if linesep is not None:
+            text = NLCRE.sub(linesep, text)
+        self._fp.write(text)
+
+
+class BytesGenerator(Generator):
+    def flatten(self, msg, unixfrom: bool = False, linesep: str | None = None):
+        del unixfrom
+        text = str(msg)
+        if linesep is not None:
+            text = NLCRE.sub(linesep, text)
+        if isinstance(text, str):
+            text = text.encode("utf-8", "replace")
+        self._fp.write(text)
+
+
+class DecodedGenerator(Generator):
+    pass

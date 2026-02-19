@@ -1,12 +1,20 @@
-"""Intrinsic-first stdlib module stub for `ctypes.macholib.framework`."""
+"""Public API surface shim for ``ctypes.macholib.framework``."""
+
+from __future__ import annotations
+
+import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+STRICT_FRAMEWORK_RE = re.compile(
+    r"(?P<location>.*/)?(?P<name>[^/]+)\.framework(?:/(?P<shortname>[^/]+))?$"
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ctypes.macholib.framework` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "ctypes.macholib.framework" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+
+def framework_info(path: str):
+    match = STRICT_FRAMEWORK_RE.match(path)
+    if match is None:
+        return None
+    return match.groupdict()

@@ -1,12 +1,23 @@
-"""Intrinsic-first stdlib module stub for `asyncio.protocols`."""
+"""Public API surface shim for ``asyncio.protocols``."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from asyncio import (
+    BaseProtocol,
+    BufferedProtocol,
+    DatagramProtocol,
+    Protocol,
+    SubprocessProtocol,
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.protocols` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.protocols" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = [
+    "BaseProtocol",
+    "BufferedProtocol",
+    "DatagramProtocol",
+    "Protocol",
+    "SubprocessProtocol",
+]

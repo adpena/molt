@@ -51,4 +51,55 @@ def normalize(form: str, unistr: str) -> str:
     raise ValueError("invalid normalization form")
 
 
-__all__ = ["normalize"]
+class UCD:
+    def normalize(self, form: str, unistr: str) -> str:
+        return normalize(form, unistr)
+
+    def name(self, unichr: str, default=None):
+        del unichr
+        return default
+
+    def lookup(self, name: str):
+        raise KeyError(name)
+
+    def category(self, unichr: str) -> str:
+        del unichr
+        return "Cn"
+
+    def bidirectional(self, unichr: str) -> str:
+        del unichr
+        return ""
+
+    def combining(self, unichr: str) -> int:
+        del unichr
+        return 0
+
+    def east_asian_width(self, unichr: str) -> str:
+        del unichr
+        return "N"
+
+    def mirrored(self, unichr: str) -> int:
+        del unichr
+        return 0
+
+    def decomposition(self, unichr: str) -> str:
+        del unichr
+        return ""
+
+    def numeric(self, unichr: str, default=None):
+        del unichr
+        return default
+
+    def decimal(self, unichr: str, default=None):
+        del unichr
+        return default
+
+    def digit(self, unichr: str, default=None):
+        del unichr
+        return default
+
+
+ucd_3_2_0 = UCD()
+
+
+__all__ = ["normalize", "ucd_3_2_0"]

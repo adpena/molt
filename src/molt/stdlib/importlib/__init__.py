@@ -20,10 +20,49 @@ _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
 _SPEC_FIRST_IMPORTS = {"asyncio.graph"}
 
 
-def _is_known_absent(resolved: str) -> bool:
+def _known_absence_error(resolved: str) -> BaseException | None:
     if resolved == "asyncio.graph":
-        return _sys.version_info < (3, 14)
-    return False
+        if _sys.version_info < (3, 14):
+            return ModuleNotFoundError(f"No module named '{resolved}'")
+        return None
+    if resolved == "asyncio.tools":
+        return ModuleNotFoundError(f"No module named '{resolved}'")
+    if resolved in {"asyncio.windows_events", "asyncio.windows_utils"}:
+        if _os.name != "nt":
+            return ImportError("win32 only")
+        return None
+    if resolved == "compression" or resolved.startswith("compression."):
+        if _sys.version_info < (3, 14):
+            return ModuleNotFoundError("No module named 'compression'")
+        if resolved == "compression.common" or resolved.startswith(
+            "compression.common."
+        ):
+            return ModuleNotFoundError("No module named 'compression.common'")
+        if resolved == "compression.zstd.zstdfile" or resolved.startswith(
+            "compression.zstd.zstdfile."
+        ):
+            return ModuleNotFoundError("No module named 'compression.zstd.zstdfile'")
+    if resolved == "concurrent.futures.interpreter" or resolved.startswith(
+        "concurrent.futures.interpreter."
+    ):
+        if _sys.version_info < (3, 14):
+            return ModuleNotFoundError(
+                "No module named 'concurrent.futures.interpreter'"
+            )
+    if resolved == "concurrent.interpreters" or resolved.startswith(
+        "concurrent.interpreters."
+    ):
+        if _sys.version_info < (3, 14):
+            return ModuleNotFoundError("No module named 'concurrent.interpreters'")
+    if resolved == "ctypes._layout" or resolved.startswith("ctypes._layout."):
+        if _sys.version_info < (3, 14):
+            return ModuleNotFoundError("No module named 'ctypes._layout'")
+    if resolved == "dbm.gnu" or resolved.startswith("dbm.gnu."):
+        return ModuleNotFoundError("No module named '_gdbm'")
+    if resolved == "dbm.sqlite3" or resolved.startswith("dbm.sqlite3."):
+        if _sys.version_info < (3, 13):
+            return ModuleNotFoundError("No module named 'dbm.sqlite3'")
+    return None
 
 
 __all__ = [
@@ -129,8 +168,9 @@ def _module_import_with_fallback(resolved: str):
 
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
-    if _is_known_absent(resolved):
-        raise ModuleNotFoundError(f"No module named '{resolved}'")
+    known_absence = _known_absence_error(resolved)
+    if known_absence is not None:
+        raise known_absence
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]

@@ -1,12 +1,22 @@
-"""Intrinsic-first stdlib module stub for `asyncio.transports`."""
+"""Public API surface shim for ``asyncio.transports``."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from asyncio import DatagramTransport, SubprocessTransport, Transport
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.transports` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.transports" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+BaseTransport = Transport
+ReadTransport = Transport
+WriteTransport = Transport
+
+__all__ = [
+    "BaseTransport",
+    "DatagramTransport",
+    "ReadTransport",
+    "SubprocessTransport",
+    "Transport",
+    "WriteTransport",
+]

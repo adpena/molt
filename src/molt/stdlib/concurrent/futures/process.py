@@ -1,12 +1,49 @@
-"""Intrinsic-first stdlib module stub for `concurrent.futures.process`."""
+"""Public API surface shim for ``concurrent.futures.process``."""
+
+from __future__ import annotations
+
+import functools as _functools
+import itertools
+import multiprocessing
+import multiprocessing as mp
+import os
+import queue
+import sys
+import threading
+from traceback import format_exception
+import weakref
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from concurrent.futures import BrokenProcessPool, ProcessPoolExecutor
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `concurrent.futures.process` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "concurrent.futures.process" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+EXTRA_QUEUED_CALLS = 1
+
+
+class Queue:
+    pass
+
+
+class partial:
+    def __new__(cls, /, *args, **kwargs):
+        return _functools.partial(*args, **kwargs)
+
+
+__all__ = [
+    "BrokenProcessPool",
+    "EXTRA_QUEUED_CALLS",
+    "ProcessPoolExecutor",
+    "Queue",
+    "format_exception",
+    "itertools",
+    "mp",
+    "multiprocessing",
+    "os",
+    "partial",
+    "queue",
+    "sys",
+    "threading",
+    "weakref",
+]

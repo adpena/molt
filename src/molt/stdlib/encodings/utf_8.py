@@ -1,12 +1,55 @@
-"""Intrinsic-first stdlib module stub for `encodings.utf_8`."""
+"""Python 'utf-8' Codec
+
+
+Written by Marc-Andre Lemburg (mal@lemburg.com).
+
+(c) Copyright CNRI, All Rights Reserved. NO WARRANTY.
+
+"""
+
+import codecs
+
+### Codec APIs
+
+encode = codecs.utf_8_encode
+
+
+def decode(input, errors="strict"):
+    return codecs.utf_8_decode(input, errors, True)
+
+
+class IncrementalEncoder(codecs.IncrementalEncoder):
+    def encode(self, input, final=False):
+        return codecs.utf_8_encode(input, self.errors)[0]
+
+
+class IncrementalDecoder(codecs.BufferedIncrementalDecoder):
+    _buffer_decode = codecs.utf_8_decode
+
+
+class StreamWriter(codecs.StreamWriter):
+    encode = codecs.utf_8_encode
+
+
+class StreamReader(codecs.StreamReader):
+    decode = codecs.utf_8_decode
+
+
+### encodings module API
+
+
+def getregentry():
+    return codecs.CodecInfo(
+        name="utf-8",
+        encode=encode,
+        decode=decode,
+        incrementalencoder=IncrementalEncoder,
+        incrementaldecoder=IncrementalDecoder,
+        streamreader=StreamReader,
+        streamwriter=StreamWriter,
+    )
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings.utf_8` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "encodings.utf_8" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )

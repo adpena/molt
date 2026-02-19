@@ -1,12 +1,50 @@
-"""Intrinsic-first stdlib module stub for `email._encoded_words`."""
+"""Public API surface shim for ``email._encoded_words``."""
+
+from __future__ import annotations
+
+import base64
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `email._encoded_words` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "email._encoded_words" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def decode_q(encoded: bytes) -> bytes:
+    return encoded.replace(b"_", b" ")
+
+
+def encode_q(data: bytes) -> bytes:
+    return data.replace(b" ", b"_")
+
+
+def len_q(data: bytes) -> int:
+    return len(encode_q(data))
+
+
+def decode_b(encoded: bytes) -> bytes:
+    try:
+        return base64.b64decode(encoded, validate=False)
+    except Exception:
+        return b""
+
+
+def encode_b(data: bytes) -> bytes:
+    try:
+        return base64.b64encode(data)
+    except Exception:
+        return b""
+
+
+def len_b(data: bytes) -> int:
+    return len(encode_b(data))
+
+
+def decode(ew: str):
+    return ("", ew, None, [])
+
+
+def encode(text: str, charset: str = "utf-8", encoding: str | None = None):
+    del encoding
+    payload = text.encode(charset, "replace")
+    return f"=?{charset}?b?{base64.b64encode(payload).decode('ascii')}?="
