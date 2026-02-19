@@ -1,26 +1,20 @@
-"""Intrinsic-backed bisect helpers for Molt."""
+"""Intrinsic-backed bisect primitives for Molt."""
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_BISECT_LEFT = _require_intrinsic("molt_bisect_left", globals())
-_MOLT_BISECT_RIGHT = _require_intrinsic("molt_bisect_right", globals())
-_MOLT_BISECT_INSORT_LEFT = _require_intrinsic("molt_bisect_insort_left", globals())
-_MOLT_BISECT_INSORT_RIGHT = _require_intrinsic("molt_bisect_insort_right", globals())
 
+__all__ = [
+    "bisect_left",
+    "bisect_right",
+    "insort_left",
+    "insort_right",
+]
 
-def bisect_left(a, x, lo=0, hi=None, *, key=None):
-    return _MOLT_BISECT_LEFT(a, x, lo, hi, key)
-
-
-def bisect_right(a, x, lo=0, hi=None, *, key=None):
-    return _MOLT_BISECT_RIGHT(a, x, lo, hi, key)
-
-
-def insort_left(a, x, lo=0, hi=None, *, key=None):
-    _MOLT_BISECT_INSORT_LEFT(a, x, lo, hi, key)
-
-
-def insort_right(a, x, lo=0, hi=None, *, key=None):
-    _MOLT_BISECT_INSORT_RIGHT(a, x, lo, hi, key)
+# Keep `_bisect` aligned with CPython's C-extension shape by exposing the
+# raw intrinsic callables directly.
+bisect_left = _require_intrinsic("molt_bisect_left", globals())
+bisect_right = _require_intrinsic("molt_bisect_right", globals())
+insort_left = _require_intrinsic("molt_insort_left", globals())
+insort_right = _require_intrinsic("molt_insort_right", globals())

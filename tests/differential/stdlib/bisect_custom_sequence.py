@@ -1,46 +1,28 @@
-"""Purpose: differential coverage for bisect generic sequence semantics."""
+"""Purpose: differential coverage for bisect custom sequences."""
 
 import bisect
 
 
 class Seq:
-    def __init__(self, values):
-        self._values = list(values)
+    def __init__(self, items):
+        self.data = list(items)
+        self.inserts = []
 
     def __len__(self):
-        return len(self._values)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        return self._values[idx]
-
-
-class Box:
-    def __init__(self, values):
-        self._values = list(values)
-
-    def __len__(self):
-        return len(self._values)
-
-    def __getitem__(self, idx):
-        return self._values[idx]
+        return self.data[idx]
 
     def insert(self, idx, value):
-        self._values.insert(idx, value)
+        self.inserts.append((idx, value))
+        self.data.insert(idx, value)
 
 
-seq = Seq([1, 2, 2, 3])
-print(bisect.bisect_left(seq, 2))
-print(bisect.bisect_right(seq, 2))
+seq = Seq([1, 3, 5])
+print(bisect.bisect_left(seq, 3))
+print(bisect.bisect_right(seq, 3))
 
-box = Box([1, 3])
-bisect.insort_left(box, 2)
-print(box._values)
-
-class KeyItem:
-    def __init__(self, x):
-        self.x = x
-
-
-box2 = Box([KeyItem(1), KeyItem(3)])
-bisect.insort_right(box2, KeyItem(2), key=lambda item: item.x)
-print([item.x for item in box2._values])
+bisect.insort_left(seq, 4)
+print(seq.data)
+print(seq.inserts)
