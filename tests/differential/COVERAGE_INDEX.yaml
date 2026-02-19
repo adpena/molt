@@ -865,6 +865,7 @@ stdlib:
       - tests/differential/stdlib/math_isfinite_decimal.py
   bisect:
     tests:
+      - tests/differential/stdlib/bisect_custom_sequence.py
       - tests/differential/stdlib/bisect_key_basic.py
       - tests/differential/stdlib/bisect_edge_cases.py
   io:
@@ -1051,6 +1052,7 @@ stdlib:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_asyncio_9232f12c.py
   _bisect:
     tests:
+      - tests/differential/stdlib/_bisect_basic.py
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_bisect_579c90c0.py
   _blake2:
     tests:
