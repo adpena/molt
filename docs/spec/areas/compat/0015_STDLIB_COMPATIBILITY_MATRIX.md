@@ -199,7 +199,7 @@ entries must obey the policy in Section 0.
 | colorsys | Stdlib | Implemented | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB/HLS/HSV/YIQ conversions; full CPython 3.12 API coverage. |
 | compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
 | configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
-| copyreg | Stdlib | Partial | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core (`dispatch_table`, `pickle`, `constructor`, extension registry helpers) with runtime-owned state; full parity pending. |
+| copyreg | Stdlib | Full | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core plus helper APIs (`__newobj__`, `__newobj_ex__`, `_reconstructor`, `_reduce_ex`) with runtime-owned state and no host-Python fallback. |
 | difflib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | dis | Stdlib | Planned | P3 | SL3 | stdlib | Bytecode disassembly; parity pending. |
 | encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |

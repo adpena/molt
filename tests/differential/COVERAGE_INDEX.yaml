@@ -553,6 +553,7 @@ stdlib:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_codec.py
       - tests/differential/stdlib/copyreg_basic.py
+      - tests/differential/stdlib/copyreg_helpers.py
   cProfile:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_profiler.py
