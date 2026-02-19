@@ -23,13 +23,14 @@ use crate::{
     attr_name_bits_from_bytes,
     builtin_classes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
     call_callable3, call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
-    ensure_function_code_bits, exception_kind_bits, exception_pending, format_obj,
-    function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
-    is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits, molt_exception_last,
-    molt_getattr_builtin, molt_getitem_method, molt_is_callable, molt_iter, molt_iter_next,
-    molt_len, molt_list_insert, molt_trace_enter_slot, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_f64, to_i64, type_name, type_of_bits,
+    dict_set_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending,
+    format_obj, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
+    inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits, molt_contains,
+    molt_dict_items, molt_dict_keys, molt_dict_new, molt_exception_last, molt_getattr_builtin,
+    molt_is_callable, molt_iter, molt_iter_next, molt_len, molt_list_append, molt_list_clear,
+    molt_list_copy, molt_list_insert, molt_set_add, molt_set_discard, molt_set_new,
+    molt_trace_enter_slot, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
+    raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64, type_name, type_of_bits,
 };
 
 #[derive(Clone)]
@@ -16879,6 +16880,910 @@ pub extern "C" fn molt_logging_runtime_ready() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+const GRAPHLIB_STATE_NODE2PREDS: &[u8] = b"node2preds";
+const GRAPHLIB_STATE_NODE2SUCCS: &[u8] = b"node2succs";
+const GRAPHLIB_STATE_NPREDECESSORS: &[u8] = b"npredecessors";
+const GRAPHLIB_STATE_READY: &[u8] = b"ready";
+const GRAPHLIB_STATE_IN_PROGRESS: &[u8] = b"in_progress";
+const GRAPHLIB_STATE_DONE: &[u8] = b"done";
+const GRAPHLIB_STATE_PREPARED: &[u8] = b"prepared";
+const GRAPHLIB_STATE_NFINISHED: &[u8] = b"nfinished";
+const GRAPHLIB_STATE_NTOTAL: &[u8] = b"n_total";
+const GRAPHLIB_CYCLE_MARKER: &[u8] = b"__molt_graphlib_cycle__";
+
+fn graphlib_state_key_bits(_py: &crate::PyToken<'_>, key: &[u8]) -> Result<u64, u64> {
+    if let Some(key_bits) = attr_name_bits_from_bytes(_py, key) {
+        return Ok(key_bits);
+    }
+    let ptr = alloc_string(_py, key);
+    if ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(MoltObject::from_ptr(ptr).bits())
+}
+
+fn graphlib_state_dict_ptr(_py: &crate::PyToken<'_>, state_bits: u64) -> Result<*mut u8, u64> {
+    let Some(ptr) = obj_from_bits(state_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "graphlib state must be a dict",
+        ));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "graphlib state must be a dict",
+        ));
+    }
+    Ok(ptr)
+}
+
+fn graphlib_state_get_bits(
+    _py: &crate::PyToken<'_>,
+    state_ptr: *mut u8,
+    key: &[u8],
+) -> Result<u64, u64> {
+    let key_bits = graphlib_state_key_bits(_py, key)?;
+    let value = unsafe { dict_get_in_place(_py, state_ptr, key_bits) };
+    dec_ref_bits(_py, key_bits);
+    match value {
+        Some(bits) => Ok(bits),
+        None => {
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "graphlib state missing key",
+            ))
+        }
+    }
+}
+
+fn graphlib_state_set_bits(
+    _py: &crate::PyToken<'_>,
+    state_ptr: *mut u8,
+    key: &[u8],
+    value_bits: u64,
+) -> Result<(), u64> {
+    let key_bits = graphlib_state_key_bits(_py, key)?;
+    unsafe {
+        dict_set_in_place(_py, state_ptr, key_bits, value_bits);
+    }
+    dec_ref_bits(_py, key_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(())
+}
+
+fn graphlib_cycle_tuple(_py: &crate::PyToken<'_>, cycle_bits: u64) -> u64 {
+    let marker_ptr = alloc_string(_py, GRAPHLIB_CYCLE_MARKER);
+    if marker_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let marker_bits = MoltObject::from_ptr(marker_ptr).bits();
+    let tuple_ptr = alloc_tuple(_py, &[marker_bits, cycle_bits]);
+    dec_ref_bits(_py, marker_bits);
+    if tuple_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+fn graphlib_state_new(_py: &crate::PyToken<'_>) -> Result<u64, u64> {
+    let state_bits = molt_dict_new(0);
+    if obj_from_bits(state_bits).is_none() {
+        return Err(MoltObject::none().bits());
+    }
+    let state_ptr = graphlib_state_dict_ptr(_py, state_bits)?;
+    let node2preds_bits = molt_dict_new(0);
+    let node2succs_bits = molt_dict_new(0);
+    let npredecessors_bits = molt_dict_new(0);
+    let ready_ptr = alloc_list_with_capacity(_py, &[], 0);
+    if ready_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let ready_bits = MoltObject::from_ptr(ready_ptr).bits();
+    let in_progress_bits = molt_set_new(0);
+    let done_bits = molt_set_new(0);
+    graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2PREDS, node2preds_bits)?;
+    graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2SUCCS, node2succs_bits)?;
+    graphlib_state_set_bits(
+        _py,
+        state_ptr,
+        GRAPHLIB_STATE_NPREDECESSORS,
+        npredecessors_bits,
+    )?;
+    graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_READY, ready_bits)?;
+    graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_IN_PROGRESS, in_progress_bits)?;
+    graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_DONE, done_bits)?;
+    graphlib_state_set_bits(
+        _py,
+        state_ptr,
+        GRAPHLIB_STATE_PREPARED,
+        MoltObject::from_bool(false).bits(),
+    )?;
+    graphlib_state_set_bits(
+        _py,
+        state_ptr,
+        GRAPHLIB_STATE_NFINISHED,
+        MoltObject::from_int(0).bits(),
+    )?;
+    graphlib_state_set_bits(
+        _py,
+        state_ptr,
+        GRAPHLIB_STATE_NTOTAL,
+        MoltObject::from_int(0).bits(),
+    )?;
+    Ok(state_bits)
+}
+
+fn graphlib_state_prepared(_py: &crate::PyToken<'_>, state_ptr: *mut u8) -> Result<bool, u64> {
+    let prepared_bits = graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_PREPARED)?;
+    Ok(is_truthy(_py, obj_from_bits(prepared_bits)))
+}
+
+fn graphlib_state_set_prepared(
+    _py: &crate::PyToken<'_>,
+    state_ptr: *mut u8,
+    value: bool,
+) -> Result<(), u64> {
+    graphlib_state_set_bits(
+        _py,
+        state_ptr,
+        GRAPHLIB_STATE_PREPARED,
+        MoltObject::from_bool(value).bits(),
+    )
+}
+
+fn graphlib_set_contains(
+    _py: &crate::PyToken<'_>,
+    set_bits: u64,
+    value_bits: u64,
+) -> Result<bool, u64> {
+    let contains_bits = molt_contains(set_bits, value_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(is_truthy(_py, obj_from_bits(contains_bits)))
+}
+
+fn graphlib_find_cycle(
+    _py: &crate::PyToken<'_>,
+    node2succs_bits: u64,
+    done_bits: u64,
+) -> Result<Option<Vec<u64>>, u64> {
+    let keys_bits = molt_dict_keys(node2succs_bits);
+    if exception_pending(_py) || obj_from_bits(keys_bits).is_none() {
+        return Err(MoltObject::none().bits());
+    }
+    let keys_iter_bits = molt_iter(keys_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let node2succs_ptr = obj_from_bits(node2succs_bits).as_ptr().ok_or_else(|| {
+        raise_exception::<u64>(_py, "RuntimeError", "graphlib node2succs missing")
+    })?;
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut stack: Vec<u64> = Vec::new();
+    let mut stack_set: HashSet<u64> = HashSet::new();
+
+    fn dfs(
+        _py: &crate::PyToken<'_>,
+        node_bits: u64,
+        node2succs_ptr: *mut u8,
+        done_bits: u64,
+        visited: &mut HashSet<u64>,
+        stack: &mut Vec<u64>,
+        stack_set: &mut HashSet<u64>,
+    ) -> Result<Option<Vec<u64>>, u64> {
+        visited.insert(node_bits);
+        stack.push(node_bits);
+        stack_set.insert(node_bits);
+
+        let succs_bits = match unsafe { dict_get_in_place(_py, node2succs_ptr, node_bits) } {
+            Some(bits) => bits,
+            None => {
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                stack.pop();
+                stack_set.remove(&node_bits);
+                return Ok(None);
+            }
+        };
+        let iter_bits = molt_iter(succs_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        loop {
+            let (succ_bits, done) = iter_next_pair(_py, iter_bits)?;
+            if done {
+                break;
+            }
+            if graphlib_set_contains(_py, done_bits, succ_bits)? {
+                continue;
+            }
+            if !visited.contains(&succ_bits) {
+                if let Some(cycle) = dfs(
+                    _py,
+                    succ_bits,
+                    node2succs_ptr,
+                    done_bits,
+                    visited,
+                    stack,
+                    stack_set,
+                )? {
+                    return Ok(Some(cycle));
+                }
+            } else if stack_set.contains(&succ_bits) {
+                if let Some(pos) = stack.iter().position(|&bits| bits == succ_bits) {
+                    let mut cycle = stack[pos..].to_vec();
+                    cycle.push(succ_bits);
+                    return Ok(Some(cycle));
+                }
+            }
+        }
+        stack.pop();
+        stack_set.remove(&node_bits);
+        Ok(None)
+    }
+
+    loop {
+        let (node_bits, done) = match iter_next_pair(_py, keys_iter_bits) {
+            Ok(value) => value,
+            Err(bits) => return Err(bits),
+        };
+        if done {
+            break;
+        }
+        if graphlib_set_contains(_py, done_bits, node_bits)? {
+            continue;
+        }
+        if !visited.contains(&node_bits) {
+            if let Some(cycle) = dfs(
+                _py,
+                node_bits,
+                node2succs_ptr,
+                done_bits,
+                &mut visited,
+                &mut stack,
+                &mut stack_set,
+            )? {
+                dec_ref_bits(_py, keys_bits);
+                return Ok(Some(cycle));
+            }
+        }
+    }
+    dec_ref_bits(_py, keys_bits);
+    Ok(None)
+}
+
+fn graphlib_add_impl(
+    _py: &crate::PyToken<'_>,
+    state_ptr: *mut u8,
+    node_bits: u64,
+    predecessors_bits: u64,
+) -> Result<(), u64> {
+    let node2preds_bits = graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2PREDS)?;
+    let node2succs_bits = graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2SUCCS)?;
+    let node2preds_ptr = obj_from_bits(node2preds_bits).as_ptr().ok_or_else(|| {
+        raise_exception::<u64>(_py, "RuntimeError", "graphlib node2preds missing")
+    })?;
+    let node2succs_ptr = obj_from_bits(node2succs_bits).as_ptr().ok_or_else(|| {
+        raise_exception::<u64>(_py, "RuntimeError", "graphlib node2succs missing")
+    })?;
+
+    let node_preds_bits = match unsafe { dict_get_in_place(_py, node2preds_ptr, node_bits) } {
+        Some(bits) => bits,
+        None => {
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            let preds_bits = molt_set_new(0);
+            unsafe {
+                dict_set_in_place(_py, node2preds_ptr, node_bits, preds_bits);
+            }
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            preds_bits
+        }
+    };
+    let _node_succs_bits = match unsafe { dict_get_in_place(_py, node2succs_ptr, node_bits) } {
+        Some(bits) => bits,
+        None => {
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            let succs_bits = molt_set_new(0);
+            unsafe {
+                dict_set_in_place(_py, node2succs_ptr, node_bits, succs_bits);
+            }
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            succs_bits
+        }
+    };
+
+    let iter_bits = molt_iter(predecessors_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    loop {
+        let (pred_bits, done) = iter_next_pair(_py, iter_bits)?;
+        if done {
+            break;
+        }
+        let _pred_preds_bits = match unsafe { dict_get_in_place(_py, node2preds_ptr, pred_bits) } {
+            Some(bits) => bits,
+            None => {
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                let preds_bits = molt_set_new(0);
+                unsafe {
+                    dict_set_in_place(_py, node2preds_ptr, pred_bits, preds_bits);
+                }
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                preds_bits
+            }
+        };
+        let pred_succs_bits = match unsafe { dict_get_in_place(_py, node2succs_ptr, pred_bits) } {
+            Some(bits) => bits,
+            None => {
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                let succs_bits = molt_set_new(0);
+                unsafe {
+                    dict_set_in_place(_py, node2succs_ptr, pred_bits, succs_bits);
+                }
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                succs_bits
+            }
+        };
+        let _ = molt_set_add(node_preds_bits, pred_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let _ = molt_set_add(pred_succs_bits, node_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_new(graph_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_bits = match graphlib_state_new(_py) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        if obj_from_bits(graph_bits).is_none() {
+            return state_bits;
+        }
+        let graph_items_name = match graphlib_state_key_bits(_py, b"items") {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let items_bits = molt_getattr_builtin(graph_bits, graph_items_name, missing_bits(_py));
+        dec_ref_bits(_py, graph_items_name);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let items_iter_bits = unsafe { call_callable0(_py, items_bits) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let iter_bits = molt_iter(items_iter_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        loop {
+            let (item_bits, done) = match iter_next_pair(_py, iter_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if done {
+                break;
+            }
+            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "graph items must be tuples");
+            };
+            if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+                return raise_exception::<_>(_py, "TypeError", "graph items must be tuples");
+            }
+            let elems = unsafe { seq_vec_ref(item_ptr) };
+            if elems.len() < 2 {
+                return raise_exception::<_>(_py, "TypeError", "graph items must be pairs");
+            }
+            let node_bits = elems[0];
+            let preds_bits = elems[1];
+            if let Err(bits) = graphlib_add_impl(_py, state_ptr, node_bits, preds_bits) {
+                return bits;
+            }
+        }
+        state_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_add(
+    state_bits: u64,
+    node_bits: u64,
+    predecessors_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        if graphlib_state_prepared(_py, state_ptr).unwrap_or(false) {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "Nodes cannot be added after a call to prepare()",
+            );
+        }
+        match graphlib_add_impl(_py, state_ptr, node_bits, predecessors_bits) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_prepare(state_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        if graphlib_state_prepared(_py, state_ptr).unwrap_or(false) {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "TopologicalSorter is already prepared",
+            );
+        }
+        let node2preds_bits =
+            match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2PREDS) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+        let npredecessors_bits = molt_dict_new(0);
+        let ready_ptr = alloc_list_with_capacity(_py, &[], 0);
+        if ready_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let ready_bits = MoltObject::from_ptr(ready_ptr).bits();
+        let in_progress_bits = molt_set_new(0);
+        let done_bits = molt_set_new(0);
+        if graphlib_state_set_bits(
+            _py,
+            state_ptr,
+            GRAPHLIB_STATE_NPREDECESSORS,
+            npredecessors_bits,
+        )
+        .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        if graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_READY, ready_bits).is_err()
+            || graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_IN_PROGRESS, in_progress_bits)
+                .is_err()
+            || graphlib_state_set_bits(_py, state_ptr, GRAPHLIB_STATE_DONE, done_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        let items_bits = molt_dict_items(node2preds_bits);
+        if exception_pending(_py) || obj_from_bits(items_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let items_iter_bits = molt_iter(items_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        loop {
+            let (item_bits, done) = match iter_next_pair(_py, items_iter_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if done {
+                break;
+            }
+            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+                dec_ref_bits(_py, items_bits);
+                return raise_exception::<_>(_py, "TypeError", "graphlib items must be tuples");
+            };
+            if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, items_bits);
+                return raise_exception::<_>(_py, "TypeError", "graphlib items must be tuples");
+            }
+            let elems = unsafe { seq_vec_ref(item_ptr) };
+            if elems.len() < 2 {
+                dec_ref_bits(_py, items_bits);
+                return raise_exception::<_>(_py, "TypeError", "graphlib items must be pairs");
+            }
+            let node_bits = elems[0];
+            let preds_bits = elems[1];
+            let len_bits = molt_len(preds_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, items_bits);
+                return MoltObject::none().bits();
+            }
+            let count = to_i64(obj_from_bits(len_bits)).unwrap_or(0);
+            unsafe {
+                dict_set_in_place(
+                    _py,
+                    obj_from_bits(npredecessors_bits)
+                        .as_ptr()
+                        .expect("npredecessors dict missing"),
+                    node_bits,
+                    MoltObject::from_int(count).bits(),
+                );
+            }
+            if exception_pending(_py) {
+                dec_ref_bits(_py, items_bits);
+                return MoltObject::none().bits();
+            }
+            if count == 0 {
+                let _ = molt_list_append(ready_bits, node_bits);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, items_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        dec_ref_bits(_py, items_bits);
+        let total_bits = molt_len(node2preds_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let total = to_i64(obj_from_bits(total_bits)).unwrap_or(0);
+        if graphlib_state_set_bits(
+            _py,
+            state_ptr,
+            GRAPHLIB_STATE_NTOTAL,
+            MoltObject::from_int(total).bits(),
+        )
+        .is_err()
+            || graphlib_state_set_bits(
+                _py,
+                state_ptr,
+                GRAPHLIB_STATE_NFINISHED,
+                MoltObject::from_int(0).bits(),
+            )
+            .is_err()
+            || graphlib_state_set_prepared(_py, state_ptr, true).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        let ready_len_bits = molt_len(ready_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ready_len = to_i64(obj_from_bits(ready_len_bits)).unwrap_or(0);
+        if ready_len == 0 && total > 0 {
+            let node2succs_bits =
+                match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2SUCCS) {
+                    Ok(bits) => bits,
+                    Err(bits) => return bits,
+                };
+            match graphlib_find_cycle(_py, node2succs_bits, done_bits) {
+                Ok(Some(cycle)) => {
+                    let list_ptr = alloc_list_with_capacity(_py, cycle.as_slice(), cycle.len());
+                    if list_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+                    return graphlib_cycle_tuple(_py, list_bits);
+                }
+                Ok(None) => {}
+                Err(bits) => return bits,
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_get_ready(state_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        if !graphlib_state_prepared(_py, state_ptr).unwrap_or(false) {
+            return raise_exception::<_>(_py, "ValueError", "prepare() must be called first");
+        }
+        let ready_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_READY) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let in_progress_bits =
+            match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_IN_PROGRESS) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+        let done_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_DONE) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let ready_len_bits = molt_len(ready_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ready_len = to_i64(obj_from_bits(ready_len_bits)).unwrap_or(0);
+        if ready_len == 0 {
+            let in_progress_len_bits = molt_len(in_progress_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let in_progress_len = to_i64(obj_from_bits(in_progress_len_bits)).unwrap_or(0);
+            let nfinished_bits =
+                match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NFINISHED) {
+                    Ok(bits) => bits,
+                    Err(bits) => return bits,
+                };
+            let ntotal_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NTOTAL) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+            let nfinished = to_i64(obj_from_bits(nfinished_bits)).unwrap_or(0);
+            let ntotal = to_i64(obj_from_bits(ntotal_bits)).unwrap_or(0);
+            if in_progress_len == 0 && nfinished < ntotal {
+                let node2succs_bits =
+                    match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2SUCCS) {
+                        Ok(bits) => bits,
+                        Err(bits) => return bits,
+                    };
+                match graphlib_find_cycle(_py, node2succs_bits, done_bits) {
+                    Ok(Some(cycle)) => {
+                        let list_ptr = alloc_list_with_capacity(_py, cycle.as_slice(), cycle.len());
+                        if list_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+                        return graphlib_cycle_tuple(_py, list_bits);
+                    }
+                    Ok(None) => {}
+                    Err(bits) => return bits,
+                }
+            }
+        }
+
+        let Some(ready_ptr) = obj_from_bits(ready_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let tuple_ptr = alloc_tuple(_py, unsafe { seq_vec_ref(ready_ptr) }.as_slice());
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        for &node_bits in unsafe { seq_vec_ref(ready_ptr) } {
+            let _ = molt_set_add(in_progress_bits, node_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+        }
+        let _ = molt_list_clear(ready_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        tuple_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_done(state_bits: u64, nodes_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        if !graphlib_state_prepared(_py, state_ptr).unwrap_or(false) {
+            return raise_exception::<_>(_py, "ValueError", "prepare() must be called first");
+        }
+        let in_progress_bits =
+            match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_IN_PROGRESS) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+        let done_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_DONE) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let npredecessors_bits =
+            match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NPREDECESSORS) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+        let node2succs_bits =
+            match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NODE2SUCCS) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
+        let ready_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_READY) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+
+        let iter_bits = molt_iter(nodes_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let mut nodes: Vec<u64> = Vec::new();
+        let mut seen: HashSet<u64> = HashSet::new();
+        loop {
+            let (node_bits, done) = match iter_next_pair(_py, iter_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if done {
+                break;
+            }
+            if !seen.insert(node_bits) {
+                return raise_exception::<_>(_py, "ValueError", "node was not ready");
+            }
+            match graphlib_set_contains(_py, in_progress_bits, node_bits) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return raise_exception::<_>(_py, "ValueError", "node was not ready");
+                }
+                Err(bits) => return bits,
+            }
+            nodes.push(node_bits);
+        }
+
+        let node2succs_ptr = match obj_from_bits(node2succs_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                return raise_exception::<_>(_py, "RuntimeError", "graphlib node2succs missing");
+            }
+        };
+        let npredecessors_ptr = match obj_from_bits(npredecessors_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                return raise_exception::<_>(_py, "RuntimeError", "graphlib npredecessors missing");
+            }
+        };
+
+        let nfinished_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NFINISHED)
+        {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let mut nfinished = to_i64(obj_from_bits(nfinished_bits)).unwrap_or(0);
+
+        for node_bits in nodes {
+            let _ = molt_set_discard(in_progress_bits, node_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let _ = molt_set_add(done_bits, node_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            nfinished += 1;
+
+            let succs_bits = match unsafe { dict_get_in_place(_py, node2succs_ptr, node_bits) } {
+                Some(bits) => bits,
+                None => {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    continue;
+                }
+            };
+            let succ_iter_bits = molt_iter(succs_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            loop {
+                let (succ_bits, done) = match iter_next_pair(_py, succ_iter_bits) {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+                if done {
+                    break;
+                }
+                let current_bits =
+                    match unsafe { dict_get_in_place(_py, npredecessors_ptr, succ_bits) } {
+                        Some(bits) => bits,
+                        None => {
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            continue;
+                        }
+                    };
+                let current = to_i64(obj_from_bits(current_bits)).unwrap_or(0);
+                let next = current - 1;
+                unsafe {
+                    dict_set_in_place(
+                        _py,
+                        npredecessors_ptr,
+                        succ_bits,
+                        MoltObject::from_int(next).bits(),
+                    );
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                if next == 0 {
+                    let _ = molt_list_append(ready_bits, succ_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+        }
+        if graphlib_state_set_bits(
+            _py,
+            state_ptr,
+            GRAPHLIB_STATE_NFINISHED,
+            MoltObject::from_int(nfinished).bits(),
+        )
+        .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_is_active(state_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state_ptr = match graphlib_state_dict_ptr(_py, state_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        if !graphlib_state_prepared(_py, state_ptr).unwrap_or(false) {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "must call prepare() before is_active()",
+            );
+        }
+        let nfinished_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NFINISHED)
+        {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let ntotal_bits = match graphlib_state_get_bits(_py, state_ptr, GRAPHLIB_STATE_NTOTAL) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let nfinished = to_i64(obj_from_bits(nfinished_bits)).unwrap_or(0);
+        let ntotal = to_i64(obj_from_bits(ntotal_bits)).unwrap_or(0);
+        MoltObject::from_bool(nfinished < ntotal).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_graphlib_drop(_state_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
