@@ -7528,14 +7528,39 @@ pub extern "C" fn molt_sys_set_version_info(
         };
         let mut version = String::from_utf8_lossy(version_bytes).into_owned();
 
-        let info = PythonVersionInfo {
+        let mut info = PythonVersionInfo {
             major,
             minor,
             micro,
             releaselevel,
             serial,
         };
-        if version.is_empty() {
+        let mut info_overridden_from_env = false;
+        if let Some(env_info) = env_sys_version_info() {
+            if env_info != info {
+                info_overridden_from_env = true;
+                if trace_sys_version() {
+                    eprintln!(
+                        "molt sys version: overriding set payload with env {}.{}.{} {} {}",
+                        env_info.major,
+                        env_info.minor,
+                        env_info.micro,
+                        env_info.releaselevel,
+                        env_info.serial
+                    );
+                }
+            }
+            info = env_info;
+        }
+
+        let mut version_from_env = false;
+        if let Ok(env_version) = std::env::var("MOLT_SYS_VERSION")
+            && !env_version.is_empty()
+        {
+            version = env_version;
+            version_from_env = true;
+        }
+        if !version_from_env && (version.is_empty() || info_overridden_from_env) {
             version = format_sys_version(&info);
         }
         if trace_sys_version() {

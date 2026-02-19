@@ -1,140 +1,16 @@
-"""Image type detection helpers (intrinsic-backed)."""
+"""Recognize image file formats based on their first few bytes.
 
-from __future__ import annotations
+This module mirrors CPython 3.12 `imghdr` surface and is version-gated absent
+for >=3.13 at the importlib boundary.
+"""
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 from os import PathLike
 import warnings
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+__all__ = ["what"]
 
-_MOLT_IMGHDR_TEST = _require_intrinsic("molt_imghdr_test", globals())
-_MOLT_IMGHDR_WHAT = _require_intrinsic("molt_imghdr_what", globals())
-
-
-def _emit_deprecation_if_user_module_import() -> None:
-    import sys as _sys
-
-    frame = _sys._getframe(1)
-    while frame is not None:
-        module_name = frame.f_globals.get("__name__", "")
-        if not module_name.startswith("importlib"):
-            break
-        frame = frame.f_back
-    if frame is None:
-        return
-    module_name = frame.f_globals.get("__name__", "")
-    if module_name not in {"__main__", "__mp_main__"}:
-        return
-    if frame.f_code.co_name != "<module>":
-        return
-    warnings.warn_explicit(
-        "'imghdr' is deprecated and slated for removal in Python 3.13",
-        DeprecationWarning,
-        frame.f_code.co_filename,
-        frame.f_lineno,
-        module_name,
-    )
-
-
-_emit_deprecation_if_user_module_import()
-
-
-tests: list = []
-
-
-def test_jpeg(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("jpeg", h):
-        return "jpeg"
-
-
-def test_png(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("png", h):
-        return "png"
-
-
-def test_gif(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("gif", h):
-        return "gif"
-
-
-def test_tiff(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("tiff", h):
-        return "tiff"
-
-
-def test_rgb(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("rgb", h):
-        return "rgb"
-
-
-def test_pbm(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("pbm", h):
-        return "pbm"
-
-
-def test_pgm(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("pgm", h):
-        return "pgm"
-
-
-def test_ppm(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("ppm", h):
-        return "ppm"
-
-
-def test_rast(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("rast", h):
-        return "rast"
-
-
-def test_xbm(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("xbm", h):
-        return "xbm"
-
-
-def test_bmp(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("bmp", h):
-        return "bmp"
-
-
-def test_webp(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("webp", h):
-        return "webp"
-
-
-def test_exr(h, f):
-    _ = f
-    if _MOLT_IMGHDR_TEST("exr", h):
-        return "exr"
-
-
-tests.append(test_jpeg)
-tests.append(test_png)
-tests.append(test_gif)
-tests.append(test_tiff)
-tests.append(test_rgb)
-tests.append(test_pbm)
-tests.append(test_pgm)
-tests.append(test_ppm)
-tests.append(test_rast)
-tests.append(test_xbm)
-tests.append(test_bmp)
-tests.append(test_webp)
-tests.append(test_exr)
-
-_BUILTIN_TESTS = tuple(tests)
+_MOLT_IMGHDR_DETECT = _require_intrinsic("molt_imghdr_detect", globals())
 
 
 def what(file, h=None):
@@ -148,28 +24,115 @@ def what(file, h=None):
                 location = file.tell()
                 h = file.read(32)
                 file.seek(location)
-
-        if tests[: len(_BUILTIN_TESTS)] == list(_BUILTIN_TESTS):
-            # CPython's default builtin test order raises this exact error
-            # for str headers when test_png calls str.startswith(bytes).
-            if isinstance(h, str):
-                raise TypeError(
-                    "startswith first arg must be str or a tuple of str, not bytes"
-                )
-            result = _MOLT_IMGHDR_WHAT(h)
-            if result is not None:
-                return result
-            start_index = len(_BUILTIN_TESTS)
-        else:
-            start_index = 0
-
-        for test in tests[start_index:]:
-            if res := test(h, f):
+        for tf in tests:
+            res = tf(h, f)
+            if res:
                 return res
-        return None
     finally:
-        if f is not None and f is not file:
+        if f:
             f.close()
+    return None
+
+
+def _match(h, kind):
+    detected = _MOLT_IMGHDR_DETECT(h)
+    if detected == kind:
+        return kind
+    return None
+
+
+tests = []
+
+
+def test_jpeg(h, f):
+    return _match(h, "jpeg")
+
+
+tests.append(test_jpeg)
+
+
+def test_png(h, f):
+    return _match(h, "png")
+
+
+tests.append(test_png)
+
+
+def test_gif(h, f):
+    return _match(h, "gif")
+
+
+tests.append(test_gif)
+
+
+def test_tiff(h, f):
+    return _match(h, "tiff")
+
+
+tests.append(test_tiff)
+
+
+def test_rgb(h, f):
+    return _match(h, "rgb")
+
+
+tests.append(test_rgb)
+
+
+def test_pbm(h, f):
+    return _match(h, "pbm")
+
+
+tests.append(test_pbm)
+
+
+def test_pgm(h, f):
+    return _match(h, "pgm")
+
+
+tests.append(test_pgm)
+
+
+def test_ppm(h, f):
+    return _match(h, "ppm")
+
+
+tests.append(test_ppm)
+
+
+def test_rast(h, f):
+    return _match(h, "rast")
+
+
+tests.append(test_rast)
+
+
+def test_xbm(h, f):
+    return _match(h, "xbm")
+
+
+tests.append(test_xbm)
+
+
+def test_bmp(h, f):
+    return _match(h, "bmp")
+
+
+tests.append(test_bmp)
+
+
+def test_webp(h, f):
+    return _match(h, "webp")
+
+
+tests.append(test_webp)
+
+
+def test_exr(h, f):
+    return _match(h, "exr")
+
+
+tests.append(test_exr)
 
 
 def test():
@@ -189,7 +152,7 @@ def test():
         sys.exit(1)
 
 
-def testall(list, recursive, toplevel):
+def testall(list, recursive, toplevel):  # noqa: A002
     import glob
     import os
     import sys
@@ -210,3 +173,7 @@ def testall(list, recursive, toplevel):
                 print(what(filename))
             except OSError:
                 print("*** not found ***")
+
+
+if __name__ == "__main__":
+    test()
