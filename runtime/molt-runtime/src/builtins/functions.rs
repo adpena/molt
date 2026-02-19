@@ -85,6 +85,414 @@ struct MoltSocketServerRuntime {
     closed_servers: HashSet<u64>,
 }
 
+#[inline]
+fn colorsys_expect_f64(_py: &crate::PyToken<'_>, bits: u64, name: &str) -> Option<f64> {
+    match to_f64(obj_from_bits(bits)) {
+        Some(value) => Some(value),
+        None => {
+            let msg = format!("colorsys {name} expects float");
+            raise_exception::<u64>(_py, "TypeError", &msg);
+            None
+        }
+    }
+}
+
+#[inline]
+fn colorsys_tuple(_py: &crate::PyToken<'_>, a: f64, b: f64, c: f64) -> u64 {
+    let tuple_ptr = alloc_tuple(
+        _py,
+        &[
+            MoltObject::from_float(a).bits(),
+            MoltObject::from_float(b).bits(),
+            MoltObject::from_float(c).bits(),
+        ],
+    );
+    if tuple_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+#[inline]
+fn colorsys_hls_v(m1: f64, m2: f64, hue: f64) -> f64 {
+    let hue = hue.rem_euclid(1.0);
+    if hue < (1.0 / 6.0) {
+        return m1 + (m2 - m1) * hue * 6.0;
+    }
+    if hue < 0.5 {
+        return m2;
+    }
+    if hue < (2.0 / 3.0) {
+        return m1 + (m2 - m1) * ((2.0 / 3.0) - hue) * 6.0;
+    }
+    m1
+}
+
+const THIS_ENCODED: &str = concat!(
+    "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
+    "Ornhgvshy vf orggre guna htyl.\n",
+    "Rkcyvpvg vf orggre guna vzcyvpvg.\n",
+    "Fvzcyr vf orggre guna pbzcyrk.\n",
+    "Pbzcyrk vf orggre guna pbzcyvpngrq.\n",
+    "Syng vf orggre guna arfgrq.\n",
+    "Fcnefr vf orggre guna qrafr.\n",
+    "Ernqnovyvgl pbhagf.\n",
+    "Fcrpvny pnfrf nera'g fcrpvny rabhtu gb oernx gur ehyrf.\n",
+    "Nygubhtu cenpgvpnyvgl orngf chevgl.\n",
+    "Reebef fubhyq arire cnff fvyragyl.\n",
+    "Hayrff rkcyvpvgyl fvyraprq.\n",
+    "Va gur snpr bs nzovthvgl, ershfr gur grzcgngvba gb thrff.\n",
+    "Gurer fubhyq or bar-- naq cersrenoyl bayl bar --boivbhf jnl gb qb vg.\n",
+    "Nygubhtu gung jnl znl abg or boivbhf ng svefg hayrff lbh'er Qhgpu.\n",
+    "Abj vf orggre guna arire.\n",
+    "Nygubhtu arire vf bsgra orggre guna *evtug* abj.\n",
+    "Vs gur vzcyrzragngvba vf uneq gb rkcynva, vg'f n onq vqrn.\n",
+    "Vs gur vzcyrzragngvba vf rnfl gb rkcynva, vg znl or n tbbq vqrn.\n",
+    "Anzrfcnprf ner bar ubaxvat terng vqrn -- yrg'f qb zber bs gubfr!",
+);
+
+#[inline]
+fn this_rot13_char(ch: char) -> char {
+    match ch {
+        'A'..='Z' => {
+            let base = b'A';
+            let idx = ch as u8 - base;
+            (base + ((idx + 13) % 26)) as char
+        }
+        'a'..='z' => {
+            let base = b'a';
+            let idx = ch as u8 - base;
+            (base + ((idx + 13) % 26)) as char
+        }
+        _ => ch,
+    }
+}
+
+fn this_build_rot13_text() -> String {
+    THIS_ENCODED.chars().map(this_rot13_char).collect()
+}
+
+const QUOPRI_ESCAPE: u8 = b'=';
+const QUOPRI_MAX_LINE_SIZE: usize = 76;
+const QUOPRI_HEX: &[u8; 16] = b"0123456789ABCDEF";
+const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/opcode_payload_312.json");
+const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
+    include_str!("../intrinsics/data/opcode_metadata_payload_314.json");
+
+#[inline]
+fn quopri_needs_quoting(byte: u8, quotetabs: bool, header: bool) -> bool {
+    if matches!(byte, b' ' | b'\t') {
+        return quotetabs;
+    }
+    if byte == b'_' {
+        return header;
+    }
+    byte == QUOPRI_ESCAPE || !(b' '..=b'~').contains(&byte)
+}
+
+#[inline]
+fn quopri_quote_byte(byte: u8, out: &mut Vec<u8>) {
+    out.push(QUOPRI_ESCAPE);
+    out.push(QUOPRI_HEX[(byte >> 4) as usize]);
+    out.push(QUOPRI_HEX[(byte & 0x0F) as usize]);
+}
+
+#[inline]
+fn quopri_write_chunk(chunk: &[u8], line_end: &[u8], out: &mut Vec<u8>) {
+    if let Some(last) = chunk.last()
+        && matches!(*last, b' ' | b'\t')
+    {
+        out.extend_from_slice(&chunk[..chunk.len() - 1]);
+        quopri_quote_byte(*last, out);
+        out.extend_from_slice(line_end);
+        return;
+    }
+    if chunk == b"." {
+        quopri_quote_byte(b'.', out);
+        out.extend_from_slice(line_end);
+        return;
+    }
+    out.extend_from_slice(chunk);
+    out.extend_from_slice(line_end);
+}
+
+fn quopri_encode_impl(data: &[u8], quotetabs: bool, header: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + (data.len() / 20));
+    let mut idx = 0usize;
+    while idx < data.len() {
+        let start = idx;
+        while idx < data.len() && data[idx] != b'\n' {
+            idx += 1;
+        }
+        let line = &data[start..idx];
+        let line_end: &[u8] = if idx < data.len() && data[idx] == b'\n' {
+            idx += 1;
+            b"\n"
+        } else {
+            b""
+        };
+
+        let mut encoded = Vec::with_capacity(line.len() * 3);
+        for byte in line {
+            if quopri_needs_quoting(*byte, quotetabs, header) {
+                quopri_quote_byte(*byte, &mut encoded);
+            } else if header && *byte == b' ' {
+                encoded.push(b'_');
+            } else {
+                encoded.push(*byte);
+            }
+        }
+
+        let mut cursor = 0usize;
+        while encoded.len().saturating_sub(cursor) > QUOPRI_MAX_LINE_SIZE {
+            let end = cursor + QUOPRI_MAX_LINE_SIZE - 1;
+            quopri_write_chunk(&encoded[cursor..end], b"=\n", &mut out);
+            cursor = end;
+        }
+        quopri_write_chunk(&encoded[cursor..], line_end, &mut out);
+    }
+    out
+}
+
+#[inline]
+fn quopri_is_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+#[inline]
+fn quopri_unhex_pair(hi: u8, lo: u8) -> Option<u8> {
+    let hi = match hi {
+        b'0'..=b'9' => hi - b'0',
+        b'a'..=b'f' => hi - b'a' + 10,
+        b'A'..=b'F' => hi - b'A' + 10,
+        _ => return None,
+    };
+    let lo = match lo {
+        b'0'..=b'9' => lo - b'0',
+        b'a'..=b'f' => lo - b'a' + 10,
+        b'A'..=b'F' => lo - b'A' + 10,
+        _ => return None,
+    };
+    Some((hi << 4) | lo)
+}
+
+fn quopri_decode_impl(data: &[u8], header: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut new = Vec::with_capacity(64);
+    let mut idx = 0usize;
+    while idx < data.len() {
+        let start = idx;
+        while idx < data.len() && data[idx] != b'\n' {
+            idx += 1;
+        }
+        let mut n = idx - start;
+        let line = &data[start..idx];
+        let mut partial = true;
+        if idx < data.len() && data[idx] == b'\n' {
+            idx += 1;
+            partial = false;
+            while n > 0 && matches!(line[n - 1], b' ' | b'\t' | b'\r') {
+                n -= 1;
+            }
+        }
+
+        let mut i = 0usize;
+        while i < n {
+            let c = line[i];
+            if c == b'_' && header {
+                new.push(b' ');
+                i += 1;
+            } else if c != QUOPRI_ESCAPE {
+                new.push(c);
+                i += 1;
+            } else if i + 1 == n && !partial {
+                partial = true;
+                break;
+            } else if i + 1 < n && line[i + 1] == QUOPRI_ESCAPE {
+                new.push(QUOPRI_ESCAPE);
+                i += 2;
+            } else if i + 2 < n && quopri_is_hex(line[i + 1]) && quopri_is_hex(line[i + 2]) {
+                if let Some(decoded) = quopri_unhex_pair(line[i + 1], line[i + 2]) {
+                    new.push(decoded);
+                    i += 3;
+                } else {
+                    new.push(c);
+                    i += 1;
+                }
+            } else {
+                new.push(c);
+                i += 1;
+            }
+        }
+        if !partial {
+            out.extend_from_slice(new.as_slice());
+            out.push(b'\n');
+            new.clear();
+        }
+    }
+    if !new.is_empty() {
+        out.extend_from_slice(new.as_slice());
+    }
+    out
+}
+
+fn quopri_expect_bytes_like(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    arg_name: &str,
+) -> Result<Vec<u8>, u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        let msg = format!("quopri {arg_name} expects bytes-like");
+        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+    };
+    let Some(raw) = (unsafe { bytes_like_slice(ptr) }) else {
+        let msg = format!("quopri {arg_name} expects bytes-like");
+        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+    };
+    Ok(raw.to_vec())
+}
+
+fn quopri_expect_single_byte(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    arg_name: &str,
+) -> Result<u8, u64> {
+    let bytes = quopri_expect_bytes_like(_py, bits, arg_name)?;
+    if bytes.len() != 1 {
+        let msg = format!("quopri {arg_name} expects single-byte bytes");
+        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+    }
+    Ok(bytes[0])
+}
+
+#[inline]
+fn email_quopri_header_safe(byte: u8) -> bool {
+    matches!(byte, b'-' | b'!' | b'*' | b'+' | b'/')
+        || byte.is_ascii_alphabetic()
+        || byte.is_ascii_digit()
+}
+
+#[inline]
+fn email_quopri_body_safe(byte: u8) -> bool {
+    matches!(
+        byte,
+        b' ' | b'!' | b'"' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+'
+            | b',' | b'-' | b'.' | b'/' | b'0'..=b'9' | b':' | b';' | b'<' | b'>' | b'?'
+            | b'@' | b'A'..=b'Z' | b'[' | b'\\' | b']' | b'^' | b'_' | b'`' | b'a'..=b'z'
+            | b'{' | b'|' | b'}' | b'~' | b'\t'
+    )
+}
+
+#[inline]
+fn email_quopri_push_escape(byte: u8, out: &mut String) {
+    out.push('=');
+    out.push(QUOPRI_HEX[(byte >> 4) as usize] as char);
+    out.push(QUOPRI_HEX[(byte & 0x0F) as usize] as char);
+}
+
+#[inline]
+fn email_quopri_push_header_mapped(byte: u8, out: &mut String) {
+    if email_quopri_header_safe(byte) {
+        out.push(byte as char);
+    } else if byte == b' ' {
+        out.push('_');
+    } else {
+        email_quopri_push_escape(byte, out);
+    }
+}
+
+#[inline]
+fn email_quopri_push_body_mapped(byte: u8, out: &mut String) {
+    if email_quopri_body_safe(byte) {
+        out.push(byte as char);
+    } else {
+        email_quopri_push_escape(byte, out);
+    }
+}
+
+fn email_quopri_expect_int_octet(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    arg_name: &str,
+) -> Result<u8, u64> {
+    let value = match to_i64(obj_from_bits(bits)) {
+        Some(value) => value,
+        None => {
+            let msg = format!("email.quoprimime {arg_name} expects int");
+            return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        }
+    };
+    if !(0..=255).contains(&value) {
+        let msg = format!("email.quoprimime {arg_name} out of range");
+        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+    }
+    Ok(value as u8)
+}
+
+fn email_quopri_expect_string(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    arg_name: &str,
+) -> Result<String, u64> {
+    match string_obj_to_owned(obj_from_bits(bits)) {
+        Some(value) => Ok(value),
+        None => {
+            let msg = format!("email.quoprimime {arg_name} expects str");
+            Err(raise_exception::<u64>(_py, "TypeError", &msg))
+        }
+    }
+}
+
+fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
+    let ptr = alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn email_quopri_splitlines(value: &str) -> Vec<String> {
+    let bytes = value.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\n' => {
+                lines.push(value[start..idx].to_string());
+                idx += 1;
+                start = idx;
+            }
+            b'\r' => {
+                lines.push(value[start..idx].to_string());
+                idx += 1;
+                if idx < bytes.len() && bytes[idx] == b'\n' {
+                    idx += 1;
+                }
+                start = idx;
+            }
+            _ => idx += 1,
+        }
+    }
+    if start < bytes.len() {
+        lines.push(value[start..].to_string());
+    }
+    lines
+}
+
+#[inline]
+fn email_quopri_is_hex_char(ch: char) -> bool {
+    ch.is_ascii_hexdigit()
+}
+
+fn email_quopri_decode_hex_pair(hi: char, lo: char) -> Option<char> {
+    let hi = hi.to_digit(16)?;
+    let lo = lo.to_digit(16)?;
+    let value = ((hi << 4) | lo) as u8;
+    Some(value as char)
+}
+
 static URLLIB_RESPONSE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltUrllibResponse>>> =
     OnceLock::new();
 static URLLIB_RESPONSE_NEXT: AtomicU64 = AtomicU64::new(1);
@@ -10056,6 +10464,1096 @@ pub extern "C" fn molt_shlex_join(words_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_this_payload() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(s_bits) = alloc_string_bits(_py, THIS_ENCODED) else {
+            return MoltObject::none().bits();
+        };
+
+        let mut pairs: Vec<u64> = Vec::with_capacity(52 * 2);
+        let mut owned_pairs: Vec<u64> = Vec::with_capacity(52 * 2);
+        for base in [b'A', b'a'] {
+            for idx in 0u8..26u8 {
+                let key = [(base + idx) as char];
+                let value = [(base + ((idx + 13) % 26)) as char];
+                let key_text: String = key.into_iter().collect();
+                let value_text: String = value.into_iter().collect();
+                let Some(key_bits) = alloc_string_bits(_py, &key_text) else {
+                    dec_ref_bits(_py, s_bits);
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                };
+                let Some(value_bits) = alloc_string_bits(_py, &value_text) else {
+                    dec_ref_bits(_py, s_bits);
+                    dec_ref_bits(_py, key_bits);
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                };
+                pairs.push(key_bits);
+                pairs.push(value_bits);
+                owned_pairs.push(key_bits);
+                owned_pairs.push(value_bits);
+            }
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        if dict_ptr.is_null() {
+            dec_ref_bits(_py, s_bits);
+            for bits in owned_pairs {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        for bits in owned_pairs {
+            dec_ref_bits(_py, bits);
+        }
+
+        let zen_text = this_build_rot13_text();
+        let Some(zen_bits) = alloc_string_bits(_py, &zen_text) else {
+            dec_ref_bits(_py, s_bits);
+            dec_ref_bits(_py, dict_bits);
+            return MoltObject::none().bits();
+        };
+
+        let payload_ptr = alloc_tuple(
+            _py,
+            &[
+                s_bits,
+                dict_bits,
+                zen_bits,
+                MoltObject::from_int(97).bits(),
+                MoltObject::from_int(25).bits(),
+            ],
+        );
+        dec_ref_bits(_py, s_bits);
+        dec_ref_bits(_py, dict_bits);
+        dec_ref_bits(_py, zen_bits);
+        if payload_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(payload_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = match quopri_expect_bytes_like(_py, data_bits, "encodestring") {
+            Ok(data) => data,
+            Err(bits) => return bits,
+        };
+        let quotetabs = is_truthy(_py, obj_from_bits(quotetabs_bits));
+        let header = is_truthy(_py, obj_from_bits(header_bits));
+        let out = quopri_encode_impl(data.as_slice(), quotetabs, header);
+        let ptr = crate::alloc_bytes(_py, out.as_slice());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_decode(data_bits: u64, header_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = match quopri_expect_bytes_like(_py, data_bits, "decodestring") {
+            Ok(data) => data,
+            Err(bits) => return bits,
+        };
+        let header = is_truthy(_py, obj_from_bits(header_bits));
+        let out = quopri_decode_impl(data.as_slice(), header);
+        let ptr = crate::alloc_bytes(_py, out.as_slice());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_needs_quoting(
+    c_bits: u64,
+    quotetabs_bits: u64,
+    header_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let byte = match quopri_expect_single_byte(_py, c_bits, "needsquoting") {
+            Ok(byte) => byte,
+            Err(bits) => return bits,
+        };
+        let quotetabs = is_truthy(_py, obj_from_bits(quotetabs_bits));
+        let header = is_truthy(_py, obj_from_bits(header_bits));
+        MoltObject::from_bool(quopri_needs_quoting(byte, quotetabs, header)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_quote(c_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let byte = match quopri_expect_single_byte(_py, c_bits, "quote") {
+            Ok(byte) => byte,
+            Err(bits) => return bits,
+        };
+        let mut out = Vec::with_capacity(3);
+        quopri_quote_byte(byte, &mut out);
+        let ptr = crate::alloc_bytes(_py, out.as_slice());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_ishex(c_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let byte = match quopri_expect_single_byte(_py, c_bits, "ishex") {
+            Ok(byte) => byte,
+            Err(bits) => return bits,
+        };
+        MoltObject::from_bool(quopri_is_hex(byte)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_quopri_unhex(s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytes = match quopri_expect_bytes_like(_py, s_bits, "unhex") {
+            Ok(bytes) => bytes,
+            Err(bits) => return bits,
+        };
+        if bytes.is_empty() {
+            return MoltObject::from_int(0).bits();
+        }
+        let mut out = 0i64;
+        for byte in bytes {
+            let value = match byte {
+                b'0'..=b'9' => i64::from(byte - b'0'),
+                b'a'..=b'f' => i64::from(byte - b'a' + 10),
+                b'A'..=b'F' => i64::from(byte - b'A' + 10),
+                _ => return raise_exception::<_>(_py, "ValueError", "quopri unhex expects hex"),
+            };
+            out = out.saturating_mul(16).saturating_add(value);
+        }
+        MoltObject::from_int(out).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_header_check(octet_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let octet = match email_quopri_expect_int_octet(_py, octet_bits, "header_check") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut mapped = String::new();
+        email_quopri_push_header_mapped(octet, &mut mapped);
+        let same = mapped.len() == 1 && mapped.as_bytes()[0] == octet;
+        MoltObject::from_bool(!same).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_body_check(octet_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let octet = match email_quopri_expect_int_octet(_py, octet_bits, "body_check") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        MoltObject::from_bool(!email_quopri_body_safe(octet)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_header_length(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = match quopri_expect_bytes_like(_py, data_bits, "email.quoprimime.header_length")
+        {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut total = 0i64;
+        for byte in data {
+            total += if email_quopri_header_safe(byte) || byte == b' ' {
+                1
+            } else {
+                3
+            };
+        }
+        MoltObject::from_int(total).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_body_length(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let data = match quopri_expect_bytes_like(_py, data_bits, "email.quoprimime.body_length") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut total = 0i64;
+        for byte in data {
+            total += if email_quopri_body_safe(byte) { 1 } else { 3 };
+        }
+        MoltObject::from_int(total).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_quote(c_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let c = match email_quopri_expect_string(_py, c_bits, "quote") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut it = c.chars();
+        let Some(ch) = it.next() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "ord() expected a character, but string of length 0 found",
+            );
+        };
+        if it.next().is_some() {
+            let msg = format!(
+                "ord() expected a character, but string of length {} found",
+                c.chars().count()
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        if (ch as u32) > 255 {
+            return raise_exception::<_>(_py, "IndexError", "list index out of range");
+        }
+        let mut out = String::with_capacity(3);
+        email_quopri_push_escape(ch as u8, &mut out);
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_unquote(s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let s = match email_quopri_expect_string(_py, s_bits, "unquote") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let chars: Vec<char> = s.chars().collect();
+        if chars.len() < 3 || chars[0] != '=' {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "invalid literal for int() with base 16",
+            );
+        }
+        let Some(ch) = email_quopri_decode_hex_pair(chars[1], chars[2]) else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "invalid literal for int() with base 16",
+            );
+        };
+        let out: String = [ch].into_iter().collect();
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_header_encode(
+    header_bytes_bits: u64,
+    charset_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let header_bytes = match quopri_expect_bytes_like(
+            _py,
+            header_bytes_bits,
+            "email.quoprimime.header_encode",
+        ) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let charset = match email_quopri_expect_string(_py, charset_bits, "header_encode charset") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if header_bytes.is_empty() {
+            return email_quopri_alloc_str(_py, "");
+        }
+        let mut encoded = String::with_capacity(header_bytes.len() * 3);
+        for byte in header_bytes {
+            email_quopri_push_header_mapped(byte, &mut encoded);
+        }
+        let out = format!("=?{charset}?q?{encoded}?=");
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_header_decode(s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let s = match email_quopri_expect_string(_py, s_bits, "header_decode") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let replaced = s.replace('_', " ");
+        let chars: Vec<char> = replaced.chars().collect();
+        let mut out = String::with_capacity(replaced.len());
+        let mut idx = 0usize;
+        while idx < chars.len() {
+            if chars[idx] == '='
+                && idx + 2 < chars.len()
+                && email_quopri_is_hex_char(chars[idx + 1])
+                && email_quopri_is_hex_char(chars[idx + 2])
+                && let Some(ch) = email_quopri_decode_hex_pair(chars[idx + 1], chars[idx + 2])
+            {
+                out.push(ch);
+                idx += 3;
+                continue;
+            }
+            out.push(chars[idx]);
+            idx += 1;
+        }
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_body_encode(
+    body_bits: u64,
+    maxlinelen_bits: u64,
+    eol_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let body = match email_quopri_expect_string(_py, body_bits, "body_encode body") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let maxlinelen = match to_i64(obj_from_bits(maxlinelen_bits)) {
+            Some(value) => value,
+            None => return raise_exception::<_>(_py, "TypeError", "maxlinelen must be int"),
+        };
+        if maxlinelen < 4 {
+            return raise_exception::<_>(_py, "ValueError", "maxlinelen must be at least 4");
+        }
+        let eol = match email_quopri_expect_string(_py, eol_bits, "body_encode eol") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if body.is_empty() {
+            return email_quopri_alloc_str(_py, body.as_str());
+        }
+
+        let mut quoted = String::with_capacity(body.len() + 8);
+        for ch in body.chars() {
+            let code = ch as u32;
+            if code <= 255 {
+                let byte = code as u8;
+                if matches!(byte, b'\r' | b'\n') {
+                    quoted.push(ch);
+                } else {
+                    email_quopri_push_body_mapped(byte, &mut quoted);
+                }
+            } else {
+                quoted.push(ch);
+            }
+        }
+
+        let soft_break = format!("={eol}");
+        let maxlinelen1 = (maxlinelen as usize) - 1;
+        let mut encoded_lines: Vec<String> = Vec::new();
+        for line in email_quopri_splitlines(quoted.as_str()) {
+            let chars: Vec<char> = line.chars().collect();
+            let mut start = 0usize;
+            let laststart = (chars.len() as isize) - 1 - (maxlinelen as isize);
+            while (start as isize) <= laststart {
+                let stop = start + maxlinelen1;
+                if chars[stop - 2] == '=' {
+                    encoded_lines.push(chars[start..stop - 1].iter().collect());
+                    start = stop - 2;
+                } else if chars[stop - 1] == '=' {
+                    encoded_lines.push(chars[start..stop].iter().collect());
+                    start = stop - 1;
+                } else {
+                    let mut segment: String = chars[start..stop].iter().collect();
+                    segment.push('=');
+                    encoded_lines.push(segment);
+                    start = stop;
+                }
+            }
+
+            if !chars.is_empty() && matches!(chars[chars.len() - 1], ' ' | '\t') {
+                let room = (start as isize) - laststart;
+                let mut q = String::new();
+                if room >= 3 {
+                    email_quopri_push_escape(chars[chars.len() - 1] as u8, &mut q);
+                } else if room == 2 {
+                    q.push(chars[chars.len() - 1]);
+                    q.push_str(soft_break.as_str());
+                } else {
+                    q.push_str(soft_break.as_str());
+                    email_quopri_push_escape(chars[chars.len() - 1] as u8, &mut q);
+                }
+                let mut segment: String = chars[start..chars.len() - 1].iter().collect();
+                segment.push_str(q.as_str());
+                encoded_lines.push(segment);
+            } else {
+                encoded_lines.push(chars[start..].iter().collect());
+            }
+        }
+
+        if matches!(quoted.chars().last(), Some('\r' | '\n')) {
+            encoded_lines.push(String::new());
+        }
+
+        let out = encoded_lines.join(eol.as_str());
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_quoprimime_decode(encoded_bits: u64, eol_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let encoded = match email_quopri_expect_string(_py, encoded_bits, "decode encoded") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let eol = match email_quopri_expect_string(_py, eol_bits, "decode eol") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if encoded.is_empty() {
+            return email_quopri_alloc_str(_py, encoded.as_str());
+        }
+
+        let mut decoded = String::new();
+        for line in email_quopri_splitlines(encoded.as_str()) {
+            let line = line.trim_end_matches(char::is_whitespace);
+            if line.is_empty() {
+                decoded.push_str(eol.as_str());
+                continue;
+            }
+            let chars: Vec<char> = line.chars().collect();
+            let mut idx = 0usize;
+            let n = chars.len();
+            while idx < n {
+                let c = chars[idx];
+                if c != '=' {
+                    decoded.push(c);
+                    idx += 1;
+                } else if idx + 1 == n {
+                    idx += 1;
+                    continue;
+                } else if idx + 2 < n
+                    && email_quopri_is_hex_char(chars[idx + 1])
+                    && email_quopri_is_hex_char(chars[idx + 2])
+                {
+                    if let Some(ch) = email_quopri_decode_hex_pair(chars[idx + 1], chars[idx + 2]) {
+                        decoded.push(ch);
+                        idx += 3;
+                    } else {
+                        decoded.push(c);
+                        idx += 1;
+                    }
+                } else {
+                    decoded.push(c);
+                    idx += 1;
+                }
+                if idx == n {
+                    decoded.push_str(eol.as_str());
+                }
+            }
+        }
+
+        if !encoded.ends_with('\r')
+            && !encoded.ends_with('\n')
+            && !eol.is_empty()
+            && decoded.ends_with(eol.as_str())
+        {
+            let trim = decoded.len() - eol.len();
+            decoded.truncate(trim);
+        }
+        email_quopri_alloc_str(_py, decoded.as_str())
+    })
+}
+
+fn opcode_num_popped_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                 // CACHE
+        1 => Some(1),                 // POP_TOP
+        2 => Some(0),                 // PUSH_NULL
+        3 => Some(1),                 // INTERPRETER_EXIT
+        4 => Some(1 + 1),             // END_FOR
+        5 => Some(2),                 // END_SEND
+        9 => Some(0),                 // NOP
+        11 => Some(1),                // UNARY_NEGATIVE
+        12 => Some(1),                // UNARY_NOT
+        15 => Some(1),                // UNARY_INVERT
+        17 => Some(0),                // RESERVED
+        25 => Some(2),                // BINARY_SUBSCR
+        26 => Some(3),                // BINARY_SLICE
+        27 => Some(4),                // STORE_SLICE
+        30 => Some(1),                // GET_LEN
+        31 => Some(1),                // MATCH_MAPPING
+        32 => Some(1),                // MATCH_SEQUENCE
+        33 => Some(2),                // MATCH_KEYS
+        35 => Some(1),                // PUSH_EXC_INFO
+        36 => Some(2),                // CHECK_EXC_MATCH
+        37 => Some(2),                // CHECK_EG_MATCH
+        49 => Some(4),                // WITH_EXCEPT_START
+        50 => Some(1),                // GET_AITER
+        51 => Some(1),                // GET_ANEXT
+        52 => Some(1),                // BEFORE_ASYNC_WITH
+        53 => Some(1),                // BEFORE_WITH
+        54 => Some(2),                // END_ASYNC_FOR
+        55 => Some(3),                // CLEANUP_THROW
+        60 => Some(3),                // STORE_SUBSCR
+        61 => Some(2),                // DELETE_SUBSCR
+        68 => Some(1),                // GET_ITER
+        69 => Some(1),                // GET_YIELD_FROM_ITER
+        71 => Some(0),                // LOAD_BUILD_CLASS
+        74 => Some(0),                // LOAD_ASSERTION_ERROR
+        75 => Some(0),                // RETURN_GENERATOR
+        83 => Some(1),                // RETURN_VALUE
+        85 => Some(0),                // SETUP_ANNOTATIONS
+        87 => Some(0),                // LOAD_LOCALS
+        89 => Some(1),                // POP_EXCEPT
+        90 => Some(1),                // STORE_NAME
+        91 => Some(0),                // DELETE_NAME
+        92 => Some(1),                // UNPACK_SEQUENCE
+        93 => Some(1),                // FOR_ITER
+        94 => Some(1),                // UNPACK_EX
+        95 => Some(2),                // STORE_ATTR
+        96 => Some(1),                // DELETE_ATTR
+        97 => Some(1),                // STORE_GLOBAL
+        98 => Some(0),                // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),  // SWAP
+        100 => Some(0),               // LOAD_CONST
+        101 => Some(0),               // LOAD_NAME
+        102 => Some(oparg),           // BUILD_TUPLE
+        103 => Some(oparg),           // BUILD_LIST
+        104 => Some(oparg),           // BUILD_SET
+        105 => Some(oparg * 2),       // BUILD_MAP
+        106 => Some(1),               // LOAD_ATTR
+        107 => Some(2),               // COMPARE_OP
+        108 => Some(2),               // IMPORT_NAME
+        109 => Some(1),               // IMPORT_FROM
+        110 => Some(0),               // JUMP_FORWARD
+        114 => Some(1),               // POP_JUMP_IF_FALSE
+        115 => Some(1),               // POP_JUMP_IF_TRUE
+        116 => Some(0),               // LOAD_GLOBAL
+        117 => Some(2),               // IS_OP
+        118 => Some(2),               // CONTAINS_OP
+        119 => Some(oparg + 1),       // RERAISE
+        120 => Some((oparg - 1) + 1), // COPY
+        121 => Some(0),               // RETURN_CONST
+        122 => Some(2),               // BINARY_OP
+        123 => Some(2),               // SEND
+        124 => Some(0),               // LOAD_FAST
+        125 => Some(1),               // STORE_FAST
+        126 => Some(0),               // DELETE_FAST
+        127 => Some(0),               // LOAD_FAST_CHECK
+        128 => Some(1),               // POP_JUMP_IF_NOT_NONE
+        129 => Some(1),               // POP_JUMP_IF_NONE
+        130 => Some(oparg),           // RAISE_VARARGS
+        131 => Some(1),               // GET_AWAITABLE
+        132 => Some(
+            (if (oparg & 0x01) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x02) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x04) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x08) != 0 { 1 } else { 0 })
+                + 1,
+        ), // MAKE_FUNCTION
+        133 => Some((if oparg == 3 { 1 } else { 0 }) + 2), // BUILD_SLICE
+        134 => Some(0),               // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),               // MAKE_CELL
+        136 => Some(0),               // LOAD_CLOSURE
+        137 => Some(0),               // LOAD_DEREF
+        138 => Some(1),               // STORE_DEREF
+        139 => Some(0),               // DELETE_DEREF
+        140 => Some(0),               // JUMP_BACKWARD
+        141 => Some(3),               // LOAD_SUPER_ATTR
+        142 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 3), // CALL_FUNCTION_EX
+        143 => Some(0),               // LOAD_FAST_AND_CLEAR
+        144 => Some(0),               // EXTENDED_ARG
+        145 => Some((oparg - 1) + 2), // LIST_APPEND
+        146 => Some((oparg - 1) + 2), // SET_ADD
+        147 => Some(2),               // MAP_ADD
+        149 => Some(0),               // COPY_FREE_VARS
+        150 => Some(1),               // YIELD_VALUE
+        151 => Some(0),               // RESUME
+        152 => Some(3),               // MATCH_CLASS
+        155 => Some((if (oparg & 0x04) == 0x04 { 1 } else { 0 }) + 1), // FORMAT_VALUE
+        156 => Some(oparg + 1),       // BUILD_CONST_KEY_MAP
+        157 => Some(oparg),           // BUILD_STRING
+        162 => Some((oparg - 1) + 2), // LIST_EXTEND
+        163 => Some((oparg - 1) + 2), // SET_UPDATE
+        164 => Some(1),               // DICT_MERGE
+        165 => Some(1),               // DICT_UPDATE
+        171 => Some(oparg + 2),       // CALL
+        172 => Some(0),               // KW_NAMES
+        173 => Some(1),               // CALL_INTRINSIC_1
+        174 => Some(2),               // CALL_INTRINSIC_2
+        175 => Some(1),               // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),               // LOAD_FROM_DICT_OR_DEREF
+        237 => Some(3),               // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0),               // INSTRUMENTED_RESUME
+        241 => Some(0),               // INSTRUMENTED_CALL
+        242 => Some(1),               // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1),               // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0),               // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0),               // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0),               // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0),               // INSTRUMENTED_RETURN_CONST
+        248 => Some(0),               // INSTRUMENTED_FOR_ITER
+        249 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(2),               // INSTRUMENTED_END_FOR
+        252 => Some(2),               // INSTRUMENTED_END_SEND
+        253 => Some(0),               // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_num_pushed_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                                            // CACHE
+        1 => Some(0),                                            // POP_TOP
+        2 => Some(1),                                            // PUSH_NULL
+        3 => Some(0),                                            // INTERPRETER_EXIT
+        4 => Some(0 + 0),                                        // END_FOR
+        5 => Some(1),                                            // END_SEND
+        9 => Some(0),                                            // NOP
+        11 => Some(1),                                           // UNARY_NEGATIVE
+        12 => Some(1),                                           // UNARY_NOT
+        15 => Some(1),                                           // UNARY_INVERT
+        17 => Some(0),                                           // RESERVED
+        25 => Some(1),                                           // BINARY_SUBSCR
+        26 => Some(1),                                           // BINARY_SLICE
+        27 => Some(0),                                           // STORE_SLICE
+        30 => Some(2),                                           // GET_LEN
+        31 => Some(2),                                           // MATCH_MAPPING
+        32 => Some(2),                                           // MATCH_SEQUENCE
+        33 => Some(3),                                           // MATCH_KEYS
+        35 => Some(2),                                           // PUSH_EXC_INFO
+        36 => Some(2),                                           // CHECK_EXC_MATCH
+        37 => Some(2),                                           // CHECK_EG_MATCH
+        49 => Some(5),                                           // WITH_EXCEPT_START
+        50 => Some(1),                                           // GET_AITER
+        51 => Some(2),                                           // GET_ANEXT
+        52 => Some(2),                                           // BEFORE_ASYNC_WITH
+        53 => Some(2),                                           // BEFORE_WITH
+        54 => Some(0),                                           // END_ASYNC_FOR
+        55 => Some(2),                                           // CLEANUP_THROW
+        60 => Some(0),                                           // STORE_SUBSCR
+        61 => Some(0),                                           // DELETE_SUBSCR
+        68 => Some(1),                                           // GET_ITER
+        69 => Some(1),                                           // GET_YIELD_FROM_ITER
+        71 => Some(1),                                           // LOAD_BUILD_CLASS
+        74 => Some(1),                                           // LOAD_ASSERTION_ERROR
+        75 => Some(0),                                           // RETURN_GENERATOR
+        83 => Some(0),                                           // RETURN_VALUE
+        85 => Some(0),                                           // SETUP_ANNOTATIONS
+        87 => Some(1),                                           // LOAD_LOCALS
+        89 => Some(0),                                           // POP_EXCEPT
+        90 => Some(0),                                           // STORE_NAME
+        91 => Some(0),                                           // DELETE_NAME
+        92 => Some(oparg),                                       // UNPACK_SEQUENCE
+        93 => Some(2),                                           // FOR_ITER
+        94 => Some((oparg & 0xFF) + (oparg >> 8) + 1),           // UNPACK_EX
+        95 => Some(0),                                           // STORE_ATTR
+        96 => Some(0),                                           // DELETE_ATTR
+        97 => Some(0),                                           // STORE_GLOBAL
+        98 => Some(0),                                           // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),                             // SWAP
+        100 => Some(1),                                          // LOAD_CONST
+        101 => Some(1),                                          // LOAD_NAME
+        102 => Some(1),                                          // BUILD_TUPLE
+        103 => Some(1),                                          // BUILD_LIST
+        104 => Some(1),                                          // BUILD_SET
+        105 => Some(1),                                          // BUILD_MAP
+        106 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_ATTR
+        107 => Some(1),                                          // COMPARE_OP
+        108 => Some(1),                                          // IMPORT_NAME
+        109 => Some(2),                                          // IMPORT_FROM
+        110 => Some(0),                                          // JUMP_FORWARD
+        114 => Some(0),                                          // POP_JUMP_IF_FALSE
+        115 => Some(0),                                          // POP_JUMP_IF_TRUE
+        116 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_GLOBAL
+        117 => Some(1),                                          // IS_OP
+        118 => Some(1),                                          // CONTAINS_OP
+        119 => Some(oparg),                                      // RERAISE
+        120 => Some((oparg - 1) + 2),                            // COPY
+        121 => Some(0),                                          // RETURN_CONST
+        122 => Some(1),                                          // BINARY_OP
+        123 => Some(2),                                          // SEND
+        124 => Some(1),                                          // LOAD_FAST
+        125 => Some(0),                                          // STORE_FAST
+        126 => Some(0),                                          // DELETE_FAST
+        127 => Some(1),                                          // LOAD_FAST_CHECK
+        128 => Some(0),                                          // POP_JUMP_IF_NOT_NONE
+        129 => Some(0),                                          // POP_JUMP_IF_NONE
+        130 => Some(0),                                          // RAISE_VARARGS
+        131 => Some(1),                                          // GET_AWAITABLE
+        132 => Some(1),                                          // MAKE_FUNCTION
+        133 => Some(1),                                          // BUILD_SLICE
+        134 => Some(0),                                          // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),                                          // MAKE_CELL
+        136 => Some(1),                                          // LOAD_CLOSURE
+        137 => Some(1),                                          // LOAD_DEREF
+        138 => Some(0),                                          // STORE_DEREF
+        139 => Some(0),                                          // DELETE_DEREF
+        140 => Some(0),                                          // JUMP_BACKWARD
+        141 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_SUPER_ATTR
+        142 => Some(1),                                          // CALL_FUNCTION_EX
+        143 => Some(1),                                          // LOAD_FAST_AND_CLEAR
+        144 => Some(0),                                          // EXTENDED_ARG
+        145 => Some((oparg - 1) + 1),                            // LIST_APPEND
+        146 => Some((oparg - 1) + 1),                            // SET_ADD
+        147 => Some(0),                                          // MAP_ADD
+        149 => Some(0),                                          // COPY_FREE_VARS
+        150 => Some(1),                                          // YIELD_VALUE
+        151 => Some(0),                                          // RESUME
+        152 => Some(1),                                          // MATCH_CLASS
+        155 => Some(1),                                          // FORMAT_VALUE
+        156 => Some(1),                                          // BUILD_CONST_KEY_MAP
+        157 => Some(1),                                          // BUILD_STRING
+        162 => Some((oparg - 1) + 1),                            // LIST_EXTEND
+        163 => Some((oparg - 1) + 1),                            // SET_UPDATE
+        164 => Some(0),                                          // DICT_MERGE
+        165 => Some(0),                                          // DICT_UPDATE
+        171 => Some(1),                                          // CALL
+        172 => Some(0),                                          // KW_NAMES
+        173 => Some(1),                                          // CALL_INTRINSIC_1
+        174 => Some(1),                                          // CALL_INTRINSIC_2
+        175 => Some(1),                                          // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),                                          // LOAD_FROM_DICT_OR_DEREF
+        237 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),                                          // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0), // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0), // INSTRUMENTED_RESUME
+        241 => Some(0), // INSTRUMENTED_CALL
+        242 => Some(0), // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1), // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0), // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0), // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0), // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0), // INSTRUMENTED_RETURN_CONST
+        248 => Some(0), // INSTRUMENTED_FOR_ITER
+        249 => Some(0), // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0), // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(0), // INSTRUMENTED_END_FOR
+        252 => Some(1), // INSTRUMENTED_END_SEND
+        253 => Some(0), // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_is_noarg_pseudo_312(opcode: i64) -> bool {
+    matches!(opcode, 256 | 257 | 258 | 259)
+}
+
+fn opcode_stack_effect_pseudo_312(opcode: i64) -> Option<i64> {
+    match opcode {
+        256 => Some(1),  // SETUP_FINALLY (max jump/non-jump)
+        257 => Some(2),  // SETUP_CLEANUP (max jump/non-jump)
+        258 => Some(1),  // SETUP_WITH (max jump/non-jump)
+        259 => Some(0),  // POP_BLOCK
+        260 => Some(0),  // JUMP
+        261 => Some(0),  // JUMP_NO_INTERRUPT
+        262 => Some(1),  // LOAD_METHOD
+        263 => Some(-1), // LOAD_SUPER_METHOD
+        264 => Some(-1), // LOAD_ZERO_SUPER_METHOD
+        265 => Some(-1), // LOAD_ZERO_SUPER_ATTR
+        266 => Some(-1), // STORE_FAST_MAYBE_NULL
+        _ => None,
+    }
+}
+
+#[inline]
+fn opcode_is_noarg_312(opcode: i64) -> bool {
+    opcode < 90 || opcode_is_noarg_pseudo_312(opcode)
+}
+
+#[inline]
+fn opcode_stack_effect_core_312(opcode: i64, oparg: i64) -> Option<i64> {
+    if let Some(effect) = opcode_stack_effect_pseudo_312(opcode) {
+        return Some(effect);
+    }
+    let popped = opcode_num_popped_312(opcode, oparg)?;
+    let pushed = opcode_num_pushed_312(opcode, oparg)?;
+    if popped < 0 || pushed < 0 {
+        return None;
+    }
+    pushed.checked_sub(popped)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
+    crate::with_gil_entry!(_py, {
+        email_quopri_alloc_str(_py, OPCODE_PAYLOAD_312_JSON)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_metadata_payload_314_json() -> u64 {
+    crate::with_gil_entry!(_py, {
+        email_quopri_alloc_str(_py, OPCODE_METADATA_PAYLOAD_314_JSON)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_get_specialization_stats() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let opcode_obj = obj_from_bits(opcode_bits);
+        let Some(opcode) = to_i64(opcode_obj) else {
+            let msg = format!(
+                "'{}' object cannot be interpreted as an integer",
+                type_name(_py, opcode_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+
+        let oparg_obj = obj_from_bits(oparg_bits);
+        let opcode_noarg = opcode_is_noarg_312(opcode);
+        if oparg_obj.is_none() {
+            if opcode_noarg {
+                return match opcode_stack_effect_core_312(opcode, 0) {
+                    Some(effect) => MoltObject::from_int(effect).bits(),
+                    None => raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg"),
+                };
+            }
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "stack_effect: opcode requires oparg but oparg was not specified",
+            );
+        }
+        if opcode_noarg {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "stack_effect: opcode does not permit oparg but oparg was specified",
+            );
+        }
+
+        let Some(oparg) = to_i64(oparg_obj) else {
+            let msg = format!(
+                "'{}' object cannot be interpreted as an integer",
+                type_name(_py, oparg_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+
+        let Some(effect) = opcode_stack_effect_core_312(opcode, oparg) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg");
+        };
+        MoltObject::from_int(effect).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_hsv(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = colorsys_expect_f64(_py, r_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
+        };
+        let Some(g) = colorsys_expect_f64(_py, g_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
+        };
+        let Some(b) = colorsys_expect_f64(_py, b_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
+        };
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let rangec = maxc - minc;
+        let v = maxc;
+        if minc == maxc {
+            return colorsys_tuple(_py, 0.0, 0.0, v);
+        }
+        let s = rangec / maxc;
+        let rc = (maxc - r) / rangec;
+        let gc = (maxc - g) / rangec;
+        let bc = (maxc - b) / rangec;
+        let h = if r == maxc {
+            bc - gc
+        } else if g == maxc {
+            2.0 + rc - bc
+        } else {
+            4.0 + gc - rc
+        };
+        let h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple(_py, h, s, v)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_hsv_to_rgb(h_bits: u64, s_bits: u64, v_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(h) = colorsys_expect_f64(_py, h_bits, "hsv_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(s) = colorsys_expect_f64(_py, s_bits, "hsv_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(v) = colorsys_expect_f64(_py, v_bits, "hsv_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        if s == 0.0 {
+            return colorsys_tuple(_py, v, v, v);
+        }
+        let h6 = h * 6.0;
+        let i = h6.trunc() as i32;
+        let f = h6 - (i as f64);
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - s * f);
+        let t = v * (1.0 - s * (1.0 - f));
+        let i = i.rem_euclid(6);
+        match i {
+            0 => colorsys_tuple(_py, v, t, p),
+            1 => colorsys_tuple(_py, q, v, p),
+            2 => colorsys_tuple(_py, p, v, t),
+            3 => colorsys_tuple(_py, p, q, v),
+            4 => colorsys_tuple(_py, t, p, v),
+            _ => colorsys_tuple(_py, v, p, q),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_hls(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = colorsys_expect_f64(_py, r_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let Some(g) = colorsys_expect_f64(_py, g_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let Some(b) = colorsys_expect_f64(_py, b_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let sumc = maxc + minc;
+        let rangec = maxc - minc;
+        let l = sumc / 2.0;
+        if minc == maxc {
+            return colorsys_tuple(_py, 0.0, l, 0.0);
+        }
+        let s = if l <= 0.5 {
+            rangec / sumc
+        } else {
+            rangec / (2.0 - maxc - minc)
+        };
+        let rc = (maxc - r) / rangec;
+        let gc = (maxc - g) / rangec;
+        let bc = (maxc - b) / rangec;
+        let h = if r == maxc {
+            bc - gc
+        } else if g == maxc {
+            2.0 + rc - bc
+        } else {
+            4.0 + gc - rc
+        };
+        let h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple(_py, h, l, s)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_hls_to_rgb(h_bits: u64, l_bits: u64, s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(h) = colorsys_expect_f64(_py, h_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(l) = colorsys_expect_f64(_py, l_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(s) = colorsys_expect_f64(_py, s_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        if s == 0.0 {
+            return colorsys_tuple(_py, l, l, l);
+        }
+        let m2 = if l <= 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - (l * s)
+        };
+        let m1 = 2.0 * l - m2;
+        let r = colorsys_hls_v(m1, m2, h + (1.0 / 3.0));
+        let g = colorsys_hls_v(m1, m2, h);
+        let b = colorsys_hls_v(m1, m2, h - (1.0 / 3.0));
+        colorsys_tuple(_py, r, g, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_yiq(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = colorsys_expect_f64(_py, r_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let Some(g) = colorsys_expect_f64(_py, g_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let Some(b) = colorsys_expect_f64(_py, b_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let y = 0.30 * r + 0.59 * g + 0.11 * b;
+        let i = 0.74 * (r - y) - 0.27 * (b - y);
+        let q = 0.48 * (r - y) + 0.41 * (b - y);
+        colorsys_tuple(_py, y, i, q)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_yiq_to_rgb(y_bits: u64, i_bits: u64, q_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(y) = colorsys_expect_f64(_py, y_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(i) = colorsys_expect_f64(_py, i_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(q) = colorsys_expect_f64(_py, q_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let mut r = y + 0.946_882_217_090_069_3 * i + 0.623_556_581_986_143_3 * q;
+        let mut g = y - 0.274_787_646_298_978_34 * i - 0.635_691_079_187_380_1 * q;
+        let mut b = y - 1.108_545_034_642_032_2 * i + 1.709_006_928_406_466_6 * q;
+        if r < 0.0 {
+            r = 0.0;
+        }
+        if g < 0.0 {
+            g = 0.0;
+        }
+        if b < 0.0 {
+            b = 0.0;
+        }
+        if r > 1.0 {
+            r = 1.0;
+        }
+        if g > 1.0 {
+            g = 1.0;
+        }
+        if b > 1.0 {
+            b = 1.0;
+        }
+        colorsys_tuple(_py, r, g, b)
     })
 }
 
