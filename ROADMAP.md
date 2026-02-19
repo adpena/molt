@@ -413,7 +413,7 @@ Sign-off criteria:
   (`molt_asyncio_taskgroup_on_task_done`, `molt_asyncio_ready_queue_drain`),
   reducing Python task-scan/callback loops in cancellation/error and
   ready-dispatch hot paths.
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, and `collections` (capability-gated env access).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, and `collections` (capability-gated env access).
 - Partial: `decimal` shim backed by Rust intrinsics (contexts/traps/flags, quantize/compare/normalize/exp/div, `as_tuple`, `str`/`repr`/float conversions) with native Rust backend when vendored `libmpdec` sources are unavailable.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
 - Implemented: strict intrinsics registry + removal of CPython shim fallbacks in tooling/tests; JSON/MsgPack helpers now use runtime intrinsics only.
@@ -478,7 +478,7 @@ Sign-off criteria:
 5) TC2/TC3: reflection builtins, CPython `hash` parity (`PYTHONHASHSEED`) + `format`/rounding; update tests + docs.
    Implemented: object-level `__getattribute__`/`__setattr__`/`__delattr__` builtins.
 6) SL1: `functools` (`lru_cache`, `partial`, `reduce`) with compile-time lowering and deterministic cache keys; `cmp_to_key`/`total_ordering` landed.
-7) SL1: `itertools` + `operator` intrinsics plus `heapq` fast paths; `bisect`/`heapq` shims landed (fast paths now wired).
+7) SL1: `itertools` + `operator` intrinsics plus `heapq` fast paths; `bisect` is now fully intrinsic-lowered (search + insort + bounds normalization) and `heapq` fast paths remain active.
 8) SL1: finish `math` intrinsics beyond `log`/`log2`/`exp`/`sin`/`cos`/`acos`/`lgamma` and trig/hyperbolic (remaining: determinism policy), plus deterministic `array`/`struct` layouts with wasm/native parity tests.
 
 ## Offload / IPC
