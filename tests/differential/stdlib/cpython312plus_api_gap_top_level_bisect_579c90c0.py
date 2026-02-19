@@ -41,7 +41,9 @@ def _module_api_digest(module: object) -> tuple[int, str, list[str]]:
     for name, value in sorted(values.items()):
         if name.startswith("_"):
             continue
-        rows.append((name, type(value).__name__, bool(callable(value))))
+        is_callable = bool(callable(value))
+        type_label = "callable" if is_callable else type(value).__name__
+        rows.append((name, type_label, is_callable))
     payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
     head = [name for name, _, _ in rows[:10]]
