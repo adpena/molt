@@ -4621,6 +4621,40 @@ pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_zip_read_entry(
+    archive_path_bits: u64,
+    inner_path_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let archive_path = match string_arg_from_bits(_py, archive_path_bits, "archive path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let inner_path = match string_arg_from_bits(_py, inner_path_bits, "inner path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let normalized = inner_path.replace('\\', "/").trim_matches('/').to_string();
+        if normalized.is_empty() {
+            return raise_exception::<_>(_py, "OSError", "zip archive entry path is empty");
+        }
+        let bytes = match zip_archive_read_entry(&archive_path, &normalized) {
+            Ok(value) => value,
+            Err(err) => return raise_importlib_io_error(_py, err),
+        };
+        let out_ptr = alloc_bytes(_py, &bytes);
+        if out_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {

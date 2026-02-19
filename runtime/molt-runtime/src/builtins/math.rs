@@ -2908,6 +2908,127 @@ fn statistics_coerce_elem_fast_f64(_py: &PyToken<'_>, val_bits: u64, name: &str)
     coerce_to_f64(_py, real)
 }
 
+fn statistics_normal_dist_params(
+    _py: &PyToken<'_>,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> Option<(f64, f64)> {
+    let Some(mu_real) = coerce_real_named(_py, mu_bits, "mu") else {
+        return None;
+    };
+    let Some(mu) = coerce_to_f64(_py, mu_real) else {
+        return None;
+    };
+    let Some(sigma_real) = coerce_real_named(_py, sigma_bits, "sigma") else {
+        return None;
+    };
+    let Some(sigma) = coerce_to_f64(_py, sigma_real) else {
+        return None;
+    };
+    if sigma < 0.0 {
+        return raise_exception::<Option<(f64, f64)>>(
+            _py,
+            "ValueError",
+            "sigma must be non-negative",
+        );
+    }
+    Some((mu, sigma))
+}
+
+fn horner_eval(x: f64, coeffs: &[f64]) -> f64 {
+    let mut acc = 0.0;
+    for &coeff in coeffs {
+        acc = acc * x + coeff;
+    }
+    acc
+}
+
+fn statistics_normal_dist_inv_cdf_raw(p: f64, mu: f64, sigma: f64) -> f64 {
+    const A: [f64; 8] = [
+        2.5090809287301227e3,
+        3.3430575583588128e4,
+        6.7265770927008701e4,
+        4.5921953931549871e4,
+        1.3731693765509461e4,
+        1.9715909503065514e3,
+        1.3314166789178438e2,
+        3.3871328727963666,
+    ];
+    const B: [f64; 8] = [
+        5.2264952788528546e3,
+        2.8729085735721943e4,
+        3.9307895800092711e4,
+        2.1213794301586596e4,
+        5.3941960214247511e3,
+        6.8718700749205791e2,
+        4.2313330701600911e1,
+        1.0,
+    ];
+    const C: [f64; 8] = [
+        7.7454501427834141e-4,
+        2.2723844989269185e-2,
+        2.4178072517745061e-1,
+        1.2704582524523684,
+        3.6478483247632046,
+        5.7694972214606914,
+        4.6303378461565453,
+        1.4234371107496836,
+    ];
+    const D: [f64; 8] = [
+        1.0507500716444168e-9,
+        5.4759380849953449e-4,
+        1.5198666563616457e-2,
+        1.4810397642748008e-1,
+        6.8976733498510000e-1,
+        1.6763848301838038,
+        2.0531916266377588,
+        1.0,
+    ];
+    const E: [f64; 8] = [
+        2.0103343992922881e-7,
+        2.7115555687434876e-5,
+        1.2426609473880784e-3,
+        2.6532189526576123e-2,
+        2.9656057182850489e-1,
+        1.7848265399172913,
+        5.4637849111641144,
+        6.6579046435011033,
+    ];
+    const F: [f64; 8] = [
+        2.0442631033899397e-15,
+        1.4215117583164459e-7,
+        1.8463183175100547e-5,
+        7.8686913114561326e-4,
+        1.4875361290850615e-2,
+        1.3692988092273581e-1,
+        5.9983220655588794e-1,
+        1.0,
+    ];
+
+    let q = p - 0.5;
+    if q.abs() <= 0.425 {
+        let r = 0.180625 - q * q;
+        let x = (horner_eval(r, &A) * q) / horner_eval(r, &B);
+        return mu + (x * sigma);
+    }
+
+    let mut r = if q <= 0.0 { p } else { 1.0 - p };
+    r = math_sqrt(-math_log(r));
+    let x = if r <= 5.0 {
+        let rr = r - 1.6;
+        horner_eval(rr, &C) / horner_eval(rr, &D)
+    } else {
+        let rr = r - 5.0;
+        horner_eval(rr, &E) / horner_eval(rr, &F)
+    };
+    let x = if q < 0.0 { -x } else { x };
+    mu + (x * sigma)
+}
+
+fn statistics_normal_dist_cdf_raw(x: f64, mu: f64, sigma: f64) -> f64 {
+    0.5 * (1.0 + math_erf((x - mu) / (sigma * core::f64::consts::SQRT_2)))
+}
+
 fn materialize_statistics_slice(
     _py: &PyToken<'_>,
     data_bits: u64,
@@ -3244,6 +3365,181 @@ pub extern "C" fn molt_statistics_linear_regression(
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_new(mu_bits: u64, sigma_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+            return MoltObject::none().bits();
+        };
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                MoltObject::from_float(mu).bits(),
+                MoltObject::from_float(sigma).bits(),
+            ],
+        );
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_inv_cdf(
+    p_bits: u64,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+            return MoltObject::none().bits();
+        };
+        let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
+            return MoltObject::none().bits();
+        };
+        let Some(p) = coerce_to_f64(_py, p_real) else {
+            return MoltObject::none().bits();
+        };
+        if p <= 0.0 || p >= 1.0 {
+            return raise_exception::<_>(_py, "ValueError", "p must be in the range 0.0 < p < 1.0");
+        }
+        MoltObject::from_float(statistics_normal_dist_inv_cdf_raw(p, mu, sigma)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_pdf(
+    mu_bits: u64,
+    sigma_bits: u64,
+    x_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+            return MoltObject::none().bits();
+        };
+        let variance = sigma * sigma;
+        if variance == 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "pdf() not defined when sigma is zero");
+        }
+        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
+            return MoltObject::none().bits();
+        };
+        let Some(x) = coerce_to_f64(_py, x_real) else {
+            return MoltObject::none().bits();
+        };
+        let diff = x - mu;
+        let out = math_exp(diff * diff / (-2.0 * variance))
+            / math_sqrt(core::f64::consts::TAU * variance);
+        MoltObject::from_float(out).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_cdf(
+    mu_bits: u64,
+    sigma_bits: u64,
+    x_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+            return MoltObject::none().bits();
+        };
+        if sigma == 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "cdf() not defined when sigma is zero");
+        }
+        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
+            return MoltObject::none().bits();
+        };
+        let Some(x) = coerce_to_f64(_py, x_real) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(statistics_normal_dist_cdf_raw(x, mu, sigma)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_zscore(
+    mu_bits: u64,
+    sigma_bits: u64,
+    x_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+            return MoltObject::none().bits();
+        };
+        if sigma == 0.0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "zscore() not defined when sigma is zero",
+            );
+        }
+        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
+            return MoltObject::none().bits();
+        };
+        let Some(x) = coerce_to_f64(_py, x_real) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float((x - mu) / sigma).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_overlap(
+    mu_a_bits: u64,
+    sigma_a_bits: u64,
+    mu_b_bits: u64,
+    sigma_b_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some((mut mu_x, mut sigma_x)) =
+            statistics_normal_dist_params(_py, mu_a_bits, sigma_a_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some((mut mu_y, mut sigma_y)) =
+            statistics_normal_dist_params(_py, mu_b_bits, sigma_b_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        if (sigma_y, mu_y) < (sigma_x, mu_x) {
+            core::mem::swap(&mut mu_x, &mut mu_y);
+            core::mem::swap(&mut sigma_x, &mut sigma_y);
+        }
+        let x_var = sigma_x * sigma_x;
+        let y_var = sigma_y * sigma_y;
+        if x_var == 0.0 || y_var == 0.0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "overlap() not defined when sigma is zero",
+            );
+        }
+        let dv = y_var - x_var;
+        let dm = (mu_y - mu_x).abs();
+        if dv == 0.0 {
+            let out = 1.0 - math_erf(dm / (2.0 * sigma_x * core::f64::consts::SQRT_2));
+            return MoltObject::from_float(out).bits();
+        }
+        let a = mu_x * y_var - mu_y * x_var;
+        let inner = dm * dm + dv * math_log(y_var / x_var);
+        if inner < 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "overlap() domain error");
+        }
+        let b = sigma_x * sigma_y * math_sqrt(inner);
+        let x1 = (a + b) / dv;
+        let x2 = (a - b) / dv;
+        let delta1 = (statistics_normal_dist_cdf_raw(x1, mu_y, sigma_y)
+            - statistics_normal_dist_cdf_raw(x1, mu_x, sigma_x))
+        .abs();
+        let delta2 = (statistics_normal_dist_cdf_raw(x2, mu_y, sigma_y)
+            - statistics_normal_dist_cdf_raw(x2, mu_x, sigma_x))
+        .abs();
+        MoltObject::from_float(1.0 - (delta1 + delta2)).bits()
     })
 }
 

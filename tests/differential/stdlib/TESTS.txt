@@ -1021,6 +1021,7 @@ tests/differential/stdlib/cpython312plus_api_gap_top_level_wmi_370747c6.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_xdrlib_56e65770.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_xml_42f7b70e.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_zipfile_fabc0a48.py
+tests/differential/stdlib/cpython312plus_api_gap_top_level_zipimport_6d54b260.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_zlib_57968f12.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_zoneinfo_74cf30f3.py
 tests/differential/stdlib/cpython312plus_api_gap_top_level_zoneinfo_f08adaf0.py
@@ -1687,6 +1688,7 @@ tests/differential/stdlib/statistics_mean_stdev_basic.py
 tests/differential/stdlib/statistics_median_grouped.py
 tests/differential/stdlib/statistics_median_low_high.py
 tests/differential/stdlib/statistics_multimode.py
+tests/differential/stdlib/statistics_normal_dist_basic.py
 tests/differential/stdlib/statistics_quantiles.py
 tests/differential/stdlib/statistics_variance.py
 tests/differential/stdlib/statistics_variance_pvariance_pstdev_basic.py
@@ -1878,5 +1880,6 @@ tests/differential/stdlib/zipapp_basic.py
 tests/differential/stdlib/zipfile_roundtrip_basic.py
 tests/differential/stdlib/zipimport_api_surface_basic.py
 tests/differential/stdlib/zipimport_basic.py
+tests/differential/stdlib/zipimport_prefix_error_edges.py
 tests/differential/stdlib/zlib_basic.py
 tests/differential/stdlib/zoneinfo_dst_fold.py

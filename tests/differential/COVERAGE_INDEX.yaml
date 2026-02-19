@@ -833,8 +833,11 @@ stdlib:
       - tests/differential/stdlib/zipapp_basic.py
   zipimport:
     tests:
+      - tests/differential/stdlib/cpython312plus_api_gap_top_level_zipimport_6d54b260.py
       - tests/differential/stdlib/stdlib_capability_smoke_fs_b.py
+      - tests/differential/stdlib/zipimport_api_surface_basic.py
       - tests/differential/stdlib/zipimport_basic.py
+      - tests/differential/stdlib/zipimport_prefix_error_edges.py
   math:
     tests:
       - tests/differential/stdlib/math_basic_more.py
@@ -2804,6 +2807,7 @@ stdlib:
   statistics:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_statistics_3d18b2ea.py
+      - tests/differential/stdlib/statistics_normal_dist_basic.py
   string:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_string_ecb25204.py
