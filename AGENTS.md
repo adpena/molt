@@ -139,6 +139,9 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
+- `python3 tools/bench_diff.py <old.json> <new.json>`: compare two benchmark JSON artifacts (use `--json-out` for machine-readable diffs).
+- `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml`: run friend-owned benchmark suites (use `--suite <id>` to target specific suites).
+- `python3 tools/diff_memory_report.py --input <rss_metrics.jsonl> --run-id <id>`: summarize `molt_diff` RSS metrics and top offenders.
 - `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in [ROADMAP.md](ROADMAP.md).
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
