@@ -124,6 +124,7 @@ pub(crate) use crate::builtins::attr::{
     property_no_setter, raise_attr_name_type_error,
 };
 pub use crate::builtins::attributes::*;
+pub use crate::builtins::binascii::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,

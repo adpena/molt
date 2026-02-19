@@ -1516,8 +1516,11 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         unsafe {
-            let idiv_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.itruediv_name, b"__itruediv__");
+            let idiv_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.itruediv_name,
+                b"__itruediv__",
+            );
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
                 return res_bits;
             }
@@ -2937,8 +2940,11 @@ pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         unsafe {
-            let ilshift_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.ilshift_name, b"__ilshift__");
+            let ilshift_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.ilshift_name,
+                b"__ilshift__",
+            );
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, ilshift_name_bits) {
                 return res_bits;
             }
@@ -2980,8 +2986,11 @@ pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         unsafe {
-            let irshift_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.irshift_name, b"__irshift__");
+            let irshift_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.irshift_name,
+                b"__irshift__",
+            );
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, irshift_name_bits) {
                 return res_bits;
             }
@@ -32137,275 +32146,6 @@ unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
     }
 }
 
-fn bisect_compare_lt(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Option<bool> {
-    let res_bits = molt_lt(lhs_bits, rhs_bits);
-    if exception_pending(_py) {
-        return None;
-    }
-    Some(is_truthy(_py, obj_from_bits(res_bits)))
-}
-
-fn bisect_elem_at(_py: &PyToken<'_>, seq_bits: u64, idx: i64) -> Option<(u64, bool)> {
-    if idx < 0 {
-        raise_exception::<()>(_py, "IndexError", "list index out of range");
-        return None;
-    }
-    let seq_obj = obj_from_bits(seq_bits);
-    if let Some(ptr) = seq_obj.as_ptr() {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(ptr);
-                let idx = idx as usize;
-                if idx >= elems.len() {
-                    let msg = if type_id == TYPE_ID_TUPLE {
-                        "tuple index out of range"
-                    } else {
-                        "list index out of range"
-                    };
-                    raise_exception::<()>(_py, "IndexError", msg);
-                    return None;
-                }
-                return Some((elems[idx], false));
-            }
-        }
-    }
-    let idx_bits = int_bits_from_i64(_py, idx);
-    let val_bits = molt_getitem_method(seq_bits, idx_bits);
-    if exception_pending(_py) {
-        return None;
-    }
-    Some((val_bits, true))
-}
-
-fn bisect_inner(
-    _py: &PyToken<'_>,
-    seq_bits: u64,
-    x_bits: u64,
-    lo: i64,
-    hi: i64,
-    key_bits: u64,
-    right: bool,
-) -> Option<i64> {
-    let use_key = !obj_from_bits(key_bits).is_none();
-    let mut lo_idx = lo;
-    let mut hi_idx = hi;
-    while lo_idx < hi_idx {
-        let mid = (lo_idx + hi_idx) / 2;
-        let (mid_bits, mid_owned) = bisect_elem_at(_py, seq_bits, mid)?;
-        let key_val_bits = if use_key {
-            let res_bits = unsafe { call_callable1(_py, key_bits, mid_bits) };
-            if exception_pending(_py) {
-                if mid_owned {
-                    dec_ref_bits(_py, mid_bits);
-                }
-                return None;
-            }
-            res_bits
-        } else {
-            mid_bits
-        };
-        let less = if right {
-            bisect_compare_lt(_py, x_bits, key_val_bits)?
-        } else {
-            bisect_compare_lt(_py, key_val_bits, x_bits)?
-        };
-        if use_key {
-            dec_ref_bits(_py, key_val_bits);
-        }
-        if mid_owned {
-            dec_ref_bits(_py, mid_bits);
-        }
-        if right {
-            if less {
-                hi_idx = mid;
-            } else {
-                lo_idx = mid + 1;
-            }
-        } else if less {
-            lo_idx = mid + 1;
-        } else {
-            hi_idx = mid;
-        }
-    }
-    Some(lo_idx)
-}
-
-fn bisect_load_index(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
-    let Some(val) = obj_from_bits(bits).as_int() else {
-        raise_exception::<()>(_py, "TypeError", "an integer is required");
-        return None;
-    };
-    Some(val)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_left(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(lo) = bisect_load_index(_py, lo_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(hi) = bisect_load_index(_py, hi_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(idx) = bisect_inner(_py, seq_bits, x_bits, lo, hi, key_bits, false) else {
-            return MoltObject::none().bits();
-        };
-        int_bits_from_i64(_py, idx)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_right(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(lo) = bisect_load_index(_py, lo_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(hi) = bisect_load_index(_py, hi_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(idx) = bisect_inner(_py, seq_bits, x_bits, lo, hi, key_bits, true) else {
-            return MoltObject::none().bits();
-        };
-        int_bits_from_i64(_py, idx)
-    })
-}
-
-fn bisect_insert_at(_py: &PyToken<'_>, seq_bits: u64, idx: i64, val_bits: u64) -> bool {
-    let seq_obj = obj_from_bits(seq_bits);
-    if let Some(ptr) = seq_obj.as_ptr() {
-        unsafe {
-            if object_type_id(ptr) == TYPE_ID_LIST {
-                let elems = seq_vec(ptr);
-                let pos = if idx < 0 { 0 } else { idx as usize };
-                let pos = pos.min(elems.len());
-                elems.insert(pos, val_bits);
-                inc_ref_bits(_py, val_bits);
-                return true;
-            }
-        }
-    }
-    let Some(ptr) = seq_obj.as_ptr() else {
-        let msg = format!(
-            "'{}' object has no attribute 'insert'",
-            type_name(_py, seq_obj)
-        );
-        raise_exception::<()>(_py, "AttributeError", &msg);
-        return false;
-    };
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"insert") else {
-        return false;
-    };
-    let call_bits = unsafe { attr_lookup_ptr(_py, ptr, name_bits) };
-    dec_ref_bits(_py, name_bits);
-    let Some(call_bits) = call_bits else {
-        let msg = format!(
-            "'{}' object has no attribute 'insert'",
-            type_name(_py, seq_obj)
-        );
-        raise_exception::<()>(_py, "AttributeError", &msg);
-        return false;
-    };
-    let idx_bits = int_bits_from_i64(_py, idx);
-    let _ = unsafe { call_callable2(_py, call_bits, idx_bits, val_bits) };
-    dec_ref_bits(_py, call_bits);
-    if exception_pending(_py) {
-        return false;
-    }
-    true
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_insort_left(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(lo) = bisect_load_index(_py, lo_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(hi) = bisect_load_index(_py, hi_bits) else {
-            return MoltObject::none().bits();
-        };
-        let use_key = !obj_from_bits(key_bits).is_none();
-        let x_key_bits = if use_key {
-            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            res_bits
-        } else {
-            x_bits
-        };
-        let idx = bisect_inner(_py, seq_bits, x_key_bits, lo, hi, key_bits, false);
-        if use_key {
-            dec_ref_bits(_py, x_key_bits);
-        }
-        let Some(idx) = idx else {
-            return MoltObject::none().bits();
-        };
-        if !bisect_insert_at(_py, seq_bits, idx, x_bits) {
-            return MoltObject::none().bits();
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_insort_right(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(lo) = bisect_load_index(_py, lo_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(hi) = bisect_load_index(_py, hi_bits) else {
-            return MoltObject::none().bits();
-        };
-        let use_key = !obj_from_bits(key_bits).is_none();
-        let x_key_bits = if use_key {
-            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            res_bits
-        } else {
-            x_bits
-        };
-        let idx = bisect_inner(_py, seq_bits, x_key_bits, lo, hi, key_bits, true);
-        if use_key {
-            dec_ref_bits(_py, x_key_bits);
-        }
-        let Some(idx) = idx else {
-            return MoltObject::none().bits();
-        };
-        if !bisect_insert_at(_py, seq_bits, idx, x_bits) {
-            return MoltObject::none().bits();
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let list_obj = obj_from_bits(list_bits);
@@ -32925,7 +32665,11 @@ fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
                     let res_obj = obj_from_bits(res_bits);
                     if let Some(i) = to_i64(res_obj) {
                         if i < 0 {
-                            raise_exception::<_>(_py, "ValueError", "__len__() should return >= 0");
+                            raise_exception::<()>(
+                                _py,
+                                "ValueError",
+                                "__len__() should return >= 0",
+                            );
                             return None;
                         }
                         return Some(i);
@@ -32933,11 +32677,15 @@ fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
                     if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
                         let big = bigint_ref(big_ptr);
                         if big.is_negative() {
-                            raise_exception::<_>(_py, "ValueError", "__len__() should return >= 0");
+                            raise_exception::<()>(
+                                _py,
+                                "ValueError",
+                                "__len__() should return >= 0",
+                            );
                             return None;
                         }
                         let Some(len) = big.to_usize() else {
-                            raise_exception::<_>(
+                            raise_exception::<()>(
                                 _py,
                                 "OverflowError",
                                 "cannot fit 'int' into an index-sized integer",
@@ -32945,7 +32693,7 @@ fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
                             return None;
                         };
                         if len > i64::MAX as usize {
-                            raise_exception::<_>(
+                            raise_exception::<()>(
                                 _py,
                                 "OverflowError",
                                 "cannot fit 'int' into an index-sized integer",
@@ -32955,9 +32703,8 @@ fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
                         return Some(len as i64);
                     }
                     let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                    let msg =
-                        format!("'{}' object cannot be interpreted as an integer", res_type);
-                    raise_exception::<_>(_py, "TypeError", &msg);
+                    let msg = format!("'{}' object cannot be interpreted as an integer", res_type);
+                    raise_exception::<()>(_py, "TypeError", &msg);
                     return None;
                 }
             }
@@ -32965,26 +32712,22 @@ fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
     }
     let type_name = class_name_for_error(type_of_bits(_py, obj.bits()));
     let msg = format!("object of type '{type_name}' has no len()");
-    raise_exception::<_>(_py, "TypeError", &msg);
+    raise_exception::<()>(_py, "TypeError", &msg);
     None
 }
 
-fn bisect_item_at(
-    _py: &PyToken<'_>,
-    seq: MoltObject,
-    idx: i64,
-) -> Option<(u64, bool)> {
+fn bisect_item_at(_py: &PyToken<'_>, seq: MoltObject, idx: i64) -> Option<(u64, bool)> {
     if let Some(ptr) = seq.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_LIST {
                 if idx < 0 {
-                    raise_exception::<_>(_py, "IndexError", "list index out of range");
+                    raise_exception::<()>(_py, "IndexError", "list index out of range");
                     return None;
                 }
                 let len = list_len(ptr) as i64;
                 if idx >= len {
-                    raise_exception::<_>(_py, "IndexError", "list index out of range");
+                    raise_exception::<()>(_py, "IndexError", "list index out of range");
                     return None;
                 }
                 let elems = seq_vec_ref(ptr);
@@ -32992,12 +32735,12 @@ fn bisect_item_at(
             }
             if type_id == TYPE_ID_TUPLE {
                 if idx < 0 {
-                    raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+                    raise_exception::<()>(_py, "IndexError", "tuple index out of range");
                     return None;
                 }
                 let elems = seq_vec_ref(ptr);
                 if idx as usize >= elems.len() {
-                    raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+                    raise_exception::<()>(_py, "IndexError", "tuple index out of range");
                     return None;
                 }
                 return Some((elems[idx as usize], false));
@@ -33016,12 +32759,12 @@ fn bisect_item_at(
                 dec_ref_bits(_py, name_bits);
             }
             let msg = format!("'{}' object is not subscriptable", type_name(_py, seq));
-            raise_exception::<_>(_py, "TypeError", &msg);
+            raise_exception::<()>(_py, "TypeError", &msg);
             return None;
         }
     }
     let msg = format!("'{}' object is not subscriptable", type_name(_py, seq));
-    raise_exception::<_>(_py, "TypeError", &msg);
+    raise_exception::<()>(_py, "TypeError", &msg);
     None
 }
 
@@ -33047,16 +32790,12 @@ fn bisect_lt_bool(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Option<boo
     }
 }
 
-fn bisect_key_value(
-    _py: &PyToken<'_>,
-    key_bits: u64,
-    item_bits: u64,
-) -> Option<(u64, bool)> {
+fn bisect_key_value(_py: &PyToken<'_>, key_bits: u64, item_bits: u64) -> Option<(u64, bool)> {
     let key_obj = obj_from_bits(key_bits);
     if key_obj.is_none() {
         return Some((item_bits, false));
     }
-    let res_bits = call_callable1(_py, key_bits, item_bits);
+    let res_bits = unsafe { call_callable1(_py, key_bits, item_bits) };
     if exception_pending(_py) {
         return None;
     }
@@ -33083,7 +32822,7 @@ fn bisect_search_index(
         return None;
     }
     if lo < 0 {
-        raise_exception::<_>(_py, "ValueError", "lo must be non-negative");
+        raise_exception::<()>(_py, "ValueError", "lo must be non-negative");
         return None;
     }
     let mut hi = if obj_from_bits(hi_bits).is_none() {
@@ -33132,12 +32871,7 @@ fn bisect_search_index(
     Some(lo)
 }
 
-fn bisect_insert(
-    _py: &PyToken<'_>,
-    seq_bits: u64,
-    idx: i64,
-    value_bits: u64,
-) -> Option<()> {
+fn bisect_insert(_py: &PyToken<'_>, seq_bits: u64, idx: i64, value_bits: u64) -> Option<()> {
     let seq = obj_from_bits(seq_bits);
     if let Some(ptr) = seq.as_ptr() {
         unsafe {
@@ -33169,48 +32903,13 @@ fn bisect_insert(
                 dec_ref_bits(_py, name_bits);
             }
             let msg = format!("'{}' object has no attribute 'insert'", type_name(_py, seq));
-            raise_exception::<_>(_py, "AttributeError", &msg);
+            raise_exception::<()>(_py, "AttributeError", &msg);
             return None;
         }
     }
     let msg = format!("'{}' object has no attribute 'insert'", type_name(_py, seq));
-    raise_exception::<_>(_py, "AttributeError", &msg);
+    raise_exception::<()>(_py, "AttributeError", &msg);
     None
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_left(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(pos) = bisect_search_index(_py, seq_bits, x_bits, lo_bits, hi_bits, key_bits, true)
-        else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_int(pos).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_right(
-    seq_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(pos) =
-            bisect_search_index(_py, seq_bits, x_bits, lo_bits, hi_bits, key_bits, false)
-        else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_int(pos).bits()
-    })
 }
 
 #[unsafe(no_mangle)]
@@ -33225,7 +32924,7 @@ pub extern "C" fn molt_insort_left(
         let mut x_key_bits = x_bits;
         let mut x_key_owned = false;
         if !obj_from_bits(key_bits).is_none() {
-            let res_bits = call_callable1(_py, key_bits, x_bits);
+            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -33258,15 +32957,14 @@ pub extern "C" fn molt_insort_right(
         let mut x_key_bits = x_bits;
         let mut x_key_owned = false;
         if !obj_from_bits(key_bits).is_none() {
-            let res_bits = call_callable1(_py, key_bits, x_bits);
+            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
             x_key_bits = res_bits;
             x_key_owned = true;
         }
-        let pos =
-            bisect_search_index(_py, seq_bits, x_key_bits, lo_bits, hi_bits, key_bits, false);
+        let pos = bisect_search_index(_py, seq_bits, x_key_bits, lo_bits, hi_bits, key_bits, false);
         if x_key_owned {
             dec_ref_bits(_py, x_key_bits);
         }
