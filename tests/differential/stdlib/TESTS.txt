@@ -281,6 +281,7 @@ tests/differential/stdlib/asyncio_wait_timeout_zero.py
 tests/differential/stdlib/bisect_basic.py
 tests/differential/stdlib/bisect_edge_cases.py
 tests/differential/stdlib/bisect_key_basic.py
+tests/differential/stdlib/_bisect_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
 tests/differential/stdlib/codecs_basic.py

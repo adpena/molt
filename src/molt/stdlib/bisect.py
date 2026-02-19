@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
 from typing import Any, Callable, TypeVar
 
-_MOLT_MATH_FLOOR = _require_intrinsic("molt_math_floor", globals())
+_MOLT_BISECT_LEFT = _require_intrinsic("molt_bisect_left", globals())
+_MOLT_BISECT_RIGHT = _require_intrinsic("molt_bisect_right", globals())
+_MOLT_INSORT_LEFT = _require_intrinsic("molt_insort_left", globals())
+_MOLT_INSORT_RIGHT = _require_intrinsic("molt_insort_right", globals())
 
 
 __all__ = [
@@ -22,45 +24,6 @@ __all__ = [
 T = TypeVar("T")
 
 
-def _coerce_index(value: Any) -> tuple[bool, int, str | None]:
-    if isinstance(value, int):
-        return True, value, None
-    try:
-        idx = value.__index__()
-    except AttributeError:
-        return (
-            False,
-            0,
-            f"'{type(value).__name__}' object cannot be interpreted as an integer",
-        )
-    if not isinstance(idx, int):
-        return (
-            False,
-            0,
-            f"__index__ returned non-int (type {type(idx).__name__})",
-        )
-    return True, idx, None
-
-
-# Return errors for the caller to raise to avoid delayed exception propagation.
-def _normalize_bounds(
-    lo: Any, hi: Any | None, size: int
-) -> tuple[int, int, Exception | None]:
-    ok, lo_idx, err = _coerce_index(lo)
-    if not ok:
-        return 0, 0, TypeError(err)
-    if lo_idx < 0:
-        return 0, 0, ValueError("lo must be non-negative")
-    if hi is None:
-        return lo_idx, size, None
-    ok, hi_idx, err = _coerce_index(hi)
-    if not ok:
-        return 0, 0, TypeError(err)
-    if hi_idx > size:
-        return 0, 0, IndexError("list index out of range")
-    return lo_idx, hi_idx, None
-
-
 def bisect_left(
     a: Any,
     x: T,
@@ -69,24 +32,7 @@ def bisect_left(
     *,
     key: Callable[[T], Any] | None = None,
 ) -> int:
-    lo_idx, hi_idx, err = _normalize_bounds(lo, hi, len(a))
-    if err is not None:
-        raise err
-    if key is None:
-        while lo_idx < hi_idx:
-            mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
-            if a[mid] < x:
-                lo_idx = mid + 1
-            else:
-                hi_idx = mid
-        return lo_idx
-    while lo_idx < hi_idx:
-        mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
-        if key(a[mid]) < x:
-            lo_idx = mid + 1
-        else:
-            hi_idx = mid
-    return lo_idx
+    return _MOLT_BISECT_LEFT(a, x, lo, hi, key)
 
 
 def bisect_right(
@@ -97,24 +43,7 @@ def bisect_right(
     *,
     key: Callable[[T], Any] | None = None,
 ) -> int:
-    lo_idx, hi_idx, err = _normalize_bounds(lo, hi, len(a))
-    if err is not None:
-        raise err
-    if key is None:
-        while lo_idx < hi_idx:
-            mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
-            if x < a[mid]:
-                hi_idx = mid
-            else:
-                lo_idx = mid + 1
-        return lo_idx
-    while lo_idx < hi_idx:
-        mid = int(_MOLT_MATH_FLOOR((lo_idx + hi_idx) // 2))
-        if x < key(a[mid]):
-            hi_idx = mid
-        else:
-            lo_idx = mid + 1
-    return lo_idx
+    return _MOLT_BISECT_RIGHT(a, x, lo, hi, key)
 
 
 def insort_left(
@@ -125,14 +54,7 @@ def insort_left(
     *,
     key: Callable[[T], Any] | None = None,
 ) -> None:
-    lo_idx, hi_idx, err = _normalize_bounds(lo, hi, len(a))
-    if err is not None:
-        raise err
-    if key is None:
-        pos = bisect_left(a, x, lo_idx, hi_idx)
-    else:
-        pos = bisect_left(a, key(x), lo_idx, hi_idx, key=key)
-    a.insert(pos, x)
+    _MOLT_INSORT_LEFT(a, x, lo, hi, key)
 
 
 def insort_right(
@@ -143,14 +65,7 @@ def insort_right(
     *,
     key: Callable[[T], Any] | None = None,
 ) -> None:
-    lo_idx, hi_idx, err = _normalize_bounds(lo, hi, len(a))
-    if err is not None:
-        raise err
-    if key is None:
-        pos = bisect_right(a, x, lo_idx, hi_idx)
-    else:
-        pos = bisect_right(a, key(x), lo_idx, hi_idx, key=key)
-    a.insert(pos, x)
+    _MOLT_INSORT_RIGHT(a, x, lo, hi, key)
 
 
 bisect = bisect_right
