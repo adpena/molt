@@ -4,38 +4,25 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready", globals()
-)
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+_MOLT_THIS_PAYLOAD = _require_intrinsic("molt_this_payload", globals())
 
-s = (
-    "Gur Mra bs Clguba, ol Gvz Crgref\n\n"
-    "Ornhgvshy vf orggre guna htyl.\n"
-    "Rkcyvpvg vf orggre guna vzcyvpvg.\n"
-    "Fvzcyr vf orggre guna pbzcyrk.\n"
-    "Pbzcyrk vf orggre guna pbzcyvpngrq.\n"
-    "Syng vf orggre guna arfgrq.\n"
-    "Fcnefr vf orggre guna qrafr.\n"
-    "Ernqnovyvgl pbhagf.\n"
-    "Fcrpvny pnfrf nera'g fcrpvny rabhtu gb oernx gur ehyrf.\n"
-    "Nygubhtu cenpgvpnyvgl orngf chevgl.\n"
-    "Reebef fubhyq arire cnff fvyragyl.\n"
-    "Hayrff rkcyvpvgyl fvyraprq.\n"
-    "Va gur snpr bs nzovthvgl, ershfr gur grzcgngvba gb thrff.\n"
-    "Gurer fubhyq or bar-- naq cersrenoyl bayl bar --boivbhf jnl gb qb vg.\n"
-    "Nygubhtu gung jnl znl abg or boivbhf ng svefg hayrff lbh'er Qhgpu.\n"
-    "Abj vf orggre guna arire.\n"
-    "Nygubhtu arire vf bsgra orggre guna *evtug* abj.\n"
-    "Vs gur vzcyrzragngvba vf uneq gb rkcynva, vg'f n onq vqrn.\n"
-    "Vs gur vzcyrzragngvba vf rnfl gb rkcynva, vg znl or n tbbq vqrn.\n"
-    "Anzrfcnprf ner bar ubaxvat terng vqrn -- yrg'f qb zber bs gubfr!"
-)
+_payload = _MOLT_THIS_PAYLOAD()
+if not isinstance(_payload, tuple) or len(_payload) != 5:
+    raise RuntimeError("this intrinsic returned invalid payload")
 
-d = {}
-for c in range(65, 91):
-    d[chr(c)] = chr((c - 65 + 13) % 26 + 65)
-for c in range(97, 123):
-    d[chr(c)] = chr((c - 97 + 13) % 26 + 97)
+s, d, _decoded, c, i = _payload
 
-print("".join([d.get(c, c) for c in s]))
+if not isinstance(s, str):
+    raise RuntimeError("this intrinsic returned invalid payload")
+if not isinstance(d, dict):
+    raise RuntimeError("this intrinsic returned invalid payload")
+if not isinstance(_decoded, str):
+    raise RuntimeError("this intrinsic returned invalid payload")
+if not isinstance(c, int) or not isinstance(i, int):
+    raise RuntimeError("this intrinsic returned invalid payload")
+
+for _k, _v in d.items():
+    if not isinstance(_k, str) or not isinstance(_v, str):
+        raise RuntimeError("this intrinsic returned invalid payload")
+
+print(_decoded)

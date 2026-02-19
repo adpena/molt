@@ -158,6 +158,7 @@ tests/differential/basic/bytes_translate_maketrans.py
 tests/differential/basic/context_return_unwind_scope.py
 tests/differential/basic/oserror_errno.py
 tests/differential/basic/unicode_surrogate_handling.py
+tests/differential/stdlib/_opcode_basic.py
 tests/differential/stdlib/abc_basic.py
 tests/differential/stdlib/abc_update_abstractmethods_intrinsic.py
 tests/differential/stdlib/argparse_basic.py
@@ -295,6 +296,7 @@ tests/differential/stdlib/collections_counter_basic.py
 tests/differential/stdlib/collections_defaultdict_basic.py
 tests/differential/stdlib/collections_deque.py
 tests/differential/stdlib/collections_deque_rotate.py
+tests/differential/stdlib/colorsys_basic.py
 tests/differential/stdlib/compileall_basic.py
 tests/differential/stdlib/concurrent_futures_cancel.py
 tests/differential/stdlib/concurrent_futures_processpool_surface.py
@@ -1097,9 +1099,11 @@ tests/differential/stdlib/email_multipart_basic.py
 tests/differential/stdlib/email_parsedate_tz.py
 tests/differential/stdlib/email_parser_basic.py
 tests/differential/stdlib/email_policy_headers.py
+tests/differential/stdlib/email_quoprimime_basic.py
 tests/differential/stdlib/email_utils_dates.py
 tests/differential/stdlib/email_utils_msgid.py
 tests/differential/stdlib/encodings_basic.py
+tests/differential/stdlib/encodings_quopri_codec_basic.py
 tests/differential/stdlib/enum_basic.py
 tests/differential/stdlib/errno_basic.py
 tests/differential/stdlib/filecmp_basic.py
@@ -1531,6 +1535,7 @@ tests/differential/stdlib/queue_basic.py
 tests/differential/stdlib/queue_lifo_priority.py
 tests/differential/stdlib/queue_priority_blocking.py
 tests/differential/stdlib/queue_timeout_basic.py
+tests/differential/stdlib/quopri_basic.py
 tests/differential/stdlib/random_basic.py
 tests/differential/stdlib/random_distributions_basic.py
 tests/differential/stdlib/random_randbytes_basic.py
@@ -1751,6 +1756,7 @@ tests/differential/stdlib/test_support_findfile_basic.py
 tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
 tests/differential/stdlib/textwrap_basic.py
+tests/differential/stdlib/this_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py
 tests/differential/stdlib/threading_barrier_basic.py
 tests/differential/stdlib/threading_basic.py

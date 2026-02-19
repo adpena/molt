@@ -537,6 +537,7 @@ stdlib:
   colorsys:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_a.py
+      - tests/differential/stdlib/colorsys_basic.py
   compileall:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_fs_a.py
@@ -720,6 +721,7 @@ stdlib:
   quopri:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_c.py
+      - tests/differential/stdlib/quopri_basic.py
   readline:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_readline.py
@@ -784,6 +786,7 @@ stdlib:
   this:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_c.py
+      - tests/differential/stdlib/this_basic.py
   timeit:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_c.py
@@ -1190,6 +1193,7 @@ stdlib:
   _opcode:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_opcode_84059ab5.py
+      - tests/differential/stdlib/_opcode_basic.py
   _opcode_metadata:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_opcode_metadata_7be7e16f.py
@@ -1754,6 +1758,7 @@ stdlib:
   email.quoprimime:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_email_quoprimime_4114b06e.py
+      - tests/differential/stdlib/email_quoprimime_basic.py
   email.utils:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_email_utils_31bf7e42.py
@@ -2066,6 +2071,7 @@ stdlib:
   encodings.quopri_codec:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_quopri_codec_9cf83e72.py
+      - tests/differential/stdlib/encodings_quopri_codec_basic.py
   encodings.raw_unicode_escape:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_raw_unicode_escape_d34fcf59.py

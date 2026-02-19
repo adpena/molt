@@ -121,7 +121,7 @@ in [docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md](docs/spec/areas/compat
 | urllib.request | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Runtime-owned opener core via `molt_urllib_request_*` intrinsics (`Request` init, `OpenerDirector` init/add_handler/open dispatch with handler ordering + `data:` URL fallback); Python shim is reduced to class shells + result adaptation (`bytes` -> `io.BytesIO`). Remaining: full handler stack parity (`HTTPHandler`/`HTTPSHandler`/proxy/cookie/auth/redirect), richer response objects (`addinfourl`), and complete network capability-gated flows. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): finish urllib.request handler/response/network parity on top of intrinsic opener core.) |
 | urllib.error | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Runtime-owned exception construction/formatting via `molt_urllib_error_*` intrinsics (`URLError`, `HTTPError`, `ContentTooShortError`) with Python shim reduced to class shell + attribute/property wiring. Remaining: full `urllib.response.addinfourl` integration and complete `urllib.request` interaction semantics. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining urllib.error/request integration parity.) |
 | urllib.robotparser | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; network fetch requires `net`. |
-| email | Stdlib | Planned | P3 | SL3 | stdlib | Email parsing. |
+| email | Stdlib | Partial | P3 | SL3 | stdlib/runtime | `email.quoprimime` implemented; broader package parsing/generator stack still pending. |
 | email.policy | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; policy objects pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.policy pending parity) |
 | email.message | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; message objects pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.message pending parity) |
 | email.parser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; parser helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.parser pending parity) |
@@ -195,21 +195,21 @@ entries must obey the policy in Section 0.
 | cmath | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Math intrinsics; parity pending. |
 | codecs | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Intrinsic encode/decode for bytes-like/str; registry/lookup + minimal encodings/aliases now available; incremental/stream codecs + error-handler registration still pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
 | codeop | Stdlib | Planned | P3 | SL3 | stdlib | Compilation helpers; parity pending. |
-| colorsys | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| colorsys | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB/HLS/HSV/YIQ conversions. |
 | compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
 | configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | copyreg | Stdlib | Partial | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core (`dispatch_table`, `pickle`, `constructor`, extension registry helpers) with runtime-owned state; full parity pending. |
 | difflib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | dis | Stdlib | Planned | P3 | SL3 | stdlib | Bytecode disassembly; parity pending. |
-| encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; encoding package import hooks pending. |
+| encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |
 | faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
 | graphlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
-| opcode | Stdlib | Planned | P3 | SL3 | stdlib | Opcode tables; import-only stub. |
+| opcode | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic payload-backed CPython 3.12 opcode tables/constants plus `_opcode` bridge surface (`stack_effect`, `get_specialization_stats`); `_opcode_metadata` loads intrinsic 3.14 metadata payload and remains version-gated absent on `<3.14`. |
 | optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |
 | pickletools | Stdlib | Planned | P3 | SL3 | stdlib | Pickle analysis helpers; import-only stub. |
 | profile | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Profiling hooks; parity pending. |
-| quopri | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| quopri | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed quoted-printable encode/decode core with CPython-compatible module API (`encode`/`decode`/`encodestring`/`decodestring` and helpers). |
 | reprlib | Stdlib | Supported | P3 | SL3 | stdlib | `Repr`, `repr`, and `recursive_repr` parity. |
 | sched | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | sre_compile | Stdlib | Planned | P3 | SL3 | stdlib | Internal regex compiler; import-only stub. |
@@ -217,7 +217,7 @@ entries must obey the policy in Section 0.
 | sre_parse | Stdlib | Planned | P3 | SL3 | stdlib | Internal regex parser; import-only stub. |
 | stringprep | Stdlib | Planned | P3 | SL3 | stdlib | Unicode stringprep tables; import-only stub. |
 | symtable | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Symbol table introspection; parity pending. |
-| this | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| this | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed `s`/`d` globals + import-time Zen print parity (including `c`/`i` globals). |
 | timeit | Stdlib | Planned | P3 | SL3 | stdlib | Timing helpers; parity pending. |
 | token | Stdlib | Planned | P3 | SL3 | stdlib | Token constants; import-only stub. |
 | tokenize | Stdlib | Planned | P3 | SL3 | stdlib | Tokenizer helpers; parity pending. |
