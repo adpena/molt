@@ -138,11 +138,16 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
+- `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
+- `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.
+- `python3 tools/gen_stdlib_module_union.py`: regenerate the stdlib module union list used by stub syncing and checks.
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
 - `python3 tools/bench_diff.py <old.json> <new.json> --top 10 --json-out <path>`: diff two benchmark JSON artifacts and emit a summary report.
 - `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml --suite <id>`: run friend benchmark suites with the pinned manifest (use `--json-out`/`--summary-out` to capture results).
 - `python3 tools/diff_memory_report.py --input /Volumes/APDataStore/Molt/rss_metrics.jsonl --top 10`: summarize top RSS offenders from diff RSS metrics.
 - `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in [ROADMAP.md](ROADMAP.md).
+- `uv run --python 3.12 python3 tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
+- `python3 tools/profile.py`: repeatable CPU/alloc profiling runs.
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
 - `uv run pip-audit`: Python dependency audit (run after `uv sync --group dev`).
