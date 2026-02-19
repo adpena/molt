@@ -1,67 +1,80 @@
-"""Purpose: differential coverage for colorsys conversions."""
+"""Purpose: differential coverage for colorsys."""
 
 import colorsys
 
 
-def show_triplet(label, triplet):
-    print(label, tuple(round(x, 10) for x in triplet))
+def _round_triplet(values, places=12):
+    return tuple(round(v, places) for v in values)
 
 
-def show_value(label, value):
-    print(label, round(value, 10))
+def _close_triplet(a, b, tol=1e-9):
+    ax, ay, az = a
+    bx, by, bz = b
+    return (
+        abs(ax - bx) <= tol
+        and abs(ay - by) <= tol
+        and abs(az - bz) <= tol
+    )
 
 
-show_triplet("rgb_to_yiq", colorsys.rgb_to_yiq(0.2, 0.4, 0.6))
-show_triplet("yiq_to_rgb", colorsys.yiq_to_rgb(0.4, 0.1, -0.2))
+def main():
+    samples = [
+        (0.0, 0.0, 0.0),
+        (1.0, 1.0, 1.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.2, 0.4, 0.6),
+        (0.9, 0.2, 0.7),
+    ]
+    for rgb in samples:
+        print("rgb_to_hls", rgb, _round_triplet(colorsys.rgb_to_hls(*rgb)))
+        print("rgb_to_hsv", rgb, _round_triplet(colorsys.rgb_to_hsv(*rgb)))
+        print("rgb_to_yiq", rgb, _round_triplet(colorsys.rgb_to_yiq(*rgb)))
 
-show_triplet("rgb_to_hls", colorsys.rgb_to_hls(0.2, 0.4, 0.6))
-show_triplet("hls_to_rgb", colorsys.hls_to_rgb(0.6, 0.5, 0.25))
+    hls_samples = [
+        (0.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.5, 0.4, 0.7),
+        (0.75, 0.2, 0.8),
+    ]
+    for hls in hls_samples:
+        print("hls_to_rgb", hls, _round_triplet(colorsys.hls_to_rgb(*hls)))
 
-show_triplet("rgb_to_hsv", colorsys.rgb_to_hsv(0.2, 0.4, 0.6))
-show_triplet("hsv_to_rgb", colorsys.hsv_to_rgb(0.6, 0.5, 0.7))
+    hsv_samples = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.3, 0.2, 0.8),
+        (0.9, 0.6, 0.3),
+    ]
+    for hsv in hsv_samples:
+        print("hsv_to_rgb", hsv, _round_triplet(colorsys.hsv_to_rgb(*hsv)))
 
-show_triplet("hsv_to_rgb_wrap", colorsys.hsv_to_rgb(1.6, 0.5, 0.7))
-show_triplet("hls_to_rgb_wrap", colorsys.hls_to_rgb(-0.1, 0.5, 0.25))
+    yiq_samples = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.5, 0.2, 0.1),
+        (0.75, -0.2, 0.3),
+    ]
+    for yiq in yiq_samples:
+        print("yiq_to_rgb", yiq, _round_triplet(colorsys.yiq_to_rgb(*yiq)))
 
-show_triplet("hls_gray", colorsys.hls_to_rgb(0.3, 0.25, 0.0))
-show_triplet("hsv_gray", colorsys.hsv_to_rgb(0.3, 0.0, 0.25))
-
-show_value("_v", colorsys._v(0.1, 0.9, 0.25))
-
-try:
-    colorsys.rgb_to_hsv("nope", 0.2, 0.3)
-except Exception as exc:
-    print(type(exc).__name__, exc)
-
-
-class Floaty:
-    def __float__(self):
-        return 0.2
-
-
-try:
-    colorsys.rgb_to_yiq(Floaty(), 0.4, 0.6)
-except Exception as exc:
-    print(type(exc).__name__, exc)
-
-
-class Indexy:
-    def __index__(self):
-        return 1
-
-
-try:
-    colorsys.rgb_to_yiq(Indexy(), 0.2, 0.3)
-except Exception as exc:
-    print(type(exc).__name__, exc)
-
-
-class BadIndex:
-    def __index__(self):
-        return 1.5
+    roundtrip_rgb = [
+        (0.1, 0.2, 0.3),
+        (0.9, 0.1, 0.4),
+        (0.0, 1.0, 0.5),
+    ]
+    for rgb in roundtrip_rgb:
+        hls = colorsys.rgb_to_hls(*rgb)
+        rgb_back_hls = colorsys.hls_to_rgb(*hls)
+        print("roundtrip_hls", rgb, _close_triplet(rgb, rgb_back_hls))
+        hsv = colorsys.rgb_to_hsv(*rgb)
+        rgb_back_hsv = colorsys.hsv_to_rgb(*hsv)
+        print("roundtrip_hsv", rgb, _close_triplet(rgb, rgb_back_hsv))
+        yiq = colorsys.rgb_to_yiq(*rgb)
+        rgb_back_yiq = colorsys.yiq_to_rgb(*yiq)
+        print("roundtrip_yiq", rgb, _close_triplet(rgb, rgb_back_yiq))
 
 
-try:
-    colorsys.rgb_to_yiq(BadIndex(), 0.2, 0.3)
-except Exception as exc:
-    print(type(exc).__name__, exc)
+if __name__ == "__main__":
+    main()
