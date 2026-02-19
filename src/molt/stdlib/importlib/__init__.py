@@ -20,7 +20,7 @@ _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
 _SPEC_FIRST_IMPORTS = {"asyncio.graph"}
 
 
-def _known_absence_error(resolved: str) -> BaseException | None:
+def _is_known_absent(resolved: str) -> bool:
     if resolved == "asyncio.graph":
         return _sys.version_info < (3, 14)
     if resolved == "json.__main__":
@@ -131,9 +131,8 @@ def _module_import_with_fallback(resolved: str):
 
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
-    known_absence = _known_absence_error(resolved)
-    if known_absence is not None:
-        raise known_absence
+    if _is_known_absent(resolved):
+        raise ModuleNotFoundError(f"No module named '{resolved}'")
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]

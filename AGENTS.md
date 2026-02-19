@@ -17,6 +17,12 @@
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). This is mandatory to prevent local `target/` growth.
   - If you hit Unix-socket filesystem limitations on the external volume, keep artifacts on external but place only daemon sockets on local temp: `export MOLT_BACKEND_DAEMON_SOCKET_DIR=/tmp/molt_backend_sockets` (small/allowed exception).
 
+## Git Workflow Policy (Non-Negotiable)
+- Always develop on `main` and keep all local work based directly on `main`.
+- Always push directly to `main` (`origin/main`) by default.
+- Never create branches or worktrees without explicit user approval for that specific task.
+- If explicit approval is missing, stop and ask before running commands such as `git switch -c`, `git checkout -b`, `git branch`, or `git worktree add`.
+
 ## Non-Negotiable: Raise On Missing Features
 - Always raise on missing features; never fallback silently.
 - Never build coverage or implementations that rely on host Python in any way.
