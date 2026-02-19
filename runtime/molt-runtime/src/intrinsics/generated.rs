@@ -57,7 +57,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_abc_reset_registry", symbol: "molt_abc_reset_registry", arity: 1 },
     IntrinsicSpec { name: "molt_abc_reset_caches", symbol: "molt_abc_reset_caches", arity: 1 },
     IntrinsicSpec { name: "molt_abc_update_abstractmethods", symbol: "molt_abc_update_abstractmethods", arity: 1 },
-    IntrinsicSpec { name: "molt_argparse_parse", symbol: "molt_argparse_parse", arity: 2 },
     IntrinsicSpec { name: "molt_enum_init_member", symbol: "molt_enum_init_member", arity: 3 },
     IntrinsicSpec { name: "molt_re_literal_matches", symbol: "molt_re_literal_matches", arity: 3 },
     IntrinsicSpec { name: "molt_re_literal_advance", symbol: "molt_re_literal_advance", arity: 5 },
@@ -78,6 +77,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_shlex_split", symbol: "molt_shlex_split", arity: 2 },
     IntrinsicSpec { name: "molt_shlex_split_ex", symbol: "molt_shlex_split_ex", arity: 7 },
     IntrinsicSpec { name: "molt_shlex_join", symbol: "molt_shlex_join", arity: 1 },
+    IntrinsicSpec { name: "molt_colorsys_rgb_to_hls", symbol: "molt_colorsys_rgb_to_hls", arity: 3 },
+    IntrinsicSpec { name: "molt_colorsys_hls_to_rgb", symbol: "molt_colorsys_hls_to_rgb", arity: 3 },
+    IntrinsicSpec { name: "molt_colorsys_rgb_to_hsv", symbol: "molt_colorsys_rgb_to_hsv", arity: 3 },
+    IntrinsicSpec { name: "molt_colorsys_hsv_to_rgb", symbol: "molt_colorsys_hsv_to_rgb", arity: 3 },
+    IntrinsicSpec { name: "molt_colorsys_rgb_to_yiq", symbol: "molt_colorsys_rgb_to_yiq", arity: 3 },
+    IntrinsicSpec { name: "molt_colorsys_yiq_to_rgb", symbol: "molt_colorsys_yiq_to_rgb", arity: 3 },
     IntrinsicSpec { name: "molt_fnmatch", symbol: "molt_fnmatch", arity: 2 },
     IntrinsicSpec { name: "molt_fnmatchcase", symbol: "molt_fnmatchcase", arity: 2 },
     IntrinsicSpec { name: "molt_pow", symbol: "molt_pow", arity: 2 },
@@ -695,14 +700,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_queue_task_done", symbol: "molt_queue_task_done", arity: 1 },
     IntrinsicSpec { name: "molt_queue_join", symbol: "molt_queue_join", arity: 1 },
     IntrinsicSpec { name: "molt_queue_drop", symbol: "molt_queue_drop", arity: 1 },
-    IntrinsicSpec { name: "molt_graphlib_new", symbol: "molt_graphlib_new", arity: 0 },
-    IntrinsicSpec { name: "molt_graphlib_add", symbol: "molt_graphlib_add", arity: 3 },
-    IntrinsicSpec { name: "molt_graphlib_prepare", symbol: "molt_graphlib_prepare", arity: 1 },
-    IntrinsicSpec { name: "molt_graphlib_get_ready", symbol: "molt_graphlib_get_ready", arity: 1 },
-    IntrinsicSpec { name: "molt_graphlib_is_active", symbol: "molt_graphlib_is_active", arity: 1 },
-    IntrinsicSpec { name: "molt_graphlib_done", symbol: "molt_graphlib_done", arity: 2 },
-    IntrinsicSpec { name: "molt_graphlib_static_order", symbol: "molt_graphlib_static_order", arity: 1 },
-    IntrinsicSpec { name: "molt_graphlib_drop", symbol: "molt_graphlib_drop", arity: 1 },
     IntrinsicSpec { name: "molt_zipfile_crc32", symbol: "molt_zipfile_crc32", arity: 1 },
     IntrinsicSpec { name: "molt_logging_percent_style_format", symbol: "molt_logging_percent_style_format", arity: 2 },
     IntrinsicSpec { name: "molt_logging_runtime_ready", symbol: "molt_logging_runtime_ready", arity: 0 },
@@ -753,9 +750,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_msgpack_parse_scalar_obj", symbol: "molt_msgpack_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_cbor_parse_scalar_obj", symbol: "molt_cbor_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_json_parse_scalar_obj", symbol: "molt_json_parse_scalar_obj", arity: 1 },
-    IntrinsicSpec { name: "molt_json_encode_basestring_obj", symbol: "molt_json_encode_basestring_obj", arity: 1 },
-    IntrinsicSpec { name: "molt_json_encode_basestring_ascii_obj", symbol: "molt_json_encode_basestring_ascii_obj", arity: 1 },
-    IntrinsicSpec { name: "molt_json_scanstring_obj", symbol: "molt_json_scanstring_obj", arity: 3 },
     IntrinsicSpec { name: "molt_socket_new", symbol: "molt_socket_new", arity: 4 },
     IntrinsicSpec { name: "molt_socket_close", symbol: "molt_socket_close", arity: 1 },
     IntrinsicSpec { name: "molt_socket_drop", symbol: "molt_socket_drop", arity: 1 },
@@ -804,8 +798,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_socket_constants", symbol: "molt_socket_constants", arity: 0 },
     IntrinsicSpec { name: "molt_socket_has_ipv6", symbol: "molt_socket_has_ipv6", arity: 0 },
     IntrinsicSpec { name: "molt_compile_builtin", symbol: "molt_compile_builtin", arity: 6 },
-    IntrinsicSpec { name: "molt_codeop_compile", symbol: "molt_codeop_compile", arity: 5 },
-    IntrinsicSpec { name: "molt_codeop_compile_command", symbol: "molt_codeop_compile_command", arity: 4 },
     IntrinsicSpec { name: "molt_input_builtin", symbol: "molt_input_builtin", arity: 1 },
     IntrinsicSpec { name: "molt_globals_builtin", symbol: "molt_globals_builtin", arity: 0 },
     IntrinsicSpec { name: "molt_locals_builtin", symbol: "molt_locals_builtin", arity: 0 },
@@ -1050,7 +1042,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_reset_registry" => Some(crate::molt_abc_reset_registry as *const () as usize as u64),
         "molt_abc_reset_caches" => Some(crate::molt_abc_reset_caches as *const () as usize as u64),
         "molt_abc_update_abstractmethods" => Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64),
-        "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
         "molt_re_literal_matches" => Some(crate::molt_re_literal_matches as *const () as usize as u64),
         "molt_re_literal_advance" => Some(crate::molt_re_literal_advance as *const () as usize as u64),
@@ -1071,24 +1062,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
         "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
         "molt_shlex_join" => Some(crate::molt_shlex_join as *const () as usize as u64),
-        "molt_colorsys_rgb_to_yiq" => {
-            Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64)
-        }
-        "molt_colorsys_yiq_to_rgb" => {
-            Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64)
-        }
-        "molt_colorsys_rgb_to_hls" => {
-            Some(crate::molt_colorsys_rgb_to_hls as *const () as usize as u64)
-        }
-        "molt_colorsys_hls_to_rgb" => {
-            Some(crate::molt_colorsys_hls_to_rgb as *const () as usize as u64)
-        }
-        "molt_colorsys_rgb_to_hsv" => {
-            Some(crate::molt_colorsys_rgb_to_hsv as *const () as usize as u64)
-        }
-        "molt_colorsys_hsv_to_rgb" => {
-            Some(crate::molt_colorsys_hsv_to_rgb as *const () as usize as u64)
-        }
+        "molt_colorsys_rgb_to_hls" => Some(crate::molt_colorsys_rgb_to_hls as *const () as usize as u64),
+        "molt_colorsys_hls_to_rgb" => Some(crate::molt_colorsys_hls_to_rgb as *const () as usize as u64),
+        "molt_colorsys_rgb_to_hsv" => Some(crate::molt_colorsys_rgb_to_hsv as *const () as usize as u64),
+        "molt_colorsys_hsv_to_rgb" => Some(crate::molt_colorsys_hsv_to_rgb as *const () as usize as u64),
+        "molt_colorsys_rgb_to_yiq" => Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64),
+        "molt_colorsys_yiq_to_rgb" => Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64),
         "molt_fnmatch" => Some(crate::molt_fnmatch as *const () as usize as u64),
         "molt_colorsys_rgb_to_yiq" => Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64),
         "molt_colorsys_yiq_to_rgb" => Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64),
@@ -1832,9 +1811,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_msgpack_parse_scalar_obj" => Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64),
         "molt_cbor_parse_scalar_obj" => Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64),
         "molt_json_parse_scalar_obj" => Some(crate::molt_json_parse_scalar_obj as *const () as usize as u64),
-        "molt_json_encode_basestring_obj" => Some(crate::molt_json_encode_basestring_obj as *const () as usize as u64),
-        "molt_json_encode_basestring_ascii_obj" => Some(crate::molt_json_encode_basestring_ascii_obj as *const () as usize as u64),
-        "molt_json_scanstring_obj" => Some(crate::molt_json_scanstring_obj as *const () as usize as u64),
         "molt_socket_new" => Some(crate::molt_socket_new as *const () as usize as u64),
         "molt_socket_close" => Some(crate::molt_socket_close as *const () as usize as u64),
         "molt_socket_drop" => Some(crate::molt_socket_drop as *const () as usize as u64),
