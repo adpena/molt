@@ -1,5 +1,6 @@
 use crate::arena::TempArena;
 use crate::*;
+use std::fmt::Write as _;
 use std::io::Cursor;
 
 // --- JSON ---
@@ -19,6 +20,228 @@ pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i
             v.as_i64().unwrap_or(0)
         })
     }
+}
+
+fn json_escape_codepoint(code: u32, out: &mut String) {
+    if code <= 0xFFFF {
+        let _ = write!(out, "\\u{code:04x}");
+        return;
+    }
+    let adjusted = code - 0x10000;
+    let high = 0xD800 + ((adjusted >> 10) & 0x3FF);
+    let low = 0xDC00 + (adjusted & 0x3FF);
+    let _ = write!(out, "\\u{high:04x}\\u{low:04x}");
+}
+
+fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
+    let mut out = String::with_capacity(value.len().saturating_add(8));
+    out.push('"');
+    for ch in value.chars() {
+        let code = ch as u32;
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => {
+                if code < 0x20 || (ensure_ascii && code > 0x7E) {
+                    json_escape_codepoint(code, &mut out);
+                } else {
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_string_line_col(text: &str, pos: usize) -> (usize, usize) {
+    let mut lineno = 1usize;
+    let mut colno = 1usize;
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= pos {
+            break;
+        }
+        if ch == '\n' {
+            lineno += 1;
+            colno = 1;
+        } else {
+            colno += 1;
+        }
+    }
+    (lineno, colno)
+}
+
+fn json_scanstring_decode(
+    text: &str,
+    end: usize,
+    strict: bool,
+) -> Result<(String, usize), (String, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    if end > len {
+        return Err(("end is out of bounds".to_string(), end));
+    }
+    let mut idx = end;
+    let mut out = String::new();
+    while idx < len {
+        let ch = chars[idx];
+        if ch == '"' {
+            return Ok((out, idx + 1));
+        }
+        if ch == '\\' {
+            idx += 1;
+            if idx >= len {
+                let start = end.saturating_sub(1);
+                return Err(("Unterminated string starting at".to_string(), start));
+            }
+            let esc = chars[idx];
+            match esc {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'b' => out.push('\u{08}'),
+                'f' => out.push('\u{0C}'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let hex_start = idx + 1;
+                    if hex_start + 4 > len {
+                        return Err(("Invalid \\uXXXX escape".to_string(), idx));
+                    }
+                    let mut code: u32 = 0;
+                    for c in &chars[hex_start..hex_start + 4] {
+                        let Some(digit) = c.to_digit(16) else {
+                            return Err(("Invalid \\uXXXX escape".to_string(), idx));
+                        };
+                        code = (code << 4) | digit;
+                    }
+                    idx += 4;
+                    if (0xD800..=0xDBFF).contains(&code) {
+                        if idx + 6 <= len && chars[idx + 1] == '\\' && chars[idx + 2] == 'u' {
+                            let mut low: u32 = 0;
+                            let mut valid = true;
+                            for c in &chars[idx + 3..idx + 7] {
+                                if let Some(d) = c.to_digit(16) {
+                                    low = (low << 4) | d;
+                                } else {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                            if valid && (0xDC00..=0xDFFF).contains(&low) {
+                                let combined =
+                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                if let Some(real) = char::from_u32(combined) {
+                                    out.push(real);
+                                    idx += 6;
+                                    idx += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(real) = char::from_u32(code) {
+                        out.push(real);
+                    } else {
+                        return Err(("Invalid \\uXXXX escape".to_string(), idx));
+                    }
+                }
+                _ => return Err(("Invalid \\uXXXX escape".to_string(), idx)),
+            }
+            idx += 1;
+            continue;
+        }
+        if strict && (ch as u32) < 0x20 {
+            return Err(("Invalid control character at".to_string(), idx));
+        }
+        out.push(ch);
+        idx += 1;
+    }
+    let start = end.saturating_sub(1);
+    Err(("Unterminated string starting at".to_string(), start))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_encode_basestring_obj(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
+            let type_name = type_name(_py, obj_from_bits(obj_bits));
+            let msg = format!("first argument must be a string, not {type_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let encoded = json_encode_basestring_impl(value.as_str(), false);
+        let ptr = alloc_string(_py, encoded.as_bytes());
+        if ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
+            let type_name = type_name(_py, obj_from_bits(obj_bits));
+            let msg = format!("first argument must be a string, not {type_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let encoded = json_encode_basestring_impl(value.as_str(), true);
+        let ptr = alloc_string(_py, encoded.as_bytes());
+        if ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            let type_name = type_name(_py, obj_from_bits(text_bits));
+            let msg = format!("first argument must be a string, not {type_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let Some(end_i64) = to_i64(obj_from_bits(end_bits)) else {
+            let type_name = type_name(_py, obj_from_bits(end_bits));
+            let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if end_i64 < 0 {
+            return raise_exception::<_>(_py, "ValueError", "end is out of bounds");
+        }
+        let strict = is_truthy(_py, obj_from_bits(strict_bits));
+        let end = end_i64 as usize;
+        match json_scanstring_decode(text.as_str(), end, strict) {
+            Ok((decoded, idx)) => {
+                let decoded_ptr = alloc_string(_py, decoded.as_bytes());
+                if decoded_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                }
+                let tuple_ptr =
+                    alloc_tuple(_py, &[MoltObject::from_ptr(decoded_ptr).bits(), MoltObject::from_int(idx as i64).bits()]);
+                if tuple_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+                }
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+            Err((msg, pos)) => {
+                if msg == "end is out of bounds" {
+                    return raise_exception::<_>(_py, "ValueError", msg.as_str());
+                }
+                let (lineno, colno) = json_string_line_col(text.as_str(), pos);
+                let detail = format!("{msg}: line {lineno} column {colno} (char {pos})");
+                raise_exception::<_>(_py, "ValueError", detail.as_str())
+            }
+        }
+    })
 }
 
 fn value_to_object(

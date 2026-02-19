@@ -195,8 +195,8 @@ entries must obey the policy in Section 0.
 | calendar | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | cmath | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Math intrinsics; parity pending. |
 | codecs | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Intrinsic encode/decode for bytes-like/str; registry/lookup + minimal encodings/aliases now available; incremental/stream codecs + error-handler registration still pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
-| codeop | Stdlib | Planned | P3 | SL3 | stdlib | Compilation helpers; parity pending. |
-| colorsys | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB<->YIQ/HLS/HSV conversions with CPython 3.12 formulas and clamping behavior. |
+| codeop | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Intrinsic-backed `compile_command`, `Compile`, and `CommandCompiler` for 3.12+ with CPython-like `_maybe_compile` flow, `__future__` flag memory, `co_filename` shaping, and expanded semantic validation (`return`/`break`/`continue` placement, delete-target checks, comprehension-assignment rejection). Warning-filter behavior (`SyntaxWarning` escalation) and full message-byte parity remain pending. |
+| colorsys | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
 | configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | copyreg | Stdlib | Full | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core plus helper APIs (`__newobj__`, `__newobj_ex__`, `_reconstructor`, `_reduce_ex`) with runtime-owned state and no host-Python fallback. |
@@ -204,7 +204,7 @@ entries must obey the policy in Section 0.
 | dis | Stdlib | Planned | P3 | SL3 | stdlib | Bytecode disassembly; parity pending. |
 | encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |
 | faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
-| graphlib | Stdlib | Complete | P3 | SL3 | stdlib/runtime | Intrinsic-backed `TopologicalSorter`/`CycleError` with Rust-lowered scheduling, cycle detection, and state transitions; Python shim handles argument wiring and error mapping. |
+| graphlib | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Fully intrinsic-lowered `TopologicalSorter` + `CycleError` parity for 3.12+ with CPython-derived exhaustive differential coverage (messages, cycle payload shape, readiness progression, insertion-order grouping invariants, and `GenericAlias`). Non-goal: no guarantee of byte-for-byte traceback text formatting beyond exception class/message parity. |
 | marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
 | opcode | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic payload-backed CPython 3.12 opcode tables/constants plus `_opcode` bridge surface (`stack_effect`, `get_specialization_stats`); `_opcode_metadata` loads intrinsic 3.14 metadata payload and remains version-gated absent on `<3.14`. |
 | optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |

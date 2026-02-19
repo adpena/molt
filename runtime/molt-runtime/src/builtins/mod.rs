@@ -16,6 +16,7 @@ pub(crate) mod exceptions;
 pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functools;
+pub(crate) mod graphlib;
 pub(crate) mod hashlib;
 pub(crate) mod hmac;
 pub(crate) mod inspect;

@@ -534,6 +534,7 @@ stdlib:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_introspection.py
       - tests/differential/stdlib/codeop_basic.py
+      - tests/differential/stdlib/codeop_exhaustive_parity.py
   colorsys:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_a.py
@@ -609,7 +610,7 @@ stdlib:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_b.py
       - tests/differential/stdlib/graphlib_basic.py
-      - tests/differential/stdlib/graphlib_flow.py
+      - tests/differential/stdlib/graphlib_exhaustive_parity.py
   grp:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_platform_posix.py
