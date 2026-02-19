@@ -64,7 +64,7 @@ in [docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md](docs/spec/areas/compat
 | collections | Stdlib | Partial | P1 | SL1 | stdlib | `deque` core ops + rotate/index/insert/remove; `Counter`/`defaultdict` dict subclasses with arithmetic, in-place ops, and Counter keys/values/items/total + dict-style clear/pop/popitem/setdefault parity. |
 | keyword | Stdlib | Supported | P3 | SL3 | stdlib | Hard/soft keyword tables (`kwlist`, `softkwlist`) + `iskeyword`/`issoftkeyword` for CPython 3.12+. |
 | heapq | Stdlib | Partial | P1 | SL1 | stdlib | `heapify`/`heappush`/`heappop`/`heapreplace`/`heappushpop` + `nlargest`/`nsmallest`, `merge` (eager; full materialization/sort), max-heap helpers, runtime fast paths. |
-| bisect | Stdlib | Partial | P1 | SL1 | stdlib | `bisect_left`/`bisect_right` + `insort_left`/`insort_right` with `key` support; aliases `bisect`/`insort`. |
+| bisect | Stdlib | Full | P1 | SL1 | stdlib | Intrinsic-backed `bisect`/`_bisect` (`bisect_left`/`bisect_right`, `insort_left`/`insort_right`) with `key` support; aliases `bisect`/`insort`. |
 | array | Stdlib | Planned | P1 | SL1 | runtime | Typed array storage, interop-ready. |
 | struct | Stdlib | Partial | P1 | SL1 | runtime | Runtime intrinsics cover the CPython 3.12 format table (including half-float) with endianness + alignment; pack/unpack paths support bytes/bytearray/C-contiguous memoryview (including nested memoryview windows) and remain intrinsic-only (no host fallback). Remaining: exact CPython diagnostic-text parity on selected edge cases. (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): align remaining struct edge-case error text with CPython.) |
 | re | Stdlib | Partial | P1 | SL2 | stdlib | Native engine supports literals, `.`, char classes/ranges (`\\d`/`\\w`/`\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL`; advanced features/flags raise `NotImplementedError` (no host fallback). Full parity pending. |
@@ -354,11 +354,11 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 - Goal: Provide deterministic binary search helpers.
 - Scope: `bisect_left`, `bisect_right`, `insort_left`, `insort_right`.
 - Semantics: Comparable to CPython for list-like sequences; stable insertion.
-- Runtime/IR: Optional fast path on list/array types.
-- Tests: Differential tests across sorted inputs, edge cases with duplicates.
-- Docs: Matrix update: `bisect` Partial/SL1.
+- Runtime/IR: Intrinsic-backed bisect/insort in Rust with list fast paths and generic `__len__`/`__getitem__`/`insert` support; no Python fallback logic.
+- Tests: Differential tests across sorted inputs, edge cases with duplicates, `_bisect` surface coverage.
+- Docs: Matrix update: `bisect` Full/SL1.
 - Acceptance: Parity for covered functions; perf within 1.5x CPython.
-- Status: Python shim + key support landed; runtime fast paths pending (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): bisect runtime fast paths).
+- Status: Intrinsic-backed `bisect` + `_bisect` landed with key support.
 
 #### 3.1.8 array (Stdlib)
 - Goal: Typed array storage with deterministic layout and buffer interop.
@@ -421,7 +421,6 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill out remaining `math` intrinsics (determinism policy).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `collections` runtime `deque` type + O(1) ops + view parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:planned): `heapq` randomized stress + perf tracking.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:planned): `bisect` fast paths on list/array types.
 - TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:planned): `array` deterministic layout + buffer protocol.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `struct` alignment + full format table parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `re` engine + deterministic regex semantics.
@@ -441,6 +440,7 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 Coverage evidence (selected):
 - `tests/differential/stdlib/heapq_basic.py`, `tests/differential/stdlib/heapq_more.py` (heapq core + merge/max-heap helpers).
 - `tests/differential/stdlib/bisect_basic.py` (bisect/insort + key support).
+- `tests/differential/stdlib/_bisect_basic.py` (`_bisect` surface coverage).
 - `tests/differential/stdlib/itertools_core.py` (core itertools iterators and combinatorics).
 - `tests/differential/stdlib/collections_basic.py`, `tests/differential/stdlib/collections_deque.py` (collections shims + deque core).
 - `tests/differential/stdlib/functools_more.py` (cmp_to_key + total_ordering parity).
