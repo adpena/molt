@@ -161,7 +161,44 @@ def molt_compileall_compile_dir(dir: str, maxlevels: int) -> bool: ...
 def molt_compileall_compile_path(
     paths: Any, skip_curdir: bool, maxlevels: int
 ) -> bool: ...
-def molt_stat_constants() -> tuple[int, ...]: ...
+def molt_colorsys_rgb_to_yiq(r: Any, g: Any, b: Any) -> tuple[float, float, float]: ...
+def molt_colorsys_yiq_to_rgb(y: Any, i: Any, q: Any) -> tuple[float, float, float]: ...
+def molt_colorsys_rgb_to_hls(r: Any, g: Any, b: Any) -> tuple[float, float, float]: ...
+def molt_colorsys_hls_to_rgb(h: Any, l: Any, s: Any) -> tuple[float, float, float]: ...
+def molt_colorsys_rgb_to_hsv(r: Any, g: Any, b: Any) -> tuple[float, float, float]: ...
+def molt_colorsys_hsv_to_rgb(h: Any, s: Any, v: Any) -> tuple[float, float, float]: ...
+def molt_stat_constants() -> tuple[
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+]: ...
 def molt_stat_ifmt(mode: int) -> int: ...
 def molt_stat_imode(mode: int) -> int: ...
 def molt_stat_isdir(mode: int) -> bool: ...
