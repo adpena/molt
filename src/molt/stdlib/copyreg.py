@@ -1,9 +1,8 @@
 """Intrinsic-backed pickle registry helpers."""
 
-from __future__ import annotations
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 from collections.abc import Callable
+from types import BuiltinFunctionType as _new_type
 
 
 __all__ = [
@@ -17,6 +16,10 @@ __all__ = [
 
 _MOLT_COPYREG_BOOTSTRAP = _require_intrinsic("molt_copyreg_bootstrap", globals())
 _MOLT_COPYREG_PICKLE = _require_intrinsic("molt_copyreg_pickle", globals())
+_MOLT_COPYREG_NEWOBJ = _require_intrinsic("molt_copyreg_newobj", globals())
+_MOLT_COPYREG_NEWOBJ_EX = _require_intrinsic("molt_copyreg_newobj_ex", globals())
+_MOLT_COPYREG_RECONSTRUCTOR = _require_intrinsic("molt_copyreg_reconstructor", globals())
+_MOLT_COPYREG_REDUCE_EX = _require_intrinsic("molt_copyreg_reduce_ex", globals())
 _MOLT_COPYREG_CONSTRUCTOR = _require_intrinsic("molt_copyreg_constructor", globals())
 _MOLT_COPYREG_ADD_EXTENSION = _require_intrinsic(
     "molt_copyreg_add_extension", globals()
@@ -27,6 +30,8 @@ _MOLT_COPYREG_REMOVE_EXTENSION = _require_intrinsic(
 _MOLT_COPYREG_CLEAR_EXTENSION_CACHE = _require_intrinsic(
     "molt_copyreg_clear_extension_cache", globals()
 )
+
+_HEAPTYPE = 1 << 9
 
 _state = _MOLT_COPYREG_BOOTSTRAP()
 if not isinstance(_state, (tuple, list)) or len(_state) != 5:
@@ -80,3 +85,19 @@ def remove_extension(module: str, name: str, code: int) -> None:
 def clear_extension_cache() -> None:
     _MOLT_COPYREG_CLEAR_EXTENSION_CACHE()
     return None
+
+
+def __newobj__(cls: type, *args: object) -> object:
+    return _MOLT_COPYREG_NEWOBJ(cls, args)
+
+
+def __newobj_ex__(cls: type, args: object, kwargs: object) -> object:
+    return _MOLT_COPYREG_NEWOBJ_EX(cls, args, kwargs)
+
+
+def _reconstructor(cls: type, base: type, state: object) -> object:
+    return _MOLT_COPYREG_RECONSTRUCTOR(cls, base, state)
+
+
+def _reduce_ex(self: object, proto: int) -> object:
+    return _MOLT_COPYREG_REDUCE_EX(self, proto)

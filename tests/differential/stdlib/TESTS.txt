@@ -330,6 +330,7 @@ tests/differential/stdlib/contextvars_task_propagation.py
 tests/differential/stdlib/copy_basic.py
 tests/differential/stdlib/copyreg_basic.py
 tests/differential/stdlib/copyreg_failures.py
+tests/differential/stdlib/copyreg_helpers.py
 tests/differential/stdlib/cpython312plus_api_gap_submodule_asyncio_base_events_8f5b7366.py
 tests/differential/stdlib/cpython312plus_api_gap_submodule_asyncio_base_futures_592aaacf.py
 tests/differential/stdlib/cpython312plus_api_gap_submodule_asyncio_base_subprocess_fbec4670.py

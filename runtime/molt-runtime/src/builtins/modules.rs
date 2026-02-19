@@ -5,19 +5,23 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::builtins::annotations::pep649_enabled;
-use crate::builtins::attr::module_attr_lookup;
+use crate::builtins::attr::{attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup};
+use crate::builtins::classes::builtin_classes;
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
     TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bytes,
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
-    call_function_obj_vec, class_name_for_error, dec_ref_bits, dict_del_in_place,
-    dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
+    call_callable0, call_callable1, call_callable2, call_function_obj_vec, class_mro_vec,
+    class_name_for_error, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
+    dict_set_in_place, exception_pending,
     format_exception_with_traceback, has_capability, inc_ref_bits, init_atomic_bits,
     int_bits_from_i64, intern_static_name, is_missing_bits, is_truthy, missing_bits,
-    module_dict_bits, module_name_bits, molt_exception_kind, molt_exception_last,
-    molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter, molt_iter_next, obj_eq,
-    obj_from_bits, object_type_id, raise_exception, runtime_state, seq_vec_ref, set_add_in_place,
-    string_bytes, string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
+    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
+    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter,
+    molt_iter_next, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    seq_vec_ref, set_add_in_place, string_bytes, string_len, string_obj_to_owned, to_i64,
+    type_name, type_of_bits,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -2731,6 +2735,89 @@ fn copyreg_add_constructor(_py: &PyToken<'_>, func_bits: u64) -> Result<(), u64>
     Ok(())
 }
 
+fn copyreg_attr_optional(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<u64>, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        if clear_attribute_error_if_pending(_py) {
+            return Ok(None);
+        }
+        return Err(MoltObject::none().bits());
+    }
+    if is_missing_bits(_py, value_bits) {
+        return Ok(None);
+    }
+    Ok(Some(value_bits))
+}
+
+fn copyreg_attr_required(_py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<u64, u64> {
+    match copyreg_attr_optional(_py, obj_bits, name)? {
+        Some(bits) => Ok(bits),
+        None => {
+            let name_text = std::str::from_utf8(name).unwrap_or("attribute");
+            let msg = format!("copyreg: missing required attribute {name_text}");
+            Err(raise_exception::<_>(_py, "AttributeError", &msg))
+        }
+    }
+}
+
+fn copyreg_class_name(_py: &PyToken<'_>, cls_bits: u64) -> String {
+    if let Ok(Some(name_bits)) = copyreg_attr_optional(_py, cls_bits, b"__name__") {
+        let name = string_obj_to_owned(obj_from_bits(name_bits))
+            .unwrap_or_else(|| type_name(_py, obj_from_bits(cls_bits)).to_string());
+        dec_ref_bits(_py, name_bits);
+        return name;
+    }
+    type_name(_py, obj_from_bits(cls_bits)).to_string()
+}
+
+fn copyreg_slots_truthy(_py: &PyToken<'_>, obj_bits: u64) -> Result<bool, u64> {
+    if let Some(slots_bits) = copyreg_attr_optional(_py, obj_bits, b"__slots__")? {
+        let truthy = is_truthy(_py, obj_from_bits(slots_bits));
+        dec_ref_bits(_py, slots_bits);
+        return Ok(truthy);
+    }
+    Ok(false)
+}
+
+fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
+    let module_ptr = alloc_string(_py, b"copyreg");
+    if module_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let module_bits = MoltObject::from_ptr(module_ptr).bits();
+    let imported_bits = crate::molt_module_import(module_bits);
+    dec_ref_bits(_py, module_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let name_ptr = alloc_string(_py, b"_reconstructor");
+    if name_ptr.is_null() {
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let value_bits = crate::molt_object_getattribute(imported_bits, name_bits);
+    dec_ref_bits(_py, name_bits);
+    if !obj_from_bits(imported_bits).is_none() {
+        dec_ref_bits(_py, imported_bits);
+    }
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(value_bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_bootstrap() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2800,6 +2887,366 @@ pub extern "C" fn molt_copyreg_constructor(func_bits: u64) -> u64 {
             return err_bits;
         }
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
+            Ok(bits) => bits,
+            Err(err_bits) => return err_bits,
+        };
+        let builder_bits = molt_callargs_new(0, 0);
+        if builder_bits == 0 {
+            dec_ref_bits(_py, new_bits);
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return MoltObject::none().bits();
+        }
+        let _ = unsafe { molt_callargs_expand_star(builder_bits, args_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return MoltObject::none().bits();
+        }
+        let out_bits = molt_call_bind(new_bits, builder_bits);
+        dec_ref_bits(_py, new_bits);
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copyreg_newobj_ex(cls_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
+            Ok(bits) => bits,
+            Err(err_bits) => return err_bits,
+        };
+        let builder_bits = molt_callargs_new(0, 0);
+        if builder_bits == 0 {
+            dec_ref_bits(_py, new_bits);
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return MoltObject::none().bits();
+        }
+        let _ = unsafe { molt_callargs_expand_star(builder_bits, args_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return MoltObject::none().bits();
+        }
+        let _ = unsafe { molt_callargs_expand_kwstar(builder_bits, kwargs_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return MoltObject::none().bits();
+        }
+        let out_bits = molt_call_bind(new_bits, builder_bits);
+        dec_ref_bits(_py, new_bits);
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copyreg_reconstructor(
+    cls_bits: u64,
+    base_bits: u64,
+    state_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let object_bits = builtins.object;
+        let obj_bits = if base_bits == object_bits {
+            let new_bits = match copyreg_attr_required(_py, object_bits, b"__new__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            let builder_bits = molt_callargs_new(0, 0);
+            if builder_bits == 0 {
+                dec_ref_bits(_py, new_bits);
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
+            if exception_pending(_py) {
+                dec_ref_bits(_py, new_bits);
+                return MoltObject::none().bits();
+            }
+            let out_bits = molt_call_bind(new_bits, builder_bits);
+            dec_ref_bits(_py, new_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            out_bits
+        } else {
+            let new_bits = match copyreg_attr_required(_py, base_bits, b"__new__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            let builder_bits = molt_callargs_new(0, 0);
+            if builder_bits == 0 {
+                dec_ref_bits(_py, new_bits);
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
+            if exception_pending(_py) {
+                dec_ref_bits(_py, new_bits);
+                return MoltObject::none().bits();
+            }
+            let _ = unsafe { molt_callargs_push_pos(builder_bits, state_bits) };
+            if exception_pending(_py) {
+                dec_ref_bits(_py, new_bits);
+                return MoltObject::none().bits();
+            }
+            let out_bits = molt_call_bind(new_bits, builder_bits);
+            dec_ref_bits(_py, new_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            out_bits
+        };
+        if base_bits != object_bits {
+            let base_init_bits = match copyreg_attr_optional(_py, base_bits, b"__init__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            let object_init_bits = match copyreg_attr_optional(_py, object_bits, b"__init__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            match (base_init_bits, object_init_bits) {
+                (Some(base_bits), Some(object_bits)) => {
+                    let needs = base_bits != object_bits;
+                    dec_ref_bits(_py, object_bits);
+                    if !needs {
+                        dec_ref_bits(_py, base_bits);
+                        return obj_bits;
+                    }
+                    let out = unsafe { call_callable2(_py, base_bits, obj_bits, state_bits) };
+                    dec_ref_bits(_py, base_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    dec_ref_bits(_py, out);
+                }
+                (Some(base_bits), None) => {
+                    let out = unsafe { call_callable2(_py, base_bits, obj_bits, state_bits) };
+                    dec_ref_bits(_py, base_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    dec_ref_bits(_py, out);
+                }
+                (None, Some(object_bits)) => {
+                    dec_ref_bits(_py, object_bits);
+                }
+                (None, None) => {}
+            };
+        }
+        obj_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let proto_int_bits = molt_int_from_obj(proto_bits, MoltObject::none().bits(), 0);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(proto) = to_i64(obj_from_bits(proto_int_bits)) else {
+            dec_ref_bits(_py, proto_int_bits);
+            return raise_exception::<_>(_py, "TypeError", "proto must be int");
+        };
+        dec_ref_bits(_py, proto_int_bits);
+        if proto >= 2 {
+            return raise_exception::<_>(_py, "AssertionError", "");
+        }
+
+        let builtins = builtin_classes(_py);
+        let cls_bits = type_of_bits(_py, self_bits);
+        let mut base_bits = builtins.object;
+        let mut found_base = false;
+        let mro = class_mro_vec(_py, cls_bits);
+        for candidate_bits in mro {
+            let flags_bits = match copyreg_attr_optional(_py, candidate_bits, b"__flags__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            if let Some(flags_bits) = flags_bits {
+                let flags_int_bits = molt_int_from_obj(flags_bits, MoltObject::none().bits(), 0);
+                dec_ref_bits(_py, flags_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let Some(flags) = to_i64(obj_from_bits(flags_int_bits)) else {
+                    dec_ref_bits(_py, flags_int_bits);
+                    return raise_exception::<_>(_py, "TypeError", "__flags__ must be int");
+                };
+                dec_ref_bits(_py, flags_int_bits);
+                if (flags & 0x200) == 0 {
+                    base_bits = candidate_bits;
+                    found_base = true;
+                    break;
+                }
+            }
+            let new_bits = match copyreg_attr_optional(_py, candidate_bits, b"__new__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            if let Some(new_bits) = new_bits {
+                let new_type_bits = type_of_bits(_py, new_bits);
+                if new_type_bits == builtins.builtin_function_or_method {
+                    let self_obj_bits = match copyreg_attr_optional(_py, new_bits, b"__self__") {
+                        Ok(bits) => bits,
+                        Err(err_bits) => return err_bits,
+                    };
+                    if let Some(self_obj_bits) = self_obj_bits {
+                        let matches = self_obj_bits == candidate_bits;
+                        dec_ref_bits(_py, self_obj_bits);
+                        if matches {
+                            dec_ref_bits(_py, new_bits);
+                            base_bits = candidate_bits;
+                            found_base = true;
+                            break;
+                        }
+                    }
+                }
+                dec_ref_bits(_py, new_bits);
+            }
+        }
+        if !found_base {
+            base_bits = builtins.object;
+        }
+
+        let state_bits = if base_bits == builtins.object {
+            MoltObject::none().bits()
+        } else {
+            if base_bits == cls_bits {
+                let class_name = copyreg_class_name(_py, cls_bits);
+                let msg = format!("cannot pickle '{class_name}' object");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let out_bits = unsafe { call_callable1(_py, base_bits, self_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            out_bits
+        };
+
+        let args_ptr = alloc_tuple(_py, &[cls_bits, base_bits, state_bits]);
+        if args_ptr.is_null() {
+            if !obj_from_bits(state_bits).is_none() {
+                dec_ref_bits(_py, state_bits);
+            }
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        if !obj_from_bits(state_bits).is_none() {
+            dec_ref_bits(_py, state_bits);
+        }
+
+        let mut dict_bits = MoltObject::none().bits();
+        let mut include_state = false;
+        let getstate_bits = match copyreg_attr_optional(_py, self_bits, b"__getstate__") {
+            Ok(bits) => bits,
+            Err(err_bits) => return err_bits,
+        };
+        if let Some(getstate_bits) = getstate_bits {
+            let slots_truthy = match copyreg_slots_truthy(_py, self_bits) {
+                Ok(value) => value,
+                Err(err_bits) => return err_bits,
+            };
+            if slots_truthy {
+                let type_getstate = match copyreg_attr_optional(_py, cls_bits, b"__getstate__") {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
+                let object_getstate =
+                    match copyreg_attr_optional(_py, builtins.object, b"__getstate__") {
+                        Ok(bits) => bits,
+                        Err(err_bits) => return err_bits,
+                    };
+                if let (Some(type_bits), Some(object_bits)) = (type_getstate, object_getstate) {
+                    let matches = type_bits == object_bits;
+                    dec_ref_bits(_py, type_bits);
+                    dec_ref_bits(_py, object_bits);
+                    if matches {
+                        dec_ref_bits(_py, getstate_bits);
+                        dec_ref_bits(_py, args_bits);
+                        let msg = "a class that defines __slots__ without defining __getstate__ cannot be pickled";
+                        return raise_exception::<_>(_py, "TypeError", msg);
+                    }
+                } else {
+                    if let Some(type_bits) = type_getstate {
+                        dec_ref_bits(_py, type_bits);
+                    }
+                    if let Some(object_bits) = object_getstate {
+                        dec_ref_bits(_py, object_bits);
+                    }
+                }
+            }
+            let out_bits = unsafe { call_callable0(_py, getstate_bits) };
+            dec_ref_bits(_py, getstate_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, args_bits);
+                return MoltObject::none().bits();
+            }
+            dict_bits = out_bits;
+            include_state = is_truthy(_py, obj_from_bits(dict_bits));
+        } else {
+            let slots_truthy = match copyreg_slots_truthy(_py, self_bits) {
+                Ok(value) => value,
+                Err(err_bits) => return err_bits,
+            };
+            if slots_truthy {
+                let class_name = copyreg_class_name(_py, cls_bits);
+                let msg = format!(
+                    "cannot pickle '{class_name}' object: a class that defines __slots__ without defining __getstate__ cannot be pickled with protocol {proto}"
+                );
+                dec_ref_bits(_py, args_bits);
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let state_dict_bits = match copyreg_attr_optional(_py, self_bits, b"__dict__") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+            if let Some(state_dict_bits) = state_dict_bits {
+                dict_bits = state_dict_bits;
+                include_state = is_truthy(_py, obj_from_bits(dict_bits));
+            }
+        }
+
+        let reconstructor_bits = match copyreg_reconstructor_bits(_py) {
+            Ok(bits) => bits,
+            Err(err_bits) => {
+                if include_state && !obj_from_bits(dict_bits).is_none() {
+                    dec_ref_bits(_py, dict_bits);
+                }
+                dec_ref_bits(_py, args_bits);
+                return err_bits;
+            }
+        };
+
+        let out_ptr = if include_state && !obj_from_bits(dict_bits).is_none() {
+            alloc_tuple(_py, &[reconstructor_bits, args_bits, dict_bits])
+        } else {
+            alloc_tuple(_py, &[reconstructor_bits, args_bits])
+        };
+
+        if !obj_from_bits(dict_bits).is_none() {
+            dec_ref_bits(_py, dict_bits);
+        }
+        dec_ref_bits(_py, reconstructor_bits);
+        dec_ref_bits(_py, args_bits);
+
+        if out_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(out_ptr).bits()
     })
 }
 
