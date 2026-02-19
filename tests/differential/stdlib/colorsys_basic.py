@@ -1,35 +1,18 @@
-from __future__ import annotations
-
 import colorsys
-import math
 
 
-def assert_triplet_close(actual, expected, *, tol=1e-12):
-    assert len(actual) == 3
-    assert len(expected) == 3
-    for left, right in zip(actual, expected):
-        assert math.isclose(left, right, rel_tol=tol, abs_tol=tol)
+def fmt_triplet(values):
+    return tuple(round(v, 6) for v in values)
 
 
-def test_colorsys_known_values():
-    assert_triplet_close(colorsys.rgb_to_yiq(0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
-    assert_triplet_close(colorsys.rgb_to_yiq(1.0, 1.0, 1.0), (1.0, 0.0, 0.0))
-    assert_triplet_close(colorsys.rgb_to_hls(1.0, 0.0, 0.0), (0.0, 0.5, 1.0))
-    assert_triplet_close(colorsys.rgb_to_hsv(1.0, 0.0, 0.0), (0.0, 1.0, 1.0))
-    assert_triplet_close(colorsys.hls_to_rgb(0.0, 0.5, 1.0), (1.0, 0.0, 0.0))
-    assert_triplet_close(colorsys.hsv_to_rgb(0.0, 1.0, 1.0), (1.0, 0.0, 0.0))
+print("rgb_to_hls_red", fmt_triplet(colorsys.rgb_to_hls(1.0, 0.0, 0.0)))
+print("rgb_to_hls_gray", fmt_triplet(colorsys.rgb_to_hls(0.25, 0.25, 0.25)))
+print("hls_to_rgb_red", fmt_triplet(colorsys.hls_to_rgb(0.0, 0.5, 1.0)))
+print("hls_to_rgb_wrap", fmt_triplet(colorsys.hls_to_rgb(1.2, 0.5, 0.5)))
 
+print("rgb_to_hsv_sample", fmt_triplet(colorsys.rgb_to_hsv(0.2, 0.4, 0.6)))
+print("hsv_to_rgb_sample", fmt_triplet(colorsys.hsv_to_rgb(0.5833333333, 0.6666666667, 0.6)))
+print("hsv_to_rgb_wrap", fmt_triplet(colorsys.hsv_to_rgb(-0.1, 0.5, 0.75)))
 
-def test_colorsys_roundtrip():
-    for rgb in ((0.2, 0.4, 0.6), (0.9, 0.1, 0.3), (0.05, 0.95, 0.5)):
-        h, l, s = colorsys.rgb_to_hls(*rgb)
-        assert_triplet_close(colorsys.hls_to_rgb(h, l, s), rgb, tol=1e-10)
-        h, s, v = colorsys.rgb_to_hsv(*rgb)
-        assert_triplet_close(colorsys.hsv_to_rgb(h, s, v), rgb, tol=1e-10)
-
-
-def test_colorsys_yiq_clamp():
-    r, g, b = colorsys.yiq_to_rgb(0.5, 1.0, 1.0)
-    assert 0.0 <= r <= 1.0
-    assert 0.0 <= g <= 1.0
-    assert 0.0 <= b <= 1.0
+print("rgb_to_yiq_sample", fmt_triplet(colorsys.rgb_to_yiq(0.2, 0.4, 0.6)))
+print("yiq_to_rgb_sample", fmt_triplet(colorsys.yiq_to_rgb(0.3, 0.1, -0.1)))
