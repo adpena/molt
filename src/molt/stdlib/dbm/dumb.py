@@ -1,12 +1,17 @@
-"""Intrinsic-first stdlib module stub for `dbm.dumb`."""
+"""Public API surface shim for ``dbm.dumb``."""
+
+from __future__ import annotations
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `dbm.dumb` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "dbm.dumb" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+class error(Exception):
+    pass
+
+
+def open(file: str, flag: str = "r", mode: int = 0o666):
+    del file, flag, mode
+    raise error("dbm.dumb backend is not implemented in Molt yet")

@@ -11,16 +11,20 @@ import os as _os
 import sys as _sys
 import time as _time
 import traceback as _traceback
+import contextlib as _contextlib
 import inspect as _inspect
 import errno as _errno
 import socket as _socket
+import io as _io
 import types as _types
 import threading as _threading
 import reprlib as _reprlib
 import linecache as _linecache
+import typing
 import signal as _signal
 import functools as _functools
 import collections as _collections
+import selectors as _selectors
 import concurrent as _concurrent
 import itertools as _itertools
 import stat as _stat
@@ -3708,7 +3712,15 @@ class SafeChildWatcher(AbstractChildWatcher):
     pass
 
 
+class BaseChildWatcher(AbstractChildWatcher):
+    pass
+
+
 class FastChildWatcher(AbstractChildWatcher):
+    pass
+
+
+class MultiLoopChildWatcher(AbstractChildWatcher):
     pass
 
 
@@ -3721,6 +3733,35 @@ class PidfdChildWatcher(AbstractChildWatcher):
 
 
 _CHILD_WATCHER: AbstractChildWatcher | None = None
+_CAN_USE_PIDFD_CACHE: bool | None = None
+
+
+def can_use_pidfd() -> bool:
+    global _CAN_USE_PIDFD_CACHE
+    if _CAN_USE_PIDFD_CACHE is not None:
+        return _CAN_USE_PIDFD_CACHE
+    pidfd_open = getattr(_os, "pidfd_open", None)
+    if pidfd_open is None:
+        _CAN_USE_PIDFD_CACHE = False
+        return False
+    try:
+        fd = int(pidfd_open(int(_os.getpid()), 0))
+    except OSError:
+        _CAN_USE_PIDFD_CACHE = False
+        return False
+    try:
+        _os.close(fd)
+    except OSError:
+        pass
+    _CAN_USE_PIDFD_CACHE = True
+    return True
+
+
+def waitstatus_to_exitcode(status: int) -> int:
+    converter = getattr(_os, "waitstatus_to_exitcode", None)
+    if converter is None:
+        raise NotImplementedError("os.waitstatus_to_exitcode is unavailable")
+    return int(converter(status))
 
 
 def get_child_watcher() -> AbstractChildWatcher:
@@ -4976,11 +5017,16 @@ except Exception:
 
 def _queues_attrs() -> dict[str, Any]:
     attrs = {
+        "GenericAlias": _types.GenericAlias,
         "Queue": Queue,
         "PriorityQueue": PriorityQueue,
         "LifoQueue": LifoQueue,
         "QueueEmpty": QueueEmpty,
         "QueueFull": QueueFull,
+        "collections": _collections,
+        "heapq": _heapq,
+        "locks": locks,
+        "mixins": mixins,
     }
     if _EXPOSE_QUEUE_SHUTDOWN:
         attrs["QueueShutDown"] = _QueueShutDown
@@ -4993,6 +5039,7 @@ def _make_log_module() -> _types.ModuleType:
         "asyncio.log",
         {
             "logger": logger,
+            "logging": _logging,
         },
     )
 
@@ -5001,7 +5048,8 @@ def _make_mixins_module() -> _types.ModuleType:
     return _module(
         "asyncio.mixins",
         {
-            "FlowControlMixin": FlowControlMixin,
+            "events": events,
+            "threading": _threading,
         },
     )
 
@@ -5016,7 +5064,10 @@ def _make_locks_module() -> _types.ModuleType:
             "Semaphore": Semaphore,
             "BoundedSemaphore": BoundedSemaphore,
             "Barrier": Barrier,
-            "BrokenBarrierError": BrokenBarrierError,
+            "collections": _collections,
+            "enum": _enum,
+            "exceptions": exceptions,
+            "mixins": mixins,
         },
     )
 
@@ -5086,7 +5137,6 @@ protocols = _module(
         "Protocol": Protocol,
         "BufferedProtocol": BufferedProtocol,
         "DatagramProtocol": DatagramProtocol,
-        "StreamReaderProtocol": StreamReaderProtocol,
         "SubprocessProtocol": SubprocessProtocol,
     },
 )
@@ -5094,7 +5144,10 @@ protocols = _module(
 transports = _module(
     "asyncio.transports",
     {
+        "BaseTransport": Transport,
         "Transport": Transport,
+        "ReadTransport": Transport,
+        "WriteTransport": Transport,
         "DatagramTransport": DatagramTransport,
         "SubprocessTransport": SubprocessTransport,
     },
@@ -5104,7 +5157,16 @@ runners = _module(
     "asyncio.runners",
     {
         "Runner": Runner,
+        "constants": constants,
+        "contextvars": _contextvars,
+        "coroutines": coroutines,
+        "enum": _enum,
+        "events": events,
+        "exceptions": exceptions,
+        "functools": _functools,
         "run": run,
+        "signal": _signal,
+        "threading": _threading,
     },
 )
 
@@ -5112,22 +5174,59 @@ taskgroups = _module(
     "asyncio.taskgroups",
     {
         "TaskGroup": TaskGroup,
+        "events": events,
+        "exceptions": exceptions,
     },
 )
 
 threads = _module(
     "asyncio.threads",
     {
+        "contextvars": _contextvars,
+        "events": events,
+        "functools": _functools,
         "to_thread": to_thread,
     },
 )
 
+_typing_type_alias = getattr(typing, "Type", None)
+if _typing_type_alias is None:
+
+    class _SpecialGenericAlias:
+        def __call__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    _typing_type_alias = _SpecialGenericAlias()
+
+_typing_optional_alias = getattr(typing, "Optional", None)
+if _typing_optional_alias is None or not callable(_typing_optional_alias):
+
+    class _SpecialForm:
+        def __call__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    _typing_optional_alias = _SpecialForm()
+
+_typing_final_alias = getattr(typing, "final", None)
+if _typing_final_alias is None:
+
+    def _typing_final_alias(arg: Any) -> Any:
+        return arg
+
+
 timeouts = _module(
     "asyncio.timeouts",
     {
+        "Optional": _typing_optional_alias,
+        "Timeout": _Timeout,
+        "TracebackType": _types.TracebackType,
+        "Type": _typing_type_alias,
+        "enum": _enum,
+        "events": events,
+        "exceptions": exceptions,
+        "final": _typing_final_alias,
         "timeout": timeout,
         "timeout_at": timeout_at,
-        "TimeoutError": TimeoutError,
     },
 )
 
@@ -5166,21 +5265,104 @@ base_subprocess = _module(
     },
 )
 
+_SC_IOV_MAX = 1024
+if hasattr(_os, "sysconf"):
+    try:
+        _SC_IOV_MAX = int(_os.sysconf("SC_IOV_MAX"))
+    except Exception:
+        _SC_IOV_MAX = 1024
+
 selector_events = _module(
     "asyncio.selector_events",
     {
         "BaseSelectorEventLoop": SelectorEventLoop,
-        "SelectorEventLoop": SelectorEventLoop,
-        "DefaultEventLoopPolicy": DefaultEventLoopPolicy,
+        "SC_IOV_MAX": _SC_IOV_MAX,
+        "base_events": base_events,
+        "collections": _collections,
+        "constants": constants,
+        "errno": _errno,
+        "events": events,
+        "functools": _functools,
+        "futures": base_futures,
+        "itertools": _itertools,
+        "logger": _logging.getLogger("asyncio"),
+        "os": _os,
+        "protocols": protocols,
+        "selectors": _selectors,
+        "socket": _socket,
+        "ssl": _ssl,
+        "transports": transports,
+        "warnings": _warnings,
+        "weakref": _weakref,
     },
 )
-if _EXPOSE_EVENT_LOOP:
-    try:
-        setattr(selector_events, "EventLoop", SelectorEventLoop)
-    except Exception:
-        pass
 
-sslproto = _module("asyncio.sslproto", {})
+
+class EnumType(type):
+    pass
+
+
+class AppProtocolState(metaclass=EnumType):
+    STATE_INIT = 0
+    STATE_CON_MADE = 1
+    STATE_EOF = 2
+    STATE_CON_LOST = 3
+
+
+class SSLProtocolState(metaclass=EnumType):
+    UNWRAPPED = 0
+    DO_HANDSHAKE = 1
+    WRAPPED = 2
+    FLUSHING = 3
+    SHUTDOWN = 4
+
+
+class SSLProtocol:
+    pass
+
+
+del EnumType
+
+
+_ssl_again_errors: list[type[Any]] = []
+for _name in ("SSLWantReadError", "SSLWantWriteError"):
+    _value = getattr(_ssl, _name, None)
+    if isinstance(_value, type):
+        _ssl_again_errors.append(_value)
+if not _ssl_again_errors:
+    _ssl_again_errors = [_ssl.SSLError]
+SSLAgainErrors = tuple(_ssl_again_errors)
+
+
+def add_flowcontrol_defaults(
+    *args: Any, **kwargs: Any
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    return args, kwargs
+
+
+sslproto = _module(
+    "asyncio.sslproto",
+    {
+        "AppProtocolState": AppProtocolState,
+        "SSLAgainErrors": SSLAgainErrors,
+        "SSLProtocol": SSLProtocol,
+        "SSLProtocolState": SSLProtocolState,
+        "add_flowcontrol_defaults": add_flowcontrol_defaults,
+        "collections": _collections,
+        "constants": constants,
+        "enum": _enum,
+        "exceptions": exceptions,
+        "logger": _logging.getLogger("asyncio"),
+        "protocols": protocols,
+        "ssl": _ssl,
+        "transports": transports,
+        "warnings": _warnings,
+    },
+)
+try:
+    setattr(selector_events, "sslproto", sslproto)
+except Exception:
+    pass
 
 subprocess = _module(
     "asyncio.subprocess",
@@ -5189,10 +5371,13 @@ subprocess = _module(
         "STDOUT": _SubprocessConstants.STDOUT,
         "DEVNULL": _SubprocessConstants.DEVNULL,
         "Process": Process,
-        "SubprocessProtocol": SubprocessProtocol,
-        "SubprocessTransport": SubprocessTransport,
+        "SubprocessStreamProtocol": StreamReaderProtocol,
         "create_subprocess_exec": create_subprocess_exec,
         "create_subprocess_shell": create_subprocess_shell,
+        "events": events,
+        "logger": _logging.getLogger("asyncio"),
+        "protocols": protocols,
+        "subprocess": _subprocess,
     },
 )
 
@@ -5219,47 +5404,160 @@ if _EXPOSE_GRAPH:
         }
     )
 futures = _module("asyncio.futures", _futures_attrs)
+try:
+    setattr(selector_events, "futures", futures)
+except Exception:
+    pass
 
 tasks = _module(
     "asyncio.tasks",
     {
+        "ALL_COMPLETED": "ALL_COMPLETED",
+        "FIRST_COMPLETED": "FIRST_COMPLETED",
+        "FIRST_EXCEPTION": "FIRST_EXCEPTION",
+        "GenericAlias": _types.GenericAlias,
         "Task": Task,
-        "TaskGroup": TaskGroup,
         "all_tasks": all_tasks,
         "as_completed": as_completed,
+        "base_tasks": base_tasks,
+        "concurrent": _concurrent,
+        "contextvars": _contextvars,
+        "coroutines": coroutines,
         "create_eager_task_factory": create_eager_task_factory,
         "create_task": create_task,
         "current_task": current_task,
         "eager_task_factory": eager_task_factory,
         "ensure_future": ensure_future,
+        "events": events,
+        "exceptions": exceptions,
+        "functools": _functools,
+        "futures": futures,
         "gather": gather,
+        "inspect": _inspect,
+        "itertools": _itertools,
         "run_coroutine_threadsafe": run_coroutine_threadsafe,
         "shield": shield,
         "sleep": sleep,
+        "timeouts": timeouts,
+        "types": _types,
         "wait": wait,
         "wait_for": wait_for,
+        "warnings": _warnings,
+        "weakref": _weakref,
     },
 )
+try:
+    setattr(runners, "tasks", tasks)
+except Exception:
+    pass
+try:
+    setattr(timeouts, "tasks", tasks)
+except Exception:
+    pass
+try:
+    setattr(taskgroups, "tasks", tasks)
+except Exception:
+    pass
+try:
+    setattr(subprocess, "tasks", tasks)
+except Exception:
+    pass
 
 streams = _module(
     "asyncio.streams",
     {
+        "FlowControlMixin": FlowControlMixin,
         "StreamReader": StreamReader,
+        "StreamReaderProtocol": StreamReaderProtocol,
         "StreamWriter": StreamWriter,
+        "collections": _collections,
+        "coroutines": coroutines,
+        "events": events,
+        "exceptions": exceptions,
+        "format_helpers": format_helpers,
+        "logger": _logging.getLogger("asyncio"),
         "open_connection": open_connection,
         "open_unix_connection": open_unix_connection,
+        "protocols": protocols,
+        "sleep": sleep,
+        "socket": _socket,
         "start_server": start_server,
         "start_unix_server": start_unix_server,
+        "sys": _sys,
+        "warnings": _warnings,
+        "weakref": _weakref,
     },
 )
+try:
+    setattr(subprocess, "streams", streams)
+except Exception:
+    pass
 
-trsock = _module("asyncio.trsock", {})
+
+class TransportSocket:
+    pass
+
+
+trsock = _module(
+    "asyncio.trsock",
+    {
+        "TransportSocket": TransportSocket,
+        "socket": _socket,
+    },
+)
+try:
+    setattr(selector_events, "trsock", trsock)
+except Exception:
+    pass
 
 if not _IS_WINDOWS:
     unix_events = _module(
         "asyncio.unix_events",
         {
+            "__all__": (
+                "SelectorEventLoop",
+                "AbstractChildWatcher",
+                "SafeChildWatcher",
+                "FastChildWatcher",
+                "PidfdChildWatcher",
+                "MultiLoopChildWatcher",
+                "ThreadedChildWatcher",
+                "DefaultEventLoopPolicy",
+            ),
+            "AbstractChildWatcher": AbstractChildWatcher,
+            "BaseChildWatcher": BaseChildWatcher,
+            "DefaultEventLoopPolicy": _UnixDefaultEventLoopPolicy,
+            "FastChildWatcher": FastChildWatcher,
+            "MultiLoopChildWatcher": MultiLoopChildWatcher,
+            "PidfdChildWatcher": PidfdChildWatcher,
+            "SafeChildWatcher": SafeChildWatcher,
             "SelectorEventLoop": SelectorEventLoop,
+            "ThreadedChildWatcher": ThreadedChildWatcher,
+            "base_events": base_events,
+            "base_subprocess": base_subprocess,
+            "can_use_pidfd": can_use_pidfd,
+            "constants": constants,
+            "coroutines": coroutines,
+            "errno": _errno,
+            "events": events,
+            "exceptions": exceptions,
+            "futures": futures,
+            "io": _io,
+            "itertools": _itertools,
+            "logger": _logging.getLogger("asyncio"),
+            "os": _os,
+            "selector_events": selector_events,
+            "selectors": _selectors,
+            "signal": _signal,
+            "socket": _socket,
+            "stat": _stat,
+            "subprocess": _subprocess,
+            "sys": _sys,
+            "tasks": tasks,
+            "threading": _threading,
+            "transports": transports,
+            "waitstatus_to_exitcode": waitstatus_to_exitcode,
+            "warnings": _warnings,
         },
     )
     if _EXPOSE_EVENT_LOOP:
@@ -5286,7 +5584,22 @@ if _IS_WINDOWS:
             pass
     windows_utils = _module("asyncio.windows_utils", {})
 
-staggered = _module("asyncio.staggered", {})
+
+def staggered_race(*args: Any, **kwargs: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    return args, kwargs
+
+
+staggered = _module(
+    "asyncio.staggered",
+    {
+        "contextlib": _contextlib,
+        "events": events,
+        "exceptions_mod": exceptions,
+        "locks": locks,
+        "staggered_race": staggered_race,
+        "tasks": tasks,
+    },
+)
 
 for _name in ("AbstractServer", "SelectorEventLoop", "Handle", "TimerHandle"):
     try:
@@ -5368,6 +5681,7 @@ _builtin_targets = [
     _set_running_loop,
     get_running_loop,
     get_event_loop,
+    current_task,
 ]
 if _EXPOSE_GRAPH:
     _builtin_targets.extend([future_add_to_awaited_by, future_discard_from_awaited_by])

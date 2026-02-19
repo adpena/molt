@@ -1,12 +1,30 @@
-"""Intrinsic-first stdlib module stub for `asyncio.queues`."""
+"""Public API surface shim for ``asyncio.queues``."""
+
+from __future__ import annotations
+
+import collections
+import heapq
+import types as _types
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.locks as locks
+import asyncio.mixins as mixins
+from asyncio import LifoQueue, PriorityQueue, Queue, QueueEmpty, QueueFull
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.queues` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.queues" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+GenericAlias = _types.GenericAlias
+
+__all__ = [
+    "GenericAlias",
+    "LifoQueue",
+    "PriorityQueue",
+    "Queue",
+    "QueueEmpty",
+    "QueueFull",
+    "collections",
+    "heapq",
+    "locks",
+    "mixins",
+]

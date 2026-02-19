@@ -1,12 +1,56 @@
-"""Intrinsic-first stdlib module stub for `asyncio.timeouts`."""
+"""Public API surface shim for ``asyncio.timeouts``."""
+
+from __future__ import annotations
+
+from types import TracebackType
+import enum
+import typing
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.events as events
+import asyncio.exceptions as exceptions
+import asyncio.tasks as tasks
+from asyncio import _Timeout as Timeout
+from asyncio import timeout, timeout_at
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.timeouts` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.timeouts" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+Optional = getattr(typing, "Optional", None)
+if Optional is None or not callable(Optional):
+
+    class _SpecialForm:
+        def __call__(self, *args, **kwargs):
+            return None
+
+    Optional = _SpecialForm()
+
+Type = getattr(typing, "Type", None)
+if Type is None:
+
+    class _SpecialGenericAlias:
+        def __call__(self, *args, **kwargs):
+            return None
+
+    Type = _SpecialGenericAlias()
+
+final = getattr(typing, "final", None)
+if final is None:
+
+    def final(arg):
+        return arg
+
+
+__all__ = [
+    "Optional",
+    "Timeout",
+    "TracebackType",
+    "Type",
+    "enum",
+    "events",
+    "exceptions",
+    "final",
+    "tasks",
+    "timeout",
+    "timeout_at",
+]

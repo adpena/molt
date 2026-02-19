@@ -1,12 +1,27 @@
-"""Intrinsic-first stdlib module stub for `email.mime.nonmultipart`."""
+# Copyright (C) 2002-2006 Python Software Foundation
+# Author: Barry Warsaw
+# Contact: email-sig@python.org
+
+"""Base class for MIME type messages that are not multipart."""
+
+__all__ = ["MIMENonMultipart"]
+
+from email import errors
+from email.mime.base import MIMEBase
+
+
+class MIMENonMultipart(MIMEBase):
+    """Base class for MIME non-multipart type messages."""
+
+    def attach(self, payload):
+        # The public API prohibits attaching multiple subparts to MIMEBase
+        # derived subtypes since none of them are, by definition, of content
+        # type multipart/*
+        raise errors.MultipartConversionError(
+            "Cannot attach additional subparts to non-multipart/*"
+        )
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `email.mime.nonmultipart` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "email.mime.nonmultipart" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )

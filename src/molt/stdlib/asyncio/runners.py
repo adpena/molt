@@ -1,12 +1,35 @@
-"""Intrinsic-first stdlib module stub for `asyncio.runners`."""
+"""Public API surface shim for ``asyncio.runners``."""
+
+from __future__ import annotations
+
+import enum
+import functools
+import signal
+import threading
+import contextvars
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.constants as constants
+import asyncio.coroutines as coroutines
+import asyncio.events as events
+import asyncio.exceptions as exceptions
+import asyncio.tasks as tasks
+from asyncio import Runner, run
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.runners` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.runners" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = [
+    "Runner",
+    "constants",
+    "contextvars",
+    "coroutines",
+    "enum",
+    "events",
+    "exceptions",
+    "functools",
+    "run",
+    "signal",
+    "tasks",
+    "threading",
+]

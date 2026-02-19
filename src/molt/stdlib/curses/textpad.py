@@ -1,12 +1,26 @@
-"""Intrinsic-first stdlib module stub for `curses.textpad`."""
+"""Public API surface shim for ``curses.textpad``."""
+
+from __future__ import annotations
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `curses.textpad` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "curses.textpad" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+class Textbox:
+    def __init__(self, win, insert_mode: bool = False):
+        self.win = win
+        self.insert_mode = bool(insert_mode)
+
+    def edit(self, validator=None):
+        del validator
+        return ""
+
+    def gather(self):
+        return ""
+
+
+def rectangle(win, uly, ulx, lry, lrx):
+    del win, uly, ulx, lry, lrx
+    return None

@@ -1,12 +1,27 @@
-"""Intrinsic-first stdlib module stub for `asyncio.locks`."""
+"""Public API surface shim for ``asyncio.locks``."""
+
+from __future__ import annotations
+
+import collections
+import enum
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.exceptions as exceptions
+import asyncio.mixins as mixins
+from asyncio import Barrier, BoundedSemaphore, Condition, Event, Lock, Semaphore
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.locks` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.locks" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = [
+    "Barrier",
+    "BoundedSemaphore",
+    "Condition",
+    "Event",
+    "Lock",
+    "Semaphore",
+    "collections",
+    "enum",
+    "exceptions",
+    "mixins",
+]

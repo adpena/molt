@@ -1,12 +1,48 @@
-"""Intrinsic-first stdlib module stub for `asyncio.proactor_events`."""
+"""Public API surface shim for ``asyncio.proactor_events``."""
+
+from __future__ import annotations
+
+import collections
+import io
+import logging as _logging
+import os
+import signal
+import socket
+import threading
+import warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.base_events as base_events
+import asyncio.constants as constants
+import asyncio.exceptions as exceptions
+import asyncio.futures as futures
+import asyncio.protocols as protocols
+import asyncio.sslproto as sslproto
+import asyncio.transports as transports
+import asyncio.trsock as trsock
+from asyncio import SelectorEventLoop as BaseProactorEventLoop
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.proactor_events` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.proactor_events" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+logger = _logging.getLogger("asyncio")
+
+__all__ = [
+    "BaseProactorEventLoop",
+    "base_events",
+    "collections",
+    "constants",
+    "exceptions",
+    "futures",
+    "io",
+    "logger",
+    "os",
+    "protocols",
+    "signal",
+    "socket",
+    "sslproto",
+    "threading",
+    "transports",
+    "trsock",
+    "warnings",
+]

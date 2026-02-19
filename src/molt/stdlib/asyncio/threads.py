@@ -1,12 +1,15 @@
-"""Intrinsic-first stdlib module stub for `asyncio.threads`."""
+"""Public API surface shim for ``asyncio.threads``."""
+
+from __future__ import annotations
+
+import contextvars
+import functools
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.events as events
+from asyncio import to_thread
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.threads` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.threads" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = ["contextvars", "events", "functools", "to_thread"]

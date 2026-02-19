@@ -1,51 +1,73 @@
-"""Intrinsic-backed email package surface for Molt.
+# Copyright (C) 2001-2007 Python Software Foundation
+# Author: Barry Warsaw
+# Contact: email-sig@python.org
 
-This package intentionally avoids host-Python stdlib fallback paths. Required
-behavior must be provided by runtime intrinsics.
-"""
+"""A package for parsing, handling, and generating email messages."""
 
-from __future__ import annotations
+__all__ = [
+    "base64mime",
+    "charset",
+    "encoders",
+    "errors",
+    "feedparser",
+    "generator",
+    "header",
+    "iterators",
+    "message",
+    "message_from_file",
+    "message_from_binary_file",
+    "message_from_string",
+    "message_from_bytes",
+    "mime",
+    "parser",
+    "quoprimime",
+    "utils",
+]
+
+
+# Some convenience routines.  Don't import Parser and Message as side-effects
+# of importing email since those cascadingly import most of the rest of the
+# email package.
+def message_from_string(s, *args, **kws):
+    """Parse a string into a Message object model.
+
+    Optional _class and strict are passed to the Parser constructor.
+    """
+    from email.parser import Parser
+
+    return Parser(*args, **kws).parsestr(s)
+
+
+def message_from_bytes(s, *args, **kws):
+    """Parse a bytes string into a Message object model.
+
+    Optional _class and strict are passed to the Parser constructor.
+    """
+    from email.parser import BytesParser
+
+    return BytesParser(*args, **kws).parsebytes(s)
+
+
+def message_from_file(fp, *args, **kws):
+    """Read a file and parse its contents into a Message object model.
+
+    Optional _class and strict are passed to the Parser constructor.
+    """
+    from email.parser import Parser
+
+    return Parser(*args, **kws).parse(fp)
+
+
+def message_from_binary_file(fp, *args, **kws):
+    """Read a binary file and parse its contents into a Message object model.
+
+    Optional _class and strict are passed to the Parser constructor.
+    """
+    from email.parser import BytesParser
+
+    return BytesParser(*args, **kws).parse(fp)
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_EMAIL_MESSAGE_FROM_BYTES = _require_intrinsic(
-    "molt_email_message_from_bytes", globals()
-)
-
-from . import policy as policy  # noqa: E402
-
-
-def message_from_bytes(data: bytes | bytearray | memoryview, *, policy=policy.default):
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        raise TypeError("message_from_bytes() argument 1 must be a bytes-like object")
-    handle = _MOLT_EMAIL_MESSAGE_FROM_BYTES(bytes(data))
-    from . import message as _message
-
-    return _message.EmailMessage._from_handle(handle, policy=policy)
-
-
-def message_from_string(text: str, *, policy=policy.default):
-    if not isinstance(text, str):
-        raise TypeError("message_from_string() argument 1 must be str")
-    return message_from_bytes(text.encode("utf-8", "surrogateescape"), policy=policy)
-
-
-def __getattr__(name: str):
-    if name in {"header", "headerregistry", "message", "parser", "policy", "utils"}:
-        module = __import__(f"{__name__}.{name}", fromlist=[name])
-        globals()[name] = module
-        return module
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = [
-    "header",
-    "headerregistry",
-    "message",
-    "message_from_bytes",
-    "message_from_string",
-    "parser",
-    "policy",
-    "utils",
-]
+_require_intrinsic("molt_capabilities_has", globals())

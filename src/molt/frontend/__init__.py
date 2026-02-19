@@ -696,6 +696,16 @@ MOLT_DIRECT_CALLS = {
         "make_dataclass",
         "replace",
     },
+    "email._encoded_words": {
+        "decode",
+        "decode_b",
+        "decode_q",
+        "encode",
+        "encode_b",
+        "encode_q",
+        "len_b",
+        "len_q",
+    },
     "fnmatch": {"fnmatch", "fnmatchcase"},
     "functools": {"lru_cache", "partial", "reduce", "update_wrapper", "wraps"},
     "importlib": {"import_module", "invalidate_caches", "reload"},
@@ -17369,8 +17379,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
 
             if func_id == "type":
-                if len(node.args) != 1:
-                    raise NotImplementedError("type expects 1 argument")
+                if node.keywords or len(node.args) != 1:
+                    callee = self.visit(node.func)
+                    if callee is None:
+                        raise NotImplementedError("Unsupported call target")
+                    return self._emit_dynamic_call(node, callee, True)
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="type")
                 self.emit(MoltOp(kind="TYPE_OF", args=[arg], result=res))

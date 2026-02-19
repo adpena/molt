@@ -1,12 +1,49 @@
-"""Intrinsic-first stdlib module stub for `encodings.cp950`."""
+#
+# cp950.py: Python Unicode Codec for CP950
+#
+# Written by Hye-Shik Chang <perky@FreeBSD.org>
+#
+
+import _codecs_tw
+import codecs
+import _multibytecodec as mbc
+
+codec = _codecs_tw.getcodec("cp950")
+
+
+class Codec(codecs.Codec):
+    encode = codec.encode
+    decode = codec.decode
+
+
+class IncrementalEncoder(mbc.MultibyteIncrementalEncoder, codecs.IncrementalEncoder):
+    codec = codec
+
+
+class IncrementalDecoder(mbc.MultibyteIncrementalDecoder, codecs.IncrementalDecoder):
+    codec = codec
+
+
+class StreamReader(Codec, mbc.MultibyteStreamReader, codecs.StreamReader):
+    codec = codec
+
+
+class StreamWriter(Codec, mbc.MultibyteStreamWriter, codecs.StreamWriter):
+    codec = codec
+
+
+def getregentry():
+    return codecs.CodecInfo(
+        name="cp950",
+        encode=Codec().encode,
+        decode=Codec().decode,
+        incrementalencoder=IncrementalEncoder,
+        incrementaldecoder=IncrementalDecoder,
+        streamreader=StreamReader,
+        streamwriter=StreamWriter,
+    )
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings.cp950` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "encodings.cp950" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )

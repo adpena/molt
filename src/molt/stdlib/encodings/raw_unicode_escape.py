@@ -1,12 +1,58 @@
-"""Intrinsic-first stdlib module stub for `encodings.raw_unicode_escape`."""
+"""Python 'raw-unicode-escape' Codec
+
+
+Written by Marc-Andre Lemburg (mal@lemburg.com).
+
+(c) Copyright CNRI, All Rights Reserved. NO WARRANTY.
+
+"""
+
+import codecs
+
+### Codec APIs
+
+
+class Codec(codecs.Codec):
+    # Note: Binding these as C functions will result in the class not
+    # converting them to methods. This is intended.
+    encode = codecs.raw_unicode_escape_encode
+    decode = codecs.raw_unicode_escape_decode
+
+
+class IncrementalEncoder(codecs.IncrementalEncoder):
+    def encode(self, input, final=False):
+        return codecs.raw_unicode_escape_encode(input, self.errors)[0]
+
+
+class IncrementalDecoder(codecs.BufferedIncrementalDecoder):
+    def _buffer_decode(self, input, errors, final):
+        return codecs.raw_unicode_escape_decode(input, errors, final)
+
+
+class StreamWriter(Codec, codecs.StreamWriter):
+    pass
+
+
+class StreamReader(Codec, codecs.StreamReader):
+    def decode(self, input, errors="strict"):
+        return codecs.raw_unicode_escape_decode(input, errors, False)
+
+
+### encodings module API
+
+
+def getregentry():
+    return codecs.CodecInfo(
+        name="raw-unicode-escape",
+        encode=Codec.encode,
+        decode=Codec.decode,
+        incrementalencoder=IncrementalEncoder,
+        incrementaldecoder=IncrementalDecoder,
+        streamwriter=StreamWriter,
+        streamreader=StreamReader,
+    )
+
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings.raw_unicode_escape` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "encodings.raw_unicode_escape" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )

@@ -1,12 +1,20 @@
-"""Intrinsic-first stdlib module stub for `ctypes.macholib.dylib`."""
+"""Public API surface shim for ``ctypes.macholib.dylib``."""
+
+from __future__ import annotations
+
+import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+DYLIB_RE = re.compile(
+    r"(?P<name>.+)\.dylib(?:\.(?P<version>[^_]+))?(?:_(?P<suffix>.+))?$"
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ctypes.macholib.dylib` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "ctypes.macholib.dylib" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+
+def dylib_info(path: str):
+    match = DYLIB_RE.match(path)
+    if match is None:
+        return None
+    return match.groupdict()
