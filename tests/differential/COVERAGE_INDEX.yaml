@@ -609,6 +609,7 @@ stdlib:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_b.py
       - tests/differential/stdlib/graphlib_basic.py
+      - tests/differential/stdlib/graphlib_flow.py
   grp:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_platform_posix.py

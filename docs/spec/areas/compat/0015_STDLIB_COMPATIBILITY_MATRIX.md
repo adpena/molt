@@ -204,8 +204,7 @@ entries must obey the policy in Section 0.
 | dis | Stdlib | Planned | P3 | SL3 | stdlib | Bytecode disassembly; parity pending. |
 | encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |
 | faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
-| graphlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
-| imghdr | Stdlib | Supported | P3 | SL3 | stdlib | Intrinsic-backed header probing via `molt_imghdr_*`; `what` and standard test list parity for CPython 3.12+. |
+| graphlib | Stdlib | Complete | P3 | SL3 | stdlib/runtime | Intrinsic-backed `TopologicalSorter`/`CycleError` with Rust-lowered scheduling, cycle detection, and state transitions; Python shim handles argument wiring and error mapping. |
 | marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
 | opcode | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic payload-backed CPython 3.12 opcode tables/constants plus `_opcode` bridge surface (`stack_effect`, `get_specialization_stats`); `_opcode_metadata` loads intrinsic 3.14 metadata payload and remains version-gated absent on `<3.14`. |
 | optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |

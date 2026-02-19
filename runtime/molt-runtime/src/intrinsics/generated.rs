@@ -423,6 +423,41 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_graphlib_new",
+        symbol: "molt_graphlib_new",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_add",
+        symbol: "molt_graphlib_add",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_prepare",
+        symbol: "molt_graphlib_prepare",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_get_ready",
+        symbol: "molt_graphlib_get_ready",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_done",
+        symbol: "molt_graphlib_done",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_is_active",
+        symbol: "molt_graphlib_is_active",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_graphlib_drop",
+        symbol: "molt_graphlib_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_pkgutil_iter_modules",
         symbol: "molt_pkgutil_iter_modules",
         arity: 2,
@@ -5073,9 +5108,26 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_opcode_stack_effect as *const () as usize as u64)
         }
         "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
-        "molt_fnmatch_translate" => Some(crate::molt_fnmatch_translate as *const () as usize as u64),
-        "molt_pkgutil_iter_modules" => Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64),
-        "molt_pkgutil_walk_packages" => Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64),
+        "molt_fnmatch_translate" => {
+            Some(crate::molt_fnmatch_translate as *const () as usize as u64)
+        }
+        "molt_graphlib_new" => Some(crate::molt_graphlib_new as *const () as usize as u64),
+        "molt_graphlib_add" => Some(crate::molt_graphlib_add as *const () as usize as u64),
+        "molt_graphlib_prepare" => Some(crate::molt_graphlib_prepare as *const () as usize as u64),
+        "molt_graphlib_get_ready" => {
+            Some(crate::molt_graphlib_get_ready as *const () as usize as u64)
+        }
+        "molt_graphlib_done" => Some(crate::molt_graphlib_done as *const () as usize as u64),
+        "molt_graphlib_is_active" => {
+            Some(crate::molt_graphlib_is_active as *const () as usize as u64)
+        }
+        "molt_graphlib_drop" => Some(crate::molt_graphlib_drop as *const () as usize as u64),
+        "molt_pkgutil_iter_modules" => {
+            Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64)
+        }
+        "molt_pkgutil_walk_packages" => {
+            Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64)
+        }
         "molt_site_help0" => Some(crate::molt_site_help0 as *const () as usize as u64),
         "molt_site_help1" => Some(crate::molt_site_help1 as *const () as usize as u64),
         "molt_site_credits" => Some(crate::molt_site_credits as *const () as usize as u64),
