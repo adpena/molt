@@ -1,12 +1,30 @@
-"""Intrinsic-first stdlib module stub for `asyncio.exceptions`."""
+"""Public API surface shim for ``asyncio.exceptions``."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from asyncio import (
+    BrokenBarrierError,
+    CancelledError,
+    IncompleteReadError,
+    InvalidStateError,
+    LimitOverrunError,
+    SendfileNotAvailableError,
+    TimeoutError,
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.exceptions` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.exceptions" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = [
+    "BrokenBarrierError",
+    "CancelledError",
+    "IncompleteReadError",
+    "InvalidStateError",
+    "LimitOverrunError",
+    "SendfileNotAvailableError",
+    "TimeoutError",
+]
+
+for _name in ("QueueEmpty", "QueueFull", "QueueShutDown"):
+    globals().pop(_name, None)

@@ -487,6 +487,7 @@ Sign-off criteria:
 - Implemented: compiled export loader + manifest validation (schema, reserved-name filtering, error mapping) with queue/timeout metrics.
 - Implemented: worker tuning via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
 - TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
+- TODO(offload, owner:runtime, milestone:SL2, priority:P1, status:planned): add a Phase 1 in-process fast path for precompiled endpoint exports (startup-loaded ABI, no runtime compilation) while preserving worker IPC semantics for capability gating, cancellation, and error mapping.
 
 ## DB
 - Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, SQLite connector (native-only; wasm parity pending), and async Postgres connector with statement cache; `molt_worker` exposes `db_query`/`db_exec` for SQLite + Postgres (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity).

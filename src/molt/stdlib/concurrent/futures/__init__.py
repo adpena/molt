@@ -438,6 +438,11 @@ class ThreadPoolExecutor(Executor):
                 if self._molt_inflight > 0:
                     self._molt_inflight -= 1
                 continue
+            if not item.future.set_running_or_notify_cancel():
+                self._molt_futures.discard(item.future)
+                if self._molt_inflight > 0:
+                    self._molt_inflight -= 1
+                continue
             self._molt_running += 1
             to_schedule.append(item)
         return to_schedule
@@ -738,8 +743,6 @@ def _threadpool_worker_bootstrap(executor: ThreadPoolExecutor) -> None:
 
 def _molt_threadpool_worker(executor: ThreadPoolExecutor, item: _WorkItem) -> None:
     try:
-        if not item.future.set_running_or_notify_cancel():
-            return
         try:
             result = item.fn(*item.args, **item.kwargs)
         except BaseException as exc:  # noqa: BLE001

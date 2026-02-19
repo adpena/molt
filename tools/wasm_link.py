@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -47,6 +48,25 @@ def _default_runtime_path() -> Path:
     if external_root.is_dir():
         return external_root / "wasm" / "molt_runtime.wasm"
     return Path("wasm/molt_runtime.wasm")
+
+
+def _is_wasm_binary(data: bytes) -> bool:
+    return len(data) >= 8 and data[:4] == WASM_MAGIC and data[4:8] == WASM_VERSION
+
+
+def _read_wasm_bytes_with_retry(
+    path: Path, *, attempts: int = 8, delay_sec: float = 0.05
+) -> bytes:
+    data = b""
+    for _ in range(max(1, attempts)):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = b""
+        if _is_wasm_binary(data):
+            return data
+        time.sleep(delay_sec)
+    return data
 
 
 def _find_tool(names: list[str]) -> str | None:
@@ -953,44 +973,54 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 file=sys.stderr,
             )
             return 1
+        linked_bytes = _read_wasm_bytes_with_retry(linked)
+        if not _is_wasm_binary(linked_bytes):
+            print(
+                "wasm-ld produced non-wasm linked output "
+                f"({linked}, size={len(linked_bytes)} bytes)",
+                file=sys.stderr,
+            )
+            return 1
         output_table_min = _table_import_min(output.read_bytes())
         if output_table_min is not None:
             try:
-                updated = _rewrite_table_import_min(
-                    linked.read_bytes(), output_table_min
-                )
+                updated = _rewrite_table_import_min(linked_bytes, output_table_min)
             except ValueError as exc:
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
                 linked.write_bytes(updated)
+                linked_bytes = updated
         output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
             try:
-                updated = _rewrite_memory_min(linked.read_bytes(), output_memory_min)
+                updated = _rewrite_memory_min(linked_bytes, output_memory_min)
             except ValueError as exc:
                 print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
                 linked.write_bytes(updated)
+                linked_bytes = updated
         append_table_refs = os.environ.get(
             "MOLT_WASM_LINK_APPEND_TABLE_REFS", "1"
         ).strip().lower() not in {"0", "false", "no", "off"}
         if append_table_refs:
             try:
-                updated = _append_table_ref_elements(linked.read_bytes())
+                updated = _append_table_ref_elements(linked_bytes)
             except ValueError as exc:
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
                 linked.write_bytes(updated)
+                linked_bytes = updated
         try:
-            updated = _ensure_table_export(linked.read_bytes())
+            updated = _ensure_table_export(linked_bytes)
         except ValueError as exc:
             print(f"Failed to ensure table export: {exc}", file=sys.stderr)
             return 1
         if updated is not None:
             linked.write_bytes(updated)
+            linked_bytes = updated
         if not _validate_linked(linked):
             return 1
         return 0

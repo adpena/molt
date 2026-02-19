@@ -11,12 +11,26 @@ import os as _os
 import sys as _sys
 import time as _time
 import traceback as _traceback
+import inspect as _inspect
 import errno as _errno
 import socket as _socket
 import types as _types
 import threading as _threading
+import reprlib as _reprlib
+import linecache as _linecache
+import signal as _signal
+import functools as _functools
+import collections as _collections
+import concurrent as _concurrent
+import itertools as _itertools
+import stat as _stat
+import warnings as _warnings
+import weakref as _weakref
+import ssl as _ssl
+import subprocess as _subprocess
 
 import contextvars as _contextvars
+import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
@@ -482,6 +496,12 @@ def iscoroutinefunction(func: Any) -> bool:
 
 
 class Future:
+    @classmethod
+    def __class_getitem__(cls, item: Any) -> Any:
+        return _require_asyncio_intrinsic(molt_generic_alias_new, "generic_alias_new")(
+            cls, item
+        )
+
     def __init__(self) -> None:
         self._done = False
         self._cancelled = False
@@ -1264,6 +1284,7 @@ molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
 molt_asyncio_sock_sendto_new = _intrinsic_require(
     "molt_asyncio_sock_sendto_new", globals()
 )
+molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
@@ -4846,24 +4867,37 @@ if _coroutine is None:
         return func
 
 
+def on_fork() -> None:
+    global _CHILD_WATCHER
+    _set_running_loop(None)
+    _CHILD_WATCHER = None
+
+
 events = _module(
     "asyncio.events",
     {
         "AbstractEventLoop": AbstractEventLoop,
         "AbstractEventLoopPolicy": AbstractEventLoopPolicy,
         "AbstractServer": AbstractServer,
-        "BaseEventLoop": BaseEventLoop,
-        "DefaultEventLoopPolicy": DefaultEventLoopPolicy,
+        "BaseDefaultEventLoopPolicy": DefaultEventLoopPolicy,
         "Handle": Handle,
         "TimerHandle": TimerHandle,
-        "_get_running_loop": _get_running_loop,
-        "_set_running_loop": _set_running_loop,
+        "contextvars": _contextvars,
+        "get_child_watcher": get_child_watcher,
         "get_event_loop": get_event_loop,
         "get_event_loop_policy": get_event_loop_policy,
         "get_running_loop": get_running_loop,
         "new_event_loop": new_event_loop,
+        "on_fork": on_fork,
+        "os": _os,
+        "set_child_watcher": set_child_watcher,
         "set_event_loop": set_event_loop,
         "set_event_loop_policy": set_event_loop_policy,
+        "signal": _signal,
+        "socket": _socket,
+        "subprocess": _subprocess,
+        "sys": _sys,
+        "threading": _threading,
     },
 )
 
@@ -4882,19 +4916,29 @@ base_events = _module(
 constants = _module(
     "asyncio.constants",
     {
+        "enum": _enum,
         "LOG_THRESHOLD_FOR_CONNLOST_WRITES": 5,
         "ACCEPT_RETRY_DELAY": 1,
-        "SLOW_CALLBACK_DURATION": 0.1,
-        "DEFAULT_LIMIT": 2**16,
+        "DEBUG_STACK_DEPTH": 10,
+        "SSL_HANDSHAKE_TIMEOUT": 60.0,
+        "SSL_SHUTDOWN_TIMEOUT": 30.0,
+        "SENDFILE_FALLBACK_READBUFFER_SIZE": 256 * 1024,
+        "FLOW_CONTROL_HIGH_WATER_SSL_READ": 256,
+        "FLOW_CONTROL_HIGH_WATER_SSL_WRITE": 512,
+        "THREAD_JOIN_TIMEOUT": 300,
     },
 )
 
 coroutines = _module(
     "asyncio.coroutines",
     {
+        "collections": _collections,
+        "inspect": _inspect,
         "iscoroutine": iscoroutine,
         "iscoroutinefunction": iscoroutinefunction,
-        "coroutine": _coroutine,
+        "os": _os,
+        "sys": _sys,
+        "types": _types,
     },
 )
 
@@ -4907,24 +4951,27 @@ exceptions = _module(
         "SendfileNotAvailableError": SendfileNotAvailableError,
         "IncompleteReadError": IncompleteReadError,
         "LimitOverrunError": LimitOverrunError,
-        "QueueEmpty": QueueEmpty,
-        "QueueFull": QueueFull,
         "BrokenBarrierError": BrokenBarrierError,
     },
 )
-if _EXPOSE_QUEUE_SHUTDOWN:
-    try:
-        setattr(exceptions, "QueueShutDown", _QueueShutDown)
-    except Exception:
-        pass
 
 format_helpers = _module(
     "asyncio.format_helpers",
     {
+        "constants": constants,
         "_format_callback_source": _format_callback_source,
         "extract_stack": _extract_stack,
+        "functools": _functools,
+        "inspect": _inspect,
+        "reprlib": _reprlib,
+        "sys": _sys,
+        "traceback": _traceback,
     },
 )
+try:
+    setattr(events, "format_helpers", format_helpers)
+except Exception:
+    pass
 
 
 def _queues_attrs() -> dict[str, Any]:
@@ -5087,25 +5134,35 @@ timeouts = _module(
 base_futures = _module(
     "asyncio.base_futures",
     {
-        "Future": Future,
-        "CancelledError": CancelledError,
-        "InvalidStateError": InvalidStateError,
+        "format_helpers": format_helpers,
+        "isfuture": isfuture,
+        "reprlib": _reprlib,
     },
 )
 
 base_tasks = _module(
     "asyncio.base_tasks",
     {
-        "Task": Task,
-        "current_task": current_task,
-        "all_tasks": all_tasks,
+        "base_futures": base_futures,
+        "coroutines": coroutines,
+        "linecache": _linecache,
+        "reprlib": _reprlib,
+        "traceback": _traceback,
     },
 )
 
 base_subprocess = _module(
     "asyncio.base_subprocess",
     {
-        "Process": Process,
+        "BaseSubprocessTransport": Process,
+        "ReadSubprocessPipeProto": Process,
+        "WriteSubprocessPipeProto": Process,
+        "collections": _collections,
+        "logger": _logging.getLogger("asyncio"),
+        "protocols": protocols,
+        "subprocess": _subprocess,
+        "transports": transports,
+        "warnings": _warnings,
     },
 )
 
@@ -5141,8 +5198,17 @@ subprocess = _module(
 
 _futures_attrs: dict[str, Any] = {
     "Future": Future,
-    "CancelledError": CancelledError,
-    "InvalidStateError": InvalidStateError,
+    "GenericAlias": _types.GenericAlias,
+    "STACK_DEBUG": 0,
+    "base_futures": base_futures,
+    "concurrent": _concurrent,
+    "contextvars": _contextvars,
+    "events": events,
+    "exceptions": exceptions,
+    "format_helpers": format_helpers,
+    "isfuture": isfuture,
+    "logging": _logging,
+    "sys": _sys,
     "wrap_future": wrap_future,
 }
 if _EXPOSE_GRAPH:
@@ -5221,6 +5287,48 @@ if _IS_WINDOWS:
     windows_utils = _module("asyncio.windows_utils", {})
 
 staggered = _module("asyncio.staggered", {})
+
+for _name in ("AbstractServer", "SelectorEventLoop", "Handle", "TimerHandle"):
+    try:
+        delattr(base_events, _name)
+    except Exception:
+        pass
+for _name, _value in {
+    "MAXIMUM_SELECT_TIMEOUT": 24 * 3600,
+    "collections": _collections,
+    "concurrent": _concurrent,
+    "constants": constants,
+    "coroutines": coroutines,
+    "errno": _errno,
+    "events": events,
+    "exceptions": exceptions,
+    "futures": futures,
+    "heapq": _heapq,
+    "itertools": _itertools,
+    "logger": _logging.getLogger("asyncio"),
+    "os": _os,
+    "protocols": protocols,
+    "socket": _socket,
+    "ssl": _ssl,
+    "sslproto": sslproto,
+    "staggered": staggered,
+    "stat": _stat,
+    "subprocess": _subprocess,
+    "sys": _sys,
+    "tasks": tasks,
+    "threading": _threading,
+    "time": _time,
+    "timeouts": timeouts,
+    "traceback": _traceback,
+    "transports": transports,
+    "trsock": trsock,
+    "warnings": _warnings,
+    "weakref": _weakref,
+}.items():
+    try:
+        setattr(base_events, _name, _value)
+    except Exception:
+        pass
 
 if _EXPOSE_GRAPH:
     graph = _module(

@@ -4056,6 +4056,16 @@ pub extern "C" fn molt_globals_builtin() -> u64 {
             return empty_dict_bits(_py);
         };
         unsafe {
+            // Module-scope globals() must resolve to the executing module namespace.
+            // When compiler instrumentation has pinned module locals on the frame,
+            // prefer that dict directly (module locals == module globals in CPython).
+            if code_is_module(entry.code_bits) {
+                let bits = entry.locals_bits;
+                if bits != 0 && !obj_from_bits(bits).is_none() {
+                    inc_ref_bits(_py, bits);
+                    return bits;
+                }
+            }
             if let Some(field) = frame_globals_field_for_code(_py, entry.code_bits) {
                 let bits = field.bits;
                 if !field.owned && !obj_from_bits(bits).is_none() {

@@ -1,12 +1,30 @@
-"""Intrinsic-first stdlib module stub for `asyncio.format_helpers`."""
+"""Public API surface shim for ``asyncio.format_helpers``."""
+
+from __future__ import annotations
+
+import functools
+import inspect
+import reprlib
+import sys
+import traceback
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+import asyncio.constants as constants
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.format_helpers` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.format_helpers" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+
+def extract_stack(limit: int | None = None):
+    return traceback.extract_stack(limit=limit)
+
+
+__all__ = [
+    "constants",
+    "extract_stack",
+    "functools",
+    "inspect",
+    "reprlib",
+    "sys",
+    "traceback",
+]

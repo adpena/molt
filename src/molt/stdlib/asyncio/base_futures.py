@@ -1,12 +1,21 @@
-"""Intrinsic-first stdlib module stub for `asyncio.base_futures`."""
+"""Public API surface shim for ``asyncio.base_futures``."""
+
+from __future__ import annotations
+
+import reprlib
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+from . import format_helpers
 
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.base_futures` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.base_futures" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def isfuture(obj) -> bool:
+    cls = obj.__class__
+    if cls.__name__ == "Future":
+        return True
+    return getattr(obj, "_asyncio_future_blocking", None) is not None
+
+
+__all__ = ["format_helpers", "isfuture", "reprlib"]

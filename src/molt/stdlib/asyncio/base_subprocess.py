@@ -1,12 +1,42 @@
-"""Intrinsic-first stdlib module stub for `asyncio.base_subprocess`."""
+"""Public API surface shim for ``asyncio.base_subprocess``."""
+
+from __future__ import annotations
+
+import collections
+import logging as _logging
+import subprocess
+import warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+from . import protocols
+from . import transports
+
 _require_intrinsic("molt_capabilities_has", globals())
 
+logger = _logging.getLogger("asyncio")
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.base_subprocess` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "asyncio.base_subprocess" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+
+class BaseSubprocessTransport:
+    pass
+
+
+class ReadSubprocessPipeProto:
+    pass
+
+
+class WriteSubprocessPipeProto:
+    pass
+
+
+__all__ = [
+    "BaseSubprocessTransport",
+    "ReadSubprocessPipeProto",
+    "WriteSubprocessPipeProto",
+    "collections",
+    "logger",
+    "protocols",
+    "subprocess",
+    "transports",
+    "warnings",
+]

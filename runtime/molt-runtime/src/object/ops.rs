@@ -7059,6 +7059,19 @@ pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_object_hash(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        let hash = if let Some(ptr) = obj.as_ptr() {
+            hash_pointer(ptr as u64)
+        } else {
+            hash_pointer(val)
+        };
+        int_bits_from_i64(_py, hash)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_id(val: u64) -> u64 {
     crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val as i64) })
 }
@@ -35819,11 +35832,28 @@ fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 }
             }
             if type_id == TYPE_ID_TYPE {
-                let class_bits = type_of_bits(_py, obj.bits());
-                if class_bits == builtin_classes(_py).type_obj {
+                let metaclass_bits = type_of_bits(_py, obj.bits());
+                if metaclass_bits == builtin_classes(_py).type_obj {
                     return hash_pointer(ptr as u64);
                 }
-                if let Some(hash) = hash_from_dunder(_py, obj, ptr) {
+                let hash_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+                let eq_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+                let mut meta_overrides_hash = false;
+                if let Some(meta_ptr) = obj_from_bits(metaclass_bits).as_ptr()
+                    && object_type_id(meta_ptr) == TYPE_ID_TYPE
+                {
+                    let dict_bits = class_dict_bits(meta_ptr);
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    {
+                        meta_overrides_hash = dict_get_in_place(_py, dict_ptr, hash_name_bits)
+                            .is_some()
+                            || dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some();
+                    }
+                }
+                if meta_overrides_hash && let Some(hash) = hash_from_dunder(_py, obj, ptr) {
                     return hash;
                 }
                 return hash_pointer(ptr as u64);

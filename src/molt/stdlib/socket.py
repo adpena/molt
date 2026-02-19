@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import errno
+import sys
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -127,7 +128,15 @@ def _init_constants() -> dict[str, int]:
 
 
 _CONSTANTS = _init_constants()
-globals().update(_CONSTANTS)
+_module_obj = sys.modules.get(__name__)
+_module_dict = (
+    getattr(_module_obj, "__dict__", None) if _module_obj is not None else None
+)
+if isinstance(_module_dict, dict):
+    _module_dict.update(_CONSTANTS)
+else:
+    # Fallback for early bootstrap/import edge paths.
+    globals().update(_CONSTANTS)
 _EAI_CODES = {val for key, val in _CONSTANTS.items() if key.startswith("EAI_")}
 
 if _molt_socket_has_ipv6 is None:

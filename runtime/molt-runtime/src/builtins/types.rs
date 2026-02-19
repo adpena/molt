@@ -927,6 +927,54 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_generic_alias_type_new(
+    cls_bits: u64,
+    origin_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+            }
+        }
+        let builtins = builtin_classes(_py);
+        let is_generic_alias_subtype =
+            cls_bits == builtins.generic_alias || issubclass_bits(cls_bits, builtins.generic_alias);
+        if !is_generic_alias_subtype {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "GenericAlias.__new__ expected GenericAlias subtype",
+            );
+        }
+
+        let out_bits = molt_generic_alias_new(origin_bits, args_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(out_ptr) = obj_from_bits(out_bits).as_ptr() else {
+            return out_bits;
+        };
+        unsafe {
+            let old_class_bits = object_class_bits(out_ptr);
+            if old_class_bits != cls_bits {
+                if old_class_bits != 0 {
+                    dec_ref_bits(_py, old_class_bits);
+                }
+                object_set_class_bits(_py, out_ptr, cls_bits);
+                inc_ref_bits(_py, cls_bits);
+            }
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);

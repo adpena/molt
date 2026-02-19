@@ -258,6 +258,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_argparse_parse",
+        symbol: "molt_argparse_parse",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_enum_init_member",
         symbol: "molt_enum_init_member",
         arity: 3,
@@ -4986,6 +4991,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_update_abstractmethods" => {
             Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64)
         }
+        "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
         "molt_re_literal_matches" => {
             Some(crate::molt_re_literal_matches as *const () as usize as u64)
