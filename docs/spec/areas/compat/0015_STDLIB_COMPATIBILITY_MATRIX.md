@@ -195,7 +195,7 @@ entries must obey the policy in Section 0.
 | cmath | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Math intrinsics; parity pending. |
 | codecs | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Intrinsic encode/decode for bytes-like/str; registry/lookup + minimal encodings/aliases now available; incremental/stream codecs + error-handler registration still pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
 | codeop | Stdlib | Planned | P3 | SL3 | stdlib | Compilation helpers; parity pending. |
-| colorsys | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB/HLS/HSV/YIQ conversions. |
+| colorsys | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB<->YIQ/HLS/HSV conversions with CPython 3.12 formulas and clamping behavior. |
 | compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
 | configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | copyreg | Stdlib | Partial | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core (`dispatch_table`, `pickle`, `constructor`, extension registry helpers) with runtime-owned state; full parity pending. |
@@ -204,6 +204,7 @@ entries must obey the policy in Section 0.
 | encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |
 | faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
 | graphlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| imghdr | Stdlib | Supported | P3 | SL3 | stdlib | Intrinsic-backed header probing via `molt_imghdr_*`; `what` and standard test list parity for CPython 3.12+. |
 | marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
 | opcode | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic payload-backed CPython 3.12 opcode tables/constants plus `_opcode` bridge surface (`stack_effect`, `get_specialization_stats`); `_opcode_metadata` loads intrinsic 3.14 metadata payload and remains version-gated absent on `<3.14`. |
 | optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |

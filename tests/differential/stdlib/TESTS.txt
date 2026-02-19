@@ -1200,6 +1200,7 @@ tests/differential/stdlib/http_upgrade_headers_httpclient.py
 tests/differential/stdlib/httpclient_chunked_iter_upload.py
 tests/differential/stdlib/httpclient_connection_pool_basic.py
 tests/differential/stdlib/imaplib_basic.py
+tests/differential/stdlib/imghdr_basic.py
 tests/differential/stdlib/import_spec_pep451.py
 tests/differential/stdlib/import_spec_shape.py
 tests/differential/stdlib/importlib_basic.py
