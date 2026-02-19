@@ -498,34 +498,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
-        name: "molt_colorsys_rgb_to_hsv",
-        symbol: "molt_colorsys_rgb_to_hsv",
-        arity: 3,
+        name: "molt_imghdr_test",
+        symbol: "molt_imghdr_test",
+        arity: 2,
     },
     IntrinsicSpec {
-        name: "molt_colorsys_hsv_to_rgb",
-        symbol: "molt_colorsys_hsv_to_rgb",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_colorsys_rgb_to_hls",
-        symbol: "molt_colorsys_rgb_to_hls",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_colorsys_hls_to_rgb",
-        symbol: "molt_colorsys_hls_to_rgb",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_colorsys_rgb_to_yiq",
-        symbol: "molt_colorsys_rgb_to_yiq",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_colorsys_yiq_to_rgb",
-        symbol: "molt_colorsys_yiq_to_rgb",
-        arity: 3,
+        name: "molt_imghdr_what",
+        symbol: "molt_imghdr_what",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_pkgutil_iter_modules",
@@ -661,6 +641,36 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_textwrap_indent",
         symbol: "molt_textwrap_indent",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_rgb_to_yiq",
+        symbol: "molt_colorsys_rgb_to_yiq",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_yiq_to_rgb",
+        symbol: "molt_colorsys_yiq_to_rgb",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_rgb_to_hls",
+        symbol: "molt_colorsys_rgb_to_hls",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_hls_to_rgb",
+        symbol: "molt_colorsys_hls_to_rgb",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_rgb_to_hsv",
+        symbol: "molt_colorsys_rgb_to_hsv",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_colorsys_hsv_to_rgb",
+        symbol: "molt_colorsys_hsv_to_rgb",
+        arity: 3,
     },
     IntrinsicSpec {
         name: "molt_urllib_quote",
@@ -5156,24 +5166,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_fnmatch_translate" => {
             Some(crate::molt_fnmatch_translate as *const () as usize as u64)
         }
-        "molt_colorsys_rgb_to_hsv" => {
-            Some(crate::molt_colorsys_rgb_to_hsv as *const () as usize as u64)
-        }
-        "molt_colorsys_hsv_to_rgb" => {
-            Some(crate::molt_colorsys_hsv_to_rgb as *const () as usize as u64)
-        }
-        "molt_colorsys_rgb_to_hls" => {
-            Some(crate::molt_colorsys_rgb_to_hls as *const () as usize as u64)
-        }
-        "molt_colorsys_hls_to_rgb" => {
-            Some(crate::molt_colorsys_hls_to_rgb as *const () as usize as u64)
-        }
-        "molt_colorsys_rgb_to_yiq" => {
-            Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64)
-        }
-        "molt_colorsys_yiq_to_rgb" => {
-            Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64)
-        }
+        "molt_imghdr_test" => Some(crate::molt_imghdr_test as *const () as usize as u64),
+        "molt_imghdr_what" => Some(crate::molt_imghdr_what as *const () as usize as u64),
         "molt_pkgutil_iter_modules" => {
             Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64)
         }
@@ -5205,6 +5199,24 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_textwrap_wrap" => Some(crate::molt_textwrap_wrap as *const () as usize as u64),
         "molt_textwrap_fill" => Some(crate::molt_textwrap_fill as *const () as usize as u64),
         "molt_textwrap_indent" => Some(crate::molt_textwrap_indent as *const () as usize as u64),
+        "molt_colorsys_rgb_to_yiq" => {
+            Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64)
+        }
+        "molt_colorsys_yiq_to_rgb" => {
+            Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64)
+        }
+        "molt_colorsys_rgb_to_hls" => {
+            Some(crate::molt_colorsys_rgb_to_hls as *const () as usize as u64)
+        }
+        "molt_colorsys_hls_to_rgb" => {
+            Some(crate::molt_colorsys_hls_to_rgb as *const () as usize as u64)
+        }
+        "molt_colorsys_rgb_to_hsv" => {
+            Some(crate::molt_colorsys_rgb_to_hsv as *const () as usize as u64)
+        }
+        "molt_colorsys_hsv_to_rgb" => {
+            Some(crate::molt_colorsys_hsv_to_rgb as *const () as usize as u64)
+        }
         "molt_urllib_quote" => Some(crate::molt_urllib_quote as *const () as usize as u64),
         "molt_urllib_quote_plus" => Some(crate::molt_urllib_quote_plus as *const () as usize as u64),
         "molt_urllib_unquote" => Some(crate::molt_urllib_unquote as *const () as usize as u64),

@@ -9045,6 +9045,34 @@ fn textwrap_wrap_impl(text: &str, width: i64) -> Vec<String> {
     lines
 }
 
+fn colorsys_v(m1: f64, m2: f64, hue: f64) -> f64 {
+    let hue = hue.rem_euclid(1.0);
+    if hue < (1.0 / 6.0) {
+        return m1 + (m2 - m1) * hue * 6.0;
+    }
+    if hue < 0.5 {
+        return m2;
+    }
+    if hue < (2.0 / 3.0) {
+        return m1 + (m2 - m1) * ((2.0 / 3.0) - hue) * 6.0;
+    }
+    m1
+}
+
+fn colorsys_tuple(_py: &crate::PyToken<'_>, a: f64, b: f64, c: f64) -> u64 {
+    let elem_bits = [
+        MoltObject::from_float(a).bits(),
+        MoltObject::from_float(b).bits(),
+        MoltObject::from_float(c).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elem_bits);
+    if tuple_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
 #[derive(Clone)]
 struct PkgutilModuleInfo {
     module_finder: String,
@@ -11930,6 +11958,106 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     })
 }
 
+fn imghdr_has_prefix(h: &[u8], prefix: &[u8]) -> bool {
+    h.len() >= prefix.len() && &h[..prefix.len()] == prefix
+}
+
+fn imghdr_check(kind: &str, h: &[u8]) -> Result<bool, ()> {
+    let matched = match kind {
+        "jpeg" => {
+            (h.len() >= 10 && (&h[6..10] == b"JFIF" || &h[6..10] == b"Exif"))
+                || (h.len() >= 4 && &h[..4] == b"\xff\xd8\xff\xdb")
+        }
+        "png" => imghdr_has_prefix(h, b"\x89PNG\r\n\x1a\n"),
+        "gif" => h.len() >= 6 && (&h[..6] == b"GIF87a" || &h[..6] == b"GIF89a"),
+        "tiff" => h.len() >= 2 && (&h[..2] == b"MM" || &h[..2] == b"II"),
+        "rgb" => imghdr_has_prefix(h, b"\x01\xda"),
+        "pbm" => {
+            h.len() >= 3
+                && h[0] == b'P'
+                && matches!(h[1], b'1' | b'4')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "pgm" => {
+            h.len() >= 3
+                && h[0] == b'P'
+                && matches!(h[1], b'2' | b'5')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "ppm" => {
+            h.len() >= 3
+                && h[0] == b'P'
+                && matches!(h[1], b'3' | b'6')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "rast" => imghdr_has_prefix(h, b"\x59\xa6\x6a\x95"),
+        "xbm" => imghdr_has_prefix(h, b"#define "),
+        "bmp" => imghdr_has_prefix(h, b"BM"),
+        "webp" => h.len() >= 12 && &h[..4] == b"RIFF" && &h[8..12] == b"WEBP",
+        "exr" => imghdr_has_prefix(h, b"\x76\x2f\x31\x01"),
+        _ => return Err(()),
+    };
+    Ok(matched)
+}
+
+fn imghdr_what(h: &[u8]) -> Option<&'static str> {
+    const ORDER: [&str; 13] = [
+        "jpeg", "png", "gif", "tiff", "rgb", "pbm", "pgm", "ppm", "rast", "xbm", "bmp", "webp",
+        "exr",
+    ];
+    for kind in ORDER {
+        if imghdr_check(kind, h).unwrap_or(false) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_test(kind_bits: u64, header_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "kind must be str");
+        };
+        let header_obj = obj_from_bits(header_bits);
+        let Some(header_ptr) = header_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let matched = match imghdr_check(&kind, header) {
+            Ok(value) => value,
+            Err(()) => {
+                return raise_exception::<_>(_py, "ValueError", "unknown imghdr test kind");
+            }
+        };
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_what(header_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let header_obj = obj_from_bits(header_bits);
+        let Some(header_ptr) = header_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(kind) = imghdr_what(header) else {
+            return MoltObject::none().bits();
+        };
+        let ptr = alloc_string(_py, kind.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_constants() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -12164,6 +12292,198 @@ pub extern "C" fn molt_textwrap_indent(text_bits: u64, prefix_bits: u64) -> u64 
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_yiq(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = to_f64(obj_from_bits(r_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "r must be real number");
+        };
+        let Some(g) = to_f64(obj_from_bits(g_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "g must be real number");
+        };
+        let Some(b) = to_f64(obj_from_bits(b_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "b must be real number");
+        };
+        let y = 0.30 * r + 0.59 * g + 0.11 * b;
+        let i = 0.74 * (r - y) - 0.27 * (b - y);
+        let q = 0.48 * (r - y) + 0.41 * (b - y);
+        colorsys_tuple(_py, y, i, q)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_yiq_to_rgb(y_bits: u64, i_bits: u64, q_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(y) = to_f64(obj_from_bits(y_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "y must be real number");
+        };
+        let Some(i) = to_f64(obj_from_bits(i_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "i must be real number");
+        };
+        let Some(q) = to_f64(obj_from_bits(q_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "q must be real number");
+        };
+        let mut r = y + 0.9468822170900693 * i + 0.6235565819861433 * q;
+        let mut g = y - 0.27478764629897834 * i - 0.6356910791873801 * q;
+        let mut b = y - 1.1085450346420322 * i + 1.7090069284064666 * q;
+        if r < 0.0 {
+            r = 0.0;
+        }
+        if g < 0.0 {
+            g = 0.0;
+        }
+        if b < 0.0 {
+            b = 0.0;
+        }
+        if r > 1.0 {
+            r = 1.0;
+        }
+        if g > 1.0 {
+            g = 1.0;
+        }
+        if b > 1.0 {
+            b = 1.0;
+        }
+        colorsys_tuple(_py, r, g, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_hls(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = to_f64(obj_from_bits(r_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "r must be real number");
+        };
+        let Some(g) = to_f64(obj_from_bits(g_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "g must be real number");
+        };
+        let Some(b) = to_f64(obj_from_bits(b_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "b must be real number");
+        };
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let sumc = maxc + minc;
+        let rangec = maxc - minc;
+        let l = sumc / 2.0;
+        if minc == maxc {
+            return colorsys_tuple(_py, 0.0, l, 0.0);
+        }
+        let s = if l <= 0.5 {
+            rangec / sumc
+        } else {
+            rangec / (2.0 - maxc - minc)
+        };
+        let rc = (maxc - r) / rangec;
+        let gc = (maxc - g) / rangec;
+        let bc = (maxc - b) / rangec;
+        let mut h = if r == maxc {
+            bc - gc
+        } else if g == maxc {
+            2.0 + rc - bc
+        } else {
+            4.0 + gc - rc
+        };
+        h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple(_py, h, l, s)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_hls_to_rgb(h_bits: u64, l_bits: u64, s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(h) = to_f64(obj_from_bits(h_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "h must be real number");
+        };
+        let Some(l) = to_f64(obj_from_bits(l_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "l must be real number");
+        };
+        let Some(s) = to_f64(obj_from_bits(s_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "s must be real number");
+        };
+        if s == 0.0 {
+            return colorsys_tuple(_py, l, l, l);
+        }
+        let m2 = if l <= 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - (l * s)
+        };
+        let m1 = 2.0 * l - m2;
+        let r = colorsys_v(m1, m2, h + (1.0 / 3.0));
+        let g = colorsys_v(m1, m2, h);
+        let b = colorsys_v(m1, m2, h - (1.0 / 3.0));
+        colorsys_tuple(_py, r, g, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_hsv(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = to_f64(obj_from_bits(r_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "r must be real number");
+        };
+        let Some(g) = to_f64(obj_from_bits(g_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "g must be real number");
+        };
+        let Some(b) = to_f64(obj_from_bits(b_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "b must be real number");
+        };
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let rangec = maxc - minc;
+        let v = maxc;
+        if minc == maxc {
+            return colorsys_tuple(_py, 0.0, 0.0, v);
+        }
+        let s = rangec / maxc;
+        let rc = (maxc - r) / rangec;
+        let gc = (maxc - g) / rangec;
+        let bc = (maxc - b) / rangec;
+        let mut h = if r == maxc {
+            bc - gc
+        } else if g == maxc {
+            2.0 + rc - bc
+        } else {
+            4.0 + gc - rc
+        };
+        h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple(_py, h, s, v)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_hsv_to_rgb(h_bits: u64, s_bits: u64, v_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(h) = to_f64(obj_from_bits(h_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "h must be real number");
+        };
+        let Some(s) = to_f64(obj_from_bits(s_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "s must be real number");
+        };
+        let Some(v) = to_f64(obj_from_bits(v_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "v must be real number");
+        };
+        if s == 0.0 {
+            return colorsys_tuple(_py, v, v, v);
+        }
+        let scaled = h * 6.0;
+        let mut i = scaled.trunc() as i64;
+        let f = scaled - (i as f64);
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - s * f);
+        let t = v * (1.0 - s * (1.0 - f));
+        i = i.rem_euclid(6);
+        match i {
+            0 => colorsys_tuple(_py, v, t, p),
+            1 => colorsys_tuple(_py, q, v, p),
+            2 => colorsys_tuple(_py, p, v, t),
+            3 => colorsys_tuple(_py, p, q, v),
+            4 => colorsys_tuple(_py, t, p, v),
+            _ => colorsys_tuple(_py, v, p, q),
         }
     })
 }
