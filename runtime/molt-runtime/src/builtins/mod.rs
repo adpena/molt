@@ -3,6 +3,7 @@ pub(crate) mod annotations;
 pub(crate) mod ast;
 pub(crate) mod attr;
 pub(crate) mod attributes;
+pub(crate) mod binascii;
 pub(crate) mod callable;
 pub(crate) mod classes;
 pub(crate) mod codecs;

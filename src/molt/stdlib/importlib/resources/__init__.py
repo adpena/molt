@@ -562,6 +562,11 @@ def _reader_files_traversable(reader: object) -> object | None:
     return _MOLT_IMPORTLIB_RESOURCES_READER_FILES_TRAVERSABLE(reader)
 
 
+def _is_traversable_like(value: object) -> bool:
+    required = ("joinpath", "iterdir", "is_file", "is_dir", "open")
+    return all(hasattr(value, name) for name in required)
+
+
 def _reader_contents(reader: object) -> list[str]:
     values = _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS(reader)
     if not isinstance(values, (list, tuple)):
@@ -657,7 +662,9 @@ def files(package: str | object) -> Traversable | _NamespaceTraversable:
     else:
         roots, is_namespace = _package_roots(module, module_name)
         if not roots and reader is not None:
-            if files_traversable is not None:
+            if files_traversable is not None and _is_traversable_like(
+                files_traversable
+            ):
                 return files_traversable
             return _LoaderReaderTraversable(reader, package_name)
     if not roots:

@@ -2,10 +2,10 @@ use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
 
 use crate::{
-    alloc_tuple, attr_lookup_ptr_allow_missing, bigint_from_f64_trunc, bigint_ptr_from_bits,
-    bigint_ref, call_callable0, class_name_for_error, dec_ref_bits, exception_pending,
-    intern_static_name, maybe_ptr_from_bits, obj_from_bits, raise_exception, runtime_state,
-    to_i64, type_name, type_of_bits, PyToken,
+    PyToken, alloc_tuple, attr_lookup_ptr_allow_missing, bigint_from_f64_trunc,
+    bigint_ptr_from_bits, bigint_ref, call_callable0, class_name_for_error, dec_ref_bits,
+    exception_pending, intern_static_name, maybe_ptr_from_bits, obj_from_bits, raise_exception,
+    runtime_state, to_i64, type_name, type_of_bits,
 };
 
 const ONE_THIRD: f64 = 1.0 / 3.0;
@@ -136,7 +136,7 @@ fn hsv_sector(_py: &PyToken<'_>, h: f64) -> Option<(i64, f64)> {
     let i_big = bigint_from_f64_trunc(h6);
     let i_float = i_big.to_f64().unwrap_or_else(|| h6.trunc());
     let f = h6 - i_float;
-    let mut i_mod = (&i_big % 6).to_i64().unwrap_or(0);
+    let mut i_mod: i64 = (&i_big % 6_i32).to_i64().unwrap_or(0);
     if i_mod < 0 {
         i_mod += 6;
     }

@@ -5,18 +5,19 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::builtins::annotations::pep649_enabled;
-use crate::builtins::attr::{attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup};
+use crate::builtins::attr::{
+    attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup,
+};
 use crate::builtins::classes::builtin_classes;
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
     TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bytes,
-    alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
-    call_callable0, call_callable1, call_callable2, call_function_obj_vec, class_mro_vec,
-    class_name_for_error, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
-    dict_set_in_place, exception_pending,
-    format_exception_with_traceback, has_capability, inc_ref_bits, init_atomic_bits,
-    int_bits_from_i64, intern_static_name, is_missing_bits, is_truthy, missing_bits,
-    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
+    call_callable1, call_callable2, call_function_obj_vec, class_mro_vec, class_name_for_error,
+    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
+    exception_pending, format_exception_with_traceback, has_capability, inc_ref_bits,
+    init_atomic_bits, int_bits_from_i64, intern_static_name, is_missing_bits, is_truthy,
+    missing_bits, module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
     molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
     molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter,
     molt_iter_next, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state,
@@ -3070,7 +3071,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
         let cls_bits = type_of_bits(_py, self_bits);
         let mut base_bits = builtins.object;
         let mut found_base = false;
-        let mro = class_mro_vec(_py, cls_bits);
+        let mro = class_mro_vec(cls_bits);
         for candidate_bits in mro {
             let flags_bits = match copyreg_attr_optional(_py, candidate_bits, b"__flags__") {
                 Ok(bits) => bits,

@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicU64;
 
 use molt_obj_model::MoltObject;
+use num_traits::{Signed, ToPrimitive};
 
 use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
@@ -11,16 +12,16 @@ use crate::{
     complex_from_obj_strict, complex_ptr_from_bits, dec_ref_bits, dict_set_in_place,
     exception_pending, inc_ref_bits, init_atomic_bits, int_bits_from_i128, intern_static_name,
     is_truthy, molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor,
-    molt_class_set_base, molt_concat, molt_contains, molt_delitem_method, molt_div,
-    molt_eq, molt_exception_clear, molt_floordiv, molt_ge, molt_getattr_builtin,
-    molt_getitem_method, molt_gt, molt_inplace_add, molt_inplace_bit_and, molt_inplace_bit_or,
-    molt_inplace_bit_xor, molt_inplace_concat, molt_inplace_div, molt_inplace_floordiv,
-    molt_inplace_lshift, molt_inplace_matmul, molt_inplace_mod, molt_inplace_mul,
-    molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub, molt_index, molt_invert,
-    molt_is_truthy, molt_iter_checked, molt_iter_next, molt_le, molt_len, molt_lshift, molt_lt,
-    molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_setitem_method,
-    molt_sub, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_bigint, to_i64, type_name, type_of_bits,
+    molt_class_set_base, molt_concat, molt_contains, molt_delitem_method, molt_div, molt_eq,
+    molt_floordiv, molt_ge, molt_getattr_builtin, molt_getitem_method, molt_gt, molt_index,
+    molt_inplace_add, molt_inplace_bit_and, molt_inplace_bit_or, molt_inplace_bit_xor,
+    molt_inplace_concat, molt_inplace_div, molt_inplace_floordiv, molt_inplace_lshift,
+    molt_inplace_matmul, molt_inplace_mod, molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift,
+    molt_inplace_sub, molt_invert, molt_is_truthy, molt_iter_checked, molt_iter_next, molt_le,
+    molt_len, molt_lshift, molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow,
+    molt_rshift, molt_setitem_method, molt_sub, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+    to_bigint, to_i64, type_name, type_of_bits,
 };
 
 static ITEMGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
@@ -181,7 +182,12 @@ fn mark_vararg(
             b"__molt_vararg__",
         );
         unsafe {
-            dict_set_in_place(_py, dict_ptr, vararg_name, MoltObject::from_bool(true).bits());
+            dict_set_in_place(
+                _py,
+                dict_ptr,
+                vararg_name,
+                MoltObject::from_bool(true).bits(),
+            );
         }
     }
     if has_varkw {
@@ -191,7 +197,12 @@ fn mark_vararg(
             b"__molt_varkw__",
         );
         unsafe {
-            dict_set_in_place(_py, dict_ptr, varkw_name, MoltObject::from_bool(true).bits());
+            dict_set_in_place(
+                _py,
+                dict_ptr,
+                varkw_name,
+                MoltObject::from_bool(true).bits(),
+            );
         }
     }
 }
@@ -931,7 +942,7 @@ pub extern "C" fn molt_operator_neg(val: u64) -> u64 {
                         _py,
                         "OverflowError",
                         "int too large to convert to float",
-                    )
+                    );
                 }
                 _ => {}
             }
@@ -977,7 +988,7 @@ pub extern "C" fn molt_operator_pos(val: u64) -> u64 {
                         _py,
                         "OverflowError",
                         "int too large to convert to float",
-                    )
+                    );
                 }
                 _ => {}
             }

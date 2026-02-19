@@ -135,8 +135,7 @@ fn json_scanstring_decode(
                                 }
                             }
                             if valid && (0xDC00..=0xDFFF).contains(&low) {
-                                let combined =
-                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                                 if let Some(real) = char::from_u32(combined) {
                                     out.push(real);
                                     idx += 6;
@@ -225,8 +224,13 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
                 if decoded_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
                 }
-                let tuple_ptr =
-                    alloc_tuple(_py, &[MoltObject::from_ptr(decoded_ptr).bits(), MoltObject::from_int(idx as i64).bits()]);
+                let tuple_ptr = alloc_tuple(
+                    _py,
+                    &[
+                        MoltObject::from_ptr(decoded_ptr).bits(),
+                        MoltObject::from_int(idx as i64).bits(),
+                    ],
+                );
                 if tuple_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
                 }
