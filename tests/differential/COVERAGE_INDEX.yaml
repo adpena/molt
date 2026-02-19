@@ -108,6 +108,7 @@ stdlib:
   operator:
     tests:
       - tests/differential/stdlib/operator_basic.py
+      - tests/differential/stdlib/operator_full_surface.py
       - tests/differential/stdlib/operator_getters_extended.py
       - tests/differential/stdlib/operator_itemgetter_error.py
   unittest:
