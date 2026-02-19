@@ -1762,6 +1762,7 @@ tests/differential/stdlib/test_support_captured_output.py
 tests/differential/stdlib/test_support_findfile_basic.py
 tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
+tests/differential/stdlib/colorsys_basic.py
 tests/differential/stdlib/textwrap_basic.py
 tests/differential/stdlib/this_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py
