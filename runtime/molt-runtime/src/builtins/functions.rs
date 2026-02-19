@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::types::cell_class;
-use crate::PyToken;
+use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
     TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE,
@@ -24,11 +24,11 @@ use crate::{
     call_callable3, call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
     ensure_function_code_bits, exception_kind_bits, exception_pending, format_obj,
     function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
-    index_i64_from_obj, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits,
-    molt_exception_last, molt_getattr_builtin, molt_getitem_method, molt_is_callable, molt_iter,
-    molt_iter_next, molt_list_insert, molt_len, molt_lt, molt_trace_enter_slot, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64, type_name, type_of_bits,
+    is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits, molt_exception_last,
+    molt_getattr_builtin, molt_getitem_method, molt_is_callable, molt_iter, molt_iter_next,
+    molt_len, molt_list_insert, molt_trace_enter_slot, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+    to_f64, to_i64, type_name, type_of_bits,
 };
 
 #[derive(Clone)]
@@ -11961,213 +11961,156 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     })
 }
 
-fn bisect_index_i64(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> Option<i64> {
-    let obj = obj_from_bits(obj_bits);
-    if let Some(i) = to_i64(obj) {
-        return Some(i);
+fn bisect_len(_py: &crate::PyToken<'_>, a_bits: u64) -> Result<i64, u64> {
+    let len_bits = molt_len(a_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
     }
-    let Some(index_name_bits) = attr_name_bits_from_bytes(_py, b"__index__") else {
-        return raise_exception::<Option<i64>>(_py, "TypeError", err);
+    let len_obj = obj_from_bits(len_bits);
+    let Some(len) = to_i64(len_obj) else {
+        if len_obj.as_ptr().is_some() {
+            dec_ref_bits(_py, len_bits);
+        }
+        return Err(raise_exception::<_>(_py, "TypeError", "len() should return int"));
     };
-    let index_bits = molt_getattr_builtin(obj_bits, index_name_bits, missing_bits(_py));
-    if exception_pending(_py) {
-        let exc_bits = molt_exception_last();
-        let exc_obj = obj_from_bits(exc_bits);
-        let mut is_attr_error = false;
-        if let Some(exc_ptr) = exc_obj.as_ptr() {
-            unsafe {
-                if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                    let kind_bits = exception_kind_bits(exc_ptr);
-                    if let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) {
-                        if kind == "AttributeError" {
-                            is_attr_error = true;
-                        }
-                    }
-                }
-            }
-        }
-        if exc_obj.as_ptr().is_some() {
-            dec_ref_bits(_py, exc_bits);
-        }
-        if is_attr_error {
-            clear_exception(_py);
-            return raise_exception::<Option<i64>>(_py, "TypeError", err);
-        }
-        return None;
+    if len_obj.as_ptr().is_some() {
+        dec_ref_bits(_py, len_bits);
     }
-    let res_bits = unsafe { call_callable0(_py, index_bits) };
-    if obj_from_bits(index_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, index_bits);
-    }
-    if exception_pending(_py) {
-        return None;
-    }
-    let res_obj = obj_from_bits(res_bits);
-    if let Some(i) = to_i64(res_obj) {
-        if res_obj.as_ptr().is_some() {
-            dec_ref_bits(_py, res_bits);
-        }
-        return Some(i);
-    }
-    let res_type = type_name(_py, res_obj);
-    if res_obj.as_ptr().is_some() {
-        dec_ref_bits(_py, res_bits);
-    }
-    let msg = format!("__index__ returned non-int (type {res_type})");
-    raise_exception::<Option<i64>>(_py, "TypeError", &msg)
+    Ok(len)
 }
 
-fn bisect_impl(
-    _py: &PyToken<'_>,
+fn bisect_index_from_obj(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> Result<i64, u64> {
+    let err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(_py, obj_from_bits(obj_bits))
+    );
+    let Some(value) = index_i64_with_overflow(_py, obj_bits, &err, None) else {
+        return Err(MoltObject::none().bits());
+    };
+    Ok(value)
+}
+
+fn bisect_bounds(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    lo_bits: u64,
+    hi_bits: u64,
+) -> Result<(i64, i64), u64> {
+    let len = bisect_len(_py, a_bits)?;
+    let lo = bisect_index_from_obj(_py, lo_bits)?;
+    if lo < 0 {
+        return Err(raise_exception::<_>(_py, "ValueError", "lo must be non-negative"));
+    }
+    let hi_obj = obj_from_bits(hi_bits);
+    let hi = if hi_obj.is_none() {
+        len
+    } else {
+        bisect_index_from_obj(_py, hi_bits)?
+    };
+    Ok((lo, hi))
+}
+
+fn bisect_search(
+    _py: &crate::PyToken<'_>,
     a_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
     key_bits: u64,
     left: bool,
-) -> u64 {
-    let len_bits = molt_len(a_bits);
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    let Some(len) = to_i64(obj_from_bits(len_bits)) else {
-        return raise_exception::<_>(_py, "TypeError", "len() returned non-int");
-    };
-    let lo_err = format!(
-        "'{}' object cannot be interpreted as an integer",
-        type_name(_py, obj_from_bits(lo_bits))
-    );
-    let Some(lo) = bisect_index_i64(_py, lo_bits, &lo_err) else {
-        return MoltObject::none().bits();
-    };
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    if lo < 0 {
-        return raise_exception::<_>(_py, "ValueError", "lo must be non-negative");
-    }
-    let hi = if obj_from_bits(hi_bits).is_none() {
-        len
-    } else {
-        let hi_err = format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(_py, obj_from_bits(hi_bits))
-        );
-        let Some(value) = bisect_index_i64(_py, hi_bits, &hi_err) else {
-            return MoltObject::none().bits();
-        };
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        value
-    };
-    let use_key = !obj_from_bits(key_bits).is_none();
-    let mut lo_idx = lo;
-    let mut hi_idx = hi;
-    while lo_idx < hi_idx {
-        let mid = lo_idx + ((hi_idx - lo_idx) / 2);
+) -> Result<i64, u64> {
+    let (mut lo, mut hi) = bisect_bounds(_py, a_bits, lo_bits, hi_bits)?;
+    let key_is_none = obj_from_bits(key_bits).is_none();
+    while lo < hi {
+        let mid = lo + ((hi - lo) / 2);
         let mid_bits = MoltObject::from_int(mid).bits();
         let item_bits = molt_getitem_method(a_bits, mid_bits);
         if exception_pending(_py) {
-            return MoltObject::none().bits();
+            return Err(MoltObject::none().bits());
         }
-        let cmp_bits = if use_key {
-            let key_val_bits = unsafe { call_callable1(_py, key_bits, item_bits) };
-            if exception_pending(_py) {
-                if obj_from_bits(item_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, item_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let out = if left {
-                molt_lt(key_val_bits, x_bits)
-            } else {
-                molt_lt(x_bits, key_val_bits)
-            };
-            if obj_from_bits(key_val_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, key_val_bits);
-            }
-            out
-        } else if left {
-            molt_lt(item_bits, x_bits)
+        let (compare_bits, compare_is_item) = if key_is_none {
+            (item_bits, true)
         } else {
-            molt_lt(x_bits, item_bits)
-        };
-        if exception_pending(_py) {
+            let key_res_bits = unsafe { call_callable1(_py, key_bits, item_bits) };
             if obj_from_bits(item_bits).as_ptr().is_some() {
                 dec_ref_bits(_py, item_bits);
             }
-            return MoltObject::none().bits();
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            (key_res_bits, false)
+        };
+        let lt_bits = if left {
+            crate::molt_lt(compare_bits, x_bits)
+        } else {
+            crate::molt_lt(x_bits, compare_bits)
+        };
+        if exception_pending(_py) {
+            if obj_from_bits(compare_bits).as_ptr().is_some() {
+                dec_ref_bits(_py, compare_bits);
+            }
+            return Err(MoltObject::none().bits());
         }
-        let cmp = is_truthy(_py, obj_from_bits(cmp_bits));
-        if obj_from_bits(item_bits).as_ptr().is_some() {
+        let is_lt = is_truthy(_py, obj_from_bits(lt_bits));
+        if obj_from_bits(lt_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, lt_bits);
+        }
+        if obj_from_bits(compare_bits).as_ptr().is_some() && !compare_is_item {
+            dec_ref_bits(_py, compare_bits);
+        }
+        if compare_is_item && obj_from_bits(item_bits).as_ptr().is_some() {
             dec_ref_bits(_py, item_bits);
         }
         if left {
-            if cmp {
-                lo_idx = mid + 1;
+            if is_lt {
+                lo = mid + 1;
             } else {
-                hi_idx = mid;
+                hi = mid;
             }
-        } else if cmp {
-            hi_idx = mid;
+        } else if is_lt {
+            hi = mid;
         } else {
-            lo_idx = mid + 1;
+            lo = mid + 1;
         }
     }
-    MoltObject::from_int(lo_idx).bits()
+    Ok(lo)
 }
 
-fn bisect_insort_impl(
-    _py: &PyToken<'_>,
+fn bisect_insert(
+    _py: &crate::PyToken<'_>,
     a_bits: u64,
+    pos: i64,
     x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-    left: bool,
-) -> u64 {
-    let use_key = !obj_from_bits(key_bits).is_none();
-    let mut search_bits = x_bits;
-    if use_key {
-        search_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-    }
-    let idx_bits = bisect_impl(_py, a_bits, search_bits, lo_bits, hi_bits, key_bits, left);
-    if use_key && obj_from_bits(search_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, search_bits);
-    }
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    let list_obj = obj_from_bits(a_bits);
-    if let Some(list_ptr) = list_obj.as_ptr() {
-        unsafe {
-            if object_type_id(list_ptr) == TYPE_ID_LIST {
-                return molt_list_insert(a_bits, idx_bits, x_bits);
-            }
-        }
-    }
+) -> Result<(), u64> {
     let Some(insert_name_bits) = attr_name_bits_from_bytes(_py, b"insert") else {
-        return MoltObject::none().bits();
+        return Err(MoltObject::none().bits());
     };
-    let insert_bits = molt_getattr_builtin(a_bits, insert_name_bits, missing_bits(_py));
+    let missing = missing_bits(_py);
+    let insert_bits = molt_getattr_builtin(a_bits, insert_name_bits, missing);
+    dec_ref_bits(_py, insert_name_bits);
     if exception_pending(_py) {
-        return MoltObject::none().bits();
+        return Err(MoltObject::none().bits());
     }
-    let out_bits = unsafe { call_callable2(_py, insert_bits, idx_bits, x_bits) };
-    if obj_from_bits(insert_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, insert_bits);
+    if insert_bits == missing {
+        let msg = format!(
+            "'{}' object has no attribute 'insert'",
+            type_name(_py, obj_from_bits(a_bits))
+        );
+        return Err(raise_exception::<_>(_py, "AttributeError", &msg));
+    }
+    let pos_bits = MoltObject::from_int(pos).bits();
+    let res_bits = unsafe { call_callable2(_py, insert_bits, pos_bits, x_bits) };
+    dec_ref_bits(_py, insert_bits);
+    if obj_from_bits(res_bits).as_ptr().is_some() {
+        dec_ref_bits(_py, res_bits);
     }
     if exception_pending(_py) {
-        return MoltObject::none().bits();
+        return Err(MoltObject::none().bits());
     }
-    if obj_from_bits(out_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, out_bits);
-    }
-    MoltObject::none().bits()
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -12179,7 +12122,10 @@ pub extern "C" fn molt_bisect_left(
     key_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        bisect_impl(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, true)
+        match bisect_search(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, true) {
+            Ok(pos) => MoltObject::from_int(pos).bits(),
+            Err(bits) => bits,
+        }
     })
 }
 
@@ -12192,12 +12138,15 @@ pub extern "C" fn molt_bisect_right(
     key_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        bisect_impl(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, false)
+        match bisect_search(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, false) {
+            Ok(pos) => MoltObject::from_int(pos).bits(),
+            Err(bits) => bits,
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_insort_left(
+pub extern "C" fn molt_bisect_insort_left(
     a_bits: u64,
     x_bits: u64,
     lo_bits: u64,
@@ -12205,12 +12154,38 @@ pub extern "C" fn molt_insort_left(
     key_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        bisect_insort_impl(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, true)
+        let key_is_none = obj_from_bits(key_bits).is_none();
+        let search_bits = if key_is_none {
+            x_bits
+        } else {
+            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        };
+        let pos = match bisect_search(_py, a_bits, search_bits, lo_bits, hi_bits, key_bits, true)
+        {
+            Ok(pos) => pos,
+            Err(bits) => {
+                if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
+                    dec_ref_bits(_py, search_bits);
+                }
+                return bits;
+            }
+        };
+        if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, search_bits);
+        }
+        match bisect_insert(_py, a_bits, pos, x_bits) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_insort_right(
+pub extern "C" fn molt_bisect_insort_right(
     a_bits: u64,
     x_bits: u64,
     lo_bits: u64,
@@ -12218,7 +12193,40 @@ pub extern "C" fn molt_insort_right(
     key_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        bisect_insort_impl(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, false)
+        let key_is_none = obj_from_bits(key_bits).is_none();
+        let search_bits = if key_is_none {
+            x_bits
+        } else {
+            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        };
+        let pos = match bisect_search(
+            _py,
+            a_bits,
+            search_bits,
+            lo_bits,
+            hi_bits,
+            key_bits,
+            false,
+        ) {
+            Ok(pos) => pos,
+            Err(bits) => {
+                if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
+                    dec_ref_bits(_py, search_bits);
+                }
+                return bits;
+            }
+        };
+        if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, search_bits);
+        }
+        match bisect_insert(_py, a_bits, pos, x_bits) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
+        }
     })
 }
 
