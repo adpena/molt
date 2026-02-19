@@ -1,12 +1,16 @@
-"""Intrinsic-first stdlib module stub for `json.__main__`."""
+"""`json.__main__` compatibility shim.
+
+In CPython, `json.__main__` exists starting in 3.14.
+Version-gated absence for earlier versions is handled at importlib boundary.
+"""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+import json
 
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `json.__main__` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "json.__main__" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+if __name__ == "__main__":
+    import json.tool as _tool
+
+    _tool.main()

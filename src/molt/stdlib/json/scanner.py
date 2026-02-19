@@ -1,12 +1,18 @@
-"""Intrinsic-first stdlib module stub for `json.scanner`."""
+"""Minimal `json.scanner` compatibility surface."""
+
+import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _json import make_scanner as c_make_scanner
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+
+NUMBER_RE = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?")
+make_scanner = c_make_scanner
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `json.scanner` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "json.scanner" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def py_make_scanner(_context):
+    def _scan_once(_s, _idx):
+        raise NotImplementedError("py_make_scanner runtime path is not implemented")
+
+    return _scan_once

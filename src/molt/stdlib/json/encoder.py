@@ -1,12 +1,35 @@
-"""Intrinsic-first stdlib module stub for `json.encoder`."""
+"""Minimal `json.encoder` compatibility surface."""
+
+import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _json import encode_basestring
+from _json import encode_basestring as c_encode_basestring
+from _json import encode_basestring_ascii
+from _json import encode_basestring_ascii as c_encode_basestring_ascii
+from _json import make_encoder as c_make_encoder
+from json import JSONEncoder
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+
+ESCAPE = re.compile(r'[\x00-\x1f\\"\b\f\n\r\t]')
+ESCAPE_ASCII = re.compile(r'([\\\\"]|[^\ -~])')
+ESCAPE_DCT = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+HAS_UTF8 = re.compile(r"[\x80-\xff]")
+INFINITY = float("inf")
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `json.encoder` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "json.encoder" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def py_encode_basestring(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def py_encode_basestring_ascii(value):
+    return py_encode_basestring(value)

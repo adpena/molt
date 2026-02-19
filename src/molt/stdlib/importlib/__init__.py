@@ -23,8 +23,10 @@ _SPEC_FIRST_IMPORTS = {"asyncio.graph"}
 def _known_absence_error(resolved: str) -> BaseException | None:
     if resolved == "asyncio.graph":
         return _sys.version_info < (3, 14)
-    if resolved == "_opcode_metadata":
+    if resolved == "json.__main__":
         return _sys.version_info < (3, 14)
+    if resolved == "imghdr":
+        return _sys.version_info >= (3, 13)
     return False
 
 

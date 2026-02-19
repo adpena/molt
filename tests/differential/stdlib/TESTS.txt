@@ -1202,6 +1202,7 @@ tests/differential/stdlib/httpclient_chunked_iter_upload.py
 tests/differential/stdlib/httpclient_connection_pool_basic.py
 tests/differential/stdlib/imaplib_basic.py
 tests/differential/stdlib/imghdr_basic.py
+tests/differential/stdlib/imghdr_version_gate.py
 tests/differential/stdlib/import_spec_pep451.py
 tests/differential/stdlib/import_spec_shape.py
 tests/differential/stdlib/importlib_basic.py
@@ -1681,7 +1682,9 @@ tests/differential/stdlib/ssl_start_tls_upgrade.py
 tests/differential/stdlib/ssl_tls13_ciphersuites.py
 tests/differential/stdlib/ssl_tls_version_bounds.py
 tests/differential/stdlib/ssl_unwrap_shutdown_basic.py
+tests/differential/stdlib/stat_api_surface_versioned.py
 tests/differential/stdlib/stat_basic.py
+tests/differential/stdlib/stat_filemode_constants.py
 tests/differential/stdlib/stat_helpers_intrinsic.py
 tests/differential/stdlib/statistics_basic.py
 tests/differential/stdlib/statistics_correlation.py
@@ -1749,6 +1752,7 @@ tests/differential/stdlib/sys_exc_info_nested.py
 tests/differential/stdlib/sys_getframe_fields.py
 tests/differential/stdlib/sys_modules_main.py
 tests/differential/stdlib/sys_setrecursionlimit.py
+tests/differential/stdlib/sys_stat_version_gate.py
 tests/differential/stdlib/sys_stdio_build_mode.py
 tests/differential/stdlib/tabnanny_basic.py
 tests/differential/stdlib/tempfile_basic.py
