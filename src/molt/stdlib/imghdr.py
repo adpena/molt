@@ -1,138 +1,217 @@
-"""Recognize image file formats based on their first few bytes.
+"""Image type detection helpers (intrinsic-backed)."""
 
-This module mirrors CPython 3.12 `imghdr` surface and is version-gated absent
-for >=3.13 at the importlib boundary.
-"""
+from os import PathLike
+import warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 from os import PathLike
 import warnings
 
-__all__ = ["what"]
+_MOLT_IMGHDR_TEST = _require_intrinsic("molt_imghdr_test", globals())
+_MOLT_IMGHDR_WHAT = _require_intrinsic("molt_imghdr_what", globals())
 
-_MOLT_IMGHDR_DETECT = _require_intrinsic("molt_imghdr_detect", globals())
+warnings.warn(
+    "'imghdr' is deprecated and slated for removal in Python 3.13",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+
+tests: list = []
+
+
+def test_jpeg(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h[6:10] in (b"JFIF", b"Exif"):
+            return "jpeg"
+        if h[:4] == b"\xff\xd8\xff\xdb":
+            return "jpeg"
+        return None
+    if _MOLT_IMGHDR_TEST("jpeg", h):
+        return "jpeg"
+
+
+def test_png(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        return None
+    if _MOLT_IMGHDR_TEST("png", h):
+        return "png"
+
+
+def test_gif(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h[:6] in (b"GIF87a", b"GIF89a"):
+            return "gif"
+        return None
+    if _MOLT_IMGHDR_TEST("gif", h):
+        return "gif"
+
+
+def test_tiff(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h[:2] in (b"MM", b"II"):
+            return "tiff"
+        return None
+    if _MOLT_IMGHDR_TEST("tiff", h):
+        return "tiff"
+
+
+def test_rgb(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"\x01\xda"):
+            return "rgb"
+        return None
+    if _MOLT_IMGHDR_TEST("rgb", h):
+        return "rgb"
+
+
+def test_pbm(h, f):
+    _ = f
+    if isinstance(h, str):
+        if (
+            len(h) >= 3
+            and h[0] == ord(b"P")
+            and h[1] in b"14"
+            and h[2] in b" \t\n\r"
+        ):
+            return "pbm"
+        return None
+    if _MOLT_IMGHDR_TEST("pbm", h):
+        return "pbm"
+
+
+def test_pgm(h, f):
+    _ = f
+    if isinstance(h, str):
+        if (
+            len(h) >= 3
+            and h[0] == ord(b"P")
+            and h[1] in b"25"
+            and h[2] in b" \t\n\r"
+        ):
+            return "pgm"
+        return None
+    if _MOLT_IMGHDR_TEST("pgm", h):
+        return "pgm"
+
+
+def test_ppm(h, f):
+    _ = f
+    if isinstance(h, str):
+        if (
+            len(h) >= 3
+            and h[0] == ord(b"P")
+            and h[1] in b"36"
+            and h[2] in b" \t\n\r"
+        ):
+            return "ppm"
+        return None
+    if _MOLT_IMGHDR_TEST("ppm", h):
+        return "ppm"
+
+
+def test_rast(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"\x59\xa6\x6a\x95"):
+            return "rast"
+        return None
+    if _MOLT_IMGHDR_TEST("rast", h):
+        return "rast"
+
+
+def test_xbm(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"#define "):
+            return "xbm"
+        return None
+    if _MOLT_IMGHDR_TEST("xbm", h):
+        return "xbm"
+
+
+def test_bmp(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"BM"):
+            return "bmp"
+        return None
+    if _MOLT_IMGHDR_TEST("bmp", h):
+        return "bmp"
+
+
+def test_webp(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"RIFF") and h[8:12] == b"WEBP":
+            return "webp"
+        return None
+    if _MOLT_IMGHDR_TEST("webp", h):
+        return "webp"
+
+
+def test_exr(h, f):
+    _ = f
+    if isinstance(h, str):
+        if h.startswith(b"\x76\x2f\x31\x01"):
+            return "exr"
+        return None
+    if _MOLT_IMGHDR_TEST("exr", h):
+        return "exr"
+
+
+tests.append(test_jpeg)
+tests.append(test_png)
+tests.append(test_gif)
+tests.append(test_tiff)
+tests.append(test_rgb)
+tests.append(test_pbm)
+tests.append(test_pgm)
+tests.append(test_ppm)
+tests.append(test_rast)
+tests.append(test_xbm)
+tests.append(test_bmp)
+tests.append(test_webp)
+tests.append(test_exr)
+
+_BUILTIN_TESTS = tuple(tests)
 
 
 def what(file, h=None):
     f = None
     try:
         if h is None:
-            if isinstance(file, (str, PathLike)):
+            if isinstance(file, (str, bytes, PathLike)):
                 f = open(file, "rb")
                 h = f.read(32)
             else:
-                location = file.tell()
-                h = file.read(32)
-                file.seek(location)
-        for tf in tests:
-            res = tf(h, f)
-            if res:
+                f = file
+                try:
+                    h = f.read(32)
+                except AttributeError:
+                    return None
+        if tests[: len(_BUILTIN_TESTS)] == list(_BUILTIN_TESTS) and not isinstance(h, str):
+            result = _MOLT_IMGHDR_WHAT(h)
+            if result is not None:
+                return result
+            start_index = len(_BUILTIN_TESTS)
+        else:
+            start_index = 0
+
+        for test in tests[start_index:]:
+            if res := test(h, f):
                 return res
+        return None
     finally:
-        if f:
+        if f is not None and f is not file:
             f.close()
-    return None
-
-
-def _match(h, kind):
-    detected = _MOLT_IMGHDR_DETECT(h)
-    if detected == kind:
-        return kind
-    return None
-
-
-tests = []
-
-
-def test_jpeg(h, f):
-    return _match(h, "jpeg")
-
-
-tests.append(test_jpeg)
-
-
-def test_png(h, f):
-    return _match(h, "png")
-
-
-tests.append(test_png)
-
-
-def test_gif(h, f):
-    return _match(h, "gif")
-
-
-tests.append(test_gif)
-
-
-def test_tiff(h, f):
-    return _match(h, "tiff")
-
-
-tests.append(test_tiff)
-
-
-def test_rgb(h, f):
-    return _match(h, "rgb")
-
-
-tests.append(test_rgb)
-
-
-def test_pbm(h, f):
-    return _match(h, "pbm")
-
-
-tests.append(test_pbm)
-
-
-def test_pgm(h, f):
-    return _match(h, "pgm")
-
-
-tests.append(test_pgm)
-
-
-def test_ppm(h, f):
-    return _match(h, "ppm")
-
-
-tests.append(test_ppm)
-
-
-def test_rast(h, f):
-    return _match(h, "rast")
-
-
-tests.append(test_rast)
-
-
-def test_xbm(h, f):
-    return _match(h, "xbm")
-
-
-tests.append(test_xbm)
-
-
-def test_bmp(h, f):
-    return _match(h, "bmp")
-
-
-tests.append(test_bmp)
-
-
-def test_webp(h, f):
-    return _match(h, "webp")
-
-
-tests.append(test_webp)
-
-
-def test_exr(h, f):
-    return _match(h, "exr")
-
-
-tests.append(test_exr)
 
 
 def test():
@@ -152,7 +231,7 @@ def test():
         sys.exit(1)
 
 
-def testall(list, recursive, toplevel):  # noqa: A002
+def testall(list, recursive, toplevel):
     import glob
     import os
     import sys
@@ -173,7 +252,3 @@ def testall(list, recursive, toplevel):  # noqa: A002
                 print(what(filename))
             except OSError:
                 print("*** not found ***")
-
-
-if __name__ == "__main__":
-    test()
