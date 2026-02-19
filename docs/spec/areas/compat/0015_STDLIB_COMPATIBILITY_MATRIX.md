@@ -196,7 +196,7 @@ entries must obey the policy in Section 0.
 | cmath | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Math intrinsics; parity pending. |
 | codecs | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Intrinsic encode/decode for bytes-like/str; registry/lookup + minimal encodings/aliases now available; incremental/stream codecs + error-handler registration still pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
 | codeop | Stdlib | Planned | P3 | SL3 | stdlib | Compilation helpers; parity pending. |
-| colorsys | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB↔HLS/HSV/YIQ conversions. |
+| colorsys | Stdlib | Complete | P3 | SL3 | stdlib/runtime | Intrinsic-backed RGB/HSV/HLS/YIQ conversions with full CPython 3.12 API surface; no host fallback. |
 | compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
 | configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
 | copyreg | Stdlib | Full | P3 | SL3 | stdlib | Intrinsic-backed pickle registry core plus helper APIs (`__newobj__`, `__newobj_ex__`, `_reconstructor`, `_reduce_ex`) with runtime-owned state and no host-Python fallback. |
