@@ -6,6 +6,7 @@ pub(crate) mod attributes;
 pub(crate) mod callable;
 pub(crate) mod classes;
 pub(crate) mod codecs;
+pub(crate) mod colorsys;
 pub(crate) mod containers;
 pub(crate) mod containers_alloc;
 pub(crate) mod context;
