@@ -84,6 +84,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_pow_mod", symbol: "molt_pow_mod", arity: 3 },
     IntrinsicSpec { name: "molt_fnmatch_filter", symbol: "molt_fnmatch_filter", arity: 3 },
     IntrinsicSpec { name: "molt_fnmatch_translate", symbol: "molt_fnmatch_translate", arity: 1 },
+    IntrinsicSpec { name: "molt_imghdr_test", symbol: "molt_imghdr_test", arity: 2 },
+    IntrinsicSpec { name: "molt_imghdr_what", symbol: "molt_imghdr_what", arity: 1 },
     IntrinsicSpec { name: "molt_pkgutil_iter_modules", symbol: "molt_pkgutil_iter_modules", arity: 2 },
     IntrinsicSpec { name: "molt_pkgutil_walk_packages", symbol: "molt_pkgutil_walk_packages", arity: 2 },
     IntrinsicSpec { name: "molt_site_help0", symbol: "molt_site_help0", arity: 0 },
@@ -1122,6 +1124,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
         "molt_fnmatch_translate" => Some(crate::molt_fnmatch_translate as *const () as usize as u64),
+        "molt_imghdr_test" => Some(crate::molt_imghdr_test as *const () as usize as u64),
+        "molt_imghdr_what" => Some(crate::molt_imghdr_what as *const () as usize as u64),
         "molt_pkgutil_iter_modules" => Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64),
         "molt_pkgutil_walk_packages" => Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64),
         "molt_site_help0" => Some(crate::molt_site_help0 as *const () as usize as u64),

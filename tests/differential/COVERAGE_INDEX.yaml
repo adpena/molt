@@ -2340,6 +2340,7 @@ stdlib:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_idlelib_zzdummy_149f77c7.py
   imghdr:
     tests:
+      - tests/differential/stdlib/imghdr_basic.py
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_imghdr_f49c9279.py
   importlib._abc:
     tests:

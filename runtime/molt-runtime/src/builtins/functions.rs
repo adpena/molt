@@ -12330,271 +12330,100 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     })
 }
 
-fn bisect_len(_py: &crate::PyToken<'_>, a_bits: u64) -> Result<i64, u64> {
-    let len_bits = molt_len(a_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let len_obj = obj_from_bits(len_bits);
-    let Some(len) = to_i64(len_obj) else {
-        if len_obj.as_ptr().is_some() {
-            dec_ref_bits(_py, len_bits);
-        }
-        return Err(raise_exception::<_>(_py, "TypeError", "len() should return int"));
-    };
-    if len_obj.as_ptr().is_some() {
-        dec_ref_bits(_py, len_bits);
-    }
-    Ok(len)
+fn imghdr_has_prefix(h: &[u8], prefix: &[u8]) -> bool {
+    h.len() >= prefix.len() && &h[..prefix.len()] == prefix
 }
 
-fn bisect_index_from_obj(
-    _py: &crate::PyToken<'_>,
-    obj_bits: u64,
-) -> Result<i64, u64> {
-    let err = format!(
-        "'{}' object cannot be interpreted as an integer",
-        type_name(_py, obj_from_bits(obj_bits))
-    );
-    let Some(value) = index_i64_with_overflow(_py, obj_bits, &err, None) else {
-        return Err(MoltObject::none().bits());
+fn imghdr_check(kind: &str, h: &[u8]) -> Result<bool, ()> {
+    let matched = match kind {
+        "jpeg" => {
+            (h.len() >= 10 && (&h[6..10] == b"JFIF" || &h[6..10] == b"Exif"))
+                || (h.len() >= 4 && &h[..4] == b"\xff\xd8\xff\xdb")
+        }
+        "png" => imghdr_has_prefix(h, b"\x89PNG\r\n\x1a\n"),
+        "gif" => h.len() >= 6 && (&h[..6] == b"GIF87a" || &h[..6] == b"GIF89a"),
+        "tiff" => h.len() >= 2 && (&h[..2] == b"MM" || &h[..2] == b"II"),
+        "rgb" => imghdr_has_prefix(h, b"\x01\xda"),
+        "pbm" => {
+            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'1' | b'4')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "pgm" => {
+            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'2' | b'5')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "ppm" => {
+            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'3' | b'6')
+                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
+        }
+        "rast" => imghdr_has_prefix(h, b"\x59\xa6\x6a\x95"),
+        "xbm" => imghdr_has_prefix(h, b"#define "),
+        "bmp" => imghdr_has_prefix(h, b"BM"),
+        "webp" => h.len() >= 12 && &h[..4] == b"RIFF" && &h[8..12] == b"WEBP",
+        "exr" => imghdr_has_prefix(h, b"\x76\x2f\x31\x01"),
+        _ => return Err(()),
     };
-    Ok(value)
+    Ok(matched)
 }
 
-fn bisect_bounds(
-    _py: &crate::PyToken<'_>,
-    a_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-) -> Result<(i64, i64), u64> {
-    let len = bisect_len(_py, a_bits)?;
-    let lo = bisect_index_from_obj(_py, lo_bits)?;
-    if lo < 0 {
-        return Err(raise_exception::<_>(_py, "ValueError", "lo must be non-negative"));
-    }
-    let hi_obj = obj_from_bits(hi_bits);
-    let hi = if hi_obj.is_none() {
-        len
-    } else {
-        bisect_index_from_obj(_py, hi_bits)?
-    };
-    Ok((lo, hi))
-}
-
-fn bisect_search(
-    _py: &crate::PyToken<'_>,
-    a_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-    left: bool,
-) -> Result<i64, u64> {
-    let (mut lo, mut hi) = bisect_bounds(_py, a_bits, lo_bits, hi_bits)?;
-    let key_is_none = obj_from_bits(key_bits).is_none();
-    while lo < hi {
-        let mid = lo + ((hi - lo) / 2);
-        let mid_bits = MoltObject::from_int(mid).bits();
-        let item_bits = molt_getitem_method(a_bits, mid_bits);
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
-        let (compare_bits, compare_is_item) = if key_is_none {
-            (item_bits, true)
-        } else {
-            let key_res_bits = unsafe { call_callable1(_py, key_bits, item_bits) };
-            if obj_from_bits(item_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, item_bits);
-            }
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            (key_res_bits, false)
-        };
-        let lt_bits = if left {
-            crate::molt_lt(compare_bits, x_bits)
-        } else {
-            crate::molt_lt(x_bits, compare_bits)
-        };
-        if exception_pending(_py) {
-            if obj_from_bits(compare_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, compare_bits);
-            }
-            return Err(MoltObject::none().bits());
-        }
-        let is_lt = is_truthy(_py, obj_from_bits(lt_bits));
-        if obj_from_bits(lt_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, lt_bits);
-        }
-        if obj_from_bits(compare_bits).as_ptr().is_some() && !compare_is_item {
-            dec_ref_bits(_py, compare_bits);
-        }
-        if compare_is_item && obj_from_bits(item_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, item_bits);
-        }
-        if left {
-            if is_lt {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        } else if is_lt {
-            hi = mid;
-        } else {
-            lo = mid + 1;
+fn imghdr_what(h: &[u8]) -> Option<&'static str> {
+    const ORDER: [&str; 13] = [
+        "jpeg", "png", "gif", "tiff", "rgb", "pbm", "pgm", "ppm", "rast", "xbm", "bmp", "webp",
+        "exr",
+    ];
+    for kind in ORDER {
+        if imghdr_check(kind, h).unwrap_or(false) {
+            return Some(kind);
         }
     }
-    Ok(lo)
-}
-
-fn bisect_insert(
-    _py: &crate::PyToken<'_>,
-    a_bits: u64,
-    pos: i64,
-    x_bits: u64,
-) -> Result<(), u64> {
-    let Some(insert_name_bits) = attr_name_bits_from_bytes(_py, b"insert") else {
-        return Err(MoltObject::none().bits());
-    };
-    let missing = missing_bits(_py);
-    let insert_bits = molt_getattr_builtin(a_bits, insert_name_bits, missing);
-    dec_ref_bits(_py, insert_name_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if insert_bits == missing {
-        let msg = format!(
-            "'{}' object has no attribute 'insert'",
-            type_name(_py, obj_from_bits(a_bits))
-        );
-        return Err(raise_exception::<_>(_py, "AttributeError", &msg));
-    }
-    let pos_bits = MoltObject::from_int(pos).bits();
-    let res_bits = unsafe { call_callable2(_py, insert_bits, pos_bits, x_bits) };
-    dec_ref_bits(_py, insert_bits);
-    if obj_from_bits(res_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, res_bits);
-    }
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    Ok(())
+    None
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_left(
-    a_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_imghdr_test(kind_bits: u64, header_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match bisect_search(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, true) {
-            Ok(pos) => MoltObject::from_int(pos).bits(),
-            Err(bits) => bits,
-        }
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "kind must be str");
+        };
+        let header_obj = obj_from_bits(header_bits);
+        let Some(header_ptr) = header_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let matched = match imghdr_check(&kind, header) {
+            Ok(value) => value,
+            Err(()) => {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "unknown imghdr test kind",
+                );
+            }
+        };
+        MoltObject::from_bool(matched).bits()
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_right(
-    a_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_imghdr_what(header_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match bisect_search(_py, a_bits, x_bits, lo_bits, hi_bits, key_bits, false) {
-            Ok(pos) => MoltObject::from_int(pos).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_left(
-    a_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let key_is_none = obj_from_bits(key_bits).is_none();
-        let search_bits = if key_is_none {
-            x_bits
+        let header_obj = obj_from_bits(header_bits);
+        let Some(header_ptr) = header_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        };
+        let Some(kind) = imghdr_what(header) else {
+            return MoltObject::none().bits();
+        };
+        let ptr = alloc_string(_py, kind.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
         } else {
-            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            res_bits
-        };
-        let pos = match bisect_search(_py, a_bits, search_bits, lo_bits, hi_bits, key_bits, true)
-        {
-            Ok(pos) => pos,
-            Err(bits) => {
-                if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, search_bits);
-                }
-                return bits;
-            }
-        };
-        if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, search_bits);
-        }
-        match bisect_insert(_py, a_bits, pos, x_bits) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_right(
-    a_bits: u64,
-    x_bits: u64,
-    lo_bits: u64,
-    hi_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let key_is_none = obj_from_bits(key_bits).is_none();
-        let search_bits = if key_is_none {
-            x_bits
-        } else {
-            let res_bits = unsafe { call_callable1(_py, key_bits, x_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            res_bits
-        };
-        let pos = match bisect_search(
-            _py,
-            a_bits,
-            search_bits,
-            lo_bits,
-            hi_bits,
-            key_bits,
-            false,
-        ) {
-            Ok(pos) => pos,
-            Err(bits) => {
-                if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, search_bits);
-                }
-                return bits;
-            }
-        };
-        if !key_is_none && obj_from_bits(search_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, search_bits);
-        }
-        match bisect_insert(_py, a_bits, pos, x_bits) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
+            MoltObject::from_ptr(ptr).bits()
         }
     })
 }
