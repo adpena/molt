@@ -184,6 +184,7 @@ pub(crate) use crate::builtins::exceptions::{
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functools::*;
+pub use crate::builtins::graphlib::*;
 pub use crate::builtins::hashlib::*;
 pub use crate::builtins::hmac::*;
 pub use crate::builtins::inspect::*;

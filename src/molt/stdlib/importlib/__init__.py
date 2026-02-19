@@ -25,8 +25,6 @@ def _known_absence_error(resolved: str) -> BaseException | None:
         return _sys.version_info < (3, 14)
     if resolved == "json.__main__":
         return _sys.version_info < (3, 14)
-    if resolved == "imghdr":
-        return _sys.version_info >= (3, 13)
     return False
 
 

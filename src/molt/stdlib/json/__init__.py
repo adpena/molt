@@ -9,6 +9,12 @@ import math
 from typing import Any, Callable, Iterable
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+_MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic(
+    "molt_json_encode_basestring_obj", globals()
+)
+_MOLT_JSON_ENCODE_BASESTRING_ASCII = _require_intrinsic(
+    "molt_json_encode_basestring_ascii_obj", globals()
+)
 
 
 __all__ = [
@@ -240,29 +246,9 @@ class _Encoder:
         return "-Infinity"
 
     def _encode_str(self, value: str) -> str:
-        out = ['"']
-        for ch in value:
-            code = ord(ch)
-            if ch == '"':
-                out.append('\\"')
-            elif ch == "\\":
-                out.append("\\\\")
-            elif ch == "\b":
-                out.append("\\b")
-            elif ch == "\f":
-                out.append("\\f")
-            elif ch == "\n":
-                out.append("\\n")
-            elif ch == "\r":
-                out.append("\\r")
-            elif ch == "\t":
-                out.append("\\t")
-            elif code < 0x20 or (self.ensure_ascii and code > 0x7E):
-                out.append(self._escape_codepoint(code))
-            else:
-                out.append(ch)
-        out.append('"')
-        return "".join(out)
+        if self.ensure_ascii:
+            return _MOLT_JSON_ENCODE_BASESTRING_ASCII(value)
+        return _MOLT_JSON_ENCODE_BASESTRING(value)
 
     def _escape_codepoint(self, code: int) -> str:
         if code <= 0xFFFF:
