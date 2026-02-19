@@ -867,6 +867,7 @@ stdlib:
       - tests/differential/stdlib/math_isfinite_decimal.py
   bisect:
     tests:
+      - tests/differential/stdlib/bisect_basic.py
       - tests/differential/stdlib/bisect_custom_sequence.py
       - tests/differential/stdlib/bisect_key_basic.py
       - tests/differential/stdlib/bisect_edge_cases.py
