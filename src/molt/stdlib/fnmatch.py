@@ -13,20 +13,24 @@ _MOLT_FNMATCH_FILTER = _require_intrinsic("molt_fnmatch_filter", globals())
 _MOLT_FNMATCH_TRANSLATE = _require_intrinsic("molt_fnmatch_translate", globals())
 
 
-def fnmatch(name: str, pat: str) -> bool:
+def fnmatch(name: str | bytes, pat: str | bytes) -> bool:
     return bool(_MOLT_FNMATCH(name, pat))
 
 
-def fnmatchcase(name: str, pat: str) -> bool:
+def fnmatchcase(name: str | bytes, pat: str | bytes) -> bool:
     return bool(_MOLT_FNMATCHCASE(name, pat))
 
 
-def filter(names, pat: str):
+def filter(names, pat: str | bytes):
     matches = _MOLT_FNMATCH_FILTER(names, pat, False)
     if not isinstance(matches, list):
         raise RuntimeError("fnmatch filter intrinsic returned invalid value")
+    if isinstance(pat, bytes):
+        expected = bytes
+    else:
+        expected = str
     for item in matches:
-        if not isinstance(item, str):
+        if not isinstance(item, expected):
             raise RuntimeError("fnmatch filter intrinsic returned invalid value")
     return matches
 
