@@ -6,6 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 import os as _os
+import sys as _sys
 
 import importlib.machinery as machinery
 import importlib.util as util
@@ -16,6 +17,13 @@ _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
     "molt_importlib_runtime_state_payload", globals()
 )
 _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
+_SPEC_FIRST_IMPORTS = {"asyncio.graph"}
+
+
+def _is_known_absent(resolved: str) -> bool:
+    if resolved == "asyncio.graph":
+        return _sys.version_info < (3, 14)
+    return False
 
 
 __all__ = [
@@ -94,6 +102,8 @@ def _import_via_spec(resolved: str):
 
 
 def _module_import_with_fallback(resolved: str):
+    if resolved in _SPEC_FIRST_IMPORTS:
+        return _import_via_spec(resolved)
     try:
         mod = _MOLT_MODULE_IMPORT(resolved)
         if mod is not None:
@@ -110,10 +120,17 @@ def _module_import_with_fallback(resolved: str):
     except ImportError:
         _MOLT_EXCEPTION_CLEAR()
         return _import_via_spec(resolved)
+    except BaseException as exc:  # noqa: BLE001
+        if type(exc).__name__ not in {"ImportError", "ModuleNotFoundError"}:
+            raise
+        _MOLT_EXCEPTION_CLEAR()
+        return _import_via_spec(resolved)
 
 
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
+    if _is_known_absent(resolved):
+        raise ModuleNotFoundError(f"No module named '{resolved}'")
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]

@@ -882,6 +882,14 @@ pub(crate) fn builtin_class_method_bits(
             2,
         ));
     }
+    if class_bits == builtins.generic_alias && name == "__new__" {
+        return Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.generic_alias_new,
+            fn_addr!(molt_generic_alias_type_new),
+            3,
+        ));
+    }
     if class_bits == builtins.object {
         return object_method_bits(_py, name);
     }
@@ -1150,7 +1158,7 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         "__hash__" => Some(builtin_func_bits(
             _py,
             &OBJECT_HASH,
-            fn_addr!(molt_hash_builtin),
+            fn_addr!(molt_object_hash),
             1,
         )),
         "__getstate__" => Some(builtin_func_bits(

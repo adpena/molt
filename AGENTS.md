@@ -57,6 +57,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 ## Version Target (Non-Negotiable)
 - Molt targets Python 3.12+ semantics only. Do not spend effort on <=3.11 compatibility.
 - When behavior differs across 3.12/3.13/3.14, document the choice explicitly in specs/tests and keep the runtime aligned with the documented version.
+- Model CPython version-gated *absence* (for example modules/submodules that should not import on a given version) in `src/molt/stdlib/importlib/__init__.py` (`import_module`/resolver path) as the canonical control point, not as ad-hoc per-module hacks.
+- Keep version-gated absence behavior CPython-aligned: raise the same exception class (`ModuleNotFoundError`/`ImportError`) with matching message shape from the importlib boundary.
 
 ## Jeff Dean Protege Mode (Non-Negotiable)
 - Optimize for correctness, performance, and determinism before convenience. No shortcuts that degrade runtime guarantees.

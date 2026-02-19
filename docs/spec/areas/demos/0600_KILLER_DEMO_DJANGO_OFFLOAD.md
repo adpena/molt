@@ -3,7 +3,7 @@
 **Status:** Draft (demo-as-product)
 **Priority:** P0 (first public proof)
 **Audience:** demo implementers, runtime engineers
-**Goal:** Show a real Django app gaining Go-like throughput and stable tail latency by offloading one endpoint to a Molt-compiled worker via IPC.
+**Goal:** Show a real Django app gaining Go-like throughput and stable tail latency by offloading one endpoint to a Molt-compiled worker via IPC, then define a clear path to an in-process fast lane for lower-overhead dispatch.
 
 ---
 
@@ -137,6 +137,19 @@ Return summary + optionally a reduced Arrow table.
   - chaos (kill worker, restart)
   - CI regression benchmarks
 
+### Phase E (planned): In-process fast path (CinderX-like integration lane)
+- Keep the worker path as the default migration lane.
+- Add an opt-in in-process execution mode for selected endpoints that are:
+  - precompiled at deploy/build time,
+  - loaded at Django worker startup,
+  - invoked through a stable ABI boundary (no runtime compilation on requests).
+- Route selection:
+  - `worker` mode: current stdio IPC model (best isolation).
+  - `in_process` mode: direct call into precompiled handler (lowest latency overhead).
+- Safety invariants for in-process mode:
+  - preserve capability checks, timeout/cancellation semantics, and deterministic error mapping.
+  - fail closed to worker mode or explicit 5xx when ABI/capability checks fail (no silent semantic drift).
+
 ---
 
 ## 6. Demo script (the “live run”)
@@ -165,3 +178,21 @@ Return summary + optionally a reduced Arrow table.
 
 ## 8. “One slide” truth
 **Molt makes Python services deploy and scale like Go, without a rewrite.**
+
+---
+
+## 9. Architecture rationale (CinderX-style JIT/static vs Molt lanes)
+Why CinderX exists:
+- Large CPython fleets need incremental speedups without changing deployment or extension stories.
+- JIT improves hot long-lived code paths after warmup.
+- Static Python reduces dynamic overhead where type information is stable.
+
+Why Molt keeps an explicit worker lane:
+- process isolation and fault containment,
+- strict capability and cancellation boundaries,
+- framework-agnostic offload contract (Django/Flask/FastAPI).
+
+How Molt can compete:
+- keep worker IPC as the broad adoption path,
+- add an opt-in in-process lane for latency-sensitive endpoints,
+- retain AOT determinism and no-runtime-compile deployment semantics while reducing per-request overhead.
