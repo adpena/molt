@@ -1,4 +1,5 @@
 use molt_obj_model::MoltObject;
+use num_traits::ToPrimitive;
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -15,22 +16,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
+use crate::builtins::classes::class_name_for_error;
 use crate::{
-    TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING,
-    TYPE_ID_TUPLE,
-    alloc_bound_method_obj, alloc_bytes, alloc_code_obj, alloc_dict_with_pairs,
-    alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes,
-    builtin_classes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
-    call_callable3, call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending,
-    format_obj, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
-    inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits, molt_contains,
-    molt_dict_items, molt_dict_keys, molt_dict_new, molt_exception_last, molt_getattr_builtin,
-    molt_is_callable, molt_iter, molt_iter_next, molt_len, molt_list_append, molt_list_clear,
-    molt_list_copy, molt_list_insert, molt_set_add, molt_set_discard, molt_set_new,
-    molt_trace_enter_slot, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64, type_name, type_of_bits,
+    TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    alloc_bound_method_obj, alloc_code_obj, alloc_dict_with_pairs, alloc_function_obj,
+    alloc_list_with_capacity, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
+    attr_name_bits_from_bytes, bigint_ptr_from_bits, bigint_ref, builtin_classes,
+    bytes_like_slice, call_callable0, call_callable1, call_callable2, call_callable3,
+    call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
+    ensure_function_code_bits, exception_kind_bits, exception_pending, format_obj,
+    function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
+    intern_static_name, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits,
+    molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
+    molt_list_insert, molt_trace_enter_slot, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, runtime_state, seq_vec_ref,
+    string_obj_to_owned, to_f64, to_i64, type_name, type_of_bits,
 };
 
 #[derive(Clone)]
@@ -12331,101 +12331,289 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     })
 }
 
-fn imghdr_has_prefix(h: &[u8], prefix: &[u8]) -> bool {
-    h.len() >= prefix.len() && &h[..prefix.len()] == prefix
-}
-
-fn imghdr_check(kind: &str, h: &[u8]) -> Result<bool, ()> {
-    let matched = match kind {
-        "jpeg" => {
-            (h.len() >= 10 && (&h[6..10] == b"JFIF" || &h[6..10] == b"Exif"))
-                || (h.len() >= 4 && &h[..4] == b"\xff\xd8\xff\xdb")
-        }
-        "png" => imghdr_has_prefix(h, b"\x89PNG\r\n\x1a\n"),
-        "gif" => h.len() >= 6 && (&h[..6] == b"GIF87a" || &h[..6] == b"GIF89a"),
-        "tiff" => h.len() >= 2 && (&h[..2] == b"MM" || &h[..2] == b"II"),
-        "rgb" => imghdr_has_prefix(h, b"\x01\xda"),
-        "pbm" => {
-            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'1' | b'4')
-                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
-        }
-        "pgm" => {
-            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'2' | b'5')
-                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
-        }
-        "ppm" => {
-            h.len() >= 3 && h[0] == b'P' && matches!(h[1], b'3' | b'6')
-                && matches!(h[2], b' ' | b'\t' | b'\n' | b'\r')
-        }
-        "rast" => imghdr_has_prefix(h, b"\x59\xa6\x6a\x95"),
-        "xbm" => imghdr_has_prefix(h, b"#define "),
-        "bmp" => imghdr_has_prefix(h, b"BM"),
-        "webp" => h.len() >= 12 && &h[..4] == b"RIFF" && &h[8..12] == b"WEBP",
-        "exr" => imghdr_has_prefix(h, b"\x76\x2f\x31\x01"),
-        _ => return Err(()),
-    };
-    Ok(matched)
-}
-
-fn imghdr_what(h: &[u8]) -> Option<&'static str> {
-    const ORDER: [&str; 13] = [
-        "jpeg", "png", "gif", "tiff", "rgb", "pbm", "pgm", "ppm", "rast", "xbm", "bmp", "webp",
-        "exr",
-    ];
-    for kind in ORDER {
-        if imghdr_check(kind, h).unwrap_or(false) {
-            return Some(kind);
+fn colorsys_coerce_real(_py: &crate::PyToken<'_>, val_bits: u64, func: &str) -> Option<f64> {
+    let obj = obj_from_bits(val_bits);
+    if let Some(value) = to_f64(obj) {
+        return Some(value);
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+        unsafe {
+            let float_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(value) = res_obj.as_float() {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(value);
+                }
+                let owner = class_name_for_error(type_of_bits(_py, val_bits));
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(value) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(value as f64);
+                }
+                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let big = unsafe { bigint_ref(big_ptr) };
+                    if let Some(value) = big.to_f64() {
+                        dec_ref_bits(_py, res_bits);
+                        return Some(value);
+                    }
+                    dec_ref_bits(_py, res_bits);
+                    return raise_exception::<Option<f64>>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
         }
     }
-    None
+    let type_label = type_name(_py, obj);
+    let msg = format!("{func}() argument must be a real number, not {type_label}");
+    raise_exception::<Option<f64>>(_py, "TypeError", &msg)
+}
+
+fn colorsys_tuple3(_py: &crate::PyToken<'_>, a: f64, b: f64, c: f64) -> u64 {
+    let payload = [
+        MoltObject::from_float(a).bits(),
+        MoltObject::from_float(b).bits(),
+        MoltObject::from_float(c).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &payload);
+    if tuple_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+fn colorsys_clamp(value: f64) -> f64 {
+    if value < 0.0 {
+        0.0
+    } else if value > 1.0 {
+        1.0
+    } else {
+        value
+    }
+}
+
+fn colorsys_hls_value(m1: f64, m2: f64, mut hue: f64) -> f64 {
+    if hue < 0.0 {
+        hue += 1.0;
+    } else if hue > 1.0 {
+        hue -= 1.0;
+    }
+    if hue * 6.0 < 1.0 {
+        return m1 + (m2 - m1) * hue * 6.0;
+    }
+    if hue * 2.0 < 1.0 {
+        return m2;
+    }
+    if hue * 3.0 < 2.0 {
+        return m1 + (m2 - m1) * (2.0 / 3.0 - hue) * 6.0;
+    }
+    m1
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_test(kind_bits: u64, header_bits: u64) -> u64 {
+pub extern "C" fn molt_colorsys_rgb_to_hsv(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "kind must be str");
+        let Some(r) = colorsys_coerce_real(_py, r_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
         };
-        let header_obj = obj_from_bits(header_bits);
-        let Some(header_ptr) = header_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        let Some(g) = colorsys_coerce_real(_py, g_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
         };
-        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+        let Some(b) = colorsys_coerce_real(_py, b_bits, "rgb_to_hsv") else {
+            return MoltObject::none().bits();
         };
-        let matched = match imghdr_check(&kind, header) {
-            Ok(value) => value,
-            Err(()) => {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "unknown imghdr test kind",
-                );
-            }
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let v = maxc;
+        if minc == maxc {
+            return colorsys_tuple3(_py, 0.0, 0.0, v);
+        }
+        let range = maxc - minc;
+        let s = range / maxc;
+        let mut h = if r == maxc {
+            (g - b) / range
+        } else if g == maxc {
+            2.0 + (b - r) / range
+        } else {
+            4.0 + (r - g) / range
         };
-        MoltObject::from_bool(matched).bits()
+        h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple3(_py, h, s, v)
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_what(header_bits: u64) -> u64 {
+pub extern "C" fn molt_colorsys_hsv_to_rgb(h_bits: u64, s_bits: u64, v_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let header_obj = obj_from_bits(header_bits);
-        let Some(header_ptr) = header_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(header_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
-        };
-        let Some(kind) = imghdr_what(header) else {
+        let Some(h) = colorsys_coerce_real(_py, h_bits, "hsv_to_rgb") else {
             return MoltObject::none().bits();
         };
-        let ptr = alloc_string(_py, kind.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
+        let Some(s) = colorsys_coerce_real(_py, s_bits, "hsv_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(v) = colorsys_coerce_real(_py, v_bits, "hsv_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        if s == 0.0 {
+            return colorsys_tuple3(_py, v, v, v);
         }
+        let h6 = h * 6.0;
+        let i = h6.trunc() as i64;
+        let f = h6 - (i as f64);
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - s * f);
+        let t = v * (1.0 - s * (1.0 - f));
+        match i.rem_euclid(6) {
+            0 => colorsys_tuple3(_py, v, t, p),
+            1 => colorsys_tuple3(_py, q, v, p),
+            2 => colorsys_tuple3(_py, p, v, t),
+            3 => colorsys_tuple3(_py, p, q, v),
+            4 => colorsys_tuple3(_py, t, p, v),
+            _ => colorsys_tuple3(_py, v, p, q),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_hls(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = colorsys_coerce_real(_py, r_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let Some(g) = colorsys_coerce_real(_py, g_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let Some(b) = colorsys_coerce_real(_py, b_bits, "rgb_to_hls") else {
+            return MoltObject::none().bits();
+        };
+        let maxc = r.max(g).max(b);
+        let minc = r.min(g).min(b);
+        let l = (maxc + minc) / 2.0;
+        if minc == maxc {
+            return colorsys_tuple3(_py, 0.0, l, 0.0);
+        }
+        let range = maxc - minc;
+        let s = if l <= 0.5 {
+            range / (maxc + minc)
+        } else {
+            range / (2.0 - maxc - minc)
+        };
+        let mut h = if r == maxc {
+            (g - b) / range
+        } else if g == maxc {
+            2.0 + (b - r) / range
+        } else {
+            4.0 + (r - g) / range
+        };
+        h = (h / 6.0).rem_euclid(1.0);
+        colorsys_tuple3(_py, h, l, s)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_hls_to_rgb(h_bits: u64, l_bits: u64, s_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(h) = colorsys_coerce_real(_py, h_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(l) = colorsys_coerce_real(_py, l_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(s) = colorsys_coerce_real(_py, s_bits, "hls_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        if s == 0.0 {
+            return colorsys_tuple3(_py, l, l, l);
+        }
+        let m2 = if l <= 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
+        let m1 = 2.0 * l - m2;
+        let r = colorsys_hls_value(m1, m2, h + 1.0 / 3.0);
+        let g = colorsys_hls_value(m1, m2, h);
+        let b = colorsys_hls_value(m1, m2, h - 1.0 / 3.0);
+        colorsys_tuple3(_py, r, g, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_rgb_to_yiq(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(r) = colorsys_coerce_real(_py, r_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let Some(g) = colorsys_coerce_real(_py, g_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let Some(b) = colorsys_coerce_real(_py, b_bits, "rgb_to_yiq") else {
+            return MoltObject::none().bits();
+        };
+        let y = 0.299 * r + 0.587 * g + 0.114 * b;
+        let i = 0.596 * r - 0.274 * g - 0.322 * b;
+        let q = 0.211 * r - 0.523 * g + 0.312 * b;
+        colorsys_tuple3(_py, y, i, q)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_colorsys_yiq_to_rgb(y_bits: u64, i_bits: u64, q_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(y) = colorsys_coerce_real(_py, y_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(i) = colorsys_coerce_real(_py, i_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let Some(q) = colorsys_coerce_real(_py, q_bits, "yiq_to_rgb") else {
+            return MoltObject::none().bits();
+        };
+        let r = colorsys_clamp(y + 0.956 * i + 0.621 * q);
+        let g = colorsys_clamp(y - 0.272 * i - 0.647 * q);
+        let b = colorsys_clamp(y - 1.106 * i + 1.703 * q);
+        colorsys_tuple3(_py, r, g, b)
     })
 }
 
