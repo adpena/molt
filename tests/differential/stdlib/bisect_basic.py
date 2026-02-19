@@ -36,6 +36,25 @@ try:
 except Exception as exc:
     print(type(exc).__name__, exc)
 
+
+class GoodIndex:
+    def __index__(self):
+        return 3
+
+
+print(bisect.bisect_left(data, 2, 0, GoodIndex()))
+
+
+class BadHiIndex:
+    def __index__(self):
+        return "nope"
+
+
+try:
+    bisect.bisect_right(data, 2, 0, BadHiIndex())
+except Exception as exc:
+    print(type(exc).__name__, exc)
+
 items = [{"x": 1}, {"x": 2}, {"x": 2}, {"x": 3}]
 print(bisect.bisect_left(items, 2, key=lambda d: d["x"]))
 print(bisect.bisect_right(items, 2, key=lambda d: d["x"]))
