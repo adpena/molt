@@ -11,13 +11,23 @@ import math
 import numbers
 import random
 import sys
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left as _bisect_left_impl
+from bisect import bisect_right as _bisect_right_impl
 from collections import Counter, defaultdict, namedtuple
 from decimal import Decimal
-from functools import reduce
-from itertools import count, groupby, repeat
-from math import erf, exp, fabs, fsum, hypot, log, sqrt, tau
-from operator import itemgetter
+from functools import reduce as _reduce_impl
+from itertools import count as _count_impl
+from itertools import groupby as _groupby_impl
+from itertools import repeat as _repeat_impl
+from math import erf as _erf_impl
+from math import exp as _exp_impl
+from math import fabs as _fabs_impl
+from math import fsum as _fsum_impl
+from math import hypot as _hypot_impl
+from math import log as _log_impl
+from math import sqrt as _sqrt_impl
+from math import tau
+from operator import itemgetter as _itemgetter_impl
 
 try:
     from fractions import Fraction
@@ -27,13 +37,57 @@ except Exception:  # noqa: BLE001
         pass
 
 
-sumprod = getattr(math, "sumprod", None)
-if sumprod is None:
-    sumprod = getattr(_builtins, "sumprod", None)
-if sumprod is None:
+class _BuiltinFunctionOrMethod:
+    __slots__ = ("_fn",)
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __call__(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._fn, name)
+
+
+_BuiltinFunctionOrMethod.__name__ = "builtin_function_or_method"
+
+
+def _make_type_proxy(fn):
+    class _TypeProxy:
+        def __new__(cls, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+    return _TypeProxy
+
+
+_sumprod_impl = getattr(math, "sumprod", None)
+if _sumprod_impl is None:
+    _sumprod_impl = getattr(_builtins, "sumprod", None)
+if _sumprod_impl is None:
 
     def sumprod(p, q, /):
-        return fsum(x * y for x, y in zip(p, q))
+        return _fsum_impl(x * y for x, y in zip(p, q))
+
+    _sumprod_impl = sumprod
+
+
+bisect_left = _BuiltinFunctionOrMethod(_bisect_left_impl)
+bisect_right = _BuiltinFunctionOrMethod(_bisect_right_impl)
+erf = _BuiltinFunctionOrMethod(_erf_impl)
+exp = _BuiltinFunctionOrMethod(_exp_impl)
+fabs = _BuiltinFunctionOrMethod(_fabs_impl)
+fsum = _BuiltinFunctionOrMethod(_fsum_impl)
+hypot = _BuiltinFunctionOrMethod(_hypot_impl)
+log = _BuiltinFunctionOrMethod(_log_impl)
+reduce = _BuiltinFunctionOrMethod(_reduce_impl)
+sqrt = _BuiltinFunctionOrMethod(_sqrt_impl)
+sumprod = _BuiltinFunctionOrMethod(_sumprod_impl)
+
+count = _make_type_proxy(_count_impl)
+groupby = _make_type_proxy(_groupby_impl)
+repeat = _make_type_proxy(_repeat_impl)
+itemgetter = _make_type_proxy(_itemgetter_impl)
 
 
 _CPYTHON_API_HELPERS = (
