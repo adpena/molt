@@ -2199,7 +2199,6 @@ def _stdlib_allowlist() -> set[str]:
     return allowlist
 
 
-_INTRINSIC_NAME_RE = re.compile(r"""['"](molt_[A-Za-z0-9_]+)['"]""")
 _INTRINSIC_CALL_NAMES = {
     "load_intrinsic",
     "require_intrinsic",
@@ -2223,27 +2222,35 @@ def _stdlib_module_intrinsic_status(path: Path) -> str:
     if path.name == "_intrinsics.py":
         return "intrinsic-backed"
 
-    intrinsic_names: set[str] = set(_INTRINSIC_NAME_RE.findall(source))
+    intrinsic_names: set[str] = set()
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        pass
-    else:
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            call_name: str | None = None
-            if isinstance(node.func, ast.Name):
-                call_name = node.func.id
-            elif isinstance(node.func, ast.Attribute):
-                call_name = node.func.attr
-            if call_name not in _INTRINSIC_CALL_NAMES:
-                continue
+        return "python-only"
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name: str | None = None
+        if isinstance(node.func, ast.Name):
+            call_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            call_name = node.func.attr
+        if call_name not in _INTRINSIC_CALL_NAMES:
+            continue
+        first: ast.expr | None = None
+        if node.args:
             first = node.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                name = first.value
-                if name.startswith("molt_"):
-                    intrinsic_names.add(name)
+        else:
+            for keyword in node.keywords:
+                if keyword.arg == "name":
+                    first = keyword.value
+                    break
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            continue
+        name = first.value
+        if name.startswith("molt_"):
+            intrinsic_names.add(name)
 
     if not intrinsic_names:
         return "python-only"

@@ -353,7 +353,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - Python: `uv run --python 3.12 python3 tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
 - Rust: `cargo test`
 - Differential (single case): `uv run --python 3.12 python3 tests/molt_diff.py <case.py>`
-- Differential (lane): `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` or `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/stdlib`
+- Differential (lane): `uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/basic` or `uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/pyperformance` or `uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/stdlib`
 - Differential layout gate: `python3 tools/check_differential_suite_layout.py`
 - Bench setup (optional): `uv sync --group bench --python 3.12`
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.

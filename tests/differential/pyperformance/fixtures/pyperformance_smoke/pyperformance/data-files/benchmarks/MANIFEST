@@ -1,0 +1,8 @@
+[benchmarks]
+
+name	metafile
+nbody	<local>
+fannkuch	<local>
+
+[group default]
+[group math]

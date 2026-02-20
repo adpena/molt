@@ -7,21 +7,26 @@ ROOT = Path(__file__).resolve().parents[1]
 COVERAGE_INDEX = ROOT / "tests" / "differential" / "COVERAGE_INDEX.yaml"
 CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 STDLIB_MANIFEST = ROOT / "tests" / "differential" / "stdlib" / "TESTS.txt"
+PYPERFORMANCE_MANIFEST = ROOT / "tests" / "differential" / "pyperformance" / "TESTS.txt"
 
 CORE_EXTRA = {
     "tests/differential/basic/try_except.py",
 }
 
 
-def _parse_coverage_lists() -> tuple[set[str], set[str]]:
+def _parse_coverage_lists() -> tuple[set[str], set[str], set[str]]:
     core: set[str] = set()
     stdlib: set[str] = set()
+    pyperformance: set[str] = set()
     section: str | None = None
     for raw in COVERAGE_INDEX.read_text(encoding="utf-8").splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         if raw.startswith("core:"):
             section = "core"
+            continue
+        if raw.startswith("pyperformance:"):
+            section = "pyperformance"
             continue
         if raw.startswith("stdlib:"):
             section = "stdlib"
@@ -36,7 +41,9 @@ def _parse_coverage_lists() -> tuple[set[str], set[str]]:
             core.add(path)
         elif section == "stdlib":
             stdlib.add(path)
-    return core, stdlib
+        elif section == "pyperformance":
+            pyperformance.add(path)
+    return core, stdlib, pyperformance
 
 
 def _write_manifest(path: Path, title: str, tests: list[str]) -> None:
@@ -53,16 +60,31 @@ def _write_manifest(path: Path, title: str, tests: list[str]) -> None:
 
 
 def main() -> int:
-    core, stdlib = _parse_coverage_lists()
+    core, stdlib, pyperformance = _parse_coverage_lists()
     stdlib_dir = ROOT / "tests" / "differential" / "stdlib"
     stdlib_existing = {str(path.relative_to(ROOT)) for path in stdlib_dir.rglob("*.py")}
+    pyperformance_dir = ROOT / "tests" / "differential" / "pyperformance"
+    pyperformance_existing = {
+        str(path.relative_to(ROOT))
+        for path in pyperformance_dir.glob("*.py")
+        if path.name != "TESTS.txt"
+    }
     stdlib |= stdlib_existing
+    pyperformance |= pyperformance_existing
     core |= CORE_EXTRA
     core -= stdlib
     _write_manifest(CORE_MANIFEST, "Core Differential Lane", sorted(core))
     _write_manifest(STDLIB_MANIFEST, "Stdlib Differential Lane", sorted(stdlib))
+    _write_manifest(
+        PYPERFORMANCE_MANIFEST,
+        "PyPerformance Differential Lane",
+        sorted(pyperformance),
+    )
     print(f"wrote {CORE_MANIFEST.relative_to(ROOT)} ({len(core)} tests)")
     print(f"wrote {STDLIB_MANIFEST.relative_to(ROOT)} ({len(stdlib)} tests)")
+    print(
+        f"wrote {PYPERFORMANCE_MANIFEST.relative_to(ROOT)} ({len(pyperformance)} tests)"
+    )
     return 0
 
 

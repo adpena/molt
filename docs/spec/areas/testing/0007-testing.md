@@ -9,7 +9,7 @@ Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,
 document the chosen target in specs/tests and keep the differential suite aligned.
 
 ## 1. Differential Testing: The `molt-diff` Harness
-`molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `uv run --python 3.12 python3 -m molt.cli build`.
+`molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `molt build` with `--build-profile dev` (Molt dev profile maps to Cargo `dev-fast` by default).
 
 ### 1.0 Performance + Memory Controls
 - **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
@@ -37,13 +37,15 @@ For complex tests, we use `molt.dump_state()` to export a JSON representation of
 ### 1.3 Curated Parity Suite
 Differential cases are organized by lane:
 - `tests/differential/basic/`: core language + builtins parity.
+- `tests/differential/pyperformance/`: pyperformance manifest/runner integration smoke lane.
 - `tests/differential/stdlib/`: stdlib module/submodule parity.
 - `tests/differential/moltlib/`: Molt-specific library surface (optional lane; add only for non-CPython APIs).
 
 Run lane sweeps via:
 ```
-uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
-uv run --python 3.12 python3 tests/molt_diff.py tests/differential/stdlib
+uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/basic
+uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/pyperformance
+uv run --python 3.12 python3 tests/molt_diff.py --build-profile dev tests/differential/stdlib
 ```
 
 The verified subset contract uses `tools/verified_subset.py` to validate and run

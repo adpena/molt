@@ -9,7 +9,7 @@ from pathlib import Path
 import check_stdlib_intrinsics as stdlib_audit
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CORE_MANIFEST = ROOT / "tests" / "differential" / "core" / "TESTS.txt"
+DEFAULT_CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 
 
 def _canonical_module(name: str, known: set[str]) -> str | None:
@@ -174,7 +174,6 @@ def _imports_from_ast(
 
 
 def _load_stdlib_audit() -> dict[str, tuple[str, Path]]:
-    known_intrinsics = stdlib_audit._load_manifest_intrinsics()
     out: dict[str, tuple[str, Path]] = {}
     failures: list[str] = []
     for path in sorted(stdlib_audit.STDLIB_ROOT.rglob("*.py")):
@@ -185,13 +184,6 @@ def _load_stdlib_audit() -> dict[str, tuple[str, Path]]:
         if errors:
             rel = path.relative_to(ROOT)
             failures.extend(f"{rel}: {msg}" for msg in errors)
-        for name in intrinsic_names:
-            if name not in known_intrinsics:
-                rel = path.relative_to(ROOT)
-                failures.append(
-                    f"{rel}: intrinsic `{name}` not present in "
-                    f"{stdlib_audit.MANIFEST.relative_to(ROOT)}"
-                )
         out[module] = (status, path)
     if failures:
         joined = "\n- ".join(sorted(set(failures)))

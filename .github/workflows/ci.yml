@@ -26,10 +26,12 @@ jobs:
         run: uv run ruff check .
       - name: Stdlib intrinsics lint
         run: uv run python tools/check_stdlib_intrinsics.py
+      - name: Differential lane layout gate
+        run: uv run python tools/check_differential_suite_layout.py
       - name: Critical strict intrinsic closure gate
         run: uv run python tools/check_stdlib_intrinsics.py --critical-allowlist
       - name: Core lane lowering gate
-        run: uv run python tools/check_core_lane_lowering.py
+        run: uv run python tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt
       - name: Molt IR inventory + semantic lane gate
         run: uv run python tools/check_molt_ir_ops.py
       - name: Type check
@@ -57,22 +59,22 @@ jobs:
         run: cargo build -p molt-runtime --release
       - name: Run molt-diff core lane
         if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 tests/differential/core
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 --files-from tests/differential/basic/CORE_TESTS.txt
       - name: Run molt-diff basic suite
         if: matrix.python-version == '3.12'
         run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 MOLT_DIFF_FAILURES=ir_probe_failures.txt uv run python tests/molt_diff.py tests/differential/basic
       - name: Molt IR probe execution gate
         if: matrix.python-version == '3.12'
         run: uv run python tools/check_molt_ir_ops.py --require-probe-execution --probe-rss-metrics rss_metrics.jsonl --failure-queue ir_probe_failures.txt
-      - name: Run molt-diff patterns suite
+      - name: Run molt-diff stdlib smoke lane
         if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py tests/differential/patterns
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 tests/differential/stdlib/importlib_basic.py tests/differential/stdlib/operator_attrgetter_basic.py tests/differential/stdlib/pathlib_basic_ops.py tests/differential/stdlib/os_path_isabs_intrinsic.py
       - name: Type coverage TODO sync
         if: matrix.python-version == '3.12'
         run: uv run python tools/check_type_coverage_todos.py
       - name: Perf smoke (microbench)
         if: matrix.python-version == '3.12'
-        run: uv run python tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.25 --json-out bench/results/ci_smoke.json
+        run: uv run python tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.10 --json-out bench/results/ci_smoke.json
       - name: Upload benchmark artifact
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4

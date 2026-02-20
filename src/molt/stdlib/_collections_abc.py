@@ -1247,3 +1247,8 @@ class MutableSequence(Sequence):
 
 MutableSequence.register(list)
 MutableSequence.register(bytearray)
+
+# Keep public API surface aligned with CPython.
+del Any
+del cast
+del framelocalsproxy
