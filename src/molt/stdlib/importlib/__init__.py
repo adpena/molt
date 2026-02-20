@@ -18,6 +18,8 @@ _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
 )
 _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
 _SPEC_FIRST_IMPORTS = {"asyncio.graph"}
+_MODULE_ALIASES: dict[str, str] = {}
+_EMPTY_MODULE_RETRY_PREFIXES = ("multiprocessing",)
 
 
 def _is_known_absent(resolved: str) -> bool:
@@ -25,6 +27,16 @@ def _is_known_absent(resolved: str) -> bool:
         return _sys.version_info < (3, 14)
     if resolved == "json.__main__":
         return _sys.version_info < (3, 14)
+    if resolved == "_android_support":
+        return _sys.platform != "android"
+    if resolved == "_remote_debugging":
+        return _sys.version_info < (3, 13)
+    if resolved == "_interpchannels":
+        return _sys.version_info < (3, 13)
+    if resolved == "_opcode_metadata":
+        return _sys.version_info < (3, 14)
+    if resolved == "multiprocessing.popen_spawn_win32":
+        return _sys.platform != "win32"
     return False
 
 
@@ -52,6 +64,35 @@ def _runtime_modules() -> dict[str, object]:
     if not isinstance(modules, dict):
         raise RuntimeError("invalid importlib runtime state payload: modules")
     return modules
+
+
+def _is_empty_placeholder_module(module_name: str, module: object) -> bool:
+    if getattr(module, "__name__", None) != module_name:
+        return False
+    values = getattr(module, "__dict__", None)
+    if not isinstance(values, dict):
+        return False
+    if any(not key.startswith("_") for key in values):
+        return False
+    spec = values.get("__spec__")
+    loader = getattr(spec, "loader", None) if spec is not None else None
+    module_file = values.get("__file__")
+    return module_file is None and loader is None
+
+
+def _is_public_surface_empty(module_name: str, module: object) -> bool:
+    if getattr(module, "__name__", None) != module_name:
+        return False
+    values = getattr(module, "__dict__", None)
+    if not isinstance(values, dict):
+        return False
+    return not any(not key.startswith("_") for key in values)
+
+
+def _should_retry_empty_module(module_name: str, module: object) -> bool:
+    if not module_name.startswith(_EMPTY_MODULE_RETRY_PREFIXES):
+        return False
+    return _is_public_surface_empty(module_name, module)
 
 
 def _resolve_name(name: str, package: str | None) -> str:
@@ -109,6 +150,11 @@ def _module_import_with_fallback(resolved: str):
     try:
         mod = _MOLT_MODULE_IMPORT(resolved)
         if mod is not None:
+            if _is_empty_placeholder_module(resolved, mod) or _should_retry_empty_module(
+                resolved, mod
+            ):
+                _MOLT_EXCEPTION_CLEAR()
+                return _import_via_spec(resolved)
             return mod
         _MOLT_EXCEPTION_CLEAR()
         return _import_via_spec(resolved)
@@ -132,10 +178,25 @@ def _module_import_with_fallback(resolved: str):
 def import_module(name: str, package: str | None = None):
     resolved = _resolve_name(name, package)
     if _is_known_absent(resolved):
+        if resolved == "multiprocessing.popen_spawn_win32":
+            raise ModuleNotFoundError("No module named 'msvcrt'")
         raise ModuleNotFoundError(f"No module named '{resolved}'")
     modules = _runtime_modules()
-    if resolved in modules:
-        return modules[resolved]
+    cached = modules.get(resolved)
+    if (
+        cached is not None
+        and not _is_empty_placeholder_module(resolved, cached)
+        and not _should_retry_empty_module(resolved, cached)
+    ):
+        return cached
+    if cached is not None:
+        modules.pop(resolved, None)
+    alias = _MODULE_ALIASES.get(resolved)
+    if alias is not None:
+        target = import_module(alias)
+        modules = _runtime_modules()
+        modules[resolved] = target
+        return target
     mod = _module_import_with_fallback(resolved)
     modules = _runtime_modules()
     if resolved in modules:

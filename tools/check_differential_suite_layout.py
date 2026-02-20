@@ -8,7 +8,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 DIFF_ROOT = ROOT / "tests" / "differential"
 COVERAGE_INDEX = DIFF_ROOT / "COVERAGE_INDEX.yaml"
-ALLOWED_LANES = {"basic", "stdlib", "moltlib"}
+ALLOWED_LANES = {"basic", "stdlib", "moltlib", "pyperformance"}
 
 # Core Python 3.12+ PEP coverage tracked in COVERAGE_INDEX.yaml.
 REQUIRED_CORE_PEPS = {
@@ -178,15 +178,19 @@ def _collect_lane_files() -> tuple[list[str], list[str]]:
     return wrong_lane, basic_stdlib_prefix
 
 
-def _parse_coverage_index() -> tuple[set[str], set[str], set[str]]:
+def _parse_coverage_index() -> tuple[set[str], set[str], set[str], set[str]]:
     text = COVERAGE_INDEX.read_text(encoding="utf-8").splitlines()
     all_paths: set[str] = set()
     stdlib_paths: set[str] = set()
+    pyperformance_paths: set[str] = set()
     peps: set[str] = set()
     section: str | None = None
     for raw in text:
         if raw.startswith("core:"):
             section = "core"
+            continue
+        if raw.startswith("pyperformance:"):
+            section = "pyperformance"
             continue
         if raw.startswith("stdlib:"):
             section = "stdlib"
@@ -205,7 +209,9 @@ def _parse_coverage_index() -> tuple[set[str], set[str], set[str]]:
         all_paths.add(maybe_path)
         if section == "stdlib":
             stdlib_paths.add(maybe_path)
-    return all_paths, stdlib_paths, peps
+        elif section == "pyperformance":
+            pyperformance_paths.add(maybe_path)
+    return all_paths, stdlib_paths, pyperformance_paths, peps
 
 
 def main() -> int:
@@ -222,7 +228,7 @@ def main() -> int:
             + "\n- ".join(basic_stdlib_prefix)
         )
 
-    all_paths, stdlib_paths, peps = _parse_coverage_index()
+    all_paths, stdlib_paths, pyperformance_paths, peps = _parse_coverage_index()
     missing_paths = sorted(path for path in all_paths if not (ROOT / path).exists())
     if missing_paths:
         errors.append(
@@ -253,6 +259,17 @@ def main() -> int:
         errors.append(
             "stdlib coverage section points outside stdlib lane:\n- "
             + "\n- ".join(stdlib_lane_violations)
+        )
+
+    pyperformance_lane_violations = sorted(
+        path
+        for path in pyperformance_paths
+        if not path.startswith("tests/differential/pyperformance/")
+    )
+    if pyperformance_lane_violations:
+        errors.append(
+            "pyperformance coverage section points outside pyperformance lane:\n- "
+            + "\n- ".join(pyperformance_lane_violations)
         )
 
     missing_peps = sorted(REQUIRED_CORE_PEPS - peps)

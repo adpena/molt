@@ -53,6 +53,7 @@ _MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext", globals())
 _MOLT_PATH_NORMPATH = _require_intrinsic("molt_path_normpath", globals())
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
 _MOLT_PATH_RELPATH = _require_intrinsic("molt_path_relpath", globals())
+_MOLT_PATH_EXPANDUSER = _require_intrinsic("molt_path_expanduser", globals())
 _MOLT_PATH_EXPANDVARS_ENV = _require_intrinsic("molt_path_expandvars_env", globals())
 _MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs", globals())
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
@@ -464,6 +465,11 @@ class _Path:
     @staticmethod
     def relpath(path: str, start: str | None = None) -> str:
         return _expect_str(_MOLT_PATH_RELPATH(path, start), "path_relpath")
+
+    @staticmethod
+    def expanduser(path: str) -> str:
+        _require_cap("env.read")
+        return _expect_str(_MOLT_PATH_EXPANDUSER(path), "path_expanduser")
 
     @staticmethod
     def exists(path: Any) -> bool:

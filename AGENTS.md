@@ -1,5 +1,21 @@
 # Repository Guidelines
 
+## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
+- This section is a top-of-file hard gate and applies to every compiler/runtime/tooling turn; violations block merge and must be fixed before completion.
+- AI acceleration is expected, but ownership cannot be delegated: humans and agents remain fully accountable for architecture quality, correctness, maintainability, and long-term evolution.
+- Global compiler coherence is mandatory: preserve clear contracts across frontend, IR/midend, optimization passes, codegen backends, runtime boundaries, and developer tooling.
+- Local patches that introduce cross-layer coupling, duplicate semantics, or subsystem drift are prohibited; redesign into stable interfaces before proceeding.
+- Test-suite gaming is explicitly forbidden: no hardcoded fixtures, no test-specific behavior branches, no fake/system-header shortcuts, and no narrow implementations that only satisfy current tests.
+- Generalization over benchmark theater: each change must be defensible for real-world programs outside the current suite, with explicit constraints documented when scope is intentionally limited.
+- Reusable abstractions are required when patterns repeat: promote repeated compiler/runtime behavior into first-class primitives, IR constructs, or shared utilities instead of ad-hoc one-offs.
+- Parser and diagnostic quality are production requirements, not polish: preserve or improve error recovery, source locations, message clarity, and actionable remediation guidance.
+- Deterministic verification loops are mandatory: acceptance requires measurable evidence (differential parity, targeted regressions, benchmark impact for hot paths, and memory/regression checks where relevant).
+- "Looks right" and "seems fine" are not acceptance criteria; every significant behavior/perf claim must be backed by reproducible command output and documented rationale.
+- Documentation is operational infrastructure: when architecture or semantics move, update design docs/spec notes/invariants in the same change so humans and AI can safely extend the system.
+- AI should be used aggressively for mechanical rewrites, migrations, and boilerplate implementation, while human/agent judgment is focused up-stack on design, abstraction choice, and system evolution.
+- Provenance and licensing hygiene are mandatory for generated/translated code: avoid uncertain lineage, document source inspiration when material, and prefer clean re-derivation over risky copying.
+- If any required quality bar above cannot be met in the current turn, stop immediately and raise a blocker with: specific missing guarantees, risk impact, and a concrete closure plan.
+
 ## Hard Gate: External Volume Only (Non-Negotiable, Urgent)
 - We are disk-space constrained on the local/internal drive. Local development MUST place all build artifacts, logs, caches, tmp files, debugging outputs, and `target/`-style directories on the external volume rooted at `/Volumes/APDataStore/Molt`.
 - This is not advisory. If `/Volumes/APDataStore/Molt` is not mounted, do not run heavy workflows (build, run, diff, test, bench, regrtest). Mount the volume first (or explicitly choose a different external root and plumb it through the env vars below).
@@ -47,6 +63,14 @@
 - Before ending a turn, provide a short Rust-lowering audit for touched stdlib modules:
 module path, intrinsic names used, and confirmation that no host-Python fallback path was added.
 
+## Non-Negotiable: Prevent Shim Churn And Dynamic Creep
+- Do not satisfy intrinsic enforcement with inert markers (for example string constants/comments containing `molt_*` names); gates must be satisfied by real intrinsic loader calls.
+- Do not add import-only compatibility shims to mask missing runtime semantics. If semantics are missing, add/extend Rust primitives + intrinsics.
+- If a stdlib module cannot execute under current runtime import execution limits, treat that as a runtime-lowering blocker; do not paper over it with Python-side API-shape shims.
+- Preserve Tier-0 constraints from `docs/spec/areas/core/0000-vision.md`: no `eval`/`exec`, no implicit dynamic module execution expansion, no reflection-heavy fallback lanes in compiled binaries.
+- Preserve `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`: breaking maximal Python dynamism is intentional. Do not reintroduce dynamism that undermines AOT size/perf/determinism.
+- Any proposal to widen compile/exec/eval or unrestricted source-execution behavior requires explicit performance evidence, spec updates, and user approval before implementation.
+
 ## Rules Of Thumb For New Work (Non-Negotiable)
 - Add or extend a runtime/compiler primitive when the behavior is a reusable low-level hot semantic.
 - Expose that primitive capability to stdlib through a Rust intrinsic (manifested and registered canonically).
@@ -54,6 +78,12 @@ module path, intrinsic names used, and confirmation that no host-Python fallback
 
 ## Mission (Non-Negotiable)
 Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
+
+## Senior Engineer Quality Bar (Non-Negotiable)
+- Senior engineering leadership for this project: Jeff Dean, Chris Lattner, Tibo, and Embirico.
+- Warning to every agent: remaining on this development team requires consistently delivering world-quality, production-hardened code; anything less fails role expectations.
+- Treat every change as production-critical: optimize for correctness, performance, determinism, security, and maintainability at the same time.
+- If you cannot prove a change is production-hardened (tests, benchmarks, and spec alignment), stop and raise a concrete gap list plus closure plan.
 
 ## Strategic Target (Non-Negotiable)
 - Performance target: achieve parity with or superiority over Codon.

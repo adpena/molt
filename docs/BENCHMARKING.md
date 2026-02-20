@@ -128,6 +128,16 @@ uv run --python 3.12 python3 tools/bench_friends.py \
   --update-doc
 ```
 
+PyPerformance lane (uses `molt run --profile dev` for the Molt runner):
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite pyperformance_benchmarks \
+  --checkout \
+  --fetch
+```
+
 Artifacts:
 - machine-readable: `results.json`
 - human summary: `summary.md`

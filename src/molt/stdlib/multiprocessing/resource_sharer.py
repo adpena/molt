@@ -1,12 +1,7 @@
-"""Intrinsic-first stdlib module stub for `multiprocessing.resource_sharer`."""
+"""Intrinsic-backed compatibility surface for `multiprocessing.resource_sharer`."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from multiprocessing._api_surface import apply_module_api_surface as _apply
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `multiprocessing.resource_sharer` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "multiprocessing.resource_sharer" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+_apply(__name__, globals())

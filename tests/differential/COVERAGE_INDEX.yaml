@@ -50,6 +50,14 @@ core:
       tests:
         - tests/differential/basic/pep701_fstrings_full_grammar.py
 
+pyperformance:
+  manifest_catalog:
+    tests:
+      - tests/differential/pyperformance/pyperformance_manifest_catalog.py
+  smoke_subset:
+    tests:
+      - tests/differential/pyperformance/pyperformance_subset_smoke.py
+
 stdlib:
   collections:
     tests:

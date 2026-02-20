@@ -97,3 +97,24 @@ skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite be
 
 [suite.runners.pyodide]
 skip_reason = "Configure pyodide run_cmd (and optional prepare_cmds) before enabling."
+
+[[suite]]
+id = "pyperformance_benchmarks"
+enabled = false
+friend = "pyperformance"
+display_name = "PyPerformance Smoke Subset"
+source = "git"
+repo_url = "https://github.com/python/pyperformance.git"
+repo_ref = "1.14.0"
+semantic_mode = "requires_adapter"
+adapter_notes = "Runs an intrinsic-friendly smoke subset (nbody,fannkuch) through tools/pyperformance_adapter.py; Molt lane uses `molt run --profile dev`."
+tags = ["native", "benchmark-suite", "pyperformance"]
+repeat = 3
+timeout_sec = 1800
+env = { MOLT_EXT_ROOT = "/Volumes/APDataStore/Molt", CARGO_TARGET_DIR = "/Volumes/APDataStore/Molt/cargo-target", MOLT_DIFF_CARGO_TARGET_DIR = "/Volumes/APDataStore/Molt/cargo-target", MOLT_CACHE = "/Volumes/APDataStore/Molt/molt_cache", MOLT_DIFF_ROOT = "/Volumes/APDataStore/Molt/diff", MOLT_DIFF_TMPDIR = "/Volumes/APDataStore/Molt/tmp", TMPDIR = "/Volumes/APDataStore/Molt/tmp" }
+
+[suite.runners.cpython]
+run_cmd = ["python3", "{repo_root}/tools/pyperformance_adapter.py", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]
+
+[suite.runners.molt]
+run_cmd = ["molt", "run", "--profile", "dev", "{repo_root}/tools/pyperformance_adapter.py", "--", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]

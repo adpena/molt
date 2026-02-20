@@ -295,6 +295,29 @@ def _normalize_output(text: str, normalize: set[str]) -> str:
     return text
 
 
+_STDOUT_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?(?![A-Za-z0-9_])"
+)
+_STDOUT_SPACING_RE = re.compile(r"\s+")
+
+
+def _canonicalize_stdout(text: str, mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized in {"", "exact"}:
+        return text
+    if normalized == "pyperformance":
+        lines: list[str] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            line = _STDOUT_NUMERIC_TOKEN_RE.sub("<num>", line)
+            line = _STDOUT_SPACING_RE.sub(" ", line)
+            lines.append(line)
+        return "\n".join(lines)
+    return text
+
+
 _EXCEPTION_SIGNATURE_RE = re.compile(
     r"^(?P<etype>[A-Za-z_][A-Za-z0-9_.]*)(?:: (?P<message>.*))?$"
 )
@@ -2674,6 +2697,7 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
         return "skip"
 
     normalize = {v.lower() for v in meta.get("normalize", [])}
+    stdout_mode = (meta.get("stdout", ["exact"])[0]).lower()
     stderr_mode = (meta.get("stderr", ["ignore"])[0]).lower()
 
     print(f"Testing {file_path} against {python_exe}...")
@@ -2860,7 +2884,9 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
                 molt_out = _normalize_output(molt_out, normalize)
                 molt_err = _normalize_output(molt_err, normalize)
                 stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
-                if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
+                cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
+                molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
+                if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
                     print(f"[PASS] {file_path}")
                     return _finalize_status("pass")
                 print(f"[FAIL] {file_path} mismatch")
@@ -2884,8 +2910,10 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
         return _finalize_status("fail")
 
     stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
+    cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
+    molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
 
-    if cp_out == molt_out and cp_ret == molt_ret and stderr_ok:
+    if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
         print(f"[PASS] {file_path}")
         return _finalize_status("pass")
     else:
