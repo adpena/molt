@@ -374,7 +374,7 @@ class ExitStack(ContextDecorator):
         return _MOLT_CONTEXTLIB_EXITSTACK_ENTER_CONTEXT(self._molt_state, cm)
 
 
-class suppress(ContextDecorator):
+class suppress(AbstractContextManager):
     def __init__(self, *exceptions: type[BaseException]) -> None:
         self._exceptions = exceptions
 

@@ -1,12 +1,21 @@
-"""Intrinsic-first stdlib module stub for `importlib._abc`."""
+"""Subset of importlib.abc used to reduce importlib.util imports."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_stdlib_probe", globals())
+
+import abc
+
+from . import _bootstrap
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib._abc` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib._abc" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+class Loader(metaclass=abc.ABCMeta):
+    """Abstract base class for import loaders."""
+
+    def create_module(self, spec):
+        return None
+
+    def load_module(self, fullname):
+        if not hasattr(self, "exec_module"):
+            raise ImportError
+        return _bootstrap._load_module_shim(self, fullname)

@@ -29,6 +29,7 @@ __all__ = [
     "Any",
     "Awaitable",
     "Callable",
+    "ContextManager",
     "ClassVar",
     "Concatenate",
     "Final",
@@ -55,6 +56,7 @@ __all__ = [
     "Tuple",
     "SupportsIndex",
     "SupportsInt",
+    "Text",
     "TextIO",
     "BinaryIO",
     "TYPE_CHECKING",
@@ -144,6 +146,9 @@ class _SpecialForm(_TypingBase):
             raise TypeError(f"{self!r} is not subscriptable")
         return self._getitem(params)
 
+    def __call__(self, *_args: object, **_kwargs: object) -> object:
+        raise TypeError(f"Cannot instantiate {self!r}")
+
 
 class _SpecialGenericAlias(_TypingBase):
     __slots__ = ("__origin__", "_name")
@@ -157,6 +162,9 @@ class _SpecialGenericAlias(_TypingBase):
 
     def __getitem__(self, params: object) -> "_GenericAlias":
         return _GenericAlias(self.__origin__, params, self._name)
+
+    def __call__(self, *_args: object, **_kwargs: object) -> object:
+        raise TypeError(f"Cannot instantiate {self!r}")
 
 
 class _LazySpecialGenericAlias(_TypingBase):
@@ -187,6 +195,9 @@ class _LazySpecialGenericAlias(_TypingBase):
 
     def __getitem__(self, params: object) -> "_GenericAlias":
         return _GenericAlias(self._origin(), params, self._name)
+
+    def __call__(self, *_args: object, **_kwargs: object) -> object:
+        raise TypeError(f"Cannot instantiate {self!r}")
 
 
 class _GenericAlias(_TypingBase):
@@ -245,7 +256,7 @@ class _MoltTypeAliasApplied(_TypingBase):
         return f"{self._alias.__name__}[{_format_args(self.__args__)}]"
 
 
-class _UnionAlias(_TypingBase):
+class _UnionGenericAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__")
 
     def __init__(self, args: tuple[object, ...]) -> None:
@@ -258,6 +269,12 @@ class _UnionAlias(_TypingBase):
             other = args[0] if args[1] is _NoneType else args[1]
             return f"typing.Optional[{_type_repr(other)}]"
         return f"typing.Union[{_format_args(args)}]"
+
+    def __call__(self, *_args: object, **_kwargs: object) -> object:
+        raise TypeError(f"Cannot instantiate {self!r}")
+
+
+_UnionAlias = _UnionGenericAlias
 
 
 class _LiteralAlias(_TypingBase):
@@ -345,7 +362,7 @@ def _make_union(args: object) -> object:
         raise TypeError("Union requires at least one argument")
     if len(norm) == 1:
         return norm[0]
-    return _UnionAlias(norm)
+    return _UnionGenericAlias(norm)
 
 
 def _make_optional(arg: object) -> object:
@@ -378,7 +395,29 @@ def _make_callable(params: object) -> _CallableAlias:
     return _CallableAlias(arglist, ret)
 
 
-Any = _SpecialForm("Any", lambda _params: Any)
+class _AnyMeta(type):
+    def __repr__(cls) -> str:
+        return "typing.Any"
+
+    def __call__(cls, *_args: object, **_kwargs: object) -> object:
+        raise TypeError("Cannot instantiate typing.Any")
+
+    def __getitem__(cls, _params: object) -> object:
+        return cls
+
+    def __or__(cls, other: object) -> object:
+        return _make_union((cls, other))
+
+    def __ror__(cls, other: object) -> object:
+        return _make_union((other, cls))
+
+
+class Any(metaclass=_AnyMeta):
+    pass
+
+
+Any.__module__ = __name__
+
 Union = _SpecialForm("Union", _make_union)
 Optional = _SpecialForm("Optional", _make_optional)
 Literal = _SpecialForm("Literal", _make_literal)
@@ -389,12 +428,29 @@ ClassVar = _SpecialForm(
 Final = _SpecialForm("Final", lambda params: _GenericAlias(Final, params, "Final"))
 Concatenate = _SpecialForm("Concatenate", _make_concatenate)
 Callable = _SpecialForm("Callable", _make_callable)
+# Keep runtime shape aligned (type: _SpecialGenericAlias) without importing
+# contextlib at typing import time (avoids contextlib<->typing cycle).
+ContextManager = _SpecialGenericAlias(object, "ContextManager")
 Self = _SpecialForm("Self")
 IO = _SpecialForm("IO", lambda params: _GenericAlias(IO, params, "IO"))
-BinaryIO = _SpecialForm(
-    "BinaryIO", lambda params: _GenericAlias(BinaryIO, params, "BinaryIO")
-)
-TextIO = _SpecialForm("TextIO", lambda params: _GenericAlias(TextIO, params, "TextIO"))
+
+
+class BinaryIO:
+    @classmethod
+    def __class_getitem__(cls, params: object) -> _GenericAlias:
+        return _GenericAlias(cls, params, "BinaryIO")
+
+
+class TextIO:
+    @classmethod
+    def __class_getitem__(cls, params: object) -> _GenericAlias:
+        return _GenericAlias(cls, params, "TextIO")
+
+
+BinaryIO.__module__ = __name__
+TextIO.__module__ = __name__
+Text = str
+
 Never = _SpecialForm("Never")
 NoReturn = _SpecialForm("NoReturn")
 TypeAlias = _SpecialForm("TypeAlias")
@@ -479,8 +535,9 @@ def _reload_collections_abc() -> ModuleType | None:
 
 
 Awaitable = _LazySpecialGenericAlias("Awaitable", "Awaitable")
-Iterable = _LazySpecialGenericAlias("Iterable", "Iterable")
-Iterator = _LazySpecialGenericAlias("Iterator", "Iterator")
+_abc_module = _load_collections_abc()
+Iterable = _SpecialGenericAlias(getattr(_abc_module, "Iterable"), "Iterable")
+Iterator = _SpecialGenericAlias(getattr(_abc_module, "Iterator"), "Iterator")
 MutableMapping = _LazySpecialGenericAlias("MutableMapping", "MutableMapping")
 
 _types_mod = _sys.modules.get("types")

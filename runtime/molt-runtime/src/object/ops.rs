@@ -32146,6 +32146,7 @@ unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let list_obj = obj_from_bits(list_bits);

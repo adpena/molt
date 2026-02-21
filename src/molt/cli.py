@@ -50,7 +50,11 @@ EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
 # Stdlib modules that rely on nested imports for required runtime semantics.
-STDLIB_NESTED_IMPORT_SCAN_MODULES = {"typing"}
+STDLIB_NESTED_IMPORT_SCAN_MODULES = {
+    "typing",
+    # EmailMessage lazily imports email.policy inside __init__.
+    "email.message",
+}
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"

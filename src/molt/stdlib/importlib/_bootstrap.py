@@ -1,12 +1,10 @@
-"""Intrinsic-first stdlib module stub for `importlib._bootstrap`."""
+"""Compatibility surface for CPython ``importlib._bootstrap``."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from _frozen_importlib import *  # noqa: F401,F403
+from _frozen_importlib import __all__ as _FROZEN_ALL
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib._bootstrap` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib._bootstrap" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = list(_FROZEN_ALL)

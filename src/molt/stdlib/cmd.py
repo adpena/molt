@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import sys
 from typing import Any
 
@@ -15,6 +16,12 @@ _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 PROMPT = "(Cmd) "
 IDENTCHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+
+
+def _load_readline_module():
+    if _importlib_util.find_spec("readline") is None:
+        return None
+    return __import__("readline")
 
 
 class Cmd:
@@ -41,12 +48,11 @@ class Cmd:
     def cmdloop(self, intro: str | None = None) -> None:
         self.preloop()
         if self.use_rawinput and self.completekey:
-            try:
-                import readline
-
+            readline = _load_readline_module()
+            if readline is not None:
                 self.old_completer = readline.get_completer()
                 readline.set_completer(self.complete)
-                if readline.backend == "editline":
+                if getattr(readline, "backend", "") == "editline":
                     if self.completekey == "tab":
                         command_string = "bind ^I rl_complete"
                     else:
@@ -54,8 +60,6 @@ class Cmd:
                 else:
                     command_string = f"{self.completekey}: complete"
                 readline.parse_and_bind(command_string)
-            except ImportError:
-                pass
         try:
             if intro is not None:
                 self.intro = intro
@@ -85,12 +89,9 @@ class Cmd:
             self.postloop()
         finally:
             if self.use_rawinput and self.completekey:
-                try:
-                    import readline
-
+                readline = _load_readline_module()
+                if readline is not None and hasattr(self, "old_completer"):
                     readline.set_completer(self.old_completer)
-                except ImportError:
-                    pass
 
     def precmd(self, line: str) -> str:
         return line
@@ -155,7 +156,10 @@ class Cmd:
 
     def complete(self, text: str, state: int):
         if state == 0:
-            import readline
+            readline = _load_readline_module()
+            if readline is None:
+                self.completion_matches = []
+                return None
 
             origline = readline.get_line_buffer()
             line = origline.lstrip()

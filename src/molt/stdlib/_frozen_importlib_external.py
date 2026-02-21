@@ -8,63 +8,49 @@ import marshal
 import sys
 
 _require_intrinsic("molt_capabilities_has", globals())
-
-
-def _fallback_type(name: str):
-    return type(name, (), {})
-
-
-BYTECODE_SUFFIXES = list(getattr(_machinery, "BYTECODE_SUFFIXES", [".pyc"]))
-DEBUG_BYTECODE_SUFFIXES = list(
-    getattr(_machinery, "DEBUG_BYTECODE_SUFFIXES", [".pyc"])
+_MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD = _require_intrinsic(
+    "molt_importlib_frozen_external_payload", globals()
 )
-EXTENSION_SUFFIXES = list(getattr(_machinery, "EXTENSION_SUFFIXES", []))
-MAGIC_NUMBER = bytes(getattr(_machinery, "MAGIC_NUMBER", b"\x00\x00\x00\x00"))
+
+
+def _load_payload() -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery, _util)
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib frozen external payload: dict expected")
+    return payload
+
+
+def _payload_get(payload: dict[str, object], name: str):
+    if name not in payload:
+        raise RuntimeError(f"invalid importlib frozen external payload: missing {name}")
+    return payload[name]
+
+
+_PAYLOAD = _load_payload()
+BYTECODE_SUFFIXES = list(_payload_get(_PAYLOAD, "BYTECODE_SUFFIXES"))
+DEBUG_BYTECODE_SUFFIXES = list(_payload_get(_PAYLOAD, "DEBUG_BYTECODE_SUFFIXES"))
+EXTENSION_SUFFIXES = list(_payload_get(_PAYLOAD, "EXTENSION_SUFFIXES"))
+MAGIC_NUMBER = bytes(_payload_get(_PAYLOAD, "MAGIC_NUMBER"))
 OPTIMIZED_BYTECODE_SUFFIXES = list(
-    getattr(_machinery, "OPTIMIZED_BYTECODE_SUFFIXES", [".pyc"])
+    _payload_get(_PAYLOAD, "OPTIMIZED_BYTECODE_SUFFIXES")
 )
-SOURCE_SUFFIXES = list(getattr(_machinery, "SOURCE_SUFFIXES", [".py"]))
+SOURCE_SUFFIXES = list(_payload_get(_PAYLOAD, "SOURCE_SUFFIXES"))
 
-ExtensionFileLoader = getattr(
-    _machinery, "ExtensionFileLoader", _fallback_type("ExtensionFileLoader")
-)
-FileFinder = getattr(_machinery, "FileFinder", _fallback_type("FileFinder"))
-FileLoader = getattr(_machinery, "FileLoader", _fallback_type("FileLoader"))
-NamespaceLoader = getattr(
-    _machinery, "NamespaceLoader", _fallback_type("NamespaceLoader")
-)
-PathFinder = getattr(_machinery, "PathFinder", _fallback_type("PathFinder"))
-SourceFileLoader = getattr(
-    _machinery, "SourceFileLoader", _fallback_type("SourceFileLoader")
-)
-SourceLoader = getattr(_machinery, "SourceLoader", _fallback_type("SourceLoader"))
-SourcelessFileLoader = getattr(
-    _machinery, "SourcelessFileLoader", _fallback_type("SourcelessFileLoader")
-)
-WindowsRegistryFinder = getattr(
-    _machinery, "WindowsRegistryFinder", _fallback_type("WindowsRegistryFinder")
-)
+ExtensionFileLoader = _payload_get(_PAYLOAD, "ExtensionFileLoader")
+FileFinder = _payload_get(_PAYLOAD, "FileFinder")
+FileLoader = _payload_get(_PAYLOAD, "FileLoader")
+NamespaceLoader = _payload_get(_PAYLOAD, "NamespaceLoader")
+PathFinder = _payload_get(_PAYLOAD, "PathFinder")
+SourceFileLoader = _payload_get(_PAYLOAD, "SourceFileLoader")
+SourceLoader = _payload_get(_PAYLOAD, "SourceLoader")
+SourcelessFileLoader = _payload_get(_PAYLOAD, "SourcelessFileLoader")
+_LoaderBasics = _payload_get(_PAYLOAD, "_LoaderBasics")
+WindowsRegistryFinder = _payload_get(_PAYLOAD, "WindowsRegistryFinder")
 
-
-def _cache_from_source(path, debug_override=None, *, optimization=None):
-    del debug_override, optimization
-    return path
-
-
-def _decode_source(source):
-    if isinstance(source, (bytes, bytearray)):
-        return bytes(source).decode("utf-8")
-    return source
-
-
-def _source_from_cache(path):
-    return path
-
-
-cache_from_source = getattr(_util, "cache_from_source", _cache_from_source)
-decode_source = getattr(_util, "decode_source", _decode_source)
-source_from_cache = getattr(_util, "source_from_cache", _source_from_cache)
-spec_from_file_location = getattr(_util, "spec_from_file_location")
+cache_from_source = _payload_get(_PAYLOAD, "cache_from_source")
+decode_source = _payload_get(_PAYLOAD, "decode_source")
+source_from_cache = _payload_get(_PAYLOAD, "source_from_cache")
+spec_from_file_location = _payload_get(_PAYLOAD, "spec_from_file_location")
 
 path_sep = "/"
 path_sep_tuple = ("/", "\\")
@@ -85,6 +71,7 @@ __all__ = [
     "SourceFileLoader",
     "SourceLoader",
     "SourcelessFileLoader",
+    "_LoaderBasics",
     "WindowsRegistryFinder",
     "cache_from_source",
     "decode_source",

@@ -808,6 +808,111 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
     },
     IntrinsicSpec {
+        name: "molt_http_client_connection_new",
+        symbol: "molt_http_client_connection_new",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_putrequest",
+        symbol: "molt_http_client_connection_putrequest",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_putheader",
+        symbol: "molt_http_client_connection_putheader",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_endheaders",
+        symbol: "molt_http_client_connection_endheaders",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_send",
+        symbol: "molt_http_client_connection_send",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_request",
+        symbol: "molt_http_client_connection_request",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_getresponse",
+        symbol: "molt_http_client_connection_getresponse",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_close",
+        symbol: "molt_http_client_connection_close",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_drop",
+        symbol: "molt_http_client_connection_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_connection_get_buffer",
+        symbol: "molt_http_client_connection_get_buffer",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_new",
+        symbol: "molt_http_message_new",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_parse",
+        symbol: "molt_http_message_parse",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_set_raw",
+        symbol: "molt_http_message_set_raw",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_get",
+        symbol: "molt_http_message_get",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_get_all",
+        symbol: "molt_http_message_get_all",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_items",
+        symbol: "molt_http_message_items",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_contains",
+        symbol: "molt_http_message_contains",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_len",
+        symbol: "molt_http_message_len",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_message_drop",
+        symbol: "molt_http_message_drop",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_parse_header_pairs",
+        symbol: "molt_http_parse_header_pairs",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_urlsplit",
+        symbol: "molt_http_client_urlsplit",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_http_client_response_read",
         symbol: "molt_http_client_response_read",
         arity: 2,
@@ -840,6 +945,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_http_client_response_getheaders",
         symbol: "molt_http_client_response_getheaders",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_client_response_message",
+        symbol: "molt_http_client_response_message",
         arity: 1,
     },
     IntrinsicSpec {
@@ -941,6 +1051,21 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_http_server_date_time_string",
         symbol: "molt_http_server_date_time_string",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_status_reason",
+        symbol: "molt_http_status_reason",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_http_status_constants",
+        symbol: "molt_http_status_constants",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_http_status_responses",
+        symbol: "molt_http_status_responses",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_context_null",
@@ -1220,6 +1345,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_email_policy_new",
         symbol: "molt_email_policy_new",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_headerregistry_value",
+        symbol: "molt_email_headerregistry_value",
         arity: 2,
     },
     IntrinsicSpec {
@@ -3188,6 +3318,41 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_select_constants",
+        symbol: "molt_select_constants",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_select_poll",
+        symbol: "molt_select_poll",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_select_epoll",
+        symbol: "molt_select_epoll",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_select_devpoll",
+        symbol: "molt_select_devpoll",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_select_fileno",
+        symbol: "molt_select_fileno",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_select_default_selector_kind",
+        symbol: "molt_select_default_selector_kind",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_select_backend_available",
+        symbol: "molt_select_backend_available",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_select_selector_new",
         symbol: "molt_select_selector_new",
         arity: 1,
@@ -3198,8 +3363,23 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_select_selector_len",
+        symbol: "molt_select_selector_len",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_select_selector_events",
+        symbol: "molt_select_selector_events",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_select_selector_register",
         symbol: "molt_select_selector_register",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_select_selector_register_fd",
+        symbol: "molt_select_selector_register_fd",
         arity: 3,
     },
     IntrinsicSpec {
@@ -3208,8 +3388,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_select_selector_unregister_obj",
+        symbol: "molt_select_selector_unregister_obj",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_select_selector_modify",
         symbol: "molt_select_selector_modify",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_select_selector_modify_obj",
+        symbol: "molt_select_selector_modify_obj",
         arity: 3,
     },
     IntrinsicSpec {
@@ -3656,6 +3846,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_logging_percent_style_format",
         symbol: "molt_logging_percent_style_format",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_config_dict",
+        symbol: "molt_logging_config_dict",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_config_valid_ident",
+        symbol: "molt_logging_config_valid_ident",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_config_file_config",
+        symbol: "molt_logging_config_file_config",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_config_listen",
+        symbol: "molt_logging_config_listen",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_logging_config_stop_listening",
+        symbol: "molt_logging_config_stop_listening",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_logging_runtime_ready",
@@ -4258,6 +4473,26 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_importlib_coerce_module_name",
+        symbol: "molt_importlib_coerce_module_name",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_coerce_search_paths",
+        symbol: "molt_importlib_coerce_search_paths",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_finder_signature",
+        symbol: "molt_importlib_finder_signature",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_path_importer_cache_signature",
+        symbol: "molt_importlib_path_importer_cache_signature",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_source_exec_payload",
         symbol: "molt_importlib_source_exec_payload",
         arity: 3,
@@ -4298,9 +4533,114 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_importlib_path_is_archive_member",
+        symbol: "molt_importlib_path_is_archive_member",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_package_root_from_origin",
+        symbol: "molt_importlib_package_root_from_origin",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_validate_resource_name",
+        symbol: "molt_importlib_validate_resource_name",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_normalize_path",
+        symbol: "molt_importlib_resources_normalize_path",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_only",
+        symbol: "molt_importlib_resources_only",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_contents_from_package",
+        symbol: "molt_importlib_resources_contents_from_package",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_is_resource_from_package",
+        symbol: "molt_importlib_resources_is_resource_from_package",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_resource_path_from_package",
+        symbol: "molt_importlib_resources_resource_path_from_package",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_read_text_from_package",
+        symbol: "molt_importlib_resources_read_text_from_package",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_resource_path_from_roots",
+        symbol: "molt_importlib_resources_reader_resource_path_from_roots",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_open_resource_bytes_from_roots",
+        symbol: "molt_importlib_resources_reader_open_resource_bytes_from_roots",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_is_resource_from_roots",
+        symbol: "molt_importlib_resources_reader_is_resource_from_roots",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_reader_contents_from_roots",
+        symbol: "molt_importlib_resources_reader_contents_from_roots",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_cache_from_source",
         symbol: "molt_importlib_cache_from_source",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_decode_source",
+        symbol: "molt_importlib_decode_source",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_source_hash",
+        symbol: "molt_importlib_source_hash",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_source_from_cache",
+        symbol: "molt_importlib_source_from_cache",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resolve_name",
+        symbol: "molt_importlib_resolve_name",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_known_absent_missing_name",
+        symbol: "molt_importlib_known_absent_missing_name",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_frozen_payload",
+        symbol: "molt_importlib_frozen_payload",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_frozen_external_payload",
+        symbol: "molt_importlib_frozen_external_payload",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_import_module",
+        symbol: "molt_importlib_import_module",
+        arity: 3,
     },
     IntrinsicSpec {
         name: "molt_importlib_find_in_path",
@@ -4318,14 +4658,59 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
     },
     IntrinsicSpec {
+        name: "molt_importlib_find_spec",
+        symbol: "molt_importlib_find_spec",
+        arity: 8,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_find_spec_from_path_hooks",
+        symbol: "molt_importlib_find_spec_from_path_hooks",
+        arity: 7,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_pathfinder_find_spec",
+        symbol: "molt_importlib_pathfinder_find_spec",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_filefinder_find_spec",
+        symbol: "molt_importlib_filefinder_find_spec",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_bootstrap_payload",
         symbol: "molt_importlib_bootstrap_payload",
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_importlib_runtime_modules",
+        symbol: "molt_importlib_runtime_modules",
+        arity: 0,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_runtime_state_payload",
         symbol: "molt_importlib_runtime_state_payload",
         arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_runtime_state_view",
+        symbol: "molt_importlib_runtime_state_view",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_existing_spec",
+        symbol: "molt_importlib_existing_spec",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_parent_search_paths",
+        symbol: "molt_importlib_parent_search_paths",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_ensure_default_meta_path",
+        symbol: "molt_importlib_ensure_default_meta_path",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_importlib_search_paths",
@@ -4343,9 +4728,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
-        name: "molt_importlib_resources_package_payload",
-        symbol: "molt_importlib_resources_package_payload",
+        name: "molt_importlib_resources_package_info",
+        symbol: "molt_importlib_resources_package_info",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_resources_open_resource_bytes_from_package",
+        symbol: "molt_importlib_resources_open_resource_bytes_from_package",
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_as_file_enter",
@@ -4443,9 +4833,34 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_importlib_module_from_spec",
+        symbol: "molt_importlib_module_from_spec",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_spec_from_loader",
+        symbol: "molt_importlib_spec_from_loader",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_spec_from_file_location",
+        symbol: "molt_importlib_spec_from_file_location",
+        arity: 5,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_spec_from_file_location_payload",
         symbol: "molt_importlib_spec_from_file_location_payload",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_set_module_state",
+        symbol: "molt_importlib_set_module_state",
+        arity: 8,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_stabilize_module_state",
+        symbol: "molt_importlib_stabilize_module_state",
+        arity: 6,
     },
     IntrinsicSpec {
         name: "molt_copyreg_bootstrap",
@@ -4868,6 +5283,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_typing_private_payload",
+        symbol: "molt_typing_private_payload",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_metadata_types_payload",
+        symbol: "molt_importlib_metadata_types_payload",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_sys_set_version_info",
         symbol: "molt_sys_set_version_info",
         arity: 6,
@@ -5278,6 +5703,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_itertools_batched",
+        symbol: "molt_itertools_batched",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_compress",
+        symbol: "molt_itertools_compress",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_combinations_with_replacement",
+        symbol: "molt_itertools_combinations_with_replacement",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_dropwhile",
+        symbol: "molt_itertools_dropwhile",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_filterfalse",
+        symbol: "molt_itertools_filterfalse",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_itertools_pairwise",
         symbol: "molt_itertools_pairwise",
         arity: 1,
@@ -5303,8 +5753,23 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_itertools_starmap",
+        symbol: "molt_itertools_starmap",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_takewhile",
+        symbol: "molt_itertools_takewhile",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_itertools_tee",
         symbol: "molt_itertools_tee",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_zip_longest",
+        symbol: "molt_itertools_zip_longest",
         arity: 2,
     },
     IntrinsicSpec {
@@ -5371,6 +5836,121 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_types_bootstrap",
         symbol: "molt_types_bootstrap",
         arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_this_payload",
+        symbol: "molt_this_payload",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_encode",
+        symbol: "molt_quopri_encode",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_decode",
+        symbol: "molt_quopri_decode",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_needs_quoting",
+        symbol: "molt_quopri_needs_quoting",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_quote",
+        symbol: "molt_quopri_quote",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_ishex",
+        symbol: "molt_quopri_ishex",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_quopri_unhex",
+        symbol: "molt_quopri_unhex",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_header_check",
+        symbol: "molt_email_quoprimime_header_check",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_body_check",
+        symbol: "molt_email_quoprimime_body_check",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_header_length",
+        symbol: "molt_email_quoprimime_header_length",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_body_length",
+        symbol: "molt_email_quoprimime_body_length",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_quote",
+        symbol: "molt_email_quoprimime_quote",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_unquote",
+        symbol: "molt_email_quoprimime_unquote",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_header_encode",
+        symbol: "molt_email_quoprimime_header_encode",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_header_decode",
+        symbol: "molt_email_quoprimime_header_decode",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_body_encode",
+        symbol: "molt_email_quoprimime_body_encode",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_email_quoprimime_decode",
+        symbol: "molt_email_quoprimime_decode",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_opcode_payload_312_json",
+        symbol: "molt_opcode_payload_312_json",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_opcode_metadata_payload_314_json",
+        symbol: "molt_opcode_metadata_payload_314_json",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_opcode_get_specialization_stats",
+        symbol: "molt_opcode_get_specialization_stats",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_opcode_stack_effect",
+        symbol: "molt_opcode_stack_effect",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_imghdr_test",
+        symbol: "molt_imghdr_test",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_imghdr_what",
+        symbol: "molt_imghdr_what",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_stdlib_probe",
@@ -5703,6 +6283,63 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_http_client_execute" => {
             Some(crate::molt_http_client_execute as *const () as usize as u64)
         }
+        "molt_http_client_connection_new" => {
+            Some(crate::molt_http_client_connection_new as *const () as usize as u64)
+        }
+        "molt_http_client_connection_putrequest" => {
+            Some(crate::molt_http_client_connection_putrequest as *const () as usize as u64)
+        }
+        "molt_http_client_connection_putheader" => {
+            Some(crate::molt_http_client_connection_putheader as *const () as usize as u64)
+        }
+        "molt_http_client_connection_endheaders" => {
+            Some(crate::molt_http_client_connection_endheaders as *const () as usize as u64)
+        }
+        "molt_http_client_connection_send" => {
+            Some(crate::molt_http_client_connection_send as *const () as usize as u64)
+        }
+        "molt_http_client_connection_request" => {
+            Some(crate::molt_http_client_connection_request as *const () as usize as u64)
+        }
+        "molt_http_client_connection_getresponse" => {
+            Some(crate::molt_http_client_connection_getresponse as *const () as usize as u64)
+        }
+        "molt_http_client_connection_close" => {
+            Some(crate::molt_http_client_connection_close as *const () as usize as u64)
+        }
+        "molt_http_client_connection_drop" => {
+            Some(crate::molt_http_client_connection_drop as *const () as usize as u64)
+        }
+        "molt_http_client_connection_get_buffer" => {
+            Some(crate::molt_http_client_connection_get_buffer as *const () as usize as u64)
+        }
+        "molt_http_message_new" => Some(crate::molt_http_message_new as *const () as usize as u64),
+        "molt_http_message_parse" => {
+            Some(crate::molt_http_message_parse as *const () as usize as u64)
+        }
+        "molt_http_message_set_raw" => {
+            Some(crate::molt_http_message_set_raw as *const () as usize as u64)
+        }
+        "molt_http_message_get" => Some(crate::molt_http_message_get as *const () as usize as u64),
+        "molt_http_message_get_all" => {
+            Some(crate::molt_http_message_get_all as *const () as usize as u64)
+        }
+        "molt_http_message_items" => {
+            Some(crate::molt_http_message_items as *const () as usize as u64)
+        }
+        "molt_http_message_contains" => {
+            Some(crate::molt_http_message_contains as *const () as usize as u64)
+        }
+        "molt_http_message_len" => Some(crate::molt_http_message_len as *const () as usize as u64),
+        "molt_http_message_drop" => {
+            Some(crate::molt_http_message_drop as *const () as usize as u64)
+        }
+        "molt_http_parse_header_pairs" => {
+            Some(crate::molt_http_parse_header_pairs as *const () as usize as u64)
+        }
+        "molt_http_client_urlsplit" => {
+            Some(crate::molt_http_client_urlsplit as *const () as usize as u64)
+        }
         "molt_http_client_response_read" => {
             Some(crate::molt_http_client_response_read as *const () as usize as u64)
         }
@@ -5723,6 +6360,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_http_client_response_getheaders" => {
             Some(crate::molt_http_client_response_getheaders as *const () as usize as u64)
+        }
+        "molt_http_client_response_message" => {
+            Some(crate::molt_http_client_response_message as *const () as usize as u64)
         }
         "molt_socketserver_register" => {
             Some(crate::molt_socketserver_register as *const () as usize as u64)
@@ -5783,6 +6423,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_http_server_date_time_string" => {
             Some(crate::molt_http_server_date_time_string as *const () as usize as u64)
+        }
+        "molt_http_status_reason" => {
+            Some(crate::molt_http_status_reason as *const () as usize as u64)
+        }
+        "molt_http_status_constants" => {
+            Some(crate::molt_http_status_constants as *const () as usize as u64)
+        }
+        "molt_http_status_responses" => {
+            Some(crate::molt_http_status_responses as *const () as usize as u64)
         }
         "molt_context_null" => Some(crate::molt_context_null as *const () as usize as u64),
         "molt_context_closing" => Some(crate::molt_context_closing as *const () as usize as u64),
@@ -5946,6 +6595,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_email_utils_parsedate_to_datetime as *const () as usize as u64)
         }
         "molt_email_policy_new" => Some(crate::molt_email_policy_new as *const () as usize as u64),
+        "molt_email_headerregistry_value" => {
+            Some(crate::molt_email_headerregistry_value as *const () as usize as u64)
+        }
         "molt_email_header_encode_word" => {
             Some(crate::molt_email_header_encode_word as *const () as usize as u64)
         }
@@ -6645,20 +7297,46 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_io_wait" => Some(crate::molt_io_wait as *const () as usize as u64),
         "molt_io_wait_new" => Some(crate::molt_io_wait_new as *const () as usize as u64),
         "molt_select_select" => Some(crate::molt_select_select as *const () as usize as u64),
+        "molt_select_constants" => Some(crate::molt_select_constants as *const () as usize as u64),
+        "molt_select_poll" => Some(crate::molt_select_poll as *const () as usize as u64),
+        "molt_select_epoll" => Some(crate::molt_select_epoll as *const () as usize as u64),
+        "molt_select_devpoll" => Some(crate::molt_select_devpoll as *const () as usize as u64),
+        "molt_select_fileno" => Some(crate::molt_select_fileno as *const () as usize as u64),
+        "molt_select_default_selector_kind" => {
+            Some(crate::molt_select_default_selector_kind as *const () as usize as u64)
+        }
+        "molt_select_backend_available" => {
+            Some(crate::molt_select_backend_available as *const () as usize as u64)
+        }
         "molt_select_selector_new" => {
             Some(crate::molt_select_selector_new as *const () as usize as u64)
         }
         "molt_select_selector_fileno" => {
             Some(crate::molt_select_selector_fileno as *const () as usize as u64)
         }
+        "molt_select_selector_len" => {
+            Some(crate::molt_select_selector_len as *const () as usize as u64)
+        }
+        "molt_select_selector_events" => {
+            Some(crate::molt_select_selector_events as *const () as usize as u64)
+        }
         "molt_select_selector_register" => {
             Some(crate::molt_select_selector_register as *const () as usize as u64)
+        }
+        "molt_select_selector_register_fd" => {
+            Some(crate::molt_select_selector_register_fd as *const () as usize as u64)
         }
         "molt_select_selector_unregister" => {
             Some(crate::molt_select_selector_unregister as *const () as usize as u64)
         }
+        "molt_select_selector_unregister_obj" => {
+            Some(crate::molt_select_selector_unregister_obj as *const () as usize as u64)
+        }
         "molt_select_selector_modify" => {
             Some(crate::molt_select_selector_modify as *const () as usize as u64)
+        }
+        "molt_select_selector_modify_obj" => {
+            Some(crate::molt_select_selector_modify_obj as *const () as usize as u64)
         }
         "molt_select_selector_poll" => {
             Some(crate::molt_select_selector_poll as *const () as usize as u64)
@@ -6798,6 +7476,21 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_zipfile_crc32" => Some(crate::molt_zipfile_crc32 as *const () as usize as u64),
         "molt_logging_percent_style_format" => {
             Some(crate::molt_logging_percent_style_format as *const () as usize as u64)
+        }
+        "molt_logging_config_dict" => {
+            Some(crate::molt_logging_config_dict as *const () as usize as u64)
+        }
+        "molt_logging_config_valid_ident" => {
+            Some(crate::molt_logging_config_valid_ident as *const () as usize as u64)
+        }
+        "molt_logging_config_file_config" => {
+            Some(crate::molt_logging_config_file_config as *const () as usize as u64)
+        }
+        "molt_logging_config_listen" => {
+            Some(crate::molt_logging_config_listen as *const () as usize as u64)
+        }
+        "molt_logging_config_stop_listening" => {
+            Some(crate::molt_logging_config_stop_listening as *const () as usize as u64)
         }
         "molt_logging_runtime_ready" => {
             Some(crate::molt_logging_runtime_ready as *const () as usize as u64)
@@ -7035,6 +7728,18 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_sourceless_loader_payload" => {
             Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64)
         }
+        "molt_importlib_coerce_module_name" => {
+            Some(crate::molt_importlib_coerce_module_name as *const () as usize as u64)
+        }
+        "molt_importlib_coerce_search_paths" => {
+            Some(crate::molt_importlib_coerce_search_paths as *const () as usize as u64)
+        }
+        "molt_importlib_finder_signature" => {
+            Some(crate::molt_importlib_finder_signature as *const () as usize as u64)
+        }
+        "molt_importlib_path_importer_cache_signature" => {
+            Some(crate::molt_importlib_path_importer_cache_signature as *const () as usize as u64)
+        }
         "molt_importlib_source_exec_payload" => {
             Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64)
         }
@@ -7059,8 +7764,74 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_module_spec_is_package" => {
             Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64)
         }
+        "molt_importlib_path_is_archive_member" => {
+            Some(crate::molt_importlib_path_is_archive_member as *const () as usize as u64)
+        }
+        "molt_importlib_package_root_from_origin" => {
+            Some(crate::molt_importlib_package_root_from_origin as *const () as usize as u64)
+        }
+        "molt_importlib_validate_resource_name" => {
+            Some(crate::molt_importlib_validate_resource_name as *const () as usize as u64)
+        }
+        "molt_importlib_resources_normalize_path" => {
+            Some(crate::molt_importlib_resources_normalize_path as *const () as usize as u64)
+        }
+        "molt_importlib_resources_only" => {
+            Some(crate::molt_importlib_resources_only as *const () as usize as u64)
+        }
+        "molt_importlib_resources_contents_from_package" => {
+            Some(crate::molt_importlib_resources_contents_from_package as *const () as usize as u64)
+        }
+        "molt_importlib_resources_is_resource_from_package" => Some(
+            crate::molt_importlib_resources_is_resource_from_package as *const () as usize as u64,
+        ),
+        "molt_importlib_resources_resource_path_from_package" => Some(
+            crate::molt_importlib_resources_resource_path_from_package as *const () as usize as u64,
+        ),
+        "molt_importlib_resources_read_text_from_package" => Some(
+            crate::molt_importlib_resources_read_text_from_package as *const () as usize as u64,
+        ),
+        "molt_importlib_resources_reader_resource_path_from_roots" => Some(
+            crate::molt_importlib_resources_reader_resource_path_from_roots as *const () as usize
+                as u64,
+        ),
+        "molt_importlib_resources_reader_open_resource_bytes_from_roots" => Some(
+            crate::molt_importlib_resources_reader_open_resource_bytes_from_roots as *const ()
+                as usize as u64,
+        ),
+        "molt_importlib_resources_reader_is_resource_from_roots" => Some(
+            crate::molt_importlib_resources_reader_is_resource_from_roots as *const () as usize
+                as u64,
+        ),
+        "molt_importlib_resources_reader_contents_from_roots" => Some(
+            crate::molt_importlib_resources_reader_contents_from_roots as *const () as usize as u64,
+        ),
         "molt_importlib_cache_from_source" => {
             Some(crate::molt_importlib_cache_from_source as *const () as usize as u64)
+        }
+        "molt_importlib_decode_source" => {
+            Some(crate::molt_importlib_decode_source as *const () as usize as u64)
+        }
+        "molt_importlib_source_hash" => {
+            Some(crate::molt_importlib_source_hash as *const () as usize as u64)
+        }
+        "molt_importlib_source_from_cache" => {
+            Some(crate::molt_importlib_source_from_cache as *const () as usize as u64)
+        }
+        "molt_importlib_resolve_name" => {
+            Some(crate::molt_importlib_resolve_name as *const () as usize as u64)
+        }
+        "molt_importlib_known_absent_missing_name" => {
+            Some(crate::molt_importlib_known_absent_missing_name as *const () as usize as u64)
+        }
+        "molt_importlib_frozen_payload" => {
+            Some(crate::molt_importlib_frozen_payload as *const () as usize as u64)
+        }
+        "molt_importlib_frozen_external_payload" => {
+            Some(crate::molt_importlib_frozen_external_payload as *const () as usize as u64)
+        }
+        "molt_importlib_import_module" => {
+            Some(crate::molt_importlib_import_module as *const () as usize as u64)
         }
         "molt_importlib_find_in_path" => {
             Some(crate::molt_importlib_find_in_path as *const () as usize as u64)
@@ -7071,11 +7842,38 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_find_spec_payload" => {
             Some(crate::molt_importlib_find_spec_payload as *const () as usize as u64)
         }
+        "molt_importlib_find_spec" => {
+            Some(crate::molt_importlib_find_spec as *const () as usize as u64)
+        }
+        "molt_importlib_find_spec_from_path_hooks" => {
+            Some(crate::molt_importlib_find_spec_from_path_hooks as *const () as usize as u64)
+        }
+        "molt_importlib_pathfinder_find_spec" => {
+            Some(crate::molt_importlib_pathfinder_find_spec as *const () as usize as u64)
+        }
+        "molt_importlib_filefinder_find_spec" => {
+            Some(crate::molt_importlib_filefinder_find_spec as *const () as usize as u64)
+        }
         "molt_importlib_bootstrap_payload" => {
             Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64)
         }
+        "molt_importlib_runtime_modules" => {
+            Some(crate::molt_importlib_runtime_modules as *const () as usize as u64)
+        }
         "molt_importlib_runtime_state_payload" => {
             Some(crate::molt_importlib_runtime_state_payload as *const () as usize as u64)
+        }
+        "molt_importlib_runtime_state_view" => {
+            Some(crate::molt_importlib_runtime_state_view as *const () as usize as u64)
+        }
+        "molt_importlib_existing_spec" => {
+            Some(crate::molt_importlib_existing_spec as *const () as usize as u64)
+        }
+        "molt_importlib_parent_search_paths" => {
+            Some(crate::molt_importlib_parent_search_paths as *const () as usize as u64)
+        }
+        "molt_importlib_ensure_default_meta_path" => {
+            Some(crate::molt_importlib_ensure_default_meta_path as *const () as usize as u64)
         }
         "molt_importlib_search_paths" => {
             Some(crate::molt_importlib_search_paths as *const () as usize as u64)
@@ -7086,9 +7884,13 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_resources_path_payload" => {
             Some(crate::molt_importlib_resources_path_payload as *const () as usize as u64)
         }
-        "molt_importlib_resources_package_payload" => {
-            Some(crate::molt_importlib_resources_package_payload as *const () as usize as u64)
+        "molt_importlib_resources_package_info" => {
+            Some(crate::molt_importlib_resources_package_info as *const () as usize as u64)
         }
+        "molt_importlib_resources_open_resource_bytes_from_package" => Some(
+            crate::molt_importlib_resources_open_resource_bytes_from_package as *const () as usize
+                as u64,
+        ),
         "molt_importlib_resources_as_file_enter" => {
             Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64)
         }
@@ -7146,8 +7948,23 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_metadata_payload" => {
             Some(crate::molt_importlib_metadata_payload as *const () as usize as u64)
         }
+        "molt_importlib_module_from_spec" => {
+            Some(crate::molt_importlib_module_from_spec as *const () as usize as u64)
+        }
+        "molt_importlib_spec_from_loader" => {
+            Some(crate::molt_importlib_spec_from_loader as *const () as usize as u64)
+        }
+        "molt_importlib_spec_from_file_location" => {
+            Some(crate::molt_importlib_spec_from_file_location as *const () as usize as u64)
+        }
         "molt_importlib_spec_from_file_location_payload" => {
             Some(crate::molt_importlib_spec_from_file_location_payload as *const () as usize as u64)
+        }
+        "molt_importlib_set_module_state" => {
+            Some(crate::molt_importlib_set_module_state as *const () as usize as u64)
+        }
+        "molt_importlib_stabilize_module_state" => {
+            Some(crate::molt_importlib_stabilize_module_state as *const () as usize as u64)
         }
         "molt_copyreg_bootstrap" => {
             Some(crate::molt_copyreg_bootstrap as *const () as usize as u64)
@@ -7339,6 +8156,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_typing_type_param" => {
             Some(crate::molt_typing_type_param as *const () as usize as u64)
         }
+        "molt_typing_private_payload" => {
+            Some(crate::molt_typing_private_payload as *const () as usize as u64)
+        }
+        "molt_importlib_metadata_types_payload" => {
+            Some(crate::molt_importlib_metadata_types_payload as *const () as usize as u64)
+        }
         "molt_sys_set_version_info" => {
             Some(crate::molt_sys_set_version_info as *const () as usize as u64)
         }
@@ -7467,6 +8290,21 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_itertools_accumulate" => {
             Some(crate::molt_itertools_accumulate as *const () as usize as u64)
         }
+        "molt_itertools_batched" => {
+            Some(crate::molt_itertools_batched as *const () as usize as u64)
+        }
+        "molt_itertools_compress" => {
+            Some(crate::molt_itertools_compress as *const () as usize as u64)
+        }
+        "molt_itertools_combinations_with_replacement" => {
+            Some(crate::molt_itertools_combinations_with_replacement as *const () as usize as u64)
+        }
+        "molt_itertools_dropwhile" => {
+            Some(crate::molt_itertools_dropwhile as *const () as usize as u64)
+        }
+        "molt_itertools_filterfalse" => {
+            Some(crate::molt_itertools_filterfalse as *const () as usize as u64)
+        }
         "molt_itertools_pairwise" => {
             Some(crate::molt_itertools_pairwise as *const () as usize as u64)
         }
@@ -7482,7 +8320,16 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_itertools_groupby" => {
             Some(crate::molt_itertools_groupby as *const () as usize as u64)
         }
+        "molt_itertools_starmap" => {
+            Some(crate::molt_itertools_starmap as *const () as usize as u64)
+        }
+        "molt_itertools_takewhile" => {
+            Some(crate::molt_itertools_takewhile as *const () as usize as u64)
+        }
         "molt_itertools_tee" => Some(crate::molt_itertools_tee as *const () as usize as u64),
+        "molt_itertools_zip_longest" => {
+            Some(crate::molt_itertools_zip_longest as *const () as usize as u64)
+        }
         "molt_functools_kwd_mark" => {
             Some(crate::molt_functools_kwd_mark as *const () as usize as u64)
         }
@@ -7512,6 +8359,59 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_future_features" => Some(crate::molt_future_features as *const () as usize as u64),
         "molt_types_bootstrap" => Some(crate::molt_types_bootstrap as *const () as usize as u64),
+        "molt_this_payload" => Some(crate::molt_this_payload as *const () as usize as u64),
+        "molt_quopri_encode" => Some(crate::molt_quopri_encode as *const () as usize as u64),
+        "molt_quopri_decode" => Some(crate::molt_quopri_decode as *const () as usize as u64),
+        "molt_quopri_needs_quoting" => {
+            Some(crate::molt_quopri_needs_quoting as *const () as usize as u64)
+        }
+        "molt_quopri_quote" => Some(crate::molt_quopri_quote as *const () as usize as u64),
+        "molt_quopri_ishex" => Some(crate::molt_quopri_ishex as *const () as usize as u64),
+        "molt_quopri_unhex" => Some(crate::molt_quopri_unhex as *const () as usize as u64),
+        "molt_email_quoprimime_header_check" => {
+            Some(crate::molt_email_quoprimime_header_check as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_body_check" => {
+            Some(crate::molt_email_quoprimime_body_check as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_header_length" => {
+            Some(crate::molt_email_quoprimime_header_length as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_body_length" => {
+            Some(crate::molt_email_quoprimime_body_length as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_quote" => {
+            Some(crate::molt_email_quoprimime_quote as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_unquote" => {
+            Some(crate::molt_email_quoprimime_unquote as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_header_encode" => {
+            Some(crate::molt_email_quoprimime_header_encode as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_header_decode" => {
+            Some(crate::molt_email_quoprimime_header_decode as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_body_encode" => {
+            Some(crate::molt_email_quoprimime_body_encode as *const () as usize as u64)
+        }
+        "molt_email_quoprimime_decode" => {
+            Some(crate::molt_email_quoprimime_decode as *const () as usize as u64)
+        }
+        "molt_opcode_payload_312_json" => {
+            Some(crate::molt_opcode_payload_312_json as *const () as usize as u64)
+        }
+        "molt_opcode_metadata_payload_314_json" => {
+            Some(crate::molt_opcode_metadata_payload_314_json as *const () as usize as u64)
+        }
+        "molt_opcode_get_specialization_stats" => {
+            Some(crate::molt_opcode_get_specialization_stats as *const () as usize as u64)
+        }
+        "molt_opcode_stack_effect" => {
+            Some(crate::molt_opcode_stack_effect as *const () as usize as u64)
+        }
+        "molt_imghdr_test" => Some(crate::molt_imghdr_test as *const () as usize as u64),
+        "molt_imghdr_what" => Some(crate::molt_imghdr_what as *const () as usize as u64),
         "molt_stdlib_probe" => Some(crate::molt_stdlib_probe as *const () as usize as u64),
         _ => None,
     }

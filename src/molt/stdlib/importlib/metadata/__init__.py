@@ -6,10 +6,30 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-from dataclasses import dataclass
-from typing import Iterable
+from importlib import import_module
+from typing import Iterable as _Iterable
+from typing import cast
+from ._collections import FreezableDefaultDict, Pair
+from ._functools import method_cache, pass_none
+from ._itertools import always_iterable, unique_everseen
+from ._meta import PackageMetadata, SimplePath
+import collections
+import contextlib
+import csv
+import email
+import functools
+import importlib.abc as abc
+import inspect
+import itertools
+import operator
 import os
+import pathlib
+import posixpath
+import re
 import sys
+import textwrap
+import warnings
+import zipfile
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file", globals())
@@ -28,35 +48,89 @@ _MOLT_IMPORTLIB_METADATA_PAYLOAD = _require_intrinsic(
 _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME = _require_intrinsic(
     "molt_importlib_metadata_normalize_name", globals()
 )
+_MOLT_IMPORTLIB_METADATA_TYPES_PAYLOAD = _require_intrinsic(
+    "molt_importlib_metadata_types_payload", globals()
+)
 _MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
-__all__ = [
-    "PackageNotFoundError",
-    "distribution",
-    "distributions",
-    "version",
-    "entry_points",
-    "EntryPoint",
-    "EntryPoints",
-]
+
+def _load_types_payload() -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_METADATA_TYPES_PAYLOAD(
+        __import__("typing"), abc, contextlib, itertools
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib.metadata types payload: dict expected")
+    return payload
+
+
+def _payload_get(payload: dict[str, object], name: str) -> object:
+    if name not in payload:
+        raise RuntimeError(f"invalid importlib.metadata types payload: missing {name}")
+    return payload[name]
+
+
+_TYPES_PAYLOAD = _load_types_payload()
+List = _payload_get(_TYPES_PAYLOAD, "List")
+Mapping = _payload_get(_TYPES_PAYLOAD, "Mapping")
+MetaPathFinder = _payload_get(_TYPES_PAYLOAD, "MetaPathFinder")
+Optional = _payload_get(_TYPES_PAYLOAD, "Optional")
+suppress = _payload_get(_TYPES_PAYLOAD, "suppress")
 
 
 class PackageNotFoundError(ModuleNotFoundError):
     pass
 
 
-def _normalize(name: str) -> str:
-    normalized = _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME(name)
-    if not isinstance(normalized, str):
-        raise RuntimeError("invalid importlib metadata normalize payload: str expected")
-    return normalized
+class DeprecatedNonAbstract:
+    pass
 
 
-def _ensure_fs_read() -> None:
-    if _MOLT_CAPABILITIES_TRUSTED():
-        return
-    _MOLT_CAPABILITIES_REQUIRE("fs.read")
+class DeprecatedTuple(tuple):
+    pass
+
+
+class DistributionFinder(MetaPathFinder):
+    @classmethod
+    def find_distributions(cls, context=None):
+        return ()
+
+
+class FastPath(str):
+    pass
+
+
+class FileHash:
+    def __init__(self, mode: str = "", value: str = "") -> None:
+        self.mode = mode
+        self.value = value
+
+
+class Lookup(dict):
+    pass
+
+
+class MetadataPathFinder(DistributionFinder):
+    @classmethod
+    def find_distributions(cls, context=None):
+        return ()
+
+
+class Prepared:
+    @staticmethod
+    def normalize(name: str) -> str:
+        return _normalize(name)
+
+
+class Sectioned:
+    pass
+
+
+class PackagePath(str):
+    pass
+
+
+starmap = itertools.starmap
 
 
 class _Metadata:
@@ -126,18 +200,36 @@ class Distribution:
         return _read_text_file(target)
 
 
-@dataclass(frozen=True)
+class PathDistribution(Distribution):
+    pass
+
+
 class EntryPoint:
-    name: str
-    value: str
-    group: str
+    __slots__ = ("name", "value", "group")
+
+    def __init__(self, name: str, value: str, group: str) -> None:
+        self.name = name
+        self.value = value
+        self.group = group
+
+    def __eq__(self, other):
+        if not isinstance(other, EntryPoint):
+            return NotImplemented
+        return (
+            self.name == other.name
+            and self.value == other.value
+            and self.group == other.group
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.value, self.group))
 
     def __repr__(self) -> str:
         return f"EntryPoint(name={self.name!r}, value={self.value!r}, group={self.group!r})"
 
 
 class EntryPoints:
-    def __init__(self, entries: Iterable[EntryPoint] = ()) -> None:
+    def __init__(self, entries: _Iterable[EntryPoint] = ()) -> None:
         self._entries = tuple(entries)
 
     def __iter__(self):
@@ -169,8 +261,80 @@ class EntryPoints:
         return EntryPoints(items)
 
 
+__all__ = [
+    "DeprecatedNonAbstract",
+    "DeprecatedTuple",
+    "Distribution",
+    "DistributionFinder",
+    "EntryPoint",
+    "EntryPoints",
+    "FastPath",
+    "FileHash",
+    "FreezableDefaultDict",
+    "List",
+    "Lookup",
+    "Mapping",
+    "MetaPathFinder",
+    "MetadataPathFinder",
+    "Optional",
+    "PackageMetadata",
+    "PackageNotFoundError",
+    "PackagePath",
+    "Pair",
+    "PathDistribution",
+    "Prepared",
+    "Sectioned",
+    "SimplePath",
+    "abc",
+    "always_iterable",
+    "cast",
+    "collections",
+    "contextlib",
+    "csv",
+    "distribution",
+    "distributions",
+    "email",
+    "entry_points",
+    "files",
+    "functools",
+    "import_module",
+    "inspect",
+    "itertools",
+    "metadata",
+    "method_cache",
+    "operator",
+    "os",
+    "packages_distributions",
+    "pass_none",
+    "pathlib",
+    "posixpath",
+    "re",
+    "requires",
+    "starmap",
+    "suppress",
+    "sys",
+    "textwrap",
+    "unique_everseen",
+    "version",
+    "warnings",
+    "zipfile",
+]
+
 _DIST_CACHE: dict[str, Distribution] | None = None
 _DIST_PATH_SNAPSHOT: tuple[str, ...] | None = None
+
+
+def _normalize(name: str) -> str:
+    normalized = _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME(name)
+    if not isinstance(normalized, str):
+        raise RuntimeError("invalid importlib metadata normalize payload: str expected")
+    return normalized
+
+
+def _ensure_fs_read() -> None:
+    if _MOLT_CAPABILITIES_TRUSTED():
+        return
+    _MOLT_CAPABILITIES_REQUIRE("fs.read")
 
 
 def _metadata_module_file() -> str | None:
@@ -202,7 +366,7 @@ def _resolved_search_paths(snapshot: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _iter_dist_paths(search_paths: tuple[str, ...]) -> Iterable[str]:
+def _iter_dist_paths(search_paths: tuple[str, ...]) -> _Iterable[str]:
     payload = _MOLT_IMPORTLIB_METADATA_DIST_PATHS(search_paths, _metadata_module_file())
     if not isinstance(payload, (list, tuple)):
         raise RuntimeError(
@@ -400,6 +564,35 @@ def version(name: str) -> str:
     return distribution(name).version
 
 
+def metadata(name: str) -> _Metadata:
+    return distribution(name).metadata
+
+
+def requires(name: str) -> list[str] | None:
+    return distribution(name).requires
+
+
+def files(name: str):
+    _ = name
+    return None
+
+
+def packages_distributions() -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {}
+    for dist in distributions():
+        top_level = dist.read_text("top_level.txt")
+        if not top_level:
+            continue
+        for line in top_level.splitlines():
+            pkg = line.strip()
+            if not pkg:
+                continue
+            providers = mapping.setdefault(pkg, [])
+            if dist._name not in providers:
+                providers.append(dist._name)
+    return mapping
+
+
 def entry_points(**params) -> EntryPoints:
     _ensure_fs_read()
     group = params.get("group")
@@ -420,5 +613,5 @@ def entry_points(**params) -> EntryPoints:
     ]
     entry_points_obj = EntryPoints(items)
     if params:
-        return entry_points_obj.select(**params)
+        return cast(EntryPoints, entry_points_obj.select(**params))
     return entry_points_obj

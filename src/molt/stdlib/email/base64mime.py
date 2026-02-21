@@ -35,15 +35,7 @@ __all__ = [
 
 
 from base64 import b64encode
-
-try:
-    from binascii import b2a_base64 as _b2a_base64, a2b_base64 as _a2b_base64
-except Exception:
-    _b2a_base64 = len
-    _a2b_base64 = len
-
-b2a_base64 = _b2a_base64
-a2b_base64 = _a2b_base64
+from binascii import a2b_base64, b2a_base64
 
 CRLF = "\r\n"
 NL = "\n"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any
 
-__all__ = ["Enum", "IntEnum", "IntFlag", "Flag", "auto"]
+__all__ = ["Enum", "EnumType", "EnumMeta", "IntEnum", "IntFlag", "Flag", "auto"]
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _enum_init_member = _require_intrinsic("molt_enum_init_member", globals())
@@ -31,7 +31,7 @@ def _is_auto_value(obj: object) -> bool:
     return isinstance(obj, _AutoValue) or bool(getattr(obj, "_molt_auto", False))
 
 
-class EnumMeta(type):
+class EnumType(type):
     _member_names_: list[str]
     _member_map_: dict[str, Any]
     _value2member_map_: dict[Any, Any]
@@ -107,7 +107,11 @@ class EnumMeta(type):
         raise ValueError(f"{value!r} is not a valid {cls.__name__}")
 
 
-class Enum(metaclass=EnumMeta):
+# CPython 3.12+ surfaces EnumType while keeping EnumMeta as compatibility alias.
+EnumMeta = EnumType
+
+
+class Enum(metaclass=EnumType):
     _name_: str | None
     _value_: Any
 

@@ -35,18 +35,8 @@ _MOLT_OPCODE_PAYLOAD_312_JSON = _require_intrinsic(
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
-# It's a chicken-and-egg I'm afraid:
-# We're imported before _opcode's made.
-# With exception unheeded
-# (stack_effect is not needed)
-# Both our chickens and eggs are allayed.
-#     --Larry Hastings, 2013/11/23
-try:
-    from _opcode import stack_effect
 
-    __all__.append("stack_effect")
-except ImportError:
-    pass
+__all__.append("stack_effect")
 
 
 def _expect_dict(value: object, label: str) -> dict[str, object]:
@@ -91,7 +81,9 @@ hasfree = [int(v) for v in _expect_list(_PAYLOAD.get("hasfree"), "hasfree")]
 hasexc = [int(v) for v in _expect_list(_PAYLOAD.get("hasexc"), "hasexc")]
 
 opname = [str(v) for v in _expect_list(_PAYLOAD.get("opname"), "opname")]
-opmap = {str(k): int(v) for k, v in _expect_dict(_PAYLOAD.get("opmap"), "opmap").items()}
+opmap = {
+    str(k): int(v) for k, v in _expect_dict(_PAYLOAD.get("opmap"), "opmap").items()
+}
 
 HAVE_ARGUMENT = _expect_int(_PAYLOAD.get("HAVE_ARGUMENT"), "HAVE_ARGUMENT")
 EXTENDED_ARG = _expect_int(_PAYLOAD.get("EXTENDED_ARG"), "EXTENDED_ARG")
@@ -104,26 +96,36 @@ ENABLE_SPECIALIZATION = bool(_PAYLOAD.get("ENABLE_SPECIALIZATION"))
 
 _nb_ops = [tuple(v) for v in _expect_list(_PAYLOAD.get("_nb_ops"), "_nb_ops")]
 _intrinsic_1_descs = [
-    str(v) for v in _expect_list(_PAYLOAD.get("_intrinsic_1_descs"), "_intrinsic_1_descs")
+    str(v)
+    for v in _expect_list(_PAYLOAD.get("_intrinsic_1_descs"), "_intrinsic_1_descs")
 ]
 _intrinsic_2_descs = [
-    str(v) for v in _expect_list(_PAYLOAD.get("_intrinsic_2_descs"), "_intrinsic_2_descs")
+    str(v)
+    for v in _expect_list(_PAYLOAD.get("_intrinsic_2_descs"), "_intrinsic_2_descs")
 ]
 _specializations = {
     str(k): [str(x) for x in _expect_list(v, f"_specializations.{k}")]
-    for k, v in _expect_dict(_PAYLOAD.get("_specializations"), "_specializations").items()
+    for k, v in _expect_dict(
+        _PAYLOAD.get("_specializations"), "_specializations"
+    ).items()
 }
 _specialized_instructions = [
     str(v)
-    for v in _expect_list(_PAYLOAD.get("_specialized_instructions"), "_specialized_instructions")
+    for v in _expect_list(
+        _PAYLOAD.get("_specialized_instructions"), "_specialized_instructions"
+    )
 ]
 _cache_format = {
-    str(k): {str(inner_k): int(inner_v) for inner_k, inner_v in _expect_dict(v, k).items()}
+    str(k): {
+        str(inner_k): int(inner_v) for inner_k, inner_v in _expect_dict(v, k).items()
+    }
     for k, v in _expect_dict(_PAYLOAD.get("_cache_format"), "_cache_format").items()
 }
 _inline_cache_entries = [
     int(v)
-    for v in _expect_list(_PAYLOAD.get("_inline_cache_entries"), "_inline_cache_entries")
+    for v in _expect_list(
+        _PAYLOAD.get("_inline_cache_entries"), "_inline_cache_entries"
+    )
 ]
 
 del _PAYLOAD

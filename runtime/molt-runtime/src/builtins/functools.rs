@@ -256,7 +256,7 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &LRU_WRAPPER_CLASS, "_LruCacheWrapper", 64);
+    let class_bits = functools_class(_py, &LRU_WRAPPER_CLASS, "_lru_cache_wrapper", 64);
     let call_bits = builtin_func_bits(
         _py,
         &LRU_CALL_FN,

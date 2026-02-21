@@ -16,17 +16,25 @@ if TYPE_CHECKING:
 
 __all__ = [
     "accumulate",
+    "batched",
     "chain",
     "combinations",
+    "combinations_with_replacement",
+    "compress",
     "count",
     "cycle",
+    "dropwhile",
+    "filterfalse",
     "groupby",
     "islice",
     "pairwise",
     "permutations",
     "product",
     "repeat",
+    "starmap",
+    "takewhile",
     "tee",
+    "zip_longest",
 ]
 
 T = TypeVar("T")
@@ -41,12 +49,22 @@ _MOLT_REPEAT = _require_intrinsic("molt_itertools_repeat", globals())
 _MOLT_COUNT = _require_intrinsic("molt_itertools_count", globals())
 _MOLT_CYCLE = _require_intrinsic("molt_itertools_cycle", globals())
 _MOLT_ACCUMULATE = _require_intrinsic("molt_itertools_accumulate", globals())
+_MOLT_BATCHED = _require_intrinsic("molt_itertools_batched", globals())
+_MOLT_COMPRESS = _require_intrinsic("molt_itertools_compress", globals())
+_MOLT_COMBINATIONS_WITH_REPLACEMENT = _require_intrinsic(
+    "molt_itertools_combinations_with_replacement", globals()
+)
+_MOLT_DROPWHILE = _require_intrinsic("molt_itertools_dropwhile", globals())
+_MOLT_FILTERFALSE = _require_intrinsic("molt_itertools_filterfalse", globals())
 _MOLT_PAIRWISE = _require_intrinsic("molt_itertools_pairwise", globals())
 _MOLT_PRODUCT = _require_intrinsic("molt_itertools_product", globals())
 _MOLT_PERMUTATIONS = _require_intrinsic("molt_itertools_permutations", globals())
 _MOLT_COMBINATIONS = _require_intrinsic("molt_itertools_combinations", globals())
 _MOLT_GROUPBY = _require_intrinsic("molt_itertools_groupby", globals())
+_MOLT_STARMAP = _require_intrinsic("molt_itertools_starmap", globals())
+_MOLT_TAKEWHILE = _require_intrinsic("molt_itertools_takewhile", globals())
 _MOLT_TEE = _require_intrinsic("molt_itertools_tee", globals())
+_MOLT_ZIP_LONGEST = _require_intrinsic("molt_itertools_zip_longest", globals())
 
 _MISSING = _MOLT_KWD_MARK()
 
@@ -95,8 +113,29 @@ def accumulate(
     return _MOLT_ACCUMULATE(iterable, func, initial)
 
 
+def batched(
+    iterable: Iterable[T], n: Any, *, strict: Any = False
+) -> Iterator[tuple[T, ...]]:
+    return _MOLT_BATCHED(iterable, n, strict)
+
+
 def pairwise(iterable: Iterable[T]) -> Iterator[tuple[T, T]]:
     return _MOLT_PAIRWISE(iterable)
+
+
+class compress:
+    def __new__(cls, data: Iterable[T], selectors: Iterable[Any]) -> Iterator[T]:
+        return _MOLT_COMPRESS(data, selectors)
+
+
+class dropwhile:
+    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
+        return _MOLT_DROPWHILE(predicate, iterable)
+
+
+class filterfalse:
+    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
+        return _MOLT_FILTERFALSE(predicate, iterable)
 
 
 def product(*iterables: Iterable[T], repeat: Any = 1) -> Iterator[tuple[Any, ...]]:
@@ -113,9 +152,32 @@ def combinations(iterable: Iterable[T], r: Any) -> Iterator[tuple[T, ...]]:
     return _MOLT_COMBINATIONS(iterable, r)
 
 
+def combinations_with_replacement(
+    iterable: Iterable[T], r: Any
+) -> Iterator[tuple[T, ...]]:
+    return _MOLT_COMBINATIONS_WITH_REPLACEMENT(iterable, r)
+
+
 def groupby(iterable: Iterable[T], key: Any | None = None) -> Any:
     return _MOLT_GROUPBY(iterable, key)
 
 
+class starmap:
+    def __new__(cls, function: Any, iterable: Iterable[Any]) -> Iterator[Any]:
+        return _MOLT_STARMAP(function, iterable)
+
+
+class takewhile:
+    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
+        return _MOLT_TAKEWHILE(predicate, iterable)
+
+
 def tee(iterable: Iterable[T], n: Any = 2):
     return _MOLT_TEE(iterable, n)
+
+
+class zip_longest:
+    def __new__(
+        cls, *iterables: Iterable[Any], fillvalue: Any = None
+    ) -> Iterator[tuple[Any, ...]]:
+        return _MOLT_ZIP_LONGEST(iterables, fillvalue)

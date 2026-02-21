@@ -4,19 +4,37 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import io
-from typing import Iterable
-import importlib
-import os
-import sys
+import io as _io
+from typing import Iterable as _Iterable
+from typing import Union as _Union
+import importlib as _importlib
+import os as _os
+import sys as _sys
+
+from . import abc
+from .abc import ResourceReader
 
 _require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file", globals())
 _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD = _require_intrinsic(
     "molt_importlib_resources_path_payload", globals()
 )
-_MOLT_IMPORTLIB_RESOURCES_PACKAGE_PAYLOAD = _require_intrinsic(
-    "molt_importlib_resources_package_payload", globals()
+_MOLT_IMPORTLIB_RESOURCES_PACKAGE_INFO = _require_intrinsic(
+    "molt_importlib_resources_package_info", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_OPEN_RESOURCE_BYTES_FROM_PACKAGE = _require_intrinsic(
+    "molt_importlib_resources_open_resource_bytes_from_package", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_CONTENTS_FROM_PACKAGE = _require_intrinsic(
+    "molt_importlib_resources_contents_from_package", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_IS_RESOURCE_FROM_PACKAGE = _require_intrinsic(
+    "molt_importlib_resources_is_resource_from_package", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_RESOURCE_PATH_FROM_PACKAGE = _require_intrinsic(
+    "molt_importlib_resources_resource_path_from_package", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_READ_TEXT_FROM_PACKAGE = _require_intrinsic(
+    "molt_importlib_resources_read_text_from_package", globals()
 )
 _MOLT_IMPORTLIB_RESOURCES_AS_FILE_ENTER = _require_intrinsic(
     "molt_importlib_resources_as_file_enter", globals()
@@ -57,20 +75,32 @@ _MOLT_IMPORTLIB_RESOURCES_READER_EXISTS = _require_intrinsic(
 _MOLT_IMPORTLIB_RESOURCES_READER_IS_DIR = _require_intrinsic(
     "molt_importlib_resources_reader_is_dir", globals()
 )
+_MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = _require_intrinsic(
+    "molt_importlib_validate_resource_name", globals()
+)
+
+Package = _Union[str, object]
+Anchor = Package
+Resource = str
 
 __all__ = [
-    "files",
+    "Package",
+    "Anchor",
+    "Resource",
+    "ResourceReader",
     "as_file",
-    "read_text",
-    "read_binary",
-    "open_text",
-    "open_binary",
     "contents",
+    "files",
     "is_resource",
+    "open_binary",
+    "open_text",
+    "path",
+    "read_binary",
+    "read_text",
 ]
 
 
-class Traversable:
+class _Traversable:
     def __init__(self, path: str) -> None:
         self._path = path
 
@@ -86,24 +116,24 @@ class Traversable:
 
     @property
     def suffix(self) -> str:
-        base = os.path.basename(self._path)
+        base = _os.path.basename(self._path)
         if "." not in base or base in {".", ".."}:
             return ""
         return base[base.rfind(".") :]
 
-    def joinpath(self, *parts: str) -> "Traversable":
+    def joinpath(self, *parts: str) -> "_Traversable":
         path = self._path
         for part in parts:
-            path = os.path.join(path, part)
-        return Traversable(path)
+            path = _os.path.join(path, part)
+        return _Traversable(path)
 
-    def iterdir(self) -> Iterable["Traversable"]:
+    def iterdir(self) -> _Iterable["_Traversable"]:
         payload = _resources_path_payload(self._path)
         entries = payload["entries"]
         for entry in entries:
-            yield Traversable(os.path.join(self._path, entry))
+            yield _Traversable(_os.path.join(self._path, entry))
         if "__pycache__" not in entries and payload["has_init_py"]:
-            yield _VirtualDirTraversable(os.path.join(self._path, "__pycache__"))
+            yield _VirtualDirTraversable(_os.path.join(self._path, "__pycache__"))
 
     def is_dir(self) -> bool:
         return _resources_path_payload(self._path)["is_dir"]
@@ -139,7 +169,7 @@ class Traversable:
             return handle.read()
 
 
-class _NamespaceTraversable(Traversable):
+class _NamespaceTraversable(_Traversable):
     def __init__(self, roots: list[str], parts: tuple[str, ...] = ()) -> None:
         unique_roots: list[str] = []
         for root in roots:
@@ -179,7 +209,7 @@ class _NamespaceTraversable(Traversable):
             next_parts = next_parts + (part,)
         return _NamespaceTraversable(self._roots, next_parts)
 
-    def iterdir(self) -> Iterable[Traversable]:
+    def iterdir(self) -> _Iterable[_Traversable]:
         names: list[str] = []
         has_init_py = False
         for path in self._candidate_paths():
@@ -195,7 +225,9 @@ class _NamespaceTraversable(Traversable):
         for name in names:
             yield self.joinpath(name)
         if "__pycache__" not in names and has_init_py:
-            yield _VirtualDirTraversable(os.path.join(self.__fspath__(), "__pycache__"))
+            yield _VirtualDirTraversable(
+                _os.path.join(self.__fspath__(), "__pycache__")
+            )
 
     def is_dir(self) -> bool:
         for path in self._candidate_paths():
@@ -241,12 +273,12 @@ class _NamespaceTraversable(Traversable):
         for root in self._roots:
             path = root
             for part in self._parts:
-                path = os.path.join(path, part)
+                path = _os.path.join(path, part)
             out.append(path)
         return out
 
 
-class _LoaderReaderTraversable(Traversable):
+class _LoaderReaderTraversable(_Traversable):
     def __init__(
         self, reader: object, package_name: str, parts: tuple[str, ...] = ()
     ) -> None:
@@ -288,7 +320,7 @@ class _LoaderReaderTraversable(Traversable):
             next_parts = next_parts + (part,)
         return _LoaderReaderTraversable(self._reader, self._package_name, next_parts)
 
-    def iterdir(self) -> Iterable[Traversable]:
+    def iterdir(self) -> _Iterable[_Traversable]:
         names = _reader_child_names(self._reader, self._parts)
         for name in sorted(names):
             yield self.joinpath(name)
@@ -337,8 +369,8 @@ class _LoaderReaderTraversable(Traversable):
             return open(resource_path, mode, encoding=encoding, errors=errors)
         raw = _reader_open_resource_bytes(self._reader, name)
         if "b" in mode:
-            return io.BytesIO(raw)
-        return io.StringIO(raw.decode(encoding or "utf-8", errors=errors or "strict"))
+            return _io.BytesIO(raw)
+        return _io.StringIO(raw.decode(encoding or "utf-8", errors=errors or "strict"))
 
     def _joined_name(self) -> str:
         return "/".join(self._parts)
@@ -349,8 +381,8 @@ class _LoaderReaderTraversable(Traversable):
         return f"<loader-resource:{self._package_name}>"
 
 
-class _VirtualDirTraversable(Traversable):
-    def iterdir(self) -> Iterable["Traversable"]:
+class _VirtualDirTraversable(_Traversable):
+    def iterdir(self) -> _Iterable["_Traversable"]:
         return iter(())
 
     def is_dir(self) -> bool:
@@ -372,19 +404,10 @@ class _VirtualDirTraversable(Traversable):
 
 
 def _validate_resource_name(name: str) -> str:
-    if not isinstance(name, str):
-        raise TypeError("resource name must be str")
-    if not name or name in {".", ".."}:
-        raise ValueError(f"{name!r} must be only a file name")
-    separators = {"/", "\\"}
-    if os.sep:
-        separators.add(os.sep)
-    if os.altsep:
-        separators.add(os.altsep)
-    for sep in separators:
-        if sep and sep in name:
-            raise ValueError(f"{name!r} must be only a file name")
-    return name
+    value = _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME(name)
+    if not isinstance(value, str):
+        raise RuntimeError("invalid importlib validate resource name payload")
+    return value
 
 
 def _is_write_mode(mode: str) -> bool:
@@ -405,15 +428,14 @@ def _resources_module_file() -> str | None:
 
 
 def _resources_package_payload(package: str) -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_RESOURCES_PACKAGE_PAYLOAD(
-        package, tuple(sys.path), _resources_module_file()
+    payload = _MOLT_IMPORTLIB_RESOURCES_PACKAGE_INFO(
+        package, tuple(_sys.path), _resources_module_file()
     )
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib resources package payload: dict expected")
-    roots = payload.get("roots")
-    is_namespace = payload.get("is_namespace")
-    has_regular_package = payload.get("has_regular_package")
-    init_file = payload.get("init_file")
+    if not isinstance(payload, tuple) or len(payload) != 4:
+        raise RuntimeError(
+            "invalid importlib resources package payload: tuple expected"
+        )
+    roots, is_namespace, has_regular_package, init_file = payload
     if not isinstance(roots, (list, tuple)) or not all(
         isinstance(entry, str) for entry in roots
     ):
@@ -432,6 +454,59 @@ def _resources_package_payload(package: str) -> dict[str, object]:
         "has_regular_package": has_regular_package,
         "init_file": init_file,
     }
+
+
+def _open_resource_bytes_from_package(package: str, resource: str) -> bytes:
+    value = _MOLT_IMPORTLIB_RESOURCES_OPEN_RESOURCE_BYTES_FROM_PACKAGE(
+        package, tuple(_sys.path), _resources_module_file(), resource
+    )
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    raise RuntimeError("invalid importlib resources open payload")
+
+
+def _resource_contents_from_package(package: str) -> list[str]:
+    value = _MOLT_IMPORTLIB_RESOURCES_CONTENTS_FROM_PACKAGE(
+        package, tuple(_sys.path), _resources_module_file()
+    )
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(entry, str) for entry in value
+    ):
+        raise RuntimeError("invalid importlib resources contents payload")
+    return list(value)
+
+
+def _resource_is_resource_from_package(package: str, resource: str) -> bool:
+    value = _MOLT_IMPORTLIB_RESOURCES_IS_RESOURCE_FROM_PACKAGE(
+        package, tuple(_sys.path), _resources_module_file(), resource
+    )
+    if not isinstance(value, bool):
+        raise RuntimeError("invalid importlib resources is_resource payload")
+    return value
+
+
+def _resource_path_from_package(package: str, resource: str) -> str | None:
+    value = _MOLT_IMPORTLIB_RESOURCES_RESOURCE_PATH_FROM_PACKAGE(
+        package, tuple(_sys.path), _resources_module_file(), resource
+    )
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError("invalid importlib resources path payload")
+    return value
+
+
+def _read_text_from_package(
+    package: str, resource: str, encoding: str, errors: str
+) -> str:
+    value = _MOLT_IMPORTLIB_RESOURCES_READ_TEXT_FROM_PACKAGE(
+        package, tuple(_sys.path), _resources_module_file(), resource, encoding, errors
+    )
+    if not isinstance(value, str):
+        raise RuntimeError("invalid importlib resources text payload")
+    return value
 
 
 def _namespace_paths_payload(package: str) -> list[str]:
@@ -512,10 +587,10 @@ def _get_package(package: str | object) -> tuple[object, str | None]:
         is_namespace = bool(payload["is_namespace"])
         has_regular_package = bool(payload["has_regular_package"])
         if has_regular_package:
-            return importlib.import_module(package), package
+            return _importlib.import_module(package), package
         if is_namespace and isinstance(roots, list) and roots:
             return _NamespacePackage(package, roots), package
-        return importlib.import_module(package), package
+        return _importlib.import_module(package), package
     return package, None
 
 
@@ -647,7 +722,7 @@ def _package_roots(
     return roots, is_namespace
 
 
-def files(package: str | object) -> Traversable | _NamespaceTraversable:
+def files(package: str | object) -> _Traversable | _NamespaceTraversable:
     module, module_name = _get_package(package)
     package_name = _package_name(module, module_name)
     reader = _loader_resource_reader(module, package_name)
@@ -671,30 +746,35 @@ def files(package: str | object) -> Traversable | _NamespaceTraversable:
         raise ModuleNotFoundError(package_name)
     if is_namespace and len(roots) > 1:
         return _NamespaceTraversable(roots)
-    return Traversable(roots[0])
+    return _Traversable(roots[0])
 
 
 class _AsFileContext:
-    def __init__(self, traversable: Traversable | object) -> None:
+    def __init__(self, traversable: _Traversable | object) -> None:
         self._traversable = traversable
 
-    def __enter__(self) -> Traversable:
-        return _MOLT_IMPORTLIB_RESOURCES_AS_FILE_ENTER(self._traversable, Traversable)
+    def __enter__(self) -> _Traversable:
+        return _MOLT_IMPORTLIB_RESOURCES_AS_FILE_ENTER(self._traversable, _Traversable)
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         return bool(_MOLT_IMPORTLIB_RESOURCES_AS_FILE_EXIT(exc_type, exc, tb))
 
 
-def as_file(traversable: Traversable | object) -> _AsFileContext:
+def as_file(traversable: _Traversable | object) -> _AsFileContext:
     return _AsFileContext(traversable)
 
 
 def contents(package: str | object) -> list[str]:
+    if isinstance(package, str):
+        return _resource_contents_from_package(package)
     root = files(package)
     return sorted([entry.name for entry in root.iterdir()])
 
 
 def is_resource(package: str | object, name: str) -> bool:
+    if isinstance(package, str):
+        _validate_resource_name(name)
+        return _resource_is_resource_from_package(package, name)
     root = files(package)
     _validate_resource_name(name)
     return root.joinpath(name).is_file()
@@ -706,6 +786,11 @@ def open_text(
     encoding: str = "utf-8",
     errors: str = "strict",
 ):
+    if isinstance(package, str):
+        _validate_resource_name(resource)
+        return _io.StringIO(
+            _read_text_from_package(package, resource, encoding=encoding, errors=errors)
+        )
     root = files(package)
     _validate_resource_name(resource)
     path = root.joinpath(resource)
@@ -715,6 +800,9 @@ def open_text(
 
 
 def open_binary(package: str | object, resource: str):
+    if isinstance(package, str):
+        _validate_resource_name(resource)
+        return _io.BytesIO(_open_resource_bytes_from_package(package, resource))
     root = files(package)
     _validate_resource_name(resource)
     path = root.joinpath(resource)
@@ -729,6 +817,11 @@ def read_text(
     encoding: str = "utf-8",
     errors: str = "strict",
 ) -> str:
+    if isinstance(package, str):
+        _validate_resource_name(resource)
+        return _read_text_from_package(
+            package, resource, encoding=encoding, errors=errors
+        )
     root = files(package)
     _validate_resource_name(resource)
     path = root.joinpath(resource)
@@ -738,9 +831,24 @@ def read_text(
 
 
 def read_binary(package: str | object, resource: str) -> bytes:
+    if isinstance(package, str):
+        return _open_resource_bytes_from_package(package, resource)
     root = files(package)
     _validate_resource_name(resource)
     path = root.joinpath(resource)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(resource)
     return path.read_bytes()
+
+
+def path(package: str | object, resource: str) -> _AsFileContext:
+    _validate_resource_name(resource)
+    if isinstance(package, str):
+        resource_path = _resource_path_from_package(package, resource)
+        if resource_path is not None:
+            return as_file(_Traversable(resource_path))
+    return as_file(files(package).joinpath(resource))
+
+
+# Mirror CPython runtime shape when importlib.readers preload paths are active.
+readers = _importlib.import_module("importlib.resources.readers")

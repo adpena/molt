@@ -605,7 +605,9 @@ class HeaderRegistry:
 
     def __getitem__(self, name):
         cls = self.registry.get(name.lower(), self.default_class)
-        return type("_" + cls.__name__, (cls, self.base_class), {})
+        # Keep BaseHeader first so its str-subclass __new__ is selected by
+        # runtimes that do not emulate CPython's dynamic metatype lookup.
+        return type("_" + cls.__name__, (self.base_class, cls), {})
 
     def __call__(self, name, value):
         """Create a header instance for header 'name' from 'value'.
@@ -617,9 +619,12 @@ class HeaderRegistry:
         class's constructor.
 
         """
-        return self[name](name, value)
+        return _MOLT_EMAIL_HEADERREGISTRY_VALUE(str(name), value)
 
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_EMAIL_HEADERREGISTRY_VALUE = _require_intrinsic(
+    "molt_email_headerregistry_value", globals()
+)

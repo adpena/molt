@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import asyncio as _asyncio
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -31,10 +32,9 @@ from asyncio import (
 )
 from asyncio import format_helpers
 
-try:
-    from asyncio import BaseDefaultEventLoopPolicy
-except Exception:
-    from asyncio import DefaultEventLoopPolicy as BaseDefaultEventLoopPolicy
+BaseDefaultEventLoopPolicy = getattr(
+    _asyncio, "BaseDefaultEventLoopPolicy", _asyncio.DefaultEventLoopPolicy
+)
 
 
 def on_fork() -> None:

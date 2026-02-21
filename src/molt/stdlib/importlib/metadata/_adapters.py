@@ -1,12 +1,18 @@
-"""Intrinsic-first stdlib module stub for `importlib.metadata._adapters`."""
+"""Intrinsic-backed adapters for `importlib.metadata` message handling."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+import email as email
+import email.message as _email_message
+import functools as functools
+import re as re
+import textwrap as textwrap
+import warnings as warnings
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.metadata._adapters` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.metadata._adapters" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+class Message(_email_message.Message):
+    pass

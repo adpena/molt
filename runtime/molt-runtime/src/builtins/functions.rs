@@ -62,6 +62,35 @@ struct UrllibHttpRequest {
 }
 
 #[derive(Clone)]
+struct MoltHttpClientConnection {
+    host: String,
+    port: u16,
+    timeout: Option<f64>,
+    method: Option<String>,
+    url: Option<String>,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    buffer: Vec<Vec<u8>>,
+    skip_host: bool,
+    skip_accept_encoding: bool,
+}
+
+struct MoltHttpClientConnectionRuntime {
+    next_handle: u64,
+    connections: HashMap<u64, MoltHttpClientConnection>,
+}
+
+#[derive(Clone, Default)]
+struct MoltHttpMessage {
+    headers: Vec<(String, String)>,
+}
+
+struct MoltHttpMessageRuntime {
+    next_handle: u64,
+    messages: HashMap<u64, MoltHttpMessage>,
+}
+
+#[derive(Clone)]
 struct MoltCookieEntry {
     name: String,
     value: String,
@@ -455,6 +484,9 @@ fn email_quopri_decode_hex_pair(hi: char, lo: char) -> Option<char> {
 static URLLIB_RESPONSE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltUrllibResponse>>> =
     OnceLock::new();
 static URLLIB_RESPONSE_NEXT: AtomicU64 = AtomicU64::new(1);
+static HTTP_CLIENT_CONNECTION_RUNTIME: OnceLock<Mutex<MoltHttpClientConnectionRuntime>> =
+    OnceLock::new();
+static HTTP_MESSAGE_RUNTIME: OnceLock<Mutex<MoltHttpMessageRuntime>> = OnceLock::new();
 static COOKIEJAR_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltCookieJar>>> = OnceLock::new();
 static COOKIEJAR_NEXT: AtomicU64 = AtomicU64::new(1);
 static EMAIL_MESSAGE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltEmailMessage>>> = OnceLock::new();
@@ -7177,14 +7209,142 @@ const HTTP_SERVER_HTTP11: &str = "HTTP/1.1";
 
 fn http_server_reason_phrase(code: i64) -> &'static str {
     match code {
+        100 => "Continue",
         101 => "Switching Protocols",
+        102 => "Processing",
+        103 => "Early Hints",
         200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        203 => "Non-Authoritative Information",
+        204 => "No Content",
+        205 => "Reset Content",
+        206 => "Partial Content",
+        207 => "Multi-Status",
+        208 => "Already Reported",
+        226 => "IM Used",
+        300 => "Multiple Choices",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        305 => "Use Proxy",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Request Entity Too Large",
+        414 => "Request-URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Requested Range Not Satisfiable",
+        417 => "Expectation Failed",
+        418 => "I'm a Teapot",
+        421 => "Misdirected Request",
+        422 => "Unprocessable Entity",
+        423 => "Locked",
+        424 => "Failed Dependency",
+        425 => "Too Early",
+        426 => "Upgrade Required",
+        428 => "Precondition Required",
+        429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
+        451 => "Unavailable For Legal Reasons",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        505 => "HTTP Version Not Supported",
+        506 => "Variant Also Negotiates",
+        507 => "Insufficient Storage",
+        508 => "Loop Detected",
+        510 => "Not Extended",
+        511 => "Network Authentication Required",
         _ => "",
     }
+}
+
+fn http_status_constants() -> &'static [(&'static str, i64)] {
+    &[
+        ("CONTINUE", 100),
+        ("SWITCHING_PROTOCOLS", 101),
+        ("PROCESSING", 102),
+        ("EARLY_HINTS", 103),
+        ("OK", 200),
+        ("CREATED", 201),
+        ("ACCEPTED", 202),
+        ("NON_AUTHORITATIVE_INFORMATION", 203),
+        ("NO_CONTENT", 204),
+        ("RESET_CONTENT", 205),
+        ("PARTIAL_CONTENT", 206),
+        ("MULTI_STATUS", 207),
+        ("ALREADY_REPORTED", 208),
+        ("IM_USED", 226),
+        ("MULTIPLE_CHOICES", 300),
+        ("MOVED_PERMANENTLY", 301),
+        ("FOUND", 302),
+        ("SEE_OTHER", 303),
+        ("NOT_MODIFIED", 304),
+        ("USE_PROXY", 305),
+        ("TEMPORARY_REDIRECT", 307),
+        ("PERMANENT_REDIRECT", 308),
+        ("BAD_REQUEST", 400),
+        ("UNAUTHORIZED", 401),
+        ("PAYMENT_REQUIRED", 402),
+        ("FORBIDDEN", 403),
+        ("NOT_FOUND", 404),
+        ("METHOD_NOT_ALLOWED", 405),
+        ("NOT_ACCEPTABLE", 406),
+        ("PROXY_AUTHENTICATION_REQUIRED", 407),
+        ("REQUEST_TIMEOUT", 408),
+        ("CONFLICT", 409),
+        ("GONE", 410),
+        ("LENGTH_REQUIRED", 411),
+        ("PRECONDITION_FAILED", 412),
+        ("REQUEST_ENTITY_TOO_LARGE", 413),
+        ("REQUEST_URI_TOO_LONG", 414),
+        ("UNSUPPORTED_MEDIA_TYPE", 415),
+        ("REQUESTED_RANGE_NOT_SATISFIABLE", 416),
+        ("EXPECTATION_FAILED", 417),
+        ("IM_A_TEAPOT", 418),
+        ("MISDIRECTED_REQUEST", 421),
+        ("UNPROCESSABLE_ENTITY", 422),
+        ("LOCKED", 423),
+        ("FAILED_DEPENDENCY", 424),
+        ("TOO_EARLY", 425),
+        ("UPGRADE_REQUIRED", 426),
+        ("PRECONDITION_REQUIRED", 428),
+        ("TOO_MANY_REQUESTS", 429),
+        ("REQUEST_HEADER_FIELDS_TOO_LARGE", 431),
+        ("UNAVAILABLE_FOR_LEGAL_REASONS", 451),
+        ("INTERNAL_SERVER_ERROR", 500),
+        ("NOT_IMPLEMENTED", 501),
+        ("BAD_GATEWAY", 502),
+        ("SERVICE_UNAVAILABLE", 503),
+        ("GATEWAY_TIMEOUT", 504),
+        ("HTTP_VERSION_NOT_SUPPORTED", 505),
+        ("VARIANT_ALSO_NEGOTIATES", 506),
+        ("INSUFFICIENT_STORAGE", 507),
+        ("LOOP_DETECTED", 508),
+        ("NOT_EXTENDED", 510),
+        ("NETWORK_AUTHENTICATION_REQUIRED", 511),
+        // CPython 3.12+ compatibility aliases.
+        ("CONTENT_TOO_LARGE", 413),
+        ("URI_TOO_LONG", 414),
+        ("RANGE_NOT_SATISFIABLE", 416),
+        ("UNPROCESSABLE_CONTENT", 422),
+    ]
 }
 
 fn http_server_error_explain(code: i64) -> &'static str {
@@ -7590,13 +7750,35 @@ fn http_server_handle_one_request_impl(
         return Err(MoltObject::none().bits());
     }
 
+    let Some(prepare_headers_name_bits) = attr_name_bits_from_bytes(_py, b"_molt_prepare_headers")
+    else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let prepare_headers_bits =
+        molt_getattr_builtin(handler_bits, prepare_headers_name_bits, missing);
+    dec_ref_bits(_py, prepare_headers_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if prepare_headers_bits != missing
+        && is_truthy(_py, obj_from_bits(molt_is_callable(prepare_headers_bits)))
+    {
+        let _ = unsafe { call_callable0(_py, prepare_headers_bits) };
+        dec_ref_bits(_py, prepare_headers_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+    } else if prepare_headers_bits != missing {
+        dec_ref_bits(_py, prepare_headers_bits);
+    }
+
     let command =
         http_server_get_optional_attr_string(_py, handler_bits, b"command")?.unwrap_or_default();
     let method_name = format!("do_{command}");
     let Some(method_name_bits) = alloc_string_bits(_py, &method_name) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
     let method_bits = molt_getattr_builtin(handler_bits, method_name_bits, missing);
     dec_ref_bits(_py, method_name_bits);
     if exception_pending(_py) {
@@ -7833,6 +8015,210 @@ fn urllib_response_with<T>(handle: i64, f: impl FnOnce(&MoltUrllibResponse) -> T
 fn urllib_response_drop(handle: i64) {
     if let Ok(mut guard) = urllib_response_registry().lock() {
         guard.remove(&(handle as u64));
+    }
+}
+
+fn http_client_connection_runtime() -> &'static Mutex<MoltHttpClientConnectionRuntime> {
+    HTTP_CLIENT_CONNECTION_RUNTIME.get_or_init(|| {
+        Mutex::new(MoltHttpClientConnectionRuntime {
+            next_handle: 1,
+            connections: HashMap::new(),
+        })
+    })
+}
+
+fn http_client_connection_store(host: String, port: u16, timeout: Option<f64>) -> Option<i64> {
+    let Ok(mut guard) = http_client_connection_runtime().lock() else {
+        return None;
+    };
+    let handle = guard.next_handle;
+    guard.next_handle = guard.next_handle.saturating_add(1);
+    guard.connections.insert(
+        handle,
+        MoltHttpClientConnection {
+            host,
+            port,
+            timeout,
+            method: None,
+            url: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            buffer: Vec::new(),
+            skip_host: false,
+            skip_accept_encoding: false,
+        },
+    );
+    i64::try_from(handle).ok()
+}
+
+fn http_client_connection_with_mut<T>(
+    handle: i64,
+    f: impl FnOnce(&mut MoltHttpClientConnection) -> T,
+) -> Option<T> {
+    let Ok(mut guard) = http_client_connection_runtime().lock() else {
+        return None;
+    };
+    guard.connections.get_mut(&(handle as u64)).map(f)
+}
+
+fn http_client_connection_with<T>(
+    handle: i64,
+    f: impl FnOnce(&MoltHttpClientConnection) -> T,
+) -> Option<T> {
+    let Ok(guard) = http_client_connection_runtime().lock() else {
+        return None;
+    };
+    guard.connections.get(&(handle as u64)).map(f)
+}
+
+fn http_client_connection_drop(handle: i64) {
+    if let Ok(mut guard) = http_client_connection_runtime().lock() {
+        guard.connections.remove(&(handle as u64));
+    }
+}
+
+fn http_client_connection_reset_pending(conn: &mut MoltHttpClientConnection) {
+    conn.method = None;
+    conn.url = None;
+    conn.headers.clear();
+    conn.body.clear();
+    conn.buffer.clear();
+    conn.skip_host = false;
+    conn.skip_accept_encoding = false;
+}
+
+fn http_client_apply_default_headers(
+    headers: &mut Vec<(String, String)>,
+    host: &str,
+    port: u16,
+    skip_host: bool,
+    skip_accept_encoding: bool,
+) {
+    if !skip_host
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+    {
+        let host_value = if port == 80 {
+            host.to_string()
+        } else {
+            format!("{host}:{port}")
+        };
+        headers.insert(0, ("Host".to_string(), host_value));
+    }
+    if !skip_accept_encoding
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("accept-encoding"))
+    {
+        headers.push(("Accept-Encoding".to_string(), "identity".to_string()));
+    }
+}
+
+fn http_client_alloc_buffer_list(_py: &crate::PyToken<'_>, buffer: &[Vec<u8>]) -> u64 {
+    let mut item_bits: Vec<u64> = Vec::with_capacity(buffer.len());
+    for chunk in buffer {
+        let item_ptr = alloc_bytes(_py, chunk.as_slice());
+        if item_ptr.is_null() {
+            for bits in item_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        item_bits.push(MoltObject::from_ptr(item_ptr).bits());
+    }
+    let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
+    for bits in item_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+fn http_message_runtime() -> &'static Mutex<MoltHttpMessageRuntime> {
+    HTTP_MESSAGE_RUNTIME.get_or_init(|| {
+        Mutex::new(MoltHttpMessageRuntime {
+            next_handle: 1,
+            messages: HashMap::new(),
+        })
+    })
+}
+
+fn http_message_store(headers: Vec<(String, String)>) -> Option<i64> {
+    let Ok(mut guard) = http_message_runtime().lock() else {
+        return None;
+    };
+    let handle = guard.next_handle;
+    guard.next_handle = guard.next_handle.saturating_add(1);
+    guard.messages.insert(handle, MoltHttpMessage { headers });
+    i64::try_from(handle).ok()
+}
+
+fn http_message_store_new() -> Option<i64> {
+    http_message_store(Vec::new())
+}
+
+fn http_message_with_mut<T>(handle: i64, f: impl FnOnce(&mut MoltHttpMessage) -> T) -> Option<T> {
+    let Ok(mut guard) = http_message_runtime().lock() else {
+        return None;
+    };
+    guard.messages.get_mut(&(handle as u64)).map(f)
+}
+
+fn http_message_with<T>(handle: i64, f: impl FnOnce(&MoltHttpMessage) -> T) -> Option<T> {
+    let Ok(guard) = http_message_runtime().lock() else {
+        return None;
+    };
+    guard.messages.get(&(handle as u64)).map(f)
+}
+
+fn http_message_drop(handle: i64) {
+    if let Ok(mut guard) = http_message_runtime().lock() {
+        guard.messages.remove(&(handle as u64));
+    }
+}
+
+fn http_message_handle_from_bits(_py: &crate::PyToken<'_>, handle_bits: u64) -> Result<i64, u64> {
+    let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "http message handle is invalid",
+        ));
+    };
+    if handle <= 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "http message handle is invalid",
+        ));
+    }
+    Ok(handle)
+}
+
+fn http_message_values_to_list(_py: &crate::PyToken<'_>, values: &[String]) -> u64 {
+    let mut item_bits: Vec<u64> = Vec::with_capacity(values.len());
+    for value in values {
+        let value_ptr = alloc_string(_py, value.as_bytes());
+        if value_ptr.is_null() {
+            for bits in item_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        item_bits.push(MoltObject::from_ptr(value_ptr).bits());
+    }
+    let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
+    for bits in item_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
     }
 }
 
@@ -8463,6 +8849,100 @@ fn http_client_response_handle_from_bits(
     Ok(handle)
 }
 
+fn http_client_connection_handle_from_bits(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> Result<i64, u64> {
+    let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "connection handle is invalid",
+        ));
+    };
+    if handle <= 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "connection handle is invalid",
+        ));
+    }
+    Ok(handle)
+}
+
+fn http_client_execute_request(
+    _py: &crate::PyToken<'_>,
+    host: String,
+    port: u16,
+    timeout: Option<f64>,
+    method: String,
+    url: String,
+    mut headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    skip_host: bool,
+    skip_accept_encoding: bool,
+) -> Result<i64, u64> {
+    http_client_apply_default_headers(
+        &mut headers,
+        host.as_str(),
+        port,
+        skip_host,
+        skip_accept_encoding,
+    );
+    let request_target = if url.is_empty() {
+        "/".to_string()
+    } else {
+        url.clone()
+    };
+    let host_header = if port == 80 {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
+    let req = UrllibHttpRequest {
+        host: host.clone(),
+        port,
+        path: request_target.clone(),
+        method,
+        headers,
+        body,
+        timeout,
+    };
+    let (code, reason, resp_headers, resp_body) =
+        match urllib_http_try_inmemory_dispatch(_py, &req, &request_target, &host_header) {
+            Ok(Some(value)) => value,
+            Ok(None) => match urllib_http_send_request(&req, &request_target, &host_header) {
+                Ok(value) => value,
+                Err(err) => {
+                    if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock {
+                        return Err(raise_exception::<u64>(_py, "TimeoutError", "timed out"));
+                    }
+                    return Err(raise_exception::<u64>(_py, "OSError", &err.to_string()));
+                }
+            },
+            Err(bits) => return Err(bits),
+        };
+    let response_url = if url.starts_with("http://") || url.starts_with("https://") {
+        url
+    } else if request_target.starts_with('/') {
+        format!("http://{host_header}{request_target}")
+    } else {
+        format!("http://{host_header}/{request_target}")
+    };
+    let Some(handle) = urllib_response_store(MoltUrllibResponse {
+        body: resp_body,
+        pos: 0,
+        closed: false,
+        url: response_url,
+        code,
+        reason,
+        headers: resp_headers,
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
+    Ok(handle)
+}
+
 fn urllib_http_extract_request_headers(
     _py: &crate::PyToken<'_>,
     request_bits: u64,
@@ -8883,6 +9363,42 @@ fn urllib_http_parse_response_bytes(raw: &[u8]) -> Result<HttpResponseParts, Str
         }
     }
     Ok((code, reason, headers, body))
+}
+
+fn http_parse_header_pairs(raw: &[u8]) -> Vec<(String, String)> {
+    let text = String::from_utf8_lossy(raw);
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_value = String::new();
+
+    for raw_line in text.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if current_name.is_some() {
+                if !current_value.is_empty() {
+                    current_value.push(' ');
+                }
+                current_value.push_str(line.trim());
+            }
+            continue;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if let Some(prev_name) = current_name.take() {
+                out.push((prev_name, current_value.trim().to_string()));
+            }
+            current_name = Some(name.trim().to_string());
+            current_value.clear();
+            current_value.push_str(value.trim_start());
+        }
+    }
+
+    if let Some(last_name) = current_name {
+        out.push((last_name, current_value.trim().to_string()));
+    }
+    out
 }
 
 fn urllib_http_build_request_bytes(
@@ -10545,6 +11061,22 @@ pub extern "C" fn molt_email_policy_new(name_bits: u64, utf8_bits: u64) -> u64 {
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+        };
+        let value = crate::format_obj_str(_py, obj_from_bits(value_bits));
+        let out_ptr = alloc_string(_py, value.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }
@@ -13020,6 +13552,25 @@ pub extern "C" fn molt_urllib_urlsplit(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_urlsplit(
+    url_bits: u64,
+    scheme_bits: u64,
+    allow_fragments_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "url must be str");
+        };
+        let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+        };
+        let allow_fragments = is_truthy(_py, obj_from_bits(allow_fragments_bits));
+        let split = urllib_urlsplit_impl(&url, &scheme, allow_fragments);
+        alloc_string_tuple(_py, &split)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_urlparse(
     url_bits: u64,
     scheme_bits: u64,
@@ -14074,7 +14625,11 @@ fn http_server_read_request_impl(_py: &crate::PyToken<'_>, handler_bits: u64) ->
             headers.push((key_text, value_text));
         }
     }
-    let headers_bits = urllib_http_headers_to_dict(_py, &headers)?;
+    let headers_bits = urllib_http_headers_to_list(_py, &headers)?;
+    if !urllib_request_set_attr(_py, handler_bits, b"_molt_header_pairs", headers_bits) {
+        dec_ref_bits(_py, headers_bits);
+        return Err(MoltObject::none().bits());
+    }
     if !urllib_request_set_attr(_py, handler_bits, b"headers", headers_bits) {
         dec_ref_bits(_py, headers_bits);
         return Err(MoltObject::none().bits());
@@ -14267,6 +14822,89 @@ pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 
             return MoltObject::none().bits();
         };
         bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(code) = to_i64(obj_from_bits(code_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "status code must be int");
+        };
+        let phrase = http_server_reason_phrase(code);
+        let ptr = alloc_string(_py, phrase.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_status_constants() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let entries = http_status_constants();
+        let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
+        let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
+        for (name, code) in entries.iter().copied() {
+            let key_ptr = alloc_string(_py, name.as_bytes());
+            if key_ptr.is_null() {
+                for bits in owned_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let value_bits = MoltObject::from_int(code).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned_bits.push(key_bits);
+            owned_bits.push(value_bits);
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_status_responses() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let entries = http_status_constants();
+        let mut seen_codes: HashSet<i64> = HashSet::new();
+        let mut pairs: Vec<u64> = Vec::new();
+        let mut owned_bits: Vec<u64> = Vec::new();
+        for (_, code) in entries.iter().copied() {
+            if !seen_codes.insert(code) {
+                continue;
+            }
+            let key_bits = MoltObject::from_int(code).bits();
+            let value_ptr = alloc_string(_py, http_server_reason_phrase(code).as_bytes());
+            if value_ptr.is_null() {
+                for bits in owned_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned_bits.push(key_bits);
+            owned_bits.push(value_bits);
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
     })
 }
 
@@ -14774,8 +15412,13 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                     return MoltObject::none().bits();
                 }
                 if !obj_from_bits(out_bits).is_none() {
-                    dec_ref_bits(_py, response_bits);
-                    response_bits = out_bits;
+                    if out_bits == response_bits {
+                        // A handler may return the same response object it was passed.
+                        // Keep the existing owned `response_bits` reference intact.
+                    } else {
+                        dec_ref_bits(_py, response_bits);
+                        response_bits = out_bits;
+                    }
                 } else {
                     dec_ref_bits(_py, out_bits);
                 }
@@ -14959,6 +15602,527 @@ pub extern "C" fn molt_urllib_request_response_getheaders(handle_bits: u64) -> u
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let headers = http_parse_header_pairs(raw.as_slice());
+        match urllib_http_headers_to_list(_py, &headers) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_new() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = http_message_store_new() else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(handle).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_parse(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let headers = http_parse_header_pairs(raw.as_slice());
+        let Some(handle) = http_message_store(headers) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(handle).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_set_raw(
+    handle_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let name = crate::format_obj_str(_py, obj_from_bits(name_bits));
+        let value = crate::format_obj_str(_py, obj_from_bits(value_bits));
+        let Some(()) = http_message_with_mut(handle, |message| {
+            message.headers.push((name, value));
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_get(
+    handle_bits: u64,
+    name_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let needle = crate::format_obj_str(_py, obj_from_bits(name_bits)).to_lowercase();
+        let Some(value_opt) = http_message_with(handle, |message| {
+            for (name, value) in message.headers.iter().rev() {
+                if name.eq_ignore_ascii_case(&needle) {
+                    return Some(value.clone());
+                }
+            }
+            None
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        let Some(value) = value_opt else {
+            return default_bits;
+        };
+        let value_ptr = alloc_string(_py, value.as_bytes());
+        if value_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(value_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let needle = crate::format_obj_str(_py, obj_from_bits(name_bits)).to_lowercase();
+        let Some(values) = http_message_with(handle, |message| {
+            message
+                .headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    if name.eq_ignore_ascii_case(&needle) {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<String>>()
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        http_message_values_to_list(_py, values.as_slice())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(headers) = http_message_with(handle, |message| message.headers.clone()) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        match urllib_http_headers_to_list(_py, &headers) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let needle = crate::format_obj_str(_py, obj_from_bits(name_bits)).to_lowercase();
+        let Some(found) = http_message_with(handle, |message| {
+            message
+                .headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&needle))
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        MoltObject::from_bool(found).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(len_value) = http_message_with(handle, |message| message.headers.len()) else {
+            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+        };
+        let len_i64 = i64::try_from(len_value).unwrap_or(i64::MAX);
+        MoltObject::from_int(len_i64).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_message_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_message_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        http_message_drop(handle);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_new(
+    host_bits: u64,
+    port_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "host must be str");
+        };
+        let Some(port_value) = to_i64(obj_from_bits(port_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "port must be int");
+        };
+        if !(0..=u16::MAX as i64).contains(&port_value) {
+            return raise_exception::<_>(_py, "ValueError", "port out of range");
+        }
+        let timeout = if obj_from_bits(timeout_bits).is_none() {
+            None
+        } else {
+            let Some(value) = to_f64(obj_from_bits(timeout_bits))
+                .or_else(|| to_i64(obj_from_bits(timeout_bits)).map(|v| v as f64))
+            else {
+                return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+            };
+            Some(value)
+        };
+        let Some(handle) = http_client_connection_store(host, port_value as u16, timeout) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(handle).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_putrequest(
+    handle_bits: u64,
+    method_bits: u64,
+    url_bits: u64,
+    skip_host_bits: u64,
+    skip_accept_encoding_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(method) = string_obj_to_owned(obj_from_bits(method_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "method must be str");
+        };
+        let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "url must be str");
+        };
+        let skip_host = is_truthy(_py, obj_from_bits(skip_host_bits));
+        let skip_accept_encoding = is_truthy(_py, obj_from_bits(skip_accept_encoding_bits));
+        let Some(buffer) = http_client_connection_with_mut(handle, |conn| {
+            conn.method = Some(method.clone());
+            conn.url = Some(url.clone());
+            conn.headers.clear();
+            conn.body.clear();
+            conn.buffer.clear();
+            conn.skip_host = skip_host;
+            conn.skip_accept_encoding = skip_accept_encoding;
+            conn.buffer
+                .push(format!("{method} {url} HTTP/1.1\r\n").into_bytes());
+            conn.buffer.clone()
+        }) else {
+            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+        };
+        http_client_alloc_buffer_list(_py, &buffer)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_putheader(
+    handle_bits: u64,
+    header_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(header) = string_obj_to_owned(obj_from_bits(header_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header must be str");
+        };
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header value must be str");
+        };
+        let state = http_client_connection_with_mut(handle, |conn| {
+            if conn.method.is_none() || conn.url.is_none() {
+                return Err("request not started");
+            }
+            conn.headers.push((header, value));
+            Ok(conn.buffer.clone())
+        });
+        match state {
+            Some(Ok(buffer)) => http_client_alloc_buffer_list(_py, &buffer),
+            Some(Err(msg)) => raise_exception::<_>(_py, "OSError", msg),
+            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_endheaders(handle_bits: u64, body_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let body = if obj_from_bits(body_bits).is_none() {
+            None
+        } else {
+            match socketserver_extract_bytes(_py, body_bits, "message_body") {
+                Ok(value) => Some(value),
+                Err(bits) => return bits,
+            }
+        };
+        let state = http_client_connection_with_mut(handle, |conn| {
+            if conn.method.is_none() || conn.url.is_none() {
+                return Err("request not started");
+            }
+            if !conn
+                .buffer
+                .last()
+                .is_some_and(|line| line.as_slice() == b"\r\n")
+            {
+                http_client_apply_default_headers(
+                    &mut conn.headers,
+                    conn.host.as_str(),
+                    conn.port,
+                    conn.skip_host,
+                    conn.skip_accept_encoding,
+                );
+                for (name, value) in &conn.headers {
+                    conn.buffer
+                        .push(format!("{name}: {value}\r\n").into_bytes());
+                }
+                conn.buffer.push(b"\r\n".to_vec());
+            }
+            if let Some(chunk) = body.as_ref() {
+                conn.body.extend_from_slice(chunk.as_slice());
+                conn.buffer.push(chunk.clone());
+            }
+            Ok(conn.buffer.clone())
+        });
+        match state {
+            Some(Ok(buffer)) => http_client_alloc_buffer_list(_py, &buffer),
+            Some(Err(msg)) => raise_exception::<_>(_py, "OSError", msg),
+            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let data = match socketserver_extract_bytes(_py, data_bits, "data") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let state = http_client_connection_with_mut(handle, |conn| {
+            if conn.method.is_none() || conn.url.is_none() {
+                return Err("request not started");
+            }
+            conn.body.extend_from_slice(data.as_slice());
+            conn.buffer.push(data);
+            Ok(conn.buffer.clone())
+        });
+        match state {
+            Some(Ok(buffer)) => http_client_alloc_buffer_list(_py, &buffer),
+            Some(Err(msg)) => raise_exception::<_>(_py, "OSError", msg),
+            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_request(
+    handle_bits: u64,
+    method_bits: u64,
+    url_bits: u64,
+    body_bits: u64,
+    headers_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(method) = string_obj_to_owned(obj_from_bits(method_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "method must be str");
+        };
+        let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "url must be str");
+        };
+        let mut headers = if obj_from_bits(headers_bits).is_none() {
+            Vec::new()
+        } else {
+            match urllib_http_extract_headers_mapping(_py, headers_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            }
+        };
+        let body = if obj_from_bits(body_bits).is_none() {
+            None
+        } else {
+            match socketserver_extract_bytes(_py, body_bits, "body") {
+                Ok(value) => Some(value),
+                Err(bits) => return bits,
+            }
+        };
+        if let Some(payload) = body.as_ref()
+            && !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        {
+            headers.push(("Content-Length".to_string(), payload.len().to_string()));
+        }
+        let state = http_client_connection_with_mut(handle, |conn| {
+            conn.method = Some(method.clone());
+            conn.url = Some(url.clone());
+            conn.headers = headers;
+            conn.body = body.unwrap_or_default();
+            conn.skip_host = false;
+            conn.skip_accept_encoding = true;
+            conn.buffer.clear();
+            conn.buffer
+                .push(format!("{method} {url} HTTP/1.1\r\n").into_bytes());
+            conn.buffer.clone()
+        });
+        match state {
+            Some(buffer) => http_client_alloc_buffer_list(_py, &buffer),
+            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let state = http_client_connection_with_mut(handle, |conn| {
+            let Some(method) = conn.method.clone() else {
+                return Err("no request pending");
+            };
+            let Some(url) = conn.url.clone() else {
+                return Err("no request pending");
+            };
+            http_client_apply_default_headers(
+                &mut conn.headers,
+                conn.host.as_str(),
+                conn.port,
+                conn.skip_host,
+                conn.skip_accept_encoding,
+            );
+            Ok((
+                conn.host.clone(),
+                conn.port,
+                conn.timeout,
+                method,
+                url,
+                conn.headers.clone(),
+                conn.body.clone(),
+            ))
+        });
+        let (host, port, timeout, method, url, headers, body) = match state {
+            Some(Ok(value)) => value,
+            Some(Err(msg)) => return raise_exception::<_>(_py, "OSError", msg),
+            None => {
+                return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+            }
+        };
+        let response_handle = match http_client_execute_request(
+            _py, host, port, timeout, method, url, headers, body, true, true,
+        ) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let _ = http_client_connection_with_mut(handle, http_client_connection_reset_pending);
+        MoltObject::from_int(response_handle).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(()) =
+            http_client_connection_with_mut(handle, http_client_connection_reset_pending)
+        else {
+            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+        };
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        http_client_connection_drop(handle);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_get_buffer(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(buffer) = http_client_connection_with(handle, |conn| conn.buffer.clone()) else {
+            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+        };
+        http_client_alloc_buffer_list(_py, &buffer)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_execute(
     host_bits: u64,
     port_bits: u64,
@@ -15005,59 +16169,12 @@ pub extern "C" fn molt_http_client_execute(
                 Err(bits) => return bits,
             }
         };
-        let request_target = if url.is_empty() {
-            "/".to_string()
-        } else {
-            url.clone()
-        };
-        let host_header = if port == 80 {
-            host.clone()
-        } else {
-            format!("{host}:{port}")
-        };
-        let req = UrllibHttpRequest {
-            host: host.clone(),
-            port,
-            path: request_target.clone(),
-            method,
-            headers,
-            body,
-            timeout,
-        };
-        let (code, reason, resp_headers, resp_body) =
-            match urllib_http_try_inmemory_dispatch(_py, &req, &request_target, &host_header) {
-                Ok(Some(value)) => value,
-                Ok(None) => match urllib_http_send_request(&req, &request_target, &host_header) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock
-                        {
-                            return raise_exception::<_>(_py, "TimeoutError", "timed out");
-                        }
-                        return raise_exception::<_>(_py, "OSError", &err.to_string());
-                    }
-                },
-                Err(bits) => return bits,
-            };
-        let response_url = if url.starts_with("http://") || url.starts_with("https://") {
-            url
-        } else if request_target.starts_with('/') {
-            format!("http://{host_header}{request_target}")
-        } else {
-            format!("http://{host_header}/{request_target}")
-        };
-        let Some(handle) = urllib_response_store(MoltUrllibResponse {
-            body: resp_body,
-            pos: 0,
-            closed: false,
-            url: response_url,
-            code,
-            reason,
-            headers: resp_headers,
-        }) else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_int(handle).bits()
+        match http_client_execute_request(
+            _py, host, port, timeout, method, url, headers, body, true, true,
+        ) {
+            Ok(handle) => MoltObject::from_int(handle).bits(),
+            Err(bits) => bits,
+        }
     })
 }
 
@@ -15170,6 +16287,23 @@ pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 
             Ok(bits) => bits,
             Err(bits) => bits,
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(headers) = urllib_response_with(handle, |resp| resp.headers.clone()) else {
+            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+        };
+        let Some(message_handle) = http_message_store(headers) else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_int(message_handle).bits()
     })
 }
 
@@ -16967,6 +18101,864 @@ fn logging_percent_render_value(
     }
 }
 
+fn logging_config_dict_lookup(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key: &str,
+) -> Result<Option<u64>, u64> {
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config object must be dict",
+        ));
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config object must be dict",
+        ));
+    }
+    let Some(key_bits) = alloc_string_bits(_py, key) else {
+        return Err(MoltObject::none().bits());
+    };
+    let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
+    dec_ref_bits(_py, key_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(value)
+}
+
+fn logging_config_dict_items(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+) -> Result<Vec<(u64, u64)>, u64> {
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config section must be dict",
+        ));
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config section must be dict",
+        ));
+    }
+    let Some(items_name_bits) = attr_name_bits_from_bytes(_py, b"items") else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let items_method_bits = molt_getattr_builtin(dict_bits, items_name_bits, missing);
+    dec_ref_bits(_py, items_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if items_method_bits == missing {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config section missing items()",
+        ));
+    }
+    let iterable_bits = unsafe { call_callable0(_py, items_method_bits) };
+    dec_ref_bits(_py, items_method_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py).list, iterable_bits) };
+    dec_ref_bits(_py, iterable_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
+        dec_ref_bits(_py, list_bits);
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config items() must produce an iterable of pairs",
+        ));
+    };
+    if unsafe { object_type_id(list_ptr) } != TYPE_ID_LIST {
+        dec_ref_bits(_py, list_bits);
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config items() iterable materialization failed",
+        ));
+    }
+    let entries: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+    let mut pairs: Vec<(u64, u64)> = Vec::new();
+    for item_bits in entries {
+        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+            dec_ref_bits(_py, list_bits);
+            for (key_bits, value_bits) in pairs {
+                dec_ref_bits(_py, key_bits);
+                dec_ref_bits(_py, value_bits);
+            }
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "logging config items must be pairs",
+            ));
+        };
+        if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, list_bits);
+            for (key_bits, value_bits) in pairs {
+                dec_ref_bits(_py, key_bits);
+                dec_ref_bits(_py, value_bits);
+            }
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "logging config items must be pairs",
+            ));
+        }
+        let fields = unsafe { seq_vec_ref(item_ptr) };
+        if fields.len() != 2 {
+            dec_ref_bits(_py, list_bits);
+            for (key_bits, value_bits) in pairs {
+                dec_ref_bits(_py, key_bits);
+                dec_ref_bits(_py, value_bits);
+            }
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "logging config items must be key/value pairs",
+            ));
+        }
+        let key_bits = fields[0];
+        let value_bits = fields[1];
+        inc_ref_bits(_py, key_bits);
+        inc_ref_bits(_py, value_bits);
+        pairs.push((key_bits, value_bits));
+    }
+    dec_ref_bits(_py, list_bits);
+    Ok(pairs)
+}
+
+fn logging_config_name_list(_py: &crate::PyToken<'_>, seq_bits: u64) -> Result<Vec<String>, u64> {
+    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py).list, seq_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
+        dec_ref_bits(_py, list_bits);
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config handler list must be iterable",
+        ));
+    };
+    if unsafe { object_type_id(list_ptr) } != TYPE_ID_LIST {
+        dec_ref_bits(_py, list_bits);
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "logging config handler list materialization failed",
+        ));
+    }
+    let entries: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+    let mut names: Vec<String> = Vec::new();
+    for item_bits in entries {
+        let Some(name) = string_obj_to_owned(obj_from_bits(item_bits)) else {
+            dec_ref_bits(_py, list_bits);
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "logging config handler references must be strings",
+            ));
+        };
+        names.push(name);
+    }
+    dec_ref_bits(_py, list_bits);
+    Ok(names)
+}
+
+fn logging_config_call_method1(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    method_name: &[u8],
+    arg_bits: u64,
+) -> Result<u64, u64> {
+    let Some(method_bits) = urllib_request_attr_optional(_py, obj_bits, method_name)? else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            "logging object method is missing",
+        ));
+    };
+    let out_bits = unsafe { call_callable1(_py, method_bits, arg_bits) };
+    dec_ref_bits(_py, method_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(out_bits)
+}
+
+fn logging_config_clear_logger_handlers(
+    _py: &crate::PyToken<'_>,
+    logger_bits: u64,
+) -> Result<(), u64> {
+    let Some(handlers_bits) = urllib_request_attr_optional(_py, logger_bits, b"handlers")? else {
+        return Ok(());
+    };
+    let Some(handlers_ptr) = obj_from_bits(handlers_bits).as_ptr() else {
+        dec_ref_bits(_py, handlers_bits);
+        return Ok(());
+    };
+    let ty = unsafe { object_type_id(handlers_ptr) };
+    let snapshot: Vec<u64> = if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
+        unsafe { seq_vec_ref(handlers_ptr).to_vec() }
+    } else {
+        dec_ref_bits(_py, handlers_bits);
+        return Ok(());
+    };
+    dec_ref_bits(_py, handlers_bits);
+    for handler_bits in snapshot {
+        let out_bits =
+            logging_config_call_method1(_py, logger_bits, b"removeHandler", handler_bits)?;
+        if !obj_from_bits(out_bits).is_none() {
+            dec_ref_bits(_py, out_bits);
+        }
+    }
+    Ok(())
+}
+
+fn logging_config_resolve_ext_stream(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+) -> Result<u64, u64> {
+    let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+        return Ok(value_bits);
+    };
+    if text == "ext://sys.stdout" {
+        return pickle_resolve_global_bits(_py, "sys", "stdout");
+    }
+    if text == "ext://sys.stderr" {
+        return pickle_resolve_global_bits(_py, "sys", "stderr");
+    }
+    if text == "ext://sys.stdin" {
+        return pickle_resolve_global_bits(_py, "sys", "stdin");
+    }
+    Err(raise_exception::<u64>(
+        _py,
+        "ValueError",
+        "unsupported logging stream ext target",
+    ))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let version_bits = match logging_config_dict_lookup(_py, config_bits, "version") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => {
+                return raise_exception::<_>(_py, "ValueError", "logging config missing version");
+            }
+            Err(bits) => return bits,
+        };
+        let Some(version) = to_i64(obj_from_bits(version_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "logging config version must be int");
+        };
+        if version != 1 {
+            return raise_exception::<_>(_py, "ValueError", "unsupported logging config version");
+        }
+
+        let formatter_class_bits = match pickle_resolve_global_bits(_py, "logging", "Formatter") {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let stream_handler_class_bits =
+            match pickle_resolve_global_bits(_py, "logging", "StreamHandler") {
+                Ok(bits) => bits,
+                Err(bits) => {
+                    dec_ref_bits(_py, formatter_class_bits);
+                    return bits;
+                }
+            };
+        let file_handler_class_bits =
+            match pickle_resolve_global_bits(_py, "logging", "FileHandler") {
+                Ok(bits) => bits,
+                Err(bits) => {
+                    dec_ref_bits(_py, stream_handler_class_bits);
+                    dec_ref_bits(_py, formatter_class_bits);
+                    return bits;
+                }
+            };
+        let get_logger_bits = match pickle_resolve_global_bits(_py, "logging", "getLogger") {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(_py, file_handler_class_bits);
+                dec_ref_bits(_py, stream_handler_class_bits);
+                dec_ref_bits(_py, formatter_class_bits);
+                return bits;
+            }
+        };
+
+        let mut formatter_map: HashMap<String, u64> = HashMap::new();
+        let mut handler_map: HashMap<String, u64> = HashMap::new();
+
+        if let Ok(Some(formatters_bits)) =
+            logging_config_dict_lookup(_py, config_bits, "formatters")
+        {
+            let pairs = match logging_config_dict_items(_py, formatters_bits) {
+                Ok(items) => items,
+                Err(bits) => {
+                    dec_ref_bits(_py, get_logger_bits);
+                    dec_ref_bits(_py, file_handler_class_bits);
+                    dec_ref_bits(_py, stream_handler_class_bits);
+                    dec_ref_bits(_py, formatter_class_bits);
+                    return bits;
+                }
+            };
+            let Some(formatter_class_ptr) = obj_from_bits(formatter_class_bits).as_ptr() else {
+                dec_ref_bits(_py, get_logger_bits);
+                dec_ref_bits(_py, file_handler_class_bits);
+                dec_ref_bits(_py, stream_handler_class_bits);
+                dec_ref_bits(_py, formatter_class_bits);
+                return raise_exception::<_>(_py, "TypeError", "logging.Formatter is invalid");
+            };
+            for (name_bits, cfg_bits) in pairs {
+                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+                    Some(value) => value,
+                    None => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "logging formatter name must be str",
+                        );
+                    }
+                };
+                let fmt_bits = match logging_config_dict_lookup(_py, cfg_bits, "format") {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => MoltObject::none().bits(),
+                    Err(bits) => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return bits;
+                    }
+                };
+                let formatter_bits =
+                    unsafe { call_class_init_with_args(_py, formatter_class_ptr, &[fmt_bits]) };
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, name_bits);
+                    dec_ref_bits(_py, cfg_bits);
+                    return MoltObject::none().bits();
+                }
+                formatter_map.insert(name, formatter_bits);
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, cfg_bits);
+            }
+        } else if exception_pending(_py) {
+            dec_ref_bits(_py, get_logger_bits);
+            dec_ref_bits(_py, file_handler_class_bits);
+            dec_ref_bits(_py, stream_handler_class_bits);
+            dec_ref_bits(_py, formatter_class_bits);
+            return MoltObject::none().bits();
+        }
+
+        if let Ok(Some(handlers_bits)) = logging_config_dict_lookup(_py, config_bits, "handlers") {
+            let pairs = match logging_config_dict_items(_py, handlers_bits) {
+                Ok(items) => items,
+                Err(bits) => {
+                    for (_, formatter_bits) in formatter_map {
+                        dec_ref_bits(_py, formatter_bits);
+                    }
+                    dec_ref_bits(_py, get_logger_bits);
+                    dec_ref_bits(_py, file_handler_class_bits);
+                    dec_ref_bits(_py, stream_handler_class_bits);
+                    dec_ref_bits(_py, formatter_class_bits);
+                    return bits;
+                }
+            };
+            let Some(stream_handler_class_ptr) = obj_from_bits(stream_handler_class_bits).as_ptr()
+            else {
+                for (_, formatter_bits) in formatter_map {
+                    dec_ref_bits(_py, formatter_bits);
+                }
+                dec_ref_bits(_py, get_logger_bits);
+                dec_ref_bits(_py, file_handler_class_bits);
+                dec_ref_bits(_py, stream_handler_class_bits);
+                dec_ref_bits(_py, formatter_class_bits);
+                return raise_exception::<_>(_py, "TypeError", "logging.StreamHandler is invalid");
+            };
+            let Some(file_handler_class_ptr) = obj_from_bits(file_handler_class_bits).as_ptr()
+            else {
+                for (_, formatter_bits) in formatter_map {
+                    dec_ref_bits(_py, formatter_bits);
+                }
+                dec_ref_bits(_py, get_logger_bits);
+                dec_ref_bits(_py, file_handler_class_bits);
+                dec_ref_bits(_py, stream_handler_class_bits);
+                dec_ref_bits(_py, formatter_class_bits);
+                return raise_exception::<_>(_py, "TypeError", "logging.FileHandler is invalid");
+            };
+            for (name_bits, cfg_bits) in pairs {
+                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+                    Some(value) => value,
+                    None => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "logging handler name must be str",
+                        );
+                    }
+                };
+                let class_bits = match logging_config_dict_lookup(_py, cfg_bits, "class") {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "logging handler config missing class",
+                        );
+                    }
+                    Err(bits) => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return bits;
+                    }
+                };
+                let class_name = match string_obj_to_owned(obj_from_bits(class_bits)) {
+                    Some(value) => value,
+                    None => {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "logging handler class must be str",
+                        );
+                    }
+                };
+                let handler_bits = if class_name == "logging.StreamHandler" {
+                    let stream_arg_bits = match logging_config_dict_lookup(_py, cfg_bits, "stream")
+                    {
+                        Ok(Some(bits)) => {
+                            let resolved = match logging_config_resolve_ext_stream(_py, bits) {
+                                Ok(resolved_bits) => resolved_bits,
+                                Err(err_bits) => {
+                                    dec_ref_bits(_py, name_bits);
+                                    dec_ref_bits(_py, cfg_bits);
+                                    return err_bits;
+                                }
+                            };
+                            resolved
+                        }
+                        Ok(None) => MoltObject::none().bits(),
+                        Err(bits) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return bits;
+                        }
+                    };
+                    unsafe {
+                        call_class_init_with_args(_py, stream_handler_class_ptr, &[stream_arg_bits])
+                    }
+                } else if class_name == "logging.FileHandler" {
+                    let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")
+                    {
+                        Ok(Some(bits)) => bits,
+                        Ok(None) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "logging FileHandler config missing filename",
+                            );
+                        }
+                        Err(bits) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return bits;
+                        }
+                    };
+                    let mode_bits = match logging_config_dict_lookup(_py, cfg_bits, "mode") {
+                        Ok(Some(bits)) => bits,
+                        Ok(None) => match alloc_string_bits(_py, "a") {
+                            Some(bits) => bits,
+                            None => {
+                                dec_ref_bits(_py, name_bits);
+                                dec_ref_bits(_py, cfg_bits);
+                                return MoltObject::none().bits();
+                            }
+                        },
+                        Err(bits) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return bits;
+                        }
+                    };
+                    let out_bits = unsafe {
+                        call_class_init_with_args(
+                            _py,
+                            file_handler_class_ptr,
+                            &[filename_bits, mode_bits],
+                        )
+                    };
+                    if let Ok(None) = logging_config_dict_lookup(_py, cfg_bits, "mode") {
+                        dec_ref_bits(_py, mode_bits);
+                    }
+                    out_bits
+                } else {
+                    dec_ref_bits(_py, name_bits);
+                    dec_ref_bits(_py, cfg_bits);
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "unsupported logging handler class for intrinsic dictConfig",
+                    );
+                };
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, name_bits);
+                    dec_ref_bits(_py, cfg_bits);
+                    return MoltObject::none().bits();
+                }
+                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
+                    let out_bits = match logging_config_call_method1(
+                        _py,
+                        handler_bits,
+                        b"setLevel",
+                        level_bits,
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            dec_ref_bits(_py, handler_bits);
+                            return bits;
+                        }
+                    };
+                    if !obj_from_bits(out_bits).is_none() {
+                        dec_ref_bits(_py, out_bits);
+                    }
+                }
+                if let Ok(Some(formatter_name_bits)) =
+                    logging_config_dict_lookup(_py, cfg_bits, "formatter")
+                {
+                    let Some(formatter_name) =
+                        string_obj_to_owned(obj_from_bits(formatter_name_bits))
+                    else {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        dec_ref_bits(_py, handler_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "logging formatter reference must be str",
+                        );
+                    };
+                    let Some(formatter_bits) = formatter_map.get(&formatter_name).copied() else {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, cfg_bits);
+                        dec_ref_bits(_py, handler_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "unknown formatter in logging handler config",
+                        );
+                    };
+                    let out_bits = match logging_config_call_method1(
+                        _py,
+                        handler_bits,
+                        b"setFormatter",
+                        formatter_bits,
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            dec_ref_bits(_py, handler_bits);
+                            return bits;
+                        }
+                    };
+                    if !obj_from_bits(out_bits).is_none() {
+                        dec_ref_bits(_py, out_bits);
+                    }
+                }
+                handler_map.insert(name, handler_bits);
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, cfg_bits);
+            }
+        } else if exception_pending(_py) {
+            for (_, formatter_bits) in formatter_map {
+                dec_ref_bits(_py, formatter_bits);
+            }
+            dec_ref_bits(_py, get_logger_bits);
+            dec_ref_bits(_py, file_handler_class_bits);
+            dec_ref_bits(_py, stream_handler_class_bits);
+            dec_ref_bits(_py, formatter_class_bits);
+            return MoltObject::none().bits();
+        }
+
+        if let Ok(Some(loggers_bits)) = logging_config_dict_lookup(_py, config_bits, "loggers") {
+            let pairs = match logging_config_dict_items(_py, loggers_bits) {
+                Ok(items) => items,
+                Err(bits) => {
+                    for (_, handler_bits) in handler_map {
+                        dec_ref_bits(_py, handler_bits);
+                    }
+                    for (_, formatter_bits) in formatter_map {
+                        dec_ref_bits(_py, formatter_bits);
+                    }
+                    dec_ref_bits(_py, get_logger_bits);
+                    dec_ref_bits(_py, file_handler_class_bits);
+                    dec_ref_bits(_py, stream_handler_class_bits);
+                    dec_ref_bits(_py, formatter_class_bits);
+                    return bits;
+                }
+            };
+            for (name_bits, cfg_bits) in pairs {
+                let logger_bits = unsafe { call_callable1(_py, get_logger_bits, name_bits) };
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, name_bits);
+                    dec_ref_bits(_py, cfg_bits);
+                    return MoltObject::none().bits();
+                }
+                if let Err(bits) = logging_config_clear_logger_handlers(_py, logger_bits) {
+                    dec_ref_bits(_py, logger_bits);
+                    dec_ref_bits(_py, name_bits);
+                    dec_ref_bits(_py, cfg_bits);
+                    return bits;
+                }
+                if let Ok(Some(handler_list_bits)) =
+                    logging_config_dict_lookup(_py, cfg_bits, "handlers")
+                {
+                    let handler_names = match logging_config_name_list(_py, handler_list_bits) {
+                        Ok(value) => value,
+                        Err(bits) => {
+                            dec_ref_bits(_py, logger_bits);
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return bits;
+                        }
+                    };
+                    for handler_name in handler_names {
+                        let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
+                            dec_ref_bits(_py, logger_bits);
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "unknown handler in logger config",
+                            );
+                        };
+                        let out_bits = match logging_config_call_method1(
+                            _py,
+                            logger_bits,
+                            b"addHandler",
+                            handler_bits,
+                        ) {
+                            Ok(bits) => bits,
+                            Err(bits) => {
+                                dec_ref_bits(_py, logger_bits);
+                                dec_ref_bits(_py, name_bits);
+                                dec_ref_bits(_py, cfg_bits);
+                                return bits;
+                            }
+                        };
+                        if !obj_from_bits(out_bits).is_none() {
+                            dec_ref_bits(_py, out_bits);
+                        }
+                    }
+                }
+                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
+                    let out_bits = match logging_config_call_method1(
+                        _py,
+                        logger_bits,
+                        b"setLevel",
+                        level_bits,
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            dec_ref_bits(_py, logger_bits);
+                            dec_ref_bits(_py, name_bits);
+                            dec_ref_bits(_py, cfg_bits);
+                            return bits;
+                        }
+                    };
+                    if !obj_from_bits(out_bits).is_none() {
+                        dec_ref_bits(_py, out_bits);
+                    }
+                }
+                dec_ref_bits(_py, logger_bits);
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, cfg_bits);
+            }
+        } else if exception_pending(_py) {
+            for (_, handler_bits) in handler_map {
+                dec_ref_bits(_py, handler_bits);
+            }
+            for (_, formatter_bits) in formatter_map {
+                dec_ref_bits(_py, formatter_bits);
+            }
+            dec_ref_bits(_py, get_logger_bits);
+            dec_ref_bits(_py, file_handler_class_bits);
+            dec_ref_bits(_py, stream_handler_class_bits);
+            dec_ref_bits(_py, formatter_class_bits);
+            return MoltObject::none().bits();
+        }
+
+        if let Ok(Some(root_bits)) = logging_config_dict_lookup(_py, config_bits, "root") {
+            let root_logger_bits = unsafe { call_callable0(_py, get_logger_bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if let Err(bits) = logging_config_clear_logger_handlers(_py, root_logger_bits) {
+                dec_ref_bits(_py, root_logger_bits);
+                return bits;
+            }
+            if let Ok(Some(handler_list_bits)) =
+                logging_config_dict_lookup(_py, root_bits, "handlers")
+            {
+                let handler_names = match logging_config_name_list(_py, handler_list_bits) {
+                    Ok(value) => value,
+                    Err(bits) => {
+                        dec_ref_bits(_py, root_logger_bits);
+                        return bits;
+                    }
+                };
+                for handler_name in handler_names {
+                    let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
+                        dec_ref_bits(_py, root_logger_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "unknown handler in root logger config",
+                        );
+                    };
+                    let out_bits = match logging_config_call_method1(
+                        _py,
+                        root_logger_bits,
+                        b"addHandler",
+                        handler_bits,
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            dec_ref_bits(_py, root_logger_bits);
+                            return bits;
+                        }
+                    };
+                    if !obj_from_bits(out_bits).is_none() {
+                        dec_ref_bits(_py, out_bits);
+                    }
+                }
+            }
+            if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, root_bits, "level") {
+                let out_bits = match logging_config_call_method1(
+                    _py,
+                    root_logger_bits,
+                    b"setLevel",
+                    level_bits,
+                ) {
+                    Ok(bits) => bits,
+                    Err(bits) => {
+                        dec_ref_bits(_py, root_logger_bits);
+                        return bits;
+                    }
+                };
+                if !obj_from_bits(out_bits).is_none() {
+                    dec_ref_bits(_py, out_bits);
+                }
+            }
+            dec_ref_bits(_py, root_logger_bits);
+        } else if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        for (_, handler_bits) in handler_map {
+            dec_ref_bits(_py, handler_bits);
+        }
+        for (_, formatter_bits) in formatter_map {
+            dec_ref_bits(_py, formatter_bits);
+        }
+        dec_ref_bits(_py, get_logger_bits);
+        dec_ref_bits(_py, file_handler_class_bits);
+        dec_ref_bits(_py, stream_handler_class_bits);
+        dec_ref_bits(_py, formatter_class_bits);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "logging.config.valid_ident expects str",
+            );
+        };
+        let mut chars = text.chars();
+        let Some(first) = chars.next() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let first_ok = first == '_' || first.is_ascii_alphabetic();
+        if !first_ok {
+            return MoltObject::from_bool(false).bits();
+        }
+        for ch in chars {
+            if ch != '_' && !ch.is_ascii_alphanumeric() {
+                return MoltObject::from_bool(false).bits();
+            }
+        }
+        MoltObject::from_bool(true).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_config_file_config(
+    config_file_bits: u64,
+    defaults_bits: u64,
+    disable_existing_loggers_bits: u64,
+    encoding_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = (
+            config_file_bits,
+            defaults_bits,
+            disable_existing_loggers_bits,
+            encoding_bits,
+        );
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "logging.config.fileConfig is not implemented in Molt yet",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = (port_bits, verify_bits);
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "logging.config.listen is not implemented in Molt yet",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -17150,6 +19142,46 @@ pub extern "C" fn molt_imghdr_detect(data_bits: u64) -> u64 {
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(kind) = imghdr_detect_kind(header) else {
+            return MoltObject::none().bits();
+        };
+        let ptr = alloc_string(_py, kind.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
+        };
+        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let matches = imghdr_detect_kind(header)
+            .map(|detected| detected == kind.as_str())
+            .unwrap_or(false);
+        MoltObject::from_bool(matches).bits()
     })
 }
 

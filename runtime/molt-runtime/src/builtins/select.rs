@@ -3,12 +3,14 @@ use molt_obj_model::MoltObject;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{GilReleaseGuard, raise_os_error};
 use crate::{
-    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_TUPLE, alloc_list, alloc_tuple,
-    attr_name_bits_from_bytes, bits_from_ptr, call_callable0, dec_ref_bits, exception_pending,
-    inc_ref_bits, int_bits_from_i64, is_truthy, maybe_ptr_from_bits, missing_bits,
-    molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next, monotonic_now_secs,
-    obj_from_bits, ptr_from_bits, raise_exception, release_ptr, seq_vec_ref, to_f64, to_i64,
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_TUPLE, alloc_dict_with_pairs,
+    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, bits_from_ptr,
+    call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
+    maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, molt_iter,
+    molt_iter_next, monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
+    seq_vec_ref, to_f64, to_i64,
 };
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
@@ -39,13 +41,12 @@ struct SelectWatch {
 }
 
 struct SelectorRegistryEntry {
-    fd: i64,
     obj_bits: u64,
     events: u32,
 }
 
 struct SelectorRegistry {
-    entries: Vec<SelectorRegistryEntry>,
+    entries: HashMap<i64, SelectorRegistryEntry>,
     closed: bool,
     fileno: i64,
     #[allow(dead_code)]
@@ -117,6 +118,54 @@ fn get_attr_optional(
         return Ok(None);
     }
     Ok(Some(value_bits))
+}
+
+fn select_construct_private_object(
+    _py: &crate::PyToken<'_>,
+    class_name: &[u8],
+) -> Result<u64, u64> {
+    let module_name_ptr = alloc_string(_py, b"select");
+    if module_name_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+    let module_bits = crate::molt_module_import(module_name_bits);
+    dec_ref_bits(_py, module_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(class_name_bits) = attr_name_bits_from_bytes(_py, class_name) else {
+        dec_ref_bits(_py, module_bits);
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let class_bits = molt_getattr_builtin(module_bits, class_name_bits, missing);
+    dec_ref_bits(_py, class_name_bits);
+    dec_ref_bits(_py, module_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if class_bits == missing {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "select backend class is unavailable",
+        ));
+    }
+    if !is_truthy(_py, obj_from_bits(molt_is_callable(class_bits))) {
+        dec_ref_bits(_py, class_bits);
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "select backend class is not callable",
+        ));
+    }
+    let out_bits = unsafe { call_callable0(_py, class_bits) };
+    dec_ref_bits(_py, class_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(out_bits)
 }
 
 fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64> {
@@ -273,6 +322,30 @@ fn selector_state<'a>(
     Ok(selector)
 }
 
+fn selector_release_obj_bits(_py: &crate::PyToken<'_>, obj_bits: u64) {
+    if !obj_from_bits(obj_bits).is_none() {
+        dec_ref_bits(_py, obj_bits);
+    }
+}
+
+fn selector_parse_fd(_py: &crate::PyToken<'_>, fd_bits: u64) -> Result<i64, u64> {
+    let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "fd must be an integer",
+        ));
+    };
+    if fd < 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            "invalid file descriptor",
+        ));
+    }
+    Ok(fd)
+}
+
 fn add_watchers(
     _py: &crate::PyToken<'_>,
     watches: &mut Vec<SelectWatch>,
@@ -293,48 +366,20 @@ fn add_watchers(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn poll_once(_py: &crate::PyToken<'_>, watch: &SelectWatch) -> Result<u32, u64> {
-    let fd = match i32::try_from(watch.handle) {
-        Ok(fd) if fd >= 0 => fd,
-        _ => {
-            return Err(raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "invalid file descriptor",
-            ));
-        }
-    };
-
+fn poll_interest_from_events(events: u32) -> libc::c_short {
     let mut interest: libc::c_short = 0;
-    if (watch.events & IO_EVENT_READ) != 0 {
+    if (events & IO_EVENT_READ) != 0 {
         interest |= libc::POLLIN as libc::c_short;
     }
-    if (watch.events & IO_EVENT_WRITE) != 0 {
+    if (events & IO_EVENT_WRITE) != 0 {
         interest |= libc::POLLOUT as libc::c_short;
     }
-    if interest == 0 {
-        return Ok(0);
-    }
+    interest
+}
 
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: interest,
-        revents: 0,
-    };
-    let rc = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, 0) };
-    if rc < 0 {
-        let err = std::io::Error::last_os_error();
-        if err.kind() == ErrorKind::Interrupted {
-            return Ok(0);
-        }
-        return Err(raise_os_error::<u64>(_py, err, "select"));
-    }
-    if rc == 0 {
-        return Ok(0);
-    }
-
+#[cfg(not(target_arch = "wasm32"))]
+fn poll_mask_from_revents(revents: libc::c_short) -> u32 {
     let mut mask = 0u32;
-    let revents = pollfd.revents;
     if (revents & (libc::POLLIN | libc::POLLPRI | libc::POLLHUP) as libc::c_short) != 0 {
         mask |= IO_EVENT_READ;
     }
@@ -344,7 +389,100 @@ fn poll_once(_py: &crate::PyToken<'_>, watch: &SelectWatch) -> Result<u32, u64> 
     if (revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) as libc::c_short) != 0 {
         mask |= IO_EVENT_ERROR;
     }
-    Ok(mask)
+    mask
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn poll_timeout_ms(_py: &crate::PyToken<'_>, timeout: Option<f64>, deadline: Option<f64>) -> i32 {
+    match timeout {
+        None => -1,
+        Some(value) if value <= 0.0 => 0,
+        Some(_) => {
+            let remaining = deadline
+                .map(|end| end - monotonic_now_secs(_py))
+                .unwrap_or(0.0);
+            if remaining <= 0.0 {
+                0
+            } else {
+                let millis = (remaining * 1000.0).ceil();
+                if millis >= i32::MAX as f64 {
+                    i32::MAX
+                } else {
+                    millis as i32
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn poll_masks_batch(
+    _py: &crate::PyToken<'_>,
+    watches: &[SelectWatch],
+    timeout_ms: i32,
+) -> Result<Vec<u32>, u64> {
+    let mut masks = vec![0u32; watches.len()];
+    if watches.is_empty() {
+        return Ok(masks);
+    }
+
+    let mut pollfds: Vec<libc::pollfd> = Vec::with_capacity(watches.len());
+    let mut watch_indexes: Vec<usize> = Vec::with_capacity(watches.len());
+    for (index, watch) in watches.iter().enumerate() {
+        let fd = match i32::try_from(watch.handle) {
+            Ok(fd) if fd >= 0 => fd,
+            _ => {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "invalid file descriptor",
+                ));
+            }
+        };
+        let interest = poll_interest_from_events(watch.events);
+        if interest == 0 {
+            continue;
+        }
+        pollfds.push(libc::pollfd {
+            fd,
+            events: interest,
+            revents: 0,
+        });
+        watch_indexes.push(index);
+    }
+    if pollfds.is_empty() {
+        return Ok(masks);
+    }
+
+    let rc = {
+        let _release = GilReleaseGuard::new();
+        unsafe {
+            libc::poll(
+                pollfds.as_mut_ptr(),
+                pollfds.len() as libc::nfds_t,
+                timeout_ms,
+            )
+        }
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == ErrorKind::Interrupted {
+            return Ok(masks);
+        }
+        return Err(raise_os_error::<u64>(_py, err, "select"));
+    }
+    if rc == 0 {
+        return Ok(masks);
+    }
+
+    for (poll_index, pollfd) in pollfds.iter().enumerate() {
+        let mask = poll_mask_from_revents(pollfd.revents);
+        if mask != 0 {
+            let watch_index = watch_indexes[poll_index];
+            masks[watch_index] = mask;
+        }
+    }
+    Ok(masks)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -372,6 +510,253 @@ fn release_bits(_py: &crate::PyToken<'_>, bits: &[u64]) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_select_constants() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut pairs: Vec<u64> = Vec::new();
+        let mut owned_bits: Vec<u64> = Vec::new();
+        macro_rules! push_const {
+            ($name:expr, $value:expr) => {{
+                let key_ptr = alloc_string(_py, $name.as_bytes());
+                if key_ptr.is_null() {
+                    for bits in owned_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                let value_bits = MoltObject::from_int($value).bits();
+                pairs.push(key_bits);
+                pairs.push(value_bits);
+                owned_bits.push(key_bits);
+                owned_bits.push(value_bits);
+            }};
+        }
+
+        #[cfg(target_os = "windows")]
+        push_const!("_HAS_POLL", 0);
+        #[cfg(not(target_os = "windows"))]
+        push_const!("_HAS_POLL", 1);
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        push_const!("_HAS_EPOLL", 1);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        push_const!("_HAS_EPOLL", 0);
+
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+        push_const!("_HAS_DEVPOLL", 1);
+        #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+        push_const!("_HAS_DEVPOLL", 0);
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        push_const!("_HAS_KQUEUE", 1);
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
+        push_const!("_HAS_KQUEUE", 0);
+
+        #[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+        {
+            push_const!("POLLIN", libc::POLLIN as i64);
+            push_const!("POLLPRI", libc::POLLPRI as i64);
+            push_const!("POLLOUT", libc::POLLOUT as i64);
+            push_const!("POLLERR", libc::POLLERR as i64);
+            push_const!("POLLHUP", libc::POLLHUP as i64);
+            push_const!("POLLNVAL", libc::POLLNVAL as i64);
+            push_const!("PIPE_BUF", libc::PIPE_BUF as i64);
+        }
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly",
+            target_os = "linux",
+            target_os = "android"
+        ))]
+        {
+            push_const!("POLLRDNORM", libc::POLLRDNORM as i64);
+            push_const!("POLLRDBAND", libc::POLLRDBAND as i64);
+            push_const!("POLLWRNORM", libc::POLLWRNORM as i64);
+            push_const!("POLLWRBAND", libc::POLLWRBAND as i64);
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            push_const!("EPOLLIN", libc::EPOLLIN as i64);
+            push_const!("EPOLLPRI", libc::EPOLLPRI as i64);
+            push_const!("EPOLLOUT", libc::EPOLLOUT as i64);
+            push_const!("EPOLLERR", libc::EPOLLERR as i64);
+            push_const!("EPOLLHUP", libc::EPOLLHUP as i64);
+            push_const!("EPOLLRDHUP", libc::EPOLLRDHUP as i64);
+            push_const!("EPOLLET", libc::EPOLLET as i64);
+            push_const!("EPOLLONESHOT", libc::EPOLLONESHOT as i64);
+            push_const!("EPOLLEXCLUSIVE", libc::EPOLLEXCLUSIVE as i64);
+            push_const!("EPOLLWAKEUP", libc::EPOLLWAKEUP as i64);
+            push_const!("EPOLLMSG", libc::EPOLLMSG as i64);
+            push_const!("EPOLL_CTL_ADD", libc::EPOLL_CTL_ADD as i64);
+            push_const!("EPOLL_CTL_DEL", libc::EPOLL_CTL_DEL as i64);
+            push_const!("EPOLL_CTL_MOD", libc::EPOLL_CTL_MOD as i64);
+        }
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            push_const!("KQ_FILTER_READ", libc::EVFILT_READ as i64);
+            push_const!("KQ_FILTER_WRITE", libc::EVFILT_WRITE as i64);
+            push_const!("KQ_FILTER_AIO", libc::EVFILT_AIO as i64);
+            push_const!("KQ_FILTER_VNODE", libc::EVFILT_VNODE as i64);
+            push_const!("KQ_FILTER_PROC", libc::EVFILT_PROC as i64);
+            push_const!("KQ_FILTER_SIGNAL", libc::EVFILT_SIGNAL as i64);
+            push_const!("KQ_FILTER_TIMER", libc::EVFILT_TIMER as i64);
+            push_const!("KQ_EV_ADD", libc::EV_ADD as i64);
+            push_const!("KQ_EV_DELETE", libc::EV_DELETE as i64);
+            push_const!("KQ_EV_ENABLE", libc::EV_ENABLE as i64);
+            push_const!("KQ_EV_DISABLE", libc::EV_DISABLE as i64);
+            push_const!("KQ_EV_CLEAR", libc::EV_CLEAR as i64);
+            push_const!("KQ_EV_ONESHOT", libc::EV_ONESHOT as i64);
+            push_const!("KQ_EV_EOF", libc::EV_EOF as i64);
+            push_const!("KQ_EV_ERROR", libc::EV_ERROR as i64);
+            push_const!("KQ_EV_FLAG1", libc::EV_FLAG1 as i64);
+            push_const!("KQ_EV_SYSFLAGS", libc::EV_SYSFLAGS as i64);
+            push_const!("KQ_NOTE_DELETE", libc::NOTE_DELETE as i64);
+            push_const!("KQ_NOTE_WRITE", libc::NOTE_WRITE as i64);
+            push_const!("KQ_NOTE_EXTEND", libc::NOTE_EXTEND as i64);
+            push_const!("KQ_NOTE_ATTRIB", libc::NOTE_ATTRIB as i64);
+            push_const!("KQ_NOTE_LINK", libc::NOTE_LINK as i64);
+            push_const!("KQ_NOTE_RENAME", libc::NOTE_RENAME as i64);
+            push_const!("KQ_NOTE_REVOKE", libc::NOTE_REVOKE as i64);
+            push_const!("KQ_NOTE_TRACK", libc::NOTE_TRACK as i64);
+            push_const!("KQ_NOTE_TRACKERR", libc::NOTE_TRACKERR as i64);
+            push_const!("KQ_NOTE_CHILD", libc::NOTE_CHILD as i64);
+            push_const!("KQ_NOTE_FORK", libc::NOTE_FORK as i64);
+            push_const!("KQ_NOTE_EXEC", libc::NOTE_EXEC as i64);
+            push_const!("KQ_NOTE_EXIT", libc::NOTE_EXIT as i64);
+            push_const!("KQ_NOTE_PDATAMASK", libc::NOTE_PDATAMASK as i64);
+            push_const!("KQ_NOTE_PCTRLMASK", (libc::NOTE_PCTRLMASK as i32) as i64);
+            push_const!("KQ_NOTE_LOWAT", libc::NOTE_LOWAT as i64);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_poll() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match select_construct_private_object(_py, b"_PollObject") {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if to_i64(obj_from_bits(sizehint_bits)).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "sizehint must be an integer");
+        }
+        if to_i64(obj_from_bits(flags_bits)).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "flags must be an integer");
+        }
+        match select_construct_private_object(_py, b"_EpollObject") {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_devpoll() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match select_construct_private_object(_py, b"_DevpollObject") {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_fileno(fileobj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        match object_to_handle(_py, fileobj_bits) {
+            Ok(fd) => int_bits_from_i64(_py, fd),
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_default_selector_kind() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let kind = if cfg!(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )) {
+            SELECT_KIND_KQUEUE
+        } else if cfg!(any(target_os = "linux", target_os = "android")) {
+            SELECT_KIND_EPOLL
+        } else if cfg!(any(target_os = "solaris", target_os = "illumos")) {
+            SELECT_KIND_DEVPOLL
+        } else if cfg!(target_os = "windows") {
+            -1
+        } else {
+            SELECT_KIND_POLL
+        };
+        int_bits_from_i64(_py, kind)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "selector kind must be an integer");
+        };
+        let available = match kind {
+            SELECT_KIND_POLL => cfg!(not(target_os = "windows")),
+            SELECT_KIND_EPOLL => cfg!(any(target_os = "linux", target_os = "android")),
+            SELECT_KIND_KQUEUE => cfg!(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            )),
+            SELECT_KIND_DEVPOLL => cfg!(any(target_os = "solaris", target_os = "illumos")),
+            _ => false,
+        };
+        MoltObject::from_bool(available).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
@@ -385,7 +770,7 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
         }
         let fileno = SELECTOR_FILENO_NEXT.fetch_add(1, AtomicOrdering::Relaxed);
         let selector = Box::new(SelectorRegistry {
-            entries: Vec::new(),
+            entries: HashMap::new(),
             closed: false,
             fileno,
             kind,
@@ -402,6 +787,38 @@ pub extern "C" fn molt_select_selector_fileno(handle_bits: u64) -> u64 {
             Err(err) => return err,
         };
         int_bits_from_i64(_py, selector.fileno)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_selector_len(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let selector = match selector_state(_py, handle_bits) {
+            Ok(selector) => selector,
+            Err(err) => return err,
+        };
+        let count = i64::try_from(selector.entries.len()).unwrap_or(i64::MAX);
+        int_bits_from_i64(_py, count)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_selector_events(handle_bits: u64, fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let selector = match selector_state(_py, handle_bits) {
+            Ok(selector) => selector,
+            Err(err) => return err,
+        };
+        let fd = match selector_parse_fd(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
+        };
+        let events = selector
+            .entries
+            .get(&fd)
+            .map(|entry| i64::from(entry.events))
+            .unwrap_or(0);
+        int_bits_from_i64(_py, events)
     })
 }
 
@@ -425,15 +842,51 @@ pub extern "C" fn molt_select_selector_register(
             Ok(fd) => fd,
             Err(err) => return err,
         };
-        if selector.entries.iter().any(|entry| entry.fd == fd) {
+        if selector.entries.contains_key(&fd) {
             return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
         }
         inc_ref_bits(_py, fileobj_bits);
-        selector.entries.push(SelectorRegistryEntry {
+        selector.entries.insert(
             fd,
-            obj_bits: fileobj_bits,
-            events,
-        });
+            SelectorRegistryEntry {
+                obj_bits: fileobj_bits,
+                events,
+            },
+        );
+        int_bits_from_i64(_py, fd)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_selector_register_fd(
+    handle_bits: u64,
+    fd_bits: u64,
+    events_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
+            Ok(selector) => selector,
+            Err(err) => return err,
+        };
+        let selector = unsafe { &mut *selector_ptr };
+        let events = match parse_selector_events(_py, events_bits) {
+            Ok(events) => events,
+            Err(err) => return err,
+        };
+        let fd = match selector_parse_fd(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
+        };
+        if selector.entries.contains_key(&fd) {
+            return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
+        }
+        selector.entries.insert(
+            fd,
+            SelectorRegistryEntry {
+                obj_bits: MoltObject::none().bits(),
+                events,
+            },
+        );
         int_bits_from_i64(_py, fd)
     })
 }
@@ -446,14 +899,34 @@ pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64
             Err(err) => return err,
         };
         let selector = unsafe { &mut *selector_ptr };
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "fd must be an integer");
+        let fd = match selector_parse_fd(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
         };
-        let Some(pos) = selector.entries.iter().position(|entry| entry.fd == fd) else {
+        let Some(entry) = selector.entries.remove(&fd) else {
             return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
         };
-        let entry = selector.entries.swap_remove(pos);
-        dec_ref_bits(_py, entry.obj_bits);
+        selector_release_obj_bits(_py, entry.obj_bits);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_selector_unregister_obj(handle_bits: u64, fileobj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
+            Ok(selector) => selector,
+            Err(err) => return err,
+        };
+        let selector = unsafe { &mut *selector_ptr };
+        let fd = match object_to_handle(_py, fileobj_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
+        };
+        let Some(entry) = selector.entries.remove(&fd) else {
+            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+        };
+        selector_release_obj_bits(_py, entry.obj_bits);
         MoltObject::none().bits()
     })
 }
@@ -470,14 +943,43 @@ pub extern "C" fn molt_select_selector_modify(
             Err(err) => return err,
         };
         let selector = unsafe { &mut *selector_ptr };
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "fd must be an integer");
+        let fd = match selector_parse_fd(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
         };
         let events = match parse_selector_events(_py, events_bits) {
             Ok(events) => events,
             Err(err) => return err,
         };
-        let Some(entry) = selector.entries.iter_mut().find(|entry| entry.fd == fd) else {
+        let Some(entry) = selector.entries.get_mut(&fd) else {
+            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+        };
+        entry.events = events;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_select_selector_modify_obj(
+    handle_bits: u64,
+    fileobj_bits: u64,
+    events_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
+            Ok(selector) => selector,
+            Err(err) => return err,
+        };
+        let selector = unsafe { &mut *selector_ptr };
+        let fd = match object_to_handle(_py, fileobj_bits) {
+            Ok(fd) => fd,
+            Err(err) => return err,
+        };
+        let events = match parse_selector_events(_py, events_bits) {
+            Ok(events) => events,
+            Err(err) => return err,
+        };
+        let Some(entry) = selector.entries.get_mut(&fd) else {
             return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
         };
         entry.events = events;
@@ -519,21 +1021,41 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
 
         let deadline = timeout.map(|value| monotonic_now_secs(_py) + value);
         let mut ready_pairs: Vec<(i64, u32)> = Vec::new();
+        let watches: Vec<SelectWatch> = selector
+            .entries
+            .iter()
+            .map(|(fd, entry)| SelectWatch {
+                obj_bits: entry.obj_bits,
+                handle: *fd,
+                events: entry.events,
+                kind: WatchKind::Read,
+            })
+            .collect();
 
         loop {
-            for entry in &selector.entries {
-                let watch = SelectWatch {
-                    obj_bits: entry.obj_bits,
-                    handle: entry.fd,
-                    events: entry.events,
-                    kind: WatchKind::Read,
-                };
-                let mask = match poll_once(_py, &watch) {
-                    Ok(mask) => mask,
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let timeout_ms = poll_timeout_ms(_py, timeout, deadline);
+                let masks = match poll_masks_batch(_py, &watches, timeout_ms) {
+                    Ok(masks) => masks,
                     Err(err) => return err,
                 };
-                if mask != 0 {
-                    ready_pairs.push((entry.fd, mask));
+                for (watch, mask) in watches.iter().zip(masks.into_iter()) {
+                    if mask != 0 {
+                        ready_pairs.push((watch.handle, mask));
+                    }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                for watch in &watches {
+                    let mask = match poll_once(_py, watch) {
+                        Ok(mask) => mask,
+                        Err(err) => return err,
+                    };
+                    if mask != 0 {
+                        ready_pairs.push((watch.handle, mask));
+                    }
                 }
             }
             if !ready_pairs.is_empty() {
@@ -542,29 +1064,10 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             if timeout == Some(0.0) {
                 break;
             }
-            if let Some(deadline) = deadline {
-                let now = monotonic_now_secs(_py);
-                if now >= deadline {
-                    break;
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(deadline) = deadline
+                && monotonic_now_secs(_py) >= deadline
             {
-                let sleep_secs = match deadline {
-                    Some(deadline) => {
-                        let remaining = deadline - monotonic_now_secs(_py);
-                        if remaining <= 0.0 {
-                            0.0
-                        } else {
-                            remaining.min(0.01)
-                        }
-                    }
-                    None => 0.01,
-                };
-                if sleep_secs > 0.0 {
-                    let _release = GilReleaseGuard::new();
-                    thread::sleep(Duration::from_secs_f64(sleep_secs));
-                }
+                break;
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -614,8 +1117,8 @@ pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
         if selector.closed {
             return MoltObject::none().bits();
         }
-        for entry in selector.entries.drain(..) {
-            dec_ref_bits(_py, entry.obj_bits);
+        for (_, entry) in selector.entries.drain() {
+            selector_release_obj_bits(_py, entry.obj_bits);
         }
         selector.closed = true;
         MoltObject::none().bits()
@@ -631,8 +1134,8 @@ pub extern "C" fn molt_select_selector_drop(handle_bits: u64) -> u64 {
         }
         let mut selector = unsafe { Box::from_raw(ptr as *mut SelectorRegistry) };
         if !selector.closed {
-            for entry in selector.entries.drain(..) {
-                dec_ref_bits(_py, entry.obj_bits);
+            for (_, entry) in selector.entries.drain() {
+                selector_release_obj_bits(_py, entry.obj_bits);
             }
             selector.closed = true;
         }
@@ -733,9 +1236,11 @@ pub extern "C" fn molt_select_select(
         let deadline = timeout.map(|value| monotonic_now_secs(_py) + value);
 
         loop {
-            for watch in &watches {
-                let mask = match poll_once(_py, watch) {
-                    Ok(mask) => mask,
+            #[cfg(not(target_arch = "wasm32"))]
+            let watch_masks = {
+                let timeout_ms = poll_timeout_ms(_py, timeout, deadline);
+                match poll_masks_batch(_py, &watches, timeout_ms) {
+                    Ok(masks) => masks,
                     Err(err) => {
                         release_bits(_py, &r_objects);
                         release_bits(_py, &w_objects);
@@ -745,7 +1250,30 @@ pub extern "C" fn molt_select_select(
                         release_bits(_py, &ready_x);
                         return err;
                     }
-                };
+                }
+            };
+            #[cfg(target_arch = "wasm32")]
+            let watch_masks = {
+                let mut masks: Vec<u32> = Vec::with_capacity(watches.len());
+                for watch in &watches {
+                    let mask = match poll_once(_py, watch) {
+                        Ok(mask) => mask,
+                        Err(err) => {
+                            release_bits(_py, &r_objects);
+                            release_bits(_py, &w_objects);
+                            release_bits(_py, &x_objects);
+                            release_bits(_py, &ready_r);
+                            release_bits(_py, &ready_w);
+                            release_bits(_py, &ready_x);
+                            return err;
+                        }
+                    };
+                    masks.push(mask);
+                }
+                masks
+            };
+
+            for (watch, mask) in watches.iter().zip(watch_masks.into_iter()) {
                 if mask == 0 {
                     continue;
                 }
@@ -777,29 +1305,10 @@ pub extern "C" fn molt_select_select(
             if timeout == Some(0.0) {
                 break;
             }
-            if let Some(deadline) = deadline {
-                let now = monotonic_now_secs(_py);
-                if now >= deadline {
-                    break;
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(deadline) = deadline
+                && monotonic_now_secs(_py) >= deadline
             {
-                let sleep_secs = match deadline {
-                    Some(deadline) => {
-                        let remaining = deadline - monotonic_now_secs(_py);
-                        if remaining <= 0.0 {
-                            0.0
-                        } else {
-                            remaining.min(0.01)
-                        }
-                    }
-                    None => 0.01,
-                };
-                if sleep_secs > 0.0 {
-                    let _release = GilReleaseGuard::new();
-                    thread::sleep(Duration::from_secs_f64(sleep_secs));
-                }
+                break;
             }
             #[cfg(target_arch = "wasm32")]
             {

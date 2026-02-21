@@ -6,38 +6,24 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 import os as _os
-import sys as _sys
 
 import importlib.machinery as machinery
 import importlib.util as util
 
 _require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
-_MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD = _require_intrinsic(
-    "molt_importlib_runtime_state_payload", globals()
+_MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic(
+    "molt_importlib_resolve_name", globals()
 )
-_MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
-_SPEC_FIRST_IMPORTS = {"asyncio.graph"}
+_MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
+    "molt_importlib_known_absent_missing_name", globals()
+)
+_MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic(
+    "molt_importlib_import_module", globals()
+)
+_MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic(
+    "molt_importlib_runtime_modules", globals()
+)
 _MODULE_ALIASES: dict[str, str] = {}
-_EMPTY_MODULE_RETRY_PREFIXES = ("multiprocessing",)
-
-
-def _is_known_absent(resolved: str) -> bool:
-    if resolved == "asyncio.graph":
-        return _sys.version_info < (3, 14)
-    if resolved == "json.__main__":
-        return _sys.version_info < (3, 14)
-    if resolved == "_android_support":
-        return _sys.platform != "android"
-    if resolved == "_remote_debugging":
-        return _sys.version_info < (3, 13)
-    if resolved == "_interpchannels":
-        return _sys.version_info < (3, 13)
-    if resolved == "_opcode_metadata":
-        return _sys.version_info < (3, 14)
-    if resolved == "multiprocessing.popen_spawn_win32":
-        return _sys.platform != "win32"
-    return False
 
 
 __all__ = [
@@ -57,147 +43,24 @@ if "__path__" not in globals():
 
 
 def _runtime_modules() -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_RUNTIME_STATE_PAYLOAD()
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib runtime state payload: dict expected")
-    modules = payload.get("modules")
+    modules = _MOLT_IMPORTLIB_RUNTIME_MODULES()
     if not isinstance(modules, dict):
         raise RuntimeError("invalid importlib runtime state payload: modules")
     return modules
 
 
-def _is_empty_placeholder_module(module_name: str, module: object) -> bool:
-    if getattr(module, "__name__", None) != module_name:
-        return False
-    values = getattr(module, "__dict__", None)
-    if not isinstance(values, dict):
-        return False
-    if any(not key.startswith("_") for key in values):
-        return False
-    spec = values.get("__spec__")
-    loader = getattr(spec, "loader", None) if spec is not None else None
-    module_file = values.get("__file__")
-    return module_file is None and loader is None
-
-
-def _is_public_surface_empty(module_name: str, module: object) -> bool:
-    if getattr(module, "__name__", None) != module_name:
-        return False
-    values = getattr(module, "__dict__", None)
-    if not isinstance(values, dict):
-        return False
-    return not any(not key.startswith("_") for key in values)
-
-
-def _should_retry_empty_module(module_name: str, module: object) -> bool:
-    if not module_name.startswith(_EMPTY_MODULE_RETRY_PREFIXES):
-        return False
-    return _is_public_surface_empty(module_name, module)
-
-
-def _resolve_name(name: str, package: str | None) -> str:
-    if not name.startswith("."):
-        return name
-    if not package:
-        raise ImportError("relative import requires package")
-    level = len(name) - len(name.lstrip("."))
-    if level <= 0:
-        return name
-    pkg_bits = package.split(".")
-    if level > len(pkg_bits):
-        raise ImportError("attempted relative import beyond top-level package")
-    base = ".".join(pkg_bits[:-level])
-    return f"{base}{name[level:]}" if base else name[level:]
-
-
-def _import_via_spec(resolved: str):
-    modules = _runtime_modules()
-    existing = modules.get(resolved)
-    if existing is not None:
-        return existing
-
-    spec = util.find_spec(resolved)
-    if spec is None:
-        raise ModuleNotFoundError(f"No module named '{resolved}'")
-
-    module = util.module_from_spec(spec)
-    loader = getattr(spec, "loader", None)
-    loader_cls = getattr(machinery, "MoltLoader", None)
-    preseed_modules = not (
-        loader is not None and loader_cls is not None and isinstance(loader, loader_cls)
-    )
-    if preseed_modules:
-        modules[resolved] = module
-    try:
-        if loader is not None:
-            if hasattr(loader, "exec_module"):
-                loader.exec_module(module)
-            elif hasattr(loader, "load_module"):
-                loaded = loader.load_module(resolved)
-                if loaded is not None:
-                    module = loaded
-        if not preseed_modules:
-            modules[resolved] = module
-        return modules.get(resolved, module)
-    except Exception:
-        modules.pop(resolved, None)
-        raise
-
-
-def _module_import_with_fallback(resolved: str):
-    if resolved in _SPEC_FIRST_IMPORTS:
-        return _import_via_spec(resolved)
-    try:
-        mod = _MOLT_MODULE_IMPORT(resolved)
-        if mod is not None:
-            if _is_empty_placeholder_module(resolved, mod) or _should_retry_empty_module(
-                resolved, mod
-            ):
-                _MOLT_EXCEPTION_CLEAR()
-                return _import_via_spec(resolved)
-            return mod
-        _MOLT_EXCEPTION_CLEAR()
-        return _import_via_spec(resolved)
-    except TypeError as exc:
-        # Some dynamic modules may not round-trip through the direct runtime import
-        # return path yet; fall back to the intrinsic-backed spec/loader flow.
-        if "import returned non-module payload" not in str(exc):
-            raise
-        _MOLT_EXCEPTION_CLEAR()
-        return _import_via_spec(resolved)
-    except ImportError:
-        _MOLT_EXCEPTION_CLEAR()
-        return _import_via_spec(resolved)
-    except BaseException as exc:  # noqa: BLE001
-        if type(exc).__name__ not in {"ImportError", "ModuleNotFoundError"}:
-            raise
-        _MOLT_EXCEPTION_CLEAR()
-        return _import_via_spec(resolved)
-
-
 def import_module(name: str, package: str | None = None):
-    resolved = _resolve_name(name, package)
-    if _is_known_absent(resolved):
-        if resolved == "multiprocessing.popen_spawn_win32":
-            raise ModuleNotFoundError("No module named 'msvcrt'")
-        raise ModuleNotFoundError(f"No module named '{resolved}'")
-    modules = _runtime_modules()
-    cached = modules.get(resolved)
-    if (
-        cached is not None
-        and not _is_empty_placeholder_module(resolved, cached)
-        and not _should_retry_empty_module(resolved, cached)
-    ):
-        return cached
-    if cached is not None:
-        modules.pop(resolved, None)
+    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
+    missing_name = _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME(resolved)
+    if missing_name is not None:
+        raise ModuleNotFoundError(f"No module named '{missing_name}'")
     alias = _MODULE_ALIASES.get(resolved)
     if alias is not None:
         target = import_module(alias)
         modules = _runtime_modules()
         modules[resolved] = target
         return target
-    mod = _module_import_with_fallback(resolved)
+    mod = _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]
@@ -228,7 +91,7 @@ def reload(module):
         if isinstance(locations, (list, tuple)):
             submodule_search_locations = list(locations)
         loader_override = module_loader
-        loader_cls = getattr(machinery, "MoltLoader", None)
+        loader_cls = getattr(machinery, "BuiltinImporter", None)
         if (
             loader_override is not None
             and loader_cls is not None

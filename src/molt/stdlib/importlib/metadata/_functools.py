@@ -1,12 +1,29 @@
-"""Intrinsic-first stdlib module stub for `importlib.metadata._functools`."""
+"""Intrinsic-backed helpers for `importlib.metadata` functional adapters."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+import functools as functools
+import types as types
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.metadata._functools` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.metadata._functools" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def method_cache(method):
+    cached = functools.lru_cache()(method)
+
+    def wrapper(self, *args, **kwargs):
+        return cached(self, *args, **kwargs)
+
+    wrapper.cache_clear = cached.cache_clear
+    return functools.update_wrapper(wrapper, method)
+
+
+def pass_none(func):
+    def wrapper(param, *args, **kwargs):
+        if param is None:
+            return None
+        return func(param, *args, **kwargs)
+
+    return functools.update_wrapper(wrapper, func)

@@ -1,12 +1,36 @@
-"""Intrinsic-first stdlib module stub for `importlib.metadata._itertools`."""
+"""Intrinsic-backed helpers for `importlib.metadata` iterable utilities."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+from itertools import filterfalse as filterfalse
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.metadata._itertools` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.metadata._itertools" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def always_iterable(obj, base_type=(str, bytes)):
+    if obj is None:
+        return iter(())
+    if base_type is not None and isinstance(obj, base_type):
+        return iter((obj,))
+    try:
+        return iter(obj)
+    except TypeError:
+        return iter((obj,))
+
+
+def unique_everseen(iterable, key=None):
+    if key is None:
+        seen = set()
+        for element in filterfalse(seen.__contains__, iterable):
+            seen.add(element)
+            yield element
+        return
+    seen_keys = set()
+    for element in iterable:
+        marker = key(element)
+        if marker in seen_keys:
+            continue
+        seen_keys.add(marker)
+        yield element
