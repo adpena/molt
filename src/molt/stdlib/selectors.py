@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import abc as _abc
+from abc import ABCMeta, abstractmethod
+from collections import namedtuple
+from collections.abc import Mapping
 import math
 import select
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -12,54 +14,36 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # provided by select.py and these intrinsics enforce that contract at import.
 _MOLT_SELECTOR_NEW = _require_intrinsic("molt_select_selector_new", globals())
 _MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll", globals())
+_MOLT_SELECT_FILENO = _require_intrinsic("molt_select_fileno", globals())
+_MOLT_SELECT_DEFAULT_SELECTOR_KIND = _require_intrinsic(
+    "molt_select_default_selector_kind", globals()
+)
+_MOLT_SELECT_BACKEND_AVAILABLE = _require_intrinsic(
+    "molt_select_backend_available", globals()
+)
 
 
 EVENT_READ = 1 << 0
 EVENT_WRITE = 1 << 1
 
+_SELECT_KIND_POLL = 0
+_SELECT_KIND_EPOLL = 1
+_SELECT_KIND_KQUEUE = 2
+_SELECT_KIND_DEVPOLL = 3
+
+
+def _backend_available(kind: int) -> bool:
+    return bool(_MOLT_SELECT_BACKEND_AVAILABLE(int(kind)))
+
 
 def _fileobj_to_fd(fileobj):
-    if isinstance(fileobj, int):
-        fd = fileobj
-    else:
-        try:
-            fileno = fileobj.fileno
-            fd = int(fileno() if callable(fileno) else fileno)
-        except (AttributeError, TypeError, ValueError):
-            raise ValueError(f"Invalid file object: {fileobj!r}") from None
-    if fd < 0:
-        raise ValueError(f"Invalid file descriptor: {fd}")
-    return fd
+    return int(_MOLT_SELECT_FILENO(fileobj))
 
 
-class SelectorKey:
-    __slots__ = ("fileobj", "fd", "events", "data")
-
-    def __init__(self, fileobj, fd, events, data) -> None:
-        self.fileobj = fileobj
-        self.fd = fd
-        self.events = events
-        self.data = data
-
-    def _replace(self, **kwargs):
-        return SelectorKey(
-            kwargs.get("fileobj", self.fileobj),
-            kwargs.get("fd", self.fd),
-            kwargs.get("events", self.events),
-            kwargs.get("data", self.data),
-        )
-
-    def __iter__(self):
-        return iter((self.fileobj, self.fd, self.events, self.data))
-
-    def __len__(self) -> int:
-        return 4
-
-    def __getitem__(self, idx):
-        return (self.fileobj, self.fd, self.events, self.data)[idx]
+SelectorKey = namedtuple("SelectorKey", ["fileobj", "fd", "events", "data"])
 
 
-class _SelectorMapping:
+class _SelectorMapping(Mapping):
     def __init__(self, selector: "_BaseSelectorImpl") -> None:
         self._selector = selector
 
@@ -81,18 +65,18 @@ class _SelectorMapping:
         return iter(self._selector._fd_to_key)
 
 
-class BaseSelector(_abc.ABC):
-    @_abc.abstractmethod
+class BaseSelector(metaclass=ABCMeta):
+    @abstractmethod
     def register(self, fileobj, events, data=None): ...
 
-    @_abc.abstractmethod
+    @abstractmethod
     def unregister(self, fileobj): ...
 
     def modify(self, fileobj, events, data=None):
         self.unregister(fileobj)
         return self.register(fileobj, events, data)
 
-    @_abc.abstractmethod
+    @abstractmethod
     def select(self, timeout=None): ...
 
     def close(self) -> None:
@@ -107,7 +91,7 @@ class BaseSelector(_abc.ABC):
         except KeyError:
             raise KeyError(f"{fileobj!r} is not registered") from None
 
-    @_abc.abstractmethod
+    @abstractmethod
     def get_map(self): ...
 
     def __enter__(self):
@@ -295,7 +279,7 @@ class _PollLikeSelector(_BaseSelectorImpl):
         super().close()
 
 
-if hasattr(select, "poll"):
+if _backend_available(_SELECT_KIND_POLL):
 
     class PollSelector(_PollLikeSelector):
         _selector_cls = select.poll
@@ -303,7 +287,7 @@ if hasattr(select, "poll"):
         _EVENT_WRITE = select.POLLOUT
 
 
-if hasattr(select, "epoll"):
+if _backend_available(_SELECT_KIND_EPOLL):
 
     class EpollSelector(_PollLikeSelector):
         _selector_cls = select.epoll
@@ -339,7 +323,7 @@ if hasattr(select, "epoll"):
             return ready
 
 
-if hasattr(select, "devpoll"):
+if _backend_available(_SELECT_KIND_DEVPOLL):
 
     class DevpollSelector(_PollLikeSelector):
         _selector_cls = select.devpoll
@@ -350,7 +334,7 @@ if hasattr(select, "devpoll"):
             return self._selector.fileno()
 
 
-if hasattr(select, "kqueue") and hasattr(select, "kevent"):
+if _backend_available(_SELECT_KIND_KQUEUE):
 
     class KqueueSelector(_BaseSelectorImpl):
         def __init__(self):
@@ -436,28 +420,29 @@ if hasattr(select, "kqueue") and hasattr(select, "kevent"):
             super().close()
 
 
-def _can_use(method: str) -> bool:
-    selector_ctor = getattr(select, method, None)
-    if selector_ctor is None:
-        return False
-    try:
-        selector_obj = selector_ctor()
-        if method == "poll":
-            selector_obj.poll(0)
-        else:
-            selector_obj.close()
-        return True
-    except OSError:
-        return False
+_default_kind = int(_MOLT_SELECT_DEFAULT_SELECTOR_KIND())
 
-
-if _can_use("kqueue"):
-    DefaultSelector = KqueueSelector
-elif _can_use("epoll"):
-    DefaultSelector = EpollSelector
-elif _can_use("devpoll"):
-    DefaultSelector = DevpollSelector
-elif _can_use("poll"):
-    DefaultSelector = PollSelector
+if _default_kind == _SELECT_KIND_KQUEUE and "KqueueSelector" in globals():
+    _default_selector_cls = KqueueSelector
+elif _default_kind == _SELECT_KIND_EPOLL and "EpollSelector" in globals():
+    _default_selector_cls = EpollSelector
+elif _default_kind == _SELECT_KIND_DEVPOLL and "DevpollSelector" in globals():
+    _default_selector_cls = DevpollSelector
+elif _default_kind == _SELECT_KIND_POLL and "PollSelector" in globals():
+    _default_selector_cls = PollSelector
 else:
-    DefaultSelector = SelectSelector
+    _default_selector_cls = SelectSelector
+
+if _default_selector_cls is SelectSelector:
+    for _selector_name in (
+        "KqueueSelector",
+        "EpollSelector",
+        "DevpollSelector",
+        "PollSelector",
+    ):
+        _selector_candidate = globals().get(_selector_name)
+        if _selector_candidate is not None:
+            _default_selector_cls = _selector_candidate
+            break
+
+DefaultSelector = _default_selector_cls

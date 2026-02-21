@@ -2531,7 +2531,7 @@ fn statistics_mode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> {
         raise_exception::<()>(_py, "ValueError", "no mode for empty data");
         return None;
     }
-    let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
+    let counts_bits = crate::molt_dict_new(0);
     let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut best_bits = values[0];
     let mut best_count: i64 = 0;
@@ -2589,7 +2589,7 @@ fn statistics_multimode_value(_py: &PyToken<'_>, data_bits: u64) -> Option<u64> 
         }
         return Some(MoltObject::from_ptr(list_ptr).bits());
     }
-    let counts_bits = crate::molt_dict_new(MoltObject::from_int(0).bits());
+    let counts_bits = crate::molt_dict_new(0);
     let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut first_seen: Vec<u64> = Vec::new();
     let mut max_count: i64 = 0;

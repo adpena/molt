@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-class MoltLoader:
+class _MoltLoader:
     def create_module(self, _spec: "ModuleSpec"):
         return None
 
@@ -22,11 +22,26 @@ class MoltLoader:
             f"import returned non-module payload: {type(imported).__name__}"
         )
 
+    def load_module(self, fullname: str):
+        _ensure_intrinsics()
+        return _MOLT_MODULE_IMPORT(fullname)
+
     def __repr__(self) -> str:
-        return "<MoltLoader>"
+        return "<_MoltLoader>"
 
 
-MOLT_LOADER = MoltLoader()
+class BuiltinImporter(_MoltLoader):
+    def __repr__(self) -> str:
+        return "<BuiltinImporter>"
+
+
+class FrozenImporter(_MoltLoader):
+    def __repr__(self) -> str:
+        return "<FrozenImporter>"
+
+
+_LoaderBasics = _MoltLoader
+_MOLT_LOADER = BuiltinImporter()
 
 
 class ModuleSpec:
@@ -63,7 +78,45 @@ class ModuleSpec:
         )
 
 
-class SourceFileLoader:
+SOURCE_SUFFIXES = [".py"]
+BYTECODE_SUFFIXES = [".pyc"]
+DEBUG_BYTECODE_SUFFIXES = [".pyc"]
+OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
+EXTENSION_SUFFIXES: list[str] = []
+
+
+def all_suffixes() -> list[str]:
+    return SOURCE_SUFFIXES + BYTECODE_SUFFIXES + EXTENSION_SUFFIXES
+
+
+class _FileLoader:
+    def __init__(self, fullname: str, path: str) -> None:
+        self.name = fullname
+        self.path = str(path)
+
+    def get_filename(self, _fullname: str | None = None) -> str:
+        return self.path
+
+    def get_data(self, path: str) -> bytes:
+        _ensure_intrinsics()
+        payload = _MOLT_IMPORTLIB_READ_FILE(path)
+        if not isinstance(payload, bytes):
+            raise RuntimeError("invalid importlib read payload: bytes expected")
+        return payload
+
+    def create_module(self, _spec: ModuleSpec):
+        return None
+
+
+class _SourceLoader(_FileLoader):
+    pass
+
+
+FileLoader = _FileLoader
+SourceLoader = _SourceLoader
+
+
+class SourceFileLoader(_SourceLoader):
     def __init__(self, fullname: str, path: str) -> None:
         self.name = fullname
         self.path = str(path)
@@ -113,6 +166,7 @@ class SourceFileLoader:
             raise RuntimeError("invalid importlib source exec payload: package_root")
         _set_module_state(
             module,
+            module_name=module_name,
             loader=self,
             origin=path,
             is_package=is_package,
@@ -130,7 +184,7 @@ class SourceFileLoader:
         )
 
 
-class ZipSourceLoader:
+class _ZipSourceLoader:
     def __init__(self, fullname: str, archive_path: str, inner_path: str) -> None:
         self.name = fullname
         self.archive_path = str(archive_path)
@@ -189,6 +243,7 @@ class ZipSourceLoader:
             )
         _set_module_state(
             module,
+            module_name=module_name,
             loader=self,
             origin=origin,
             is_package=is_package,
@@ -206,7 +261,7 @@ class ZipSourceLoader:
         )
 
 
-class ExtensionFileLoader:
+class ExtensionFileLoader(_FileLoader):
     def __init__(self, fullname: str, path: str) -> None:
         self.name = fullname
         self.path = str(path)
@@ -244,6 +299,7 @@ class ExtensionFileLoader:
             )
         _set_module_state(
             module,
+            module_name=module_name,
             loader=self,
             origin=self.path,
             is_package=bool(is_package),
@@ -265,7 +321,7 @@ class ExtensionFileLoader:
         )
 
 
-class SourcelessFileLoader:
+class SourcelessFileLoader(_FileLoader):
     def __init__(self, fullname: str, path: str) -> None:
         self.name = fullname
         self.path = str(path)
@@ -316,6 +372,7 @@ class SourcelessFileLoader:
             )
         _set_module_state(
             module,
+            module_name=module_name,
             loader=self,
             origin=self.path,
             is_package=bool(is_package),
@@ -357,106 +414,81 @@ class _MoltResourceReader:
 
     def resource_path(self, resource: str) -> str:
         name = _validate_resource_name(resource)
-        for path in self._resource_candidates(name):
-            payload = _resource_path_payload(path)
-            if payload["is_file"] and not payload["is_archive_member"]:
-                return path
-        raise FileNotFoundError(name)
+        path = _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS(
+            self._roots, name
+        )
+        if path is None:
+            raise FileNotFoundError(name)
+        if not isinstance(path, str):
+            raise RuntimeError("invalid importlib resource path payload: str expected")
+        return path
 
     def open_resource(self, resource: str):
         name = _validate_resource_name(resource)
-        for path in self._resource_candidates(name):
-            payload = _resource_path_payload(path)
-            if not payload["is_file"]:
-                continue
-            data = _MOLT_IMPORTLIB_READ_FILE(path)
-            if not isinstance(data, bytes):
-                raise RuntimeError("invalid importlib read payload: bytes expected")
-            import io as _io
+        data = _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS(
+            self._roots, name
+        )
+        if not isinstance(data, bytes):
+            raise RuntimeError(
+                "invalid importlib open resource payload: bytes expected"
+            )
+        import io as _io
 
-            return _io.BytesIO(data)
-        raise FileNotFoundError(name)
+        return _io.BytesIO(data)
 
     def is_resource(self, resource: str) -> bool:
         name = _validate_resource_name(resource)
-        for path in self._resource_candidates(name):
-            payload = _resource_path_payload(path)
-            if payload["is_file"]:
-                return True
-        return False
+        value = _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS(
+            self._roots, name
+        )
+        if not isinstance(value, bool):
+            raise RuntimeError("invalid importlib is_resource payload: bool expected")
+        return value
 
     def contents(self) -> list[str]:
-        entries: list[str] = []
-        for root in self._roots:
-            payload = _resource_path_payload(root)
-            values = payload["entries"]
-            if not isinstance(values, list):
-                continue
-            for value in values:
-                if value not in entries:
-                    entries.append(value)
-        entries.sort()
-        return entries
-
-    def _resource_candidates(self, resource: str) -> list[str]:
-        import os as _os
-
-        out: list[str] = []
-        for root in self._roots:
-            out.append(_os.path.join(root, resource))
-        return out
+        values = _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS(self._roots)
+        if not isinstance(values, list) or not all(
+            isinstance(entry, str) for entry in values
+        ):
+            raise RuntimeError("invalid importlib resource contents payload: list[str]")
+        return values
 
 
 def _set_module_state(
     module,
     *,
+    module_name: str,
     loader: object,
     origin: str,
     is_package: bool,
     module_package: str,
     package_root: str | None,
 ) -> None:
-    spec = getattr(module, "__spec__", None)
-    module_name = _coerce_module_name(module, loader, spec)
-    if spec is None:
-        spec = ModuleSpec(
-            module_name,
-            loader=loader,
-            origin=origin,
-            is_package=is_package,
+    _ensure_intrinsics()
+    result = _MOLT_IMPORTLIB_SET_MODULE_STATE(
+        module,
+        module_name,
+        loader,
+        origin,
+        is_package,
+        module_package,
+        package_root,
+        ModuleSpec,
+    )
+    if result is not None:
+        raise RuntimeError(
+            "invalid importlib set module state intrinsic result: expected None"
         )
-        module.__spec__ = spec
-    else:
-        if not isinstance(getattr(spec, "name", None), str):
-            try:
-                spec.name = module_name
-            except Exception as exc:
-                raise RuntimeError("invalid module spec name state") from exc
-        spec.loader = loader
-        spec.origin = origin
-        spec.has_location = True
-    module.__loader__ = loader
-    module.__file__ = origin
-    module.__cached__ = None
-    module.__package__ = module_package
-    if is_package:
-        if not isinstance(package_root, str):
-            raise RuntimeError("invalid importlib package root for package module")
-        module.__path__ = [package_root]
-        if getattr(spec, "submodule_search_locations", None) is None:
-            spec.submodule_search_locations = [package_root]
-    import sys as _sys
-
-    _sys.modules[module_name] = module
 
 
 def _is_archive_member_path(path: str) -> bool:
-    normalized = _normalize_path(path)
-    return ".zip/" in normalized
-
-
-def _is_str_list(value: object) -> bool:
-    return isinstance(value, list) and all(isinstance(entry, str) for entry in value)
+    _ensure_intrinsics()
+    value = _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER(path)
+    if not isinstance(value, bool):
+        raise RuntimeError(
+            "invalid importlib archive member path payload: bool expected"
+        )
+    return value
 
 
 def _stabilize_module_state_after_exec(
@@ -468,33 +500,19 @@ def _stabilize_module_state_after_exec(
     module_package: str,
     package_root: str | None,
 ) -> None:
-    spec = getattr(module, "__spec__", None)
-    if spec is not None:
-        spec.loader = loader
-        spec.origin = origin
-        spec.has_location = True
-    module.__loader__ = loader
-    module.__file__ = origin
-    module.__cached__ = None
-    module.__package__ = module_package
-    if is_package:
-        if not isinstance(package_root, str):
-            raise RuntimeError("invalid importlib package root for package module")
-        module_path = getattr(module, "__path__", None)
-        if not _is_str_list(module_path):
-            module_path = [package_root]
-            module.__path__ = module_path
-        if spec is not None:
-            locations = getattr(spec, "submodule_search_locations", None)
-            if not _is_str_list(locations):
-                spec.submodule_search_locations = list(module_path)
-    else:
-        module_path = getattr(module, "__path__", None)
-        if type(module_path) is object:
-            try:
-                del module.__path__
-            except Exception:
-                pass
+    _ensure_intrinsics()
+    result = _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE(
+        module,
+        loader,
+        origin,
+        is_package,
+        module_package,
+        package_root,
+    )
+    if result is not None:
+        raise RuntimeError(
+            "invalid importlib stabilize module state intrinsic result: expected None"
+        )
 
 
 class PathFinder:
@@ -505,32 +523,90 @@ class PathFinder:
         path: object | None = None,
         target: object | None = None,
     ):
-        del cls
-        import importlib.util as _util
+        del cls, target
+        _ensure_intrinsics()
         import sys as _sys
 
-        if path is None:
-            search_paths = tuple(_sys.path)
-            package_context = False
-        else:
-            search_paths = _util._coerce_search_paths(  # noqa: SLF001
-                path,
-                "invalid parent package search path",
-            )
-            package_context = True
-        # Provide a non-empty meta-path sentinel so the intrinsic path-hook
-        # resolution lane remains active without recursively invoking PathFinder.
-        meta_path_sentinel = (None,)
-        path_hooks = getattr(_sys, "path_hooks", ())
-        path_importer_cache = getattr(_sys, "path_importer_cache", None)
-        return _util._find_spec_in_path(  # noqa: SLF001
-            fullname,
-            list(search_paths),
-            meta_path_sentinel,
-            path_hooks,
-            path_importer_cache,
-            package_context,
+        machinery_module = _sys.modules.get(__name__)
+        if machinery_module is None:
+            raise RuntimeError("importlib.machinery module unavailable")
+        return _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC(fullname, path, machinery_module)
+
+
+class FileFinder:
+    def __init__(self, path: str, *loader_details) -> None:
+        self.path = str(path)
+        self._loader_details = tuple(loader_details)
+
+    def __repr__(self) -> str:
+        return f"<MoltFileFinder path={self.path!r}>"
+
+    @classmethod
+    def path_hook(cls, *loader_details):
+        def _path_hook(path: str):
+            if not isinstance(path, str):
+                raise ImportError("only str paths are supported")
+            return cls(path, *loader_details)
+
+        return _path_hook
+
+    def find_spec(self, fullname: str, target: object | None = None):
+        del target
+        _ensure_intrinsics()
+        import sys as _sys
+
+        machinery_module = _sys.modules.get(__name__)
+        if machinery_module is None:
+            raise RuntimeError("importlib.machinery module unavailable")
+        return _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC(
+            fullname, self.path, machinery_module
         )
+
+    def invalidate_caches(self) -> None:
+        return None
+
+
+class NamespaceLoader:
+    def __init__(self, name: str, path, path_finder=None) -> None:
+        del path_finder
+        self.name = str(name)
+        if isinstance(path, str):
+            values = [path] if path else []
+        elif isinstance(path, (list, tuple)):
+            values = [entry for entry in path if isinstance(entry, str) and entry]
+        else:
+            values = []
+        self.path = list(values)
+
+    def __repr__(self) -> str:
+        return f"<MoltNamespaceLoader name={self.name!r}>"
+
+    def create_module(self, _spec: ModuleSpec):
+        return None
+
+    def exec_module(self, _module) -> None:
+        return None
+
+    def is_package(self, _fullname: str) -> bool:
+        return True
+
+    def get_resource_reader(self, fullname: str):
+        _ensure_intrinsics()
+        if fullname != self.name:
+            return None
+        return _MoltResourceReader(list(self.path))
+
+
+class WindowsRegistryFinder:
+    @classmethod
+    def find_spec(
+        cls,
+        fullname: str,
+        path: object | None = None,
+        target: object | None = None,
+    ):
+        del cls, fullname, path, target
+        return None
 
 
 def _exec_restricted(module, source: str, filename: str) -> None:
@@ -601,61 +677,24 @@ def _sourceless_loader_payload(
     return payload
 
 
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/")
-
-
 def _package_root_from_origin(path: str) -> str | None:
-    normalized = _normalize_path(path)
-    if normalized.endswith("/__init__.py") or normalized.endswith("/__init__.pyc"):
-        return normalized.rsplit("/", 1)[0]
-    return None
+    _ensure_intrinsics()
+    value = _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN(path)
+    if value is not None and not isinstance(value, str):
+        raise RuntimeError(
+            "invalid importlib package root payload: str | None expected"
+        )
+    return value
 
 
 def _validate_resource_name(resource: str) -> str:
-    import os as _os
-
-    if not isinstance(resource, str):
-        raise TypeError("resource name must be str")
-    if not resource or resource in {".", ".."}:
-        raise ValueError(f"{resource!r} must be only a file name")
-    for sep in ("/", "\\", _os.sep, _os.altsep):
-        if sep and sep in resource:
-            raise ValueError(f"{resource!r} must be only a file name")
-    return resource
-
-
-def _resource_path_payload(path: str) -> dict[str, object]:
     _ensure_intrinsics()
-    payload = _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD(path)
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib resources path payload: dict expected")
-    exists = payload.get("exists")
-    is_file = payload.get("is_file")
-    is_dir = payload.get("is_dir")
-    entries = payload.get("entries")
-    is_archive_member = payload.get("is_archive_member")
-    if not isinstance(exists, bool):
-        raise RuntimeError("invalid importlib resources path payload: exists")
-    if not isinstance(is_file, bool):
-        raise RuntimeError("invalid importlib resources path payload: is_file")
-    if not isinstance(is_dir, bool):
-        raise RuntimeError("invalid importlib resources path payload: is_dir")
-    if not isinstance(entries, list) or not all(
-        isinstance(entry, str) for entry in entries
-    ):
-        raise RuntimeError("invalid importlib resources path payload: entries")
-    if not isinstance(is_archive_member, bool):
+    value = _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME(resource)
+    if not isinstance(value, str):
         raise RuntimeError(
-            "invalid importlib resources path payload: is_archive_member"
+            "invalid importlib validate resource name payload: str expected"
         )
-    return {
-        "exists": exists,
-        "is_file": is_file,
-        "is_dir": is_dir,
-        "entries": list(entries),
-        "is_archive_member": is_archive_member,
-    }
+    return value
 
 
 def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
@@ -669,38 +708,34 @@ def _coerce_module_name(
     loader: object | None,
     spec: object | None = None,
 ) -> str:
-    module_name = getattr(module, "__name__", None)
-    if isinstance(module_name, str):
-        return module_name
-    module_spec = spec if spec is not None else getattr(module, "__spec__", None)
-    spec_name = getattr(module_spec, "name", None)
-    if isinstance(spec_name, str):
-        _set_module_name_best_effort(module, spec_name)
-        return spec_name
-    loader_name = getattr(loader, "name", None)
-    if isinstance(loader_name, str):
-        _set_module_name_best_effort(module, loader_name)
-        return loader_name
-    raise TypeError("module name must be str")
-
-
-def _set_module_name_best_effort(module, name: str) -> None:
-    try:
-        module.__name__ = name
-    except Exception:
-        return
+    _ensure_intrinsics()
+    value = _MOLT_IMPORTLIB_COERCE_MODULE_NAME(module, loader, spec)
+    if not isinstance(value, str):
+        raise RuntimeError("invalid importlib module name payload: str expected")
+    return value
 
 
 _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = None
 _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = None
 _MOLT_IMPORTLIB_READ_FILE = None
-_MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD = None
+_MOLT_IMPORTLIB_COERCE_MODULE_NAME = None
+_MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = None
+_MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = None
 _MOLT_IMPORTLIB_EXEC_EXTENSION = None
 _MOLT_IMPORTLIB_EXEC_SOURCELESS = None
 _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD = None
 _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD = None
 _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = None
+_MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = None
+_MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = None
+_MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = None
+_MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = None
+_MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER = None
+_MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = None
+_MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = None
+_MOLT_IMPORTLIB_SET_MODULE_STATE = None
+_MOLT_IMPORTLIB_STABILIZE_MODULE_STATE = None
 _MOLT_EXCEPTION_CLEAR = None
 _MOLT_MODULE_IMPORT = None
 
@@ -709,13 +744,24 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD
     global _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD
     global _MOLT_IMPORTLIB_READ_FILE
-    global _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD
+    global _MOLT_IMPORTLIB_COERCE_MODULE_NAME
+    global _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC
+    global _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE
     global _MOLT_IMPORTLIB_EXEC_EXTENSION
     global _MOLT_IMPORTLIB_EXEC_SOURCELESS
     global _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD
     global _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD
     global _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE
+    global _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS
+    global _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS
+    global _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS
+    global _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS
+    global _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER
+    global _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN
+    global _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME
+    global _MOLT_IMPORTLIB_SET_MODULE_STATE
+    global _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE
     global _MOLT_EXCEPTION_CLEAR
     global _MOLT_MODULE_IMPORT
     if _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD is not None:
@@ -730,8 +776,14 @@ def _ensure_intrinsics() -> None:
     _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic(
         "molt_importlib_read_file", globals()
     )
-    _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD = _require_intrinsic(
-        "molt_importlib_resources_path_payload", globals()
+    _MOLT_IMPORTLIB_COERCE_MODULE_NAME = _require_intrinsic(
+        "molt_importlib_coerce_module_name", globals()
+    )
+    _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = _require_intrinsic(
+        "molt_importlib_pathfinder_find_spec", globals()
+    )
+    _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
+        "molt_importlib_filefinder_find_spec", globals()
     )
     _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
         "molt_importlib_exec_restricted_source", globals()
@@ -751,18 +803,54 @@ def _ensure_intrinsics() -> None:
     _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = _require_intrinsic(
         "molt_importlib_module_spec_is_package", globals()
     )
+    _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = _require_intrinsic(
+        "molt_importlib_resources_reader_resource_path_from_roots", globals()
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = (
+        _require_intrinsic(
+            "molt_importlib_resources_reader_open_resource_bytes_from_roots", globals()
+        )
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = _require_intrinsic(
+        "molt_importlib_resources_reader_is_resource_from_roots", globals()
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = _require_intrinsic(
+        "molt_importlib_resources_reader_contents_from_roots", globals()
+    )
+    _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER = _require_intrinsic(
+        "molt_importlib_path_is_archive_member", globals()
+    )
+    _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = _require_intrinsic(
+        "molt_importlib_package_root_from_origin", globals()
+    )
+    _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = _require_intrinsic(
+        "molt_importlib_validate_resource_name", globals()
+    )
+    _MOLT_IMPORTLIB_SET_MODULE_STATE = _require_intrinsic(
+        "molt_importlib_set_module_state", globals()
+    )
+    _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE = _require_intrinsic(
+        "molt_importlib_stabilize_module_state", globals()
+    )
     _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
     _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
 
 
 __all__ = [
+    "BYTECODE_SUFFIXES",
+    "BuiltinImporter",
+    "DEBUG_BYTECODE_SUFFIXES",
+    "EXTENSION_SUFFIXES",
     "ExtensionFileLoader",
+    "FileFinder",
+    "FrozenImporter",
     "ModuleSpec",
-    "MOLT_LOADER",
-    "MoltLoader",
+    "NamespaceLoader",
+    "OPTIMIZED_BYTECODE_SUFFIXES",
     "PathFinder",
-    "SourcelessFileLoader",
+    "SOURCE_SUFFIXES",
     "SourceFileLoader",
-    "ZipSourceLoader",
-    "_exec_restricted",
+    "SourcelessFileLoader",
+    "WindowsRegistryFinder",
+    "all_suffixes",
 ]

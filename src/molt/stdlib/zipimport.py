@@ -5,7 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 from importlib.machinery import ModuleSpec as _ModuleSpec
-from importlib.machinery import ZipSourceLoader as _ZipSourceLoader
+from importlib.machinery import _ZipSourceLoader as _ZipSourceLoader
 from types import ModuleType as _ModuleType
 from typing import Any as _Any
 import marshal as _marshal

@@ -7,6 +7,7 @@ from abc import ABCMeta as _ABCMeta
 from typing import Any as _Any
 
 import builtins as _builtins
+import fractions as _fractions
 import math
 import numbers
 import random
@@ -29,12 +30,14 @@ from math import sqrt as _sqrt_impl
 from math import tau
 from operator import itemgetter as _itemgetter_impl
 
-try:
-    from fractions import Fraction
-except Exception:  # noqa: BLE001
+_FRACTION_TYPE = getattr(_fractions, "Fraction", None)
+if _FRACTION_TYPE is None:
 
     class Fraction(metaclass=_ABCMeta):
         pass
+
+else:
+    Fraction = _FRACTION_TYPE
 
 
 class _BuiltinFunctionOrMethod:
@@ -147,26 +150,37 @@ class StatisticsError(ValueError):
     pass
 
 
-class LinearRegression(tuple):
-    __slots__ = ()
+class LinearRegression:
+    __slots__ = ("slope", "intercept")
     _fields = ("slope", "intercept")
 
-    def __new__(cls, slope: float, intercept: float):
-        return tuple.__new__(cls, (float(slope), float(intercept)))
+    def __init__(self, slope: _Any, intercept: _Any):
+        self.slope = float(slope)
+        self.intercept = float(intercept)
 
-    @property
-    def slope(self) -> float:
-        return self[0]
+    def __iter__(self):
+        yield self.slope
+        yield self.intercept
 
-    @property
-    def intercept(self) -> float:
-        return self[1]
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int) -> float:
+        if index == 0:
+            return self.slope
+        if index == 1:
+            return self.intercept
+        raise IndexError(index)
+
+    def __eq__(self, other: _Any) -> bool:
+        if isinstance(other, LinearRegression):
+            return (self.slope, self.intercept) == (other.slope, other.intercept)
+        if isinstance(other, tuple):
+            return (self.slope, self.intercept) == other
+        return False
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}(slope={self.slope!r}, "
-            f"intercept={self.intercept!r})"
-        )
+        return f"LinearRegression(slope={self.slope!r}, intercept={self.intercept!r})"
 
 
 class NormalDist:

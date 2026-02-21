@@ -1,12 +1,140 @@
-"""Intrinsic-first stdlib module stub for `logging.config`."""
+"""Intrinsic-backed config helpers for the stdlib ``logging`` package."""
+
+from __future__ import annotations
+
+from typing import Any as _Any
+
+import errno
+import functools
+import io
+import logging
+import os
+import queue
+import re
+import struct
+import threading
+import traceback
+import socketserver as _socketserver
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+_MOLT_LOGGING_CONFIG_DICT = _require_intrinsic("molt_logging_config_dict", globals())
+_MOLT_LOGGING_CONFIG_VALID_IDENT = _require_intrinsic(
+    "molt_logging_config_valid_ident", globals()
+)
+_MOLT_LOGGING_CONFIG_FILE_CONFIG = _require_intrinsic(
+    "molt_logging_config_file_config", globals()
+)
+_MOLT_LOGGING_CONFIG_LISTEN = _require_intrinsic(
+    "molt_logging_config_listen", globals()
+)
+_MOLT_LOGGING_CONFIG_STOP_LISTENING = _require_intrinsic(
+    "molt_logging_config_stop_listening", globals()
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `logging.config` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "logging.config" is not fully lowered yet; only an intrinsic-first stub is available.'
+DEFAULT_LOGGING_CONFIG_PORT = 9030
+RESET_ERROR = errno.ECONNRESET
+IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.I)
+StreamRequestHandler = getattr(
+    _socketserver, "StreamRequestHandler", type("StreamRequestHandler", (), {})
+)
+ThreadingTCPServer = getattr(
+    _socketserver, "ThreadingTCPServer", type("ThreadingTCPServer", (), {})
+)
+
+__all__ = [
+    "BaseConfigurator",
+    "ConvertingDict",
+    "ConvertingList",
+    "ConvertingMixin",
+    "ConvertingTuple",
+    "DEFAULT_LOGGING_CONFIG_PORT",
+    "DictConfigurator",
+    "IDENTIFIER",
+    "RESET_ERROR",
+    "StreamRequestHandler",
+    "ThreadingTCPServer",
+    "dictConfig",
+    "dictConfigClass",
+    "errno",
+    "fileConfig",
+    "functools",
+    "io",
+    "listen",
+    "logging",
+    "os",
+    "queue",
+    "re",
+    "stopListening",
+    "struct",
+    "threading",
+    "traceback",
+    "valid_ident",
+]
+
+
+class BaseConfigurator:
+    def __init__(self, config: dict[str, _Any]):
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dict")
+        self.config = config
+
+    def configure(self) -> _Any:
+        raise NotImplementedError
+
+
+class DictConfigurator(BaseConfigurator):
+    def configure(self) -> None:
+        _MOLT_LOGGING_CONFIG_DICT(self.config)
+
+
+class ConvertingMixin:
+    pass
+
+
+class ConvertingDict(dict, ConvertingMixin):
+    pass
+
+
+class ConvertingList(list, ConvertingMixin):
+    pass
+
+
+class ConvertingTuple(tuple, ConvertingMixin):
+    pass
+
+
+dictConfigClass = DictConfigurator
+
+
+def dictConfig(config: dict[str, _Any]) -> None:
+    dictConfigClass(config).configure()
+
+
+def valid_ident(s: str) -> bool:
+    return bool(_MOLT_LOGGING_CONFIG_VALID_IDENT(s))
+
+
+def fileConfig(
+    fname: _Any,
+    defaults: dict[str, _Any] | None = None,
+    disable_existing_loggers: bool = True,
+    encoding: str | None = None,
+) -> None:
+    _MOLT_LOGGING_CONFIG_FILE_CONFIG(
+        fname, defaults, bool(disable_existing_loggers), encoding
     )
+
+
+def listen(
+    port: int = DEFAULT_LOGGING_CONFIG_PORT,
+    verify: _Any | None = None,
+) -> None:
+    _MOLT_LOGGING_CONFIG_LISTEN(int(port), verify)
+
+
+def stopListening() -> None:
+    _MOLT_LOGGING_CONFIG_STOP_LISTENING()
+    return None

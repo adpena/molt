@@ -1,12 +1,37 @@
-"""Intrinsic-first stdlib module stub for `importlib.metadata._text`."""
+"""Intrinsic-backed helpers for `importlib.metadata` text handling."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+from ._functools import method_cache
+import re as re
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.metadata._text` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.metadata._text" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+class FoldedCase(str):
+    @staticmethod
+    def _coerce(other):
+        if isinstance(other, str):
+            return other
+        return NotImplemented
+
+    @method_cache
+    def lower(self):
+        return super().lower()
+
+    def __hash__(self):
+        return hash(self.lower())
+
+    def __eq__(self, other):
+        other_text = self._coerce(other)
+        if other_text is NotImplemented:
+            return NotImplemented
+        return self.lower() == str(other_text).lower()
+
+    def __lt__(self, other):
+        other_text = self._coerce(other)
+        if other_text is NotImplemented:
+            return NotImplemented
+        return self.lower() < str(other_text).lower()

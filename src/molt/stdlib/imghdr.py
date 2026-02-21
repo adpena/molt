@@ -1,20 +1,11 @@
 """Image type detection helpers (intrinsic-backed)."""
 
 from os import PathLike
-import warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from os import PathLike
-import warnings
 
 _MOLT_IMGHDR_TEST = _require_intrinsic("molt_imghdr_test", globals())
 _MOLT_IMGHDR_WHAT = _require_intrinsic("molt_imghdr_what", globals())
-
-warnings.warn(
-    "'imghdr' is deprecated and slated for removal in Python 3.13",
-    DeprecationWarning,
-    stacklevel=2,
-)
 
 
 tests: list = []
@@ -75,12 +66,7 @@ def test_rgb(h, f):
 def test_pbm(h, f):
     _ = f
     if isinstance(h, str):
-        if (
-            len(h) >= 3
-            and h[0] == ord(b"P")
-            and h[1] in b"14"
-            and h[2] in b" \t\n\r"
-        ):
+        if len(h) >= 3 and h[0] == ord(b"P") and h[1] in b"14" and h[2] in b" \t\n\r":
             return "pbm"
         return None
     if _MOLT_IMGHDR_TEST("pbm", h):
@@ -90,12 +76,7 @@ def test_pbm(h, f):
 def test_pgm(h, f):
     _ = f
     if isinstance(h, str):
-        if (
-            len(h) >= 3
-            and h[0] == ord(b"P")
-            and h[1] in b"25"
-            and h[2] in b" \t\n\r"
-        ):
+        if len(h) >= 3 and h[0] == ord(b"P") and h[1] in b"25" and h[2] in b" \t\n\r":
             return "pgm"
         return None
     if _MOLT_IMGHDR_TEST("pgm", h):
@@ -105,12 +86,7 @@ def test_pgm(h, f):
 def test_ppm(h, f):
     _ = f
     if isinstance(h, str):
-        if (
-            len(h) >= 3
-            and h[0] == ord(b"P")
-            and h[1] in b"36"
-            and h[2] in b" \t\n\r"
-        ):
+        if len(h) >= 3 and h[0] == ord(b"P") and h[1] in b"36" and h[2] in b" \t\n\r":
             return "ppm"
         return None
     if _MOLT_IMGHDR_TEST("ppm", h):
@@ -197,7 +173,9 @@ def what(file, h=None):
                     h = f.read(32)
                 except AttributeError:
                     return None
-        if tests[: len(_BUILTIN_TESTS)] == list(_BUILTIN_TESTS) and not isinstance(h, str):
+        if tests[: len(_BUILTIN_TESTS)] == list(_BUILTIN_TESTS) and not isinstance(
+            h, str
+        ):
             result = _MOLT_IMGHDR_WHAT(h)
             if result is not None:
                 return result

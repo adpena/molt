@@ -1,12 +1,14 @@
-"""Intrinsic-first stdlib module stub for `importlib.simple`."""
+"""Compatibility shim for importlib.resources.simple (Python 3.10 surface)."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_stdlib_probe", globals())
 
+from .resources.simple import (
+    ResourceContainer,
+    ResourceHandle,
+    SimpleReader,
+    TraversableReader,
+)
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.simple` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.simple" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = ["SimpleReader", "ResourceHandle", "ResourceContainer", "TraversableReader"]

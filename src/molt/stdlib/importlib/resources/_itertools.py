@@ -1,12 +1,12 @@
-"""Intrinsic-first stdlib module stub for `importlib.resources._itertools`."""
+"""Helpers for importlib.resources."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic(
+    "molt_importlib_resources_only", globals()
+)
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.resources._itertools` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.resources._itertools" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def only(iterable, default=None, too_long=None):
+    return _MOLT_IMPORTLIB_RESOURCES_ONLY(iterable, default, too_long)

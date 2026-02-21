@@ -7,17 +7,30 @@ import importlib.util as _util
 import sys
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_IMPORTLIB_FROZEN_PAYLOAD = _require_intrinsic(
+    "molt_importlib_frozen_payload", globals()
+)
 
 
-def _fallback_type(name: str):
-    return type(name, (), {})
+def _load_payload() -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_FROZEN_PAYLOAD(_machinery, _util)
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib frozen payload: dict expected")
+    return payload
 
 
-BuiltinImporter = getattr(_machinery, "BuiltinImporter", _fallback_type("BuiltinImporter"))
-FrozenImporter = getattr(_machinery, "FrozenImporter", _fallback_type("FrozenImporter"))
-ModuleSpec = getattr(_machinery, "ModuleSpec", _fallback_type("ModuleSpec"))
-module_from_spec = getattr(_util, "module_from_spec")
-spec_from_loader = getattr(_util, "spec_from_loader")
+def _payload_get(payload: dict[str, object], name: str):
+    if name not in payload:
+        raise RuntimeError(f"invalid importlib frozen payload: missing {name}")
+    return payload[name]
+
+
+_PAYLOAD = _load_payload()
+BuiltinImporter = _payload_get(_PAYLOAD, "BuiltinImporter")
+FrozenImporter = _payload_get(_PAYLOAD, "FrozenImporter")
+ModuleSpec = _payload_get(_PAYLOAD, "ModuleSpec")
+module_from_spec = _payload_get(_PAYLOAD, "module_from_spec")
+spec_from_loader = _payload_get(_PAYLOAD, "spec_from_loader")
 
 __all__ = [
     "BuiltinImporter",

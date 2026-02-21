@@ -9,9 +9,9 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `873`
-- `intrinsic-backed`: `0`
-- `intrinsic-partial`: `873`
+- Total audited modules: `875`
+- `intrinsic-backed`: `8`
+- `intrinsic-partial`: `867`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -61,6 +61,14 @@
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
+- `_opcode`
+- `_opcode_metadata`
+- `email.quoprimime`
+- `encodings.quopri_codec`
+- `imghdr`
+- `opcode`
+- `quopri`
+- `this`
 
 ### Intrinsic-backed modules (partial lowering pending)
 - `__future__`
@@ -119,8 +127,6 @@
 - `_msi`
 - `_multibytecodec`
 - `_multiprocessing`
-- `_opcode`
-- `_opcode_metadata`
 - `_operator`
 - `_osx_support`
 - `_overlapped`
@@ -338,7 +344,6 @@
 - `email.mime.text`
 - `email.parser`
 - `email.policy`
-- `email.quoprimime`
 - `email.utils`
 - `encodings`
 - `encodings._win_cp_codecs`
@@ -443,7 +448,6 @@
 - `encodings.palmos`
 - `encodings.ptcp154`
 - `encodings.punycode`
-- `encodings.quopri_codec`
 - `encodings.raw_unicode_escape`
 - `encodings.rot_13`
 - `encodings.shift_jis`
@@ -557,7 +561,6 @@
 - `idlelib.zoomheight`
 - `idlelib.zzdummy`
 - `imaplib`
-- `imghdr`
 - `importlib`
 - `importlib._abc`
 - `importlib._bootstrap`
@@ -685,6 +688,8 @@
 - `msilib`
 - `msvcrt`
 - `multiprocessing`
+- `multiprocessing._api_surface`
+- `multiprocessing._core`
 - `multiprocessing.connection`
 - `multiprocessing.context`
 - `multiprocessing.dummy`
@@ -714,7 +719,6 @@
 - `ntpath`
 - `nturl2path`
 - `numbers`
-- `opcode`
 - `operator`
 - `optparse`
 - `os`
@@ -746,7 +750,6 @@
 - `pydoc_data.topics`
 - `pyexpat`
 - `queue`
-- `quopri`
 - `random`
 - `re`
 - `re._casefix`
@@ -810,7 +813,6 @@
 - `test.tokenizedata.badsyntax_3131`
 - `test.tokenizedata.badsyntax_pep3120`
 - `textwrap`
-- `this`
 - `threading`
 - `time`
 - `timeit`
