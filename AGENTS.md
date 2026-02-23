@@ -101,6 +101,33 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Keep native and wasm behavior in lockstep for supported semantics; do not land native-only behavior without explicit capability gating, documented rationale, and targeted coverage.
 - For CPython `>=3.12` compatibility, enforce explicit version-gated behavior (3.12/3.13/3.14) instead of accidental drift, and add/update differential tests that exercise each gated lane.
 
+## Compatibility Documentation Architecture (Non-Negotiable)
+- Canonical compatibility documentation root is `docs/spec/areas/compat/README.md`.
+- Canonical CPython reference mirror for Python `>=3.12` is `molt/docs/python_documentation` (`docs/python_documentation/` in-repo path). Use it for language, stdlib, C-API, and platform-availability alignment.
+- Do not create or reintroduce legacy flat compat files at `docs/spec/areas/compat/*.md` (except `README.md` and subdirectory indexes). New/updated compat docs must live under:
+  - `docs/spec/areas/compat/contracts/`
+  - `docs/spec/areas/compat/surfaces/language/`
+  - `docs/spec/areas/compat/surfaces/stdlib/`
+  - `docs/spec/areas/compat/surfaces/c_api/`
+  - `docs/spec/areas/compat/plans/`
+- Treat generated files as generated-only truth; do not hand-edit semantic status in:
+  - `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
+  - `docs/spec/areas/compat/surfaces/stdlib/asyncio_surface.generated.md`
+  - `docs/spec/areas/compat/surfaces/language/core_language_pep_coverage.generated.md`
+  - `docs/spec/areas/compat/surfaces/language/generator_api_coverage.generated.md`
+  - `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`
+- Every compatibility claim must include explicit dimensions where relevant: `py312`/`py313`/`py314`, `native`, `wasm_wasi`, `wasm_browser`, and platform notes (`linux`/`macos`/`windows`).
+- Required refresh workflow when compatibility surfaces move:
+  1. `python3 tools/gen_stdlib_module_union.py`
+  2. `python3 tools/sync_stdlib_top_level_stubs.py --write`
+  3. `python3 tools/sync_stdlib_submodule_stubs.py --write`
+  4. `python3 tools/check_stdlib_intrinsics.py --update-doc`
+  5. `python3 tools/gen_compat_platform_availability.py --write`
+  6. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+  7. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
+  8. Sync docs in the same change: `docs/spec/STATUS.md`, `ROADMAP.md`, `docs/spec/README.md`, and `docs/INDEX.md`.
+- If documentation claims conflict across compat files, stop and resolve in the same change; conflicting compatibility claims are turn blockers.
+
 ## Jeff Dean Protege Mode (Non-Negotiable)
 - Optimize for correctness, performance, and determinism before convenience. No shortcuts that degrade runtime guarantees.
 - Default path is native Molt lowering + Rust runtime. Treat CPython bridge paths as explicit, opt-in compatibility layers only.
@@ -121,6 +148,12 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 ## Key Docs
 - [docs/CANONICALS.md](docs/CANONICALS.md): must-read documents for new work.
 - [docs/INDEX.md](docs/INDEX.md): documentation map and entry points.
+- [docs/python_documentation/](docs/python_documentation/): local canonical CPython documentation mirror for Python >= 3.12 reference work (path: `molt/docs/python_documentation`).
+- [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md): canonical compatibility documentation architecture and upkeep workflow.
+- [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md): language surface index and coverage dimensions.
+- [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md): stdlib compatibility source-of-truth index.
+- [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md): C-API compatibility source-of-truth index.
+- [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md): canonical intrinsic-first stdlib lowering program.
 - [docs/spec/README.md](docs/spec/README.md): spec index by area.
 - [CONTRIBUTING.md](CONTRIBUTING.md): workflow expectations and the change impact matrix.
 - [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): architecture map, layer ownership, and integration checklist.
@@ -182,6 +215,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.
 - `python3 tools/gen_stdlib_module_union.py`: regenerate the stdlib module union list used by stub syncing and checks.
+- `python3 tools/gen_compat_platform_availability.py --write`: regenerate CPython 3.12/3.13/3.14 stdlib Availability matrix at `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`.
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
 - `python3 tools/bench_diff.py <old.json> <new.json> --top 10 --json-out <path>`: diff two benchmark JSON artifacts and emit a summary report.
 - `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml --suite <id>`: run friend benchmark suites with the pinned manifest (use `--json-out`/`--summary-out` to capture results).
@@ -225,7 +259,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Treat stdlib submodules (e.g., `asyncio.locks`) as first-class entries in the compatibility matrix.
 - Register submodules explicitly (create module objects, add to `sys.modules`, and attach on the parent package) instead of relying on dynamic attribute lookups.
 - Keep submodules deterministic and capability-gated where they touch host I/O, OS, or process boundaries.
-- Update [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md) when submodule coverage changes.
+- Update [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) when submodule coverage changes.
 
 ## Runtime Locking & Unsafe Policy
 - Runtime mutation requires the GIL token; do not bypass it.
@@ -302,7 +336,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - The regrtest shim marks `MOLT_COMPAT_ERROR` results as skipped; check `junit.xml` for reasons and codify intentional exclusions in `tools/cpython_regrtest_skip.txt`.
 - The regrtest shim forces `MOLT_PROJECT_ROOT` to the repo so compiled runs link against the Molt runtime even for `third_party/` test sources.
 - The regrtest shim sets `MOLT_MODULE_ROOTS` (and `MOLT_REGRTEST_CPYTHON_DIR`) to the CPython `Lib` directory so `test.*` resolves to CPython sources; avoid exporting that path via `PYTHONPATH` to the host Python.
-- Use `molt test` for fast iteration, then use regrtest to surface broad regressions and map failures back to the stdlib matrix ([docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md)).
+- Use `molt test` for fast iteration, then use regrtest to surface broad regressions and map failures back to the stdlib matrix ([docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)).
 - Regrtest runs also emit `diff_summary.md` and `type_semantics_matrix.md` in each `logs/cpython_regrtest/<run>/` run directory to track type/semantics coverage gaps against `0014`/`0023`.
 - Use `--no-diff` if you want regrtest-only runs (the diff suite is enabled by default).
 - Use `--rust-coverage` with `cargo-llvm-cov` installed to collect Rust runtime coverage under `logs/cpython_regrtest/<ts>/py*/rust_coverage/`.
@@ -358,7 +392,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
 - Whenever a stub/partial feature or optimization candidate is added, update [README.md](README.md), the relevant `docs/spec/` file(s), and [ROADMAP.md](ROADMAP.md) in the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in [README.md](README.md) with the summarized results.
-- Follow [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
+- Follow [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
 - NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:

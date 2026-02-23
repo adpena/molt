@@ -282,7 +282,9 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         / "spec"
         / "areas"
         / "compat"
-        / "0015_STDLIB_COMPATIBILITY_MATRIX.md",
+        / "surfaces"
+        / "stdlib"
+        / "stdlib_surface_matrix.md",
         help="Path to Molt stdlib compatibility matrix.",
     )
     parser.add_argument(
@@ -299,7 +301,9 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         / "spec"
         / "areas"
         / "compat"
-        / "0014_TYPE_COVERAGE_MATRIX.md",
+        / "surfaces"
+        / "language"
+        / "type_coverage_matrix.md",
         help="Path to the Molt type coverage matrix.",
     )
     parser.add_argument(
@@ -310,7 +314,9 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         / "spec"
         / "areas"
         / "compat"
-        / "0023_SEMANTIC_BEHAVIOR_MATRIX.md",
+        / "surfaces"
+        / "language"
+        / "semantic_behavior_matrix.md",
         help="Path to the Molt semantic behavior matrix.",
     )
     parser.add_argument(

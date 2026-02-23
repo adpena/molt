@@ -16,7 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"
 MANIFEST = ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
 AUDIT_DOC = (
-    ROOT / "docs" / "spec" / "areas" / "compat" / "0016_STDLIB_INTRINSICS_AUDIT.md"
+    ROOT
+    / "docs"
+    / "spec"
+    / "areas"
+    / "compat"
+    / "surfaces"
+    / "stdlib"
+    / "stdlib_intrinsics_audit.generated.md"
 )
 STDLIB_UNION_BASELINE = ROOT / "tools" / "stdlib_module_union.py"
 INTRINSIC_PARTIAL_RATCHET = ROOT / "tools" / "stdlib_intrinsics_ratchet.json"
@@ -973,7 +980,7 @@ def main() -> int:
         "--update-doc",
         action="store_true",
         help=(
-            "Rewrite docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md "
+            "Rewrite docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md "
             "with generated audit output."
         ),
     )

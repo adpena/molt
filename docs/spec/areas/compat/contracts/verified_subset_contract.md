@@ -41,7 +41,7 @@ true:
 ## 6. Relationship to Other Specs
 - `docs/spec/STATUS.md` remains the canonical capability summary.
 - `docs/spec/areas/testing/0007-testing.md` defines the differential testing harness.
-- `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md` defines fallback tiers.
+- `docs/spec/areas/compat/contracts/compatibility_fallback_contract.md` defines fallback tiers.
 
 ## 7. Tooling + CI Enforcement
 - `tools/verified_subset.py check` validates the manifest and referenced paths.

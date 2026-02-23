@@ -28,7 +28,7 @@ performance-first C-extension compatibility without embedding CPython.
   Molt object layouts directly.
 - All handles are `u64`-compatible values (opaque to the extension).
 - A versioned C header defines `MOLT_C_API_VERSION` and symbol availability.
-- Symbol availability is tracked in `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`.
+- Symbol availability is tracked in `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`.
 
 ---
 

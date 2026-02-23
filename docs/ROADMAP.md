@@ -82,7 +82,7 @@ Planned acceleration lanes:
 ---
 
 ## 🧭 Type Coverage Milestones
-**Tracking doc:** `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
+**Tracking doc:** `docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md`
 
 | Milestone | Focus | Owners | Status | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -149,7 +149,7 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
 
 Stdlib compatibility TODOs tracked here for CI parity:
-Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` (section 3.1).
+Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md` (section 3.1).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `math` intrinsics + float determinism policy (non-transcendentals covered; trig/log/exp parity pending).
@@ -196,7 +196,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - Implemented: importlib.resources loader-reader lookup now explicitly falls back from `module.__spec__.loader` to `module.__loader__` inside runtime intrinsic lowering, so module-object reader discovery no longer depends on Python-side bootstrap probing.
 - Implemented: runtime restricted shim executor now supports `from ... import *` (`__all__` validation + underscore fallback exports), improving extension/sourceless shim execution parity without host fallback.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
 - Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) with fail-fast missing-intrinsic behavior.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P0, status:partial): complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm.
@@ -223,7 +223,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - reprlib module implemented (`Repr`, `repr`, `recursive_repr` parity).
 
 ## Rust Lowering Program (Core -> Stdlib)
-Execution contract: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+Execution contract: `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
 
 Program board:
 - Phase 0 (enforcement spine): completed, keep strict in CI + local lint.
@@ -288,7 +288,7 @@ Language feature TODOs tracked here for parity:
 - [x] Closure Conversion (for lambdas and inner functions)
 - [x] List/Dict Comprehension Lowering
 - [x] Full `range()` semantics (start/stop/step + negative ranges; step==0 raises ValueError)
-- [ ] Type coverage matrix execution (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`) (TODO(type-coverage, owner:tests, milestone:TC2, priority:P2, status:partial): execute matrix end-to-end).
+- [ ] Type coverage matrix execution (see `docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md`) (TODO(type-coverage, owner:tests, milestone:TC2, priority:P2, status:partial): execute matrix end-to-end).
 
 ### Runtime & Performance
 - [x] NaN-Boxing (Inline Ints, Bools, None)
