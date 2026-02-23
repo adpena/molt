@@ -5090,13 +5090,27 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
     Some((kind, message))
 }
 
+fn importlib_rethrow_pending_exception(_py: &PyToken<'_>) {
+    let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
+        return;
+    };
+    clear_exception(_py);
+    let _ = raise_exception::<u64>(_py, &kind, &message);
+}
+
 fn importlib_exception_should_fallback(_py: &PyToken<'_>) -> bool {
     let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
         return false;
     };
     if kind == "ImportError" || kind == "ModuleNotFoundError" {
-        clear_exception(_py);
-        return true;
+        let is_missing_module = message.starts_with("No module named ")
+            || message.contains("No module named '")
+            || message.contains("No module named \"");
+        if is_missing_module {
+            clear_exception(_py);
+            return true;
+        }
+        return false;
     }
     if kind == "TypeError" && message.contains("import returned non-module payload") {
         clear_exception(_py);
@@ -6020,6 +6034,10 @@ fn importlib_import_with_fallback(
                 machinery_bits,
             );
         }
+        // Exceptions raised while importing in another runtime lane can carry
+        // non-canonical class identities; rethrow in the current lane so
+        // Python-level try/except matching uses the local hierarchy.
+        importlib_rethrow_pending_exception(_py);
         return Err(MoltObject::none().bits());
     }
 
@@ -8199,7 +8217,12 @@ pub extern "C" fn molt_importlib_import_module(
                 machinery_bits,
             ) {
                 Ok(bits) => bits,
-                Err(err) => return err,
+                Err(err) => {
+                    if exception_pending(_py) {
+                        importlib_rethrow_pending_exception(_py);
+                    }
+                    return err;
+                }
             };
 
             let cached_bits =
