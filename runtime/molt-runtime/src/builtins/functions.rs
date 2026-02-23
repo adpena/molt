@@ -10510,6 +10510,7 @@ fn textwrap_splitlines_keepends(text: &str) -> Vec<String> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn textwrap_parse_options_ex(
     _py: &crate::PyToken<'_>,
     width_bits: u64,
@@ -10522,8 +10523,7 @@ fn textwrap_parse_options_ex(
     drop_whitespace_bits: u64,
     break_on_hyphens_bits: u64,
     tabsize_bits: u64,
-    max_lines_bits: u64,
-    placeholder_bits: u64,
+    max_lines_placeholder_bits: u64,
 ) -> Result<TextWrapOptions, u64> {
     let Some(width) = to_i64(obj_from_bits(width_bits)) else {
         return Err(raise_exception::<u64>(
@@ -10553,6 +10553,31 @@ fn textwrap_parse_options_ex(
             "tabsize must be int",
         ));
     };
+    let Some(max_lines_placeholder_ptr) = obj_from_bits(max_lines_placeholder_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    };
+    if unsafe { object_type_id(max_lines_placeholder_ptr) } != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    }
+    let max_lines_placeholder = unsafe { seq_vec_ref(max_lines_placeholder_ptr) };
+    if max_lines_placeholder.len() != 2 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    }
+    let max_lines_bits = max_lines_placeholder[0];
+    let placeholder_bits = max_lines_placeholder[1];
+
     let max_lines = if obj_from_bits(max_lines_bits).is_none() {
         None
     } else {
@@ -14307,8 +14332,7 @@ pub extern "C" fn molt_textwrap_wrap_ex(
     drop_whitespace_bits: u64,
     break_on_hyphens_bits: u64,
     tabsize_bits: u64,
-    max_lines_bits: u64,
-    placeholder_bits: u64,
+    max_lines_placeholder_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
@@ -14326,8 +14350,7 @@ pub extern "C" fn molt_textwrap_wrap_ex(
             drop_whitespace_bits,
             break_on_hyphens_bits,
             tabsize_bits,
-            max_lines_bits,
-            placeholder_bits,
+            max_lines_placeholder_bits,
         ) {
             Ok(options) => options,
             Err(bits) => return bits,
@@ -14376,8 +14399,7 @@ pub extern "C" fn molt_textwrap_fill_ex(
     drop_whitespace_bits: u64,
     break_on_hyphens_bits: u64,
     tabsize_bits: u64,
-    max_lines_bits: u64,
-    placeholder_bits: u64,
+    max_lines_placeholder_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
@@ -14395,8 +14417,7 @@ pub extern "C" fn molt_textwrap_fill_ex(
             drop_whitespace_bits,
             break_on_hyphens_bits,
             tabsize_bits,
-            max_lines_bits,
-            placeholder_bits,
+            max_lines_placeholder_bits,
         ) {
             Ok(options) => options,
             Err(bits) => return bits,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -12,7 +11,46 @@ _MOLT_DATETIME_RUNTIME_READY = _require_intrinsic(
 )
 _MOLT_DATETIME_RUNTIME_READY()
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:in_progress): lower datetime/date/time arithmetic and parsing primitives into dedicated Rust intrinsics.
+_MOLT_DT_VALIDATE_DATE = _require_intrinsic("molt_datetime_validate_date", globals())
+_MOLT_DT_VALIDATE_TIME = _require_intrinsic("molt_datetime_validate_time", globals())
+_MOLT_DT_IS_LEAP = _require_intrinsic("molt_datetime_is_leap", globals())
+_MOLT_DT_DAYS_IN_MONTH = _require_intrinsic("molt_datetime_days_in_month", globals())
+_MOLT_DT_YMD_TO_ORDINAL = _require_intrinsic("molt_datetime_ymd_to_ordinal", globals())
+_MOLT_DT_ORDINAL_TO_YMD = _require_intrinsic("molt_datetime_ordinal_to_ymd", globals())
+_MOLT_DT_TD_NORMALIZE = _require_intrinsic("molt_datetime_td_normalize", globals())
+_MOLT_DT_TD_TOTAL_SECONDS = _require_intrinsic(
+    "molt_datetime_td_total_seconds", globals()
+)
+_MOLT_DT_NOW_LOCAL = _require_intrinsic("molt_datetime_now_local", globals())
+_MOLT_DT_NOW_UTC = _require_intrinsic("molt_datetime_now_utc", globals())
+_MOLT_DT_FROMTIMESTAMP_LOCAL = _require_intrinsic(
+    "molt_datetime_fromtimestamp_local", globals()
+)
+_MOLT_DT_FROMTIMESTAMP_UTC = _require_intrinsic(
+    "molt_datetime_fromtimestamp_utc", globals()
+)
+_MOLT_DT_TO_TIMESTAMP = _require_intrinsic("molt_datetime_to_timestamp", globals())
+_MOLT_DT_STRFTIME = _require_intrinsic("molt_datetime_strftime", globals())
+_MOLT_DT_STRPTIME = _require_intrinsic("molt_datetime_strptime", globals())
+_MOLT_DT_FORMAT_ISODATE = _require_intrinsic("molt_datetime_format_isodate", globals())
+_MOLT_DT_FORMAT_ISOTIME = _require_intrinsic("molt_datetime_format_isotime", globals())
+_MOLT_DT_FORMAT_ISODATETIME = _require_intrinsic(
+    "molt_datetime_format_isodatetime", globals()
+)
+_MOLT_DT_PARSE_ISOFORMAT = _require_intrinsic(
+    "molt_datetime_parse_isoformat", globals()
+)
+_MOLT_DT_HASH_DATE = _require_intrinsic("molt_datetime_hash_date", globals())
+_MOLT_DT_HASH_TIME = _require_intrinsic("molt_datetime_hash_time", globals())
+_MOLT_DT_HASH_DATETIME = _require_intrinsic("molt_datetime_hash_datetime", globals())
+_MOLT_DT_HASH_TIMEDELTA = _require_intrinsic("molt_datetime_hash_timedelta", globals())
+_MOLT_DT_WEEKDAY = _require_intrinsic("molt_datetime_weekday", globals())
+_MOLT_DT_ISOWEEKDAY = _require_intrinsic("molt_datetime_isoweekday", globals())
+_MOLT_DT_ISOCALENDAR = _require_intrinsic("molt_datetime_isocalendar", globals())
+_MOLT_DT_CTIME = _require_intrinsic("molt_datetime_ctime", globals())
+_MOLT_DT_LOCAL_UTCOFFSET = _require_intrinsic(
+    "molt_datetime_local_utcoffset", globals()
+)
 
 __all__ = [
     "MINYEAR",
@@ -40,74 +78,41 @@ def _as_int(value: Any) -> int:
 
 
 def _is_leap(year: int) -> bool:
-    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    return bool(_MOLT_DT_IS_LEAP(year))
 
 
 def _days_in_month(year: int, month: int) -> int:
-    if month == 2:
-        return 29 if _is_leap(year) else 28
-    if month in (4, 6, 9, 11):
-        return 30
-    return 31
+    return int(_MOLT_DT_DAYS_IN_MONTH(year, month))
 
 
 def _validate_date(year: int, month: int, day: int) -> None:
-    if not (MINYEAR <= year <= MAXYEAR):
-        raise ValueError("year out of range")
-    if not (1 <= month <= 12):
-        raise ValueError("month must be in 1..12")
-    dim = _days_in_month(year, month)
-    if not (1 <= day <= dim):
-        raise ValueError("day is out of range for month")
+    _MOLT_DT_VALIDATE_DATE(year, month, day)
 
 
 def _validate_time(
     hour: int, minute: int, second: int, microsecond: int, fold: int
 ) -> None:
-    if not (0 <= hour <= 23):
-        raise ValueError("hour must be in 0..23")
-    if not (0 <= minute <= 59):
-        raise ValueError("minute must be in 0..59")
-    if not (0 <= second <= 59):
-        raise ValueError("second must be in 0..59")
-    if not (0 <= microsecond <= 999_999):
-        raise ValueError("microsecond must be in 0..999999")
-    if fold not in (0, 1):
-        raise ValueError("fold must be either 0 or 1")
+    _MOLT_DT_VALIDATE_TIME(hour, minute, second, microsecond, fold)
 
 
 def _days_from_civil(year: int, month: int, day: int) -> int:
-    y = year - (1 if month <= 2 else 0)
-    era = y // 400 if y >= 0 else (y - 399) // 400
-    yoe = y - era * 400
-    mp = month - 3 if month > 2 else month + 9
-    doy = (153 * mp + 2) // 5 + day - 1
-    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
-    return era * 146097 + doe - _EPOCH_ORDINAL_OFFSET
+    return int(_MOLT_DT_YMD_TO_ORDINAL(year, month, day))
 
 
 def _civil_from_days(days: int) -> tuple[int, int, int]:
-    z = days + _EPOCH_ORDINAL_OFFSET
-    era = z // 146097 if z >= 0 else (z - 146096) // 146097
-    doe = z - era * 146097
-    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
-    year = yoe + era * 400
-    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
-    mp = (5 * doy + 2) // 153
-    day = doy - (153 * mp + 2) // 5 + 1
-    month = mp + 3 if mp < 10 else mp - 9
-    year += 0 if month > 2 else 1
-    return (year, month, day)
+    result = _MOLT_DT_ORDINAL_TO_YMD(days)
+    return (int(result[0]), int(result[1]), int(result[2]))
 
 
 def _normalize_day_second_micro(
     days: int, seconds: int, microseconds: int
 ) -> tuple[int, int, int]:
-    sec_carry, microseconds = divmod(microseconds, 1_000_000)
-    seconds += sec_carry
-    day_carry, seconds = divmod(seconds, _DAY_SECONDS)
-    days += day_carry
-    return int(days), int(seconds), int(microseconds)
+    result = _MOLT_DT_TD_NORMALIZE(days, seconds, microseconds)
+    return (int(result[0]), int(result[1]), int(result[2]))
+
+
+_UNSET = object()
+_SENTINEL = object()
 
 
 def _format_time(
@@ -157,7 +162,12 @@ class timedelta:
         return obj
 
     def total_seconds(self) -> float:
-        return self.days * _DAY_SECONDS + self.seconds + self.microseconds / 1_000_000.0
+        return float(
+            _MOLT_DT_TD_TOTAL_SECONDS(self.days, self.seconds, self.microseconds)
+        )
+
+    def __hash__(self) -> int:
+        return int(_MOLT_DT_HASH_TIMEDELTA(self.days, self.seconds, self.microseconds))
 
     def __add__(self, other: object) -> timedelta:
         if not isinstance(other, timedelta):
@@ -271,10 +281,88 @@ class date:
         self.day = day
 
     def isoformat(self) -> str:
-        return f"{self.year:04d}-{self.month:02d}-{self.day:02d}"
+        return str(_MOLT_DT_FORMAT_ISODATE(self.year, self.month, self.day))
 
     def __str__(self) -> str:
         return self.isoformat()
+
+    def __repr__(self) -> str:
+        return f"datetime.date({self.year}, {self.month}, {self.day})"
+
+    def __hash__(self) -> int:
+        return int(_MOLT_DT_HASH_DATE(self.year, self.month, self.day))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, date):
+            return NotImplemented
+        return (
+            self.year == other.year
+            and self.month == other.month
+            and self.day == other.day
+        )
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, date):
+            return NotImplemented
+        return (self.year, self.month, self.day) < (other.year, other.month, other.day)
+
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, date):
+            return NotImplemented
+        return (self.year, self.month, self.day) <= (other.year, other.month, other.day)
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, date):
+            return NotImplemented
+        return (self.year, self.month, self.day) > (other.year, other.month, other.day)
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, date):
+            return NotImplemented
+        return (self.year, self.month, self.day) >= (other.year, other.month, other.day)
+
+    def weekday(self) -> int:
+        return int(_MOLT_DT_WEEKDAY(self.year, self.month, self.day))
+
+    def isoweekday(self) -> int:
+        return int(_MOLT_DT_ISOWEEKDAY(self.year, self.month, self.day))
+
+    def isocalendar(self) -> tuple[int, int, int]:
+        result = _MOLT_DT_ISOCALENDAR(self.year, self.month, self.day)
+        return (int(result[0]), int(result[1]), int(result[2]))
+
+    def ctime(self) -> str:
+        return str(_MOLT_DT_CTIME(self.year, self.month, self.day, 0, 0, 0))
+
+    def toordinal(self) -> int:
+        return _days_from_civil(self.year, self.month, self.day)
+
+    @classmethod
+    def fromordinal(cls, ordinal: int) -> date:
+        y, m, d = _civil_from_days(ordinal)
+        return cls(y, m, d)
+
+    @classmethod
+    def today(cls) -> date:
+        result = _MOLT_DT_NOW_LOCAL()
+        return cls(int(result[0]), int(result[1]), int(result[2]))
+
+    def replace(
+        self,
+        year: int | None = None,
+        month: int | None = None,
+        day: int | None = None,
+    ) -> date:
+        return date(
+            year if year is not None else self.year,
+            month if month is not None else self.month,
+            day if day is not None else self.day,
+        )
+
+    def strftime(self, fmt: str) -> str:
+        return str(
+            _MOLT_DT_STRFTIME(self.year, self.month, self.day, 0, 0, 0, 0, "", fmt)
+        )
 
 
 class time:
@@ -306,12 +394,55 @@ class time:
         self.fold = fold
 
     def isoformat(self, timespec: str = "auto") -> str:
-        return _format_time(
-            self.hour, self.minute, self.second, self.microsecond, timespec=timespec
+        return str(
+            _MOLT_DT_FORMAT_ISOTIME(
+                self.hour, self.minute, self.second, self.microsecond, timespec
+            )
         )
 
     def __str__(self) -> str:
         return self.isoformat()
+
+    def __repr__(self) -> str:
+        if self.microsecond:
+            return f"datetime.time({self.hour}, {self.minute}, {self.second}, {self.microsecond})"
+        if self.second:
+            return f"datetime.time({self.hour}, {self.minute}, {self.second})"
+        return f"datetime.time({self.hour}, {self.minute})"
+
+    def __hash__(self) -> int:
+        return int(
+            _MOLT_DT_HASH_TIME(self.hour, self.minute, self.second, self.microsecond)
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, time):
+            return NotImplemented
+        return (
+            self.hour == other.hour
+            and self.minute == other.minute
+            and self.second == other.second
+            and self.microsecond == other.microsecond
+        )
+
+    def replace(
+        self,
+        hour: int | None = None,
+        minute: int | None = None,
+        second: int | None = None,
+        microsecond: int | None = None,
+        tzinfo: Any = _UNSET,
+        *,
+        fold: int | None = None,
+    ) -> time:
+        return time(
+            hour if hour is not None else self.hour,
+            minute if minute is not None else self.minute,
+            second if second is not None else self.second,
+            microsecond if microsecond is not None else self.microsecond,
+            tzinfo=tzinfo if tzinfo is not _UNSET else self.tzinfo,
+            fold=fold if fold is not None else self.fold,
+        )
 
 
 class datetime:
@@ -325,12 +456,6 @@ class datetime:
         "microsecond",
         "tzinfo",
         "fold",
-    )
-
-    _ISO_RE = re.compile(
-        r"^(\d{4})-(\d{2})-(\d{2})"
-        r"(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?"
-        r"(?:([Zz]|[+-]\d{2}:\d{2}))?)?$"
     )
 
     def __init__(
@@ -436,19 +561,29 @@ class datetime:
         return self.tzinfo.tzname(self)
 
     def isoformat(self, sep: str = "T", timespec: str = "auto") -> str:
-        out = (
-            f"{self.year:04d}-{self.month:02d}-{self.day:02d}{sep}"
-            f"{_format_time(self.hour, self.minute, self.second, self.microsecond, timespec)}"
-        )
         offset = self.utcoffset()
+        tz_str = ""
         if offset is not None:
             total = offset.days * _DAY_SECONDS + offset.seconds
             sign = "+" if total >= 0 else "-"
             total = abs(total)
             hh, rem = divmod(total, 3600)
             mm, _ = divmod(rem, 60)
-            out += f"{sign}{hh:02d}:{mm:02d}"
-        return out
+            tz_str = f"{sign}{hh:02d}:{mm:02d}"
+        return str(
+            _MOLT_DT_FORMAT_ISODATETIME(
+                self.year,
+                self.month,
+                self.day,
+                self.hour,
+                self.minute,
+                self.second,
+                self.microsecond,
+                sep,
+                timespec,
+                tz_str,
+            )
+        )
 
     def __str__(self) -> str:
         return self.isoformat(sep=" ")
@@ -457,40 +592,15 @@ class datetime:
     def fromisoformat(cls, value: str) -> datetime:
         if not isinstance(value, str):
             raise TypeError("fromisoformat: argument must be str")
-        match = cls._ISO_RE.fullmatch(value)
-        if match is None:
+        result = _MOLT_DT_PARSE_ISOFORMAT(value)
+        if not isinstance(result, (list, tuple)) or len(result) < 7:
             raise ValueError("Invalid isoformat string")
-        y_s, mo_s, d_s, hh_s, mm_s, ss_s, us_s, tz_s = match.groups()
-        year = int(y_s)
-        month = int(mo_s)
-        day = int(d_s)
-        hour = int(hh_s or "0")
-        minute = int(mm_s or "0")
-        second = int(ss_s or "0")
-        us_txt = us_s or "0"
-        if len(us_txt) < 6:
-            us_txt = us_txt + ("0" * (6 - len(us_txt)))
-        microsecond = int(us_txt[:6])
-
+        y, mo, d, hh, mm, ss, us = (int(result[i]) for i in range(7))
         tz: tzinfo | None = None
-        if tz_s:
-            if tz_s in ("Z", "z"):
-                tz = timezone.utc
-            else:
-                sign = 1 if tz_s[0] == "+" else -1
-                off_h = int(tz_s[1:3])
-                off_m = int(tz_s[4:6])
-                tz = timezone(timedelta(hours=sign * off_h, minutes=sign * off_m))
-        return cls(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            microsecond,
-            tzinfo=tz,
-        )
+        if len(result) >= 8 and result[7] is not None:
+            off_seconds = int(result[7])
+            tz = timezone(timedelta(seconds=off_seconds))
+        return cls(y, mo, d, hh, mm, ss, us, tzinfo=tz)
 
     def astimezone(self, tz: tzinfo | None = None) -> datetime:
         if tz is None:
@@ -613,84 +723,189 @@ class datetime:
     def strftime(self, fmt: str) -> str:
         if not isinstance(fmt, str):
             raise TypeError("strftime() argument 1 must be str")
-        offset = self.utcoffset()
-        if offset is None:
-            z_num = ""
-        else:
-            total = offset.days * _DAY_SECONDS + offset.seconds
-            sign = "+" if total >= 0 else "-"
-            total = abs(total)
-            hh, rem = divmod(total, 3600)
-            mm, _ = divmod(rem, 60)
-            z_num = f"{sign}{hh:02d}{mm:02d}"
-        replacements = {
-            "%Y": f"{self.year:04d}",
-            "%m": f"{self.month:02d}",
-            "%d": f"{self.day:02d}",
-            "%H": f"{self.hour:02d}",
-            "%M": f"{self.minute:02d}",
-            "%S": f"{self.second:02d}",
-            "%f": f"{self.microsecond:06d}",
-            "%z": z_num,
-            "%Z": self.tzname() or "",
-        }
-        out = fmt
-        for key, value in replacements.items():
-            out = out.replace(key, value)
-        return out
+        tz_str = self.tzname() or ""
+        return str(
+            _MOLT_DT_STRFTIME(
+                self.year,
+                self.month,
+                self.day,
+                self.hour,
+                self.minute,
+                self.second,
+                self.microsecond,
+                tz_str,
+                fmt,
+            )
+        )
 
     @classmethod
     def strptime(cls, text: str, fmt: str) -> datetime:
-        if fmt == "%Y-%m-%d %H:%M:%S":
-            match = re.fullmatch(
-                r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})", text
+        result = _MOLT_DT_STRPTIME(text, fmt)
+        if isinstance(result, (list, tuple)) and len(result) >= 7:
+            y, mo, d, hh, mm, ss, us = (int(result[i]) for i in range(7))
+            tz: tzinfo | None = None
+            if len(result) >= 8 and result[7] is not None:
+                off_seconds = int(result[7])
+                tz = timezone(timedelta(seconds=off_seconds))
+            return cls(y, mo, d, hh, mm, ss, us, tzinfo=tz)
+        raise ValueError("time data does not match format")
+
+    def __hash__(self) -> int:
+        offset = self.utcoffset()
+        off_secs = 0
+        if offset is not None:
+            off_secs = offset.days * _DAY_SECONDS + offset.seconds
+        return int(
+            _MOLT_DT_HASH_DATETIME(
+                self.year,
+                self.month,
+                self.day,
+                self.hour,
+                self.minute,
+                self.second,
+                self.microsecond,
+                off_secs,
             )
-            if match is None:
-                raise ValueError("time data does not match format")
-            y, mo, d, hh, mm, ss = (int(x) for x in match.groups())
-            return cls(y, mo, d, hh, mm, ss)
-        if fmt == "%m/%d/%Y %H:%M:%S":
-            match = re.fullmatch(
-                r"(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2}):(\d{2})", text
+        )
+
+    def weekday(self) -> int:
+        return int(_MOLT_DT_WEEKDAY(self.year, self.month, self.day))
+
+    def isoweekday(self) -> int:
+        return int(_MOLT_DT_ISOWEEKDAY(self.year, self.month, self.day))
+
+    def isocalendar(self) -> tuple[int, int, int]:
+        result = _MOLT_DT_ISOCALENDAR(self.year, self.month, self.day)
+        return (int(result[0]), int(result[1]), int(result[2]))
+
+    def ctime(self) -> str:
+        return str(
+            _MOLT_DT_CTIME(
+                self.year,
+                self.month,
+                self.day,
+                self.hour,
+                self.minute,
+                self.second,
             )
-            if match is None:
-                raise ValueError("time data does not match format")
-            mo, d, y, hh, mm, ss = (int(x) for x in match.groups())
-            return cls(y, mo, d, hh, mm, ss)
-        if fmt == "%Y-%j":
-            match = re.fullmatch(r"(\d{4})-(\d{3})", text)
-            if match is None:
-                raise ValueError("time data does not match format")
-            year = int(match.group(1))
-            day_of_year = int(match.group(2))
-            max_day = 366 if _is_leap(year) else 365
-            if not (1 <= day_of_year <= max_day):
-                raise ValueError("day of year out of range")
-            month = 1
-            day = day_of_year
-            while True:
-                dim = _days_in_month(year, month)
-                if day <= dim:
-                    break
-                day -= dim
-                month += 1
-            return cls(year, month, day)
-        if fmt == "%Y-%m-%d %H:%M:%S %z":
-            match = re.fullmatch(
-                r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) ([+-]\d{4})", text
+        )
+
+    def timestamp(self) -> float:
+        return float(
+            _MOLT_DT_TO_TIMESTAMP(
+                self.year,
+                self.month,
+                self.day,
+                self.hour,
+                self.minute,
+                self.second,
+                self.microsecond,
             )
-            if match is None:
-                raise ValueError("time data does not match format")
-            y, mo, d, hh, mm, ss = (int(x) for x in match.groups()[:6])
-            z = match.group(7)
-            sign = 1 if z[0] == "+" else -1
-            off_h = int(z[1:3]) * sign
-            off_m = int(z[3:5]) * sign
-            tz = timezone(timedelta(hours=off_h, minutes=off_m))
-            return cls(y, mo, d, hh, mm, ss, tzinfo=tz)
-        if fmt == "%Y-%m-%d %H:%M:%S %Z":
-            raise ValueError("time data does not match format")
-        raise ValueError("unsupported strptime format")
+        )
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:
+        if tz is None:
+            result = _MOLT_DT_NOW_LOCAL()
+        else:
+            result = _MOLT_DT_NOW_UTC()
+        dt = cls(
+            int(result[0]),
+            int(result[1]),
+            int(result[2]),
+            int(result[3]),
+            int(result[4]),
+            int(result[5]),
+            int(result[6]),
+        )
+        if tz is not None:
+            dt = dt.replace(tzinfo=timezone.utc).astimezone(tz)
+        return dt
+
+    @classmethod
+    def utcnow(cls) -> datetime:
+        result = _MOLT_DT_NOW_UTC()
+        return cls(
+            int(result[0]),
+            int(result[1]),
+            int(result[2]),
+            int(result[3]),
+            int(result[4]),
+            int(result[5]),
+            int(result[6]),
+        )
+
+    @classmethod
+    def fromtimestamp(cls, ts: float, tz: tzinfo | None = None) -> datetime:
+        if tz is None:
+            result = _MOLT_DT_FROMTIMESTAMP_LOCAL(ts)
+        else:
+            result = _MOLT_DT_FROMTIMESTAMP_UTC(ts)
+        dt = cls(
+            int(result[0]),
+            int(result[1]),
+            int(result[2]),
+            int(result[3]),
+            int(result[4]),
+            int(result[5]),
+            int(result[6]),
+        )
+        if tz is not None:
+            dt = dt.replace(tzinfo=timezone.utc).astimezone(tz)
+        return dt
+
+    def replace(
+        self,
+        year: int | None = None,
+        month: int | None = None,
+        day: int | None = None,
+        hour: int | None = None,
+        minute: int | None = None,
+        second: int | None = None,
+        microsecond: int | None = None,
+        tzinfo: Any = _SENTINEL,
+        *,
+        fold: int | None = None,
+    ) -> datetime:
+        return datetime(
+            year if year is not None else self.year,
+            month if month is not None else self.month,
+            day if day is not None else self.day,
+            hour if hour is not None else self.hour,
+            minute if minute is not None else self.minute,
+            second if second is not None else self.second,
+            microsecond if microsecond is not None else self.microsecond,
+            tzinfo=tzinfo if tzinfo is not _SENTINEL else self.tzinfo,
+            fold=fold if fold is not None else self.fold,
+        )
+
+    def timetuple(self) -> tuple[int, ...]:
+        yday = self.toordinal() - date(self.year, 1, 1).toordinal() + 1
+        dst_flag = -1
+        d = self.dst()
+        if d is not None:
+            dst_flag = 1 if d.total_seconds() > 0 else 0
+        return (
+            self.year,
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second,
+            self.weekday(),
+            yday,
+            dst_flag,
+        )
+
+    def toordinal(self) -> int:
+        return _days_from_civil(self.year, self.month, self.day)
 
 
 timedelta.resolution = timedelta(microseconds=1)  # type: ignore[attr-defined]
+timedelta.min = timedelta(days=-999999999)  # type: ignore[attr-defined]
+timedelta.max = timedelta(
+    days=999999999, hours=23, minutes=59, seconds=59, microseconds=999999
+)  # type: ignore[attr-defined]
+date.min = date(MINYEAR, 1, 1)  # type: ignore[attr-defined]
+date.max = date(MAXYEAR, 12, 31)  # type: ignore[attr-defined]
+date.resolution = timedelta(days=1)  # type: ignore[attr-defined]
