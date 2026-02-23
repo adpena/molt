@@ -1,4 +1,4 @@
-"""Collections helpers for Molt."""
+"""Collections helpers for Molt (intrinsic-backed)."""
 
 from __future__ import annotations
 
@@ -22,191 +22,320 @@ import keyword as _keyword
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+# Re-export OrderedDict from _collections
+from _collections import OrderedDict
 
-__all__ = ["abc", "Counter", "defaultdict", "deque", "namedtuple"]
+__all__ = [
+    "abc",
+    "Counter",
+    "defaultdict",
+    "deque",
+    "namedtuple",
+    "OrderedDict",
+]
 
 _MISSING = object()
 
-if TYPE_CHECKING:
-    from types import NotImplementedType
-
+# --- Class-building intrinsics (for namedtuple) ---
 _MOLT_CLASS_NEW = _require_intrinsic("molt_class_new", globals())
 _MOLT_CLASS_SET_BASE = _require_intrinsic("molt_class_set_base", globals())
 _MOLT_CLASS_APPLY_SET_NAME = _require_intrinsic("molt_class_apply_set_name", globals())
 
+# --- deque intrinsics ---
+_MOLT_DEQUE_NEW = _require_intrinsic("molt_deque_new", globals())
+_MOLT_DEQUE_FROM_ITERABLE = _require_intrinsic("molt_deque_from_iterable", globals())
+_MOLT_DEQUE_APPEND = _require_intrinsic("molt_deque_append", globals())
+_MOLT_DEQUE_APPENDLEFT = _require_intrinsic("molt_deque_appendleft", globals())
+_MOLT_DEQUE_CLEAR = _require_intrinsic("molt_deque_clear", globals())
+_MOLT_DEQUE_CONTAINS = _require_intrinsic("molt_deque_contains", globals())
+_MOLT_DEQUE_COPY = _require_intrinsic("molt_deque_copy", globals())
+_MOLT_DEQUE_COUNT = _require_intrinsic("molt_deque_count", globals())
+_MOLT_DEQUE_DELITEM = _require_intrinsic("molt_deque_delitem", globals())
+_MOLT_DEQUE_DROP = _require_intrinsic("molt_deque_drop", globals())
+_MOLT_DEQUE_EXTEND = _require_intrinsic("molt_deque_extend", globals())
+_MOLT_DEQUE_EXTENDLEFT = _require_intrinsic("molt_deque_extendleft", globals())
+_MOLT_DEQUE_GETITEM = _require_intrinsic("molt_deque_getitem", globals())
+_MOLT_DEQUE_INDEX = _require_intrinsic("molt_deque_index", globals())
+_MOLT_DEQUE_INSERT = _require_intrinsic("molt_deque_insert", globals())
+_MOLT_DEQUE_LEN = _require_intrinsic("molt_deque_len", globals())
+_MOLT_DEQUE_MAXLEN = _require_intrinsic("molt_deque_maxlen", globals())
+_MOLT_DEQUE_POP = _require_intrinsic("molt_deque_pop", globals())
+_MOLT_DEQUE_POPLEFT = _require_intrinsic("molt_deque_popleft", globals())
+_MOLT_DEQUE_REMOVE = _require_intrinsic("molt_deque_remove", globals())
+_MOLT_DEQUE_REVERSE = _require_intrinsic("molt_deque_reverse", globals())
+_MOLT_DEQUE_ROTATE = _require_intrinsic("molt_deque_rotate", globals())
+_MOLT_DEQUE_SETITEM = _require_intrinsic("molt_deque_setitem", globals())
+
+# --- Counter intrinsics ---
+_MOLT_COUNTER_ADD = _require_intrinsic("molt_counter_add", globals())
+_MOLT_COUNTER_AND = _require_intrinsic("molt_counter_and", globals())
+_MOLT_COUNTER_CLEAR = _require_intrinsic("molt_counter_clear", globals())
+_MOLT_COUNTER_CONTAINS = _require_intrinsic("molt_counter_contains", globals())
+_MOLT_COUNTER_COPY = _require_intrinsic("molt_counter_copy", globals())
+_MOLT_COUNTER_DELITEM = _require_intrinsic("molt_counter_delitem", globals())
+_MOLT_COUNTER_DROP = _require_intrinsic("molt_counter_drop", globals())
+_MOLT_COUNTER_ELEMENTS = _require_intrinsic("molt_counter_elements", globals())
+_MOLT_COUNTER_FROM_ITERABLE = _require_intrinsic(
+    "molt_counter_from_iterable", globals()
+)
+_MOLT_COUNTER_FROM_MAPPING = _require_intrinsic("molt_counter_from_mapping", globals())
+_MOLT_COUNTER_GETITEM = _require_intrinsic("molt_counter_getitem", globals())
+_MOLT_COUNTER_ITEMS = _require_intrinsic("molt_counter_items", globals())
+_MOLT_COUNTER_LEN = _require_intrinsic("molt_counter_len", globals())
+_MOLT_COUNTER_MOST_COMMON = _require_intrinsic("molt_counter_most_common", globals())
+_MOLT_COUNTER_NEW = _require_intrinsic("molt_counter_new", globals())
+_MOLT_COUNTER_OR = _require_intrinsic("molt_counter_or", globals())
+_MOLT_COUNTER_POP = _require_intrinsic("molt_counter_pop", globals())
+_MOLT_COUNTER_SETITEM = _require_intrinsic("molt_counter_setitem", globals())
+_MOLT_COUNTER_SUB = _require_intrinsic("molt_counter_sub", globals())
+_MOLT_COUNTER_SUBTRACT = _require_intrinsic("molt_counter_subtract", globals())
+_MOLT_COUNTER_TOTAL = _require_intrinsic("molt_counter_total", globals())
+_MOLT_COUNTER_UPDATE = _require_intrinsic("molt_counter_update", globals())
+
+# --- defaultdict intrinsics ---
+_MOLT_DEFAULTDICT_COPY = _require_intrinsic("molt_defaultdict_copy", globals())
+_MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop", globals())
+_MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory", globals())
+_MOLT_DEFAULTDICT_MISSING = _require_intrinsic("molt_defaultdict_missing", globals())
+_MOLT_DEFAULTDICT_NEW = _require_intrinsic("molt_defaultdict_new", globals())
+
+
+# ---------------------------------------------------------------------------
+# deque — fully intrinsic-backed
+# ---------------------------------------------------------------------------
+
 
 class _DequeIter:
+    """Forward iterator over an intrinsic-backed deque."""
+
+    __slots__ = ("_deque", "_index")
+
     def __init__(self, deq: "deque") -> None:
-        self._data = deq._data
+        self._deque = deq
         self._index = 0
 
     def __iter__(self):
         return self
 
     def __next__(self) -> Any:
-        if self._index >= len(self._data):
+        if self._index >= len(self._deque):
             raise StopIteration
-        value = self._data[self._index]
+        value = _MOLT_DEQUE_GETITEM(self._deque._handle, self._index)
         self._index += 1
         return value
 
 
+class _DequeRevIter:
+    """Reverse iterator over an intrinsic-backed deque."""
+
+    __slots__ = ("_deque", "_index")
+
+    def __init__(self, deq: "deque") -> None:
+        self._deque = deq
+        self._index = len(deq) - 1
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Any:
+        if self._index < 0:
+            raise StopIteration
+        value = _MOLT_DEQUE_GETITEM(self._deque._handle, self._index)
+        self._index -= 1
+        return value
+
+
 class deque:
-    _iter_class = _DequeIter
+    __slots__ = ("_handle",)
 
     def __init__(
         self, iterable: Iterable[Any] | None = None, maxlen: int | None = None
     ):
         if maxlen is not None and maxlen < 0:
             raise ValueError("maxlen must be non-negative")
-        self._maxlen = maxlen
-        self._data: list[Any] = []
         if iterable is not None:
-            items = list(iterable)
-            if self._maxlen is not None and len(items) > self._maxlen:
-                items = items[-self._maxlen :]
-            self._data = items
+            if isinstance(iterable, (list, tuple)):
+                self._handle = _MOLT_DEQUE_FROM_ITERABLE(iterable, maxlen)
+            else:
+                self._handle = _MOLT_DEQUE_FROM_ITERABLE(list(iterable), maxlen)
+        else:
+            self._handle = _MOLT_DEQUE_NEW(maxlen)
+
+    @classmethod
+    def _from_handle(cls, handle) -> "deque":
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
 
     def __len__(self) -> int:
-        return len(self._data)
+        return int(_MOLT_DEQUE_LEN(self._handle))
 
     @property
     def maxlen(self) -> int | None:
-        return self._maxlen
+        result = _MOLT_DEQUE_MAXLEN(self._handle)
+        if result is None:
+            return None
+        return int(result)
 
     def __iter__(self):
-        return self._iter_class(self)
+        return _DequeIter(self)
+
+    def __reversed__(self) -> Iterator[Any]:
+        return _DequeRevIter(self)
 
     def __repr__(self) -> str:
-        if self._maxlen is None:
-            return f"deque({list(self)!r})"
-        return f"deque({list(self)!r}, maxlen={self._maxlen!r})"
+        items = list(self)
+        ml = self.maxlen
+        if ml is None:
+            return f"deque({items!r})"
+        return f"deque({items!r}, maxlen={ml!r})"
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __contains__(self, item) -> bool:
+        return bool(_MOLT_DEQUE_CONTAINS(self._handle, item))
 
     def __getitem__(self, index: int) -> Any:
-        if index < 0:
-            index += len(self._data)
-        if index < 0 or index >= len(self._data):
-            raise IndexError("deque index out of range")
-        return self._data[index]
+        return _MOLT_DEQUE_GETITEM(self._handle, index)
 
     def __setitem__(self, index: int, value: Any) -> None:
-        if index < 0:
-            index += len(self._data)
-        if index < 0 or index >= len(self._data):
-            raise IndexError("deque index out of range")
-        self._data[index] = value
+        _MOLT_DEQUE_SETITEM(self._handle, index, value)
+
+    def __delitem__(self, index: int) -> None:
+        _MOLT_DEQUE_DELITEM(self._handle, index)
 
     def append(self, item: Any) -> None:
-        if self._maxlen is not None and len(self._data) == self._maxlen:
-            self._data = self._data[1:]
-        self._data = self._data + [item]
+        _MOLT_DEQUE_APPEND(self._handle, item)
 
     def appendleft(self, item: Any) -> None:
-        if self._maxlen is not None and len(self._data) == self._maxlen:
-            self._data = self._data[:-1]
-        self._data = [item] + self._data
+        _MOLT_DEQUE_APPENDLEFT(self._handle, item)
 
     def pop(self) -> Any:
-        if not self._data:
-            raise IndexError("pop from an empty deque")
-        value = self._data[-1]
-        self._data = self._data[:-1]
-        return value
+        return _MOLT_DEQUE_POP(self._handle)
 
     def popleft(self) -> Any:
-        if not self._data:
-            raise IndexError("pop from an empty deque")
-        value = self._data[0]
-        self._data = self._data[1:]
-        return value
+        return _MOLT_DEQUE_POPLEFT(self._handle)
 
     def rotate(self, n: int = 1) -> None:
-        if not self._data:
-            return
-        length = len(self._data)
-        if n == 0:
-            return
-        n = n % length
-        if n:
-            self._data = self._data[-n:] + self._data[:-n]
+        _MOLT_DEQUE_ROTATE(self._handle, n)
 
     def clear(self) -> None:
-        self._data = []
+        _MOLT_DEQUE_CLEAR(self._handle)
 
     def copy(self) -> "deque":
-        cls = self.__class__
-        cloned = cls()
-        cloned._maxlen = self._maxlen
-        cloned._data = list(self._data)
-        if cloned._maxlen is not None and len(cloned._data) > cloned._maxlen:
-            cloned._data = cloned._data[-cloned._maxlen :]
-        return cloned
+        return deque._from_handle(_MOLT_DEQUE_COPY(self._handle))
 
     def count(self, value: Any) -> int:
-        count = 0
-        for item in self._data:
-            if item == value:
-                count += 1
-        return count
+        return int(_MOLT_DEQUE_COUNT(self._handle, value))
 
     def index(self, value: Any, start: int = 0, stop: int | None = None) -> int:
         if stop is None:
-            stop = len(self._data)
-        if start < 0:
-            start += len(self._data)
-        if stop < 0:
-            stop += len(self._data)
-        idx = start
-        while idx < stop:
-            if self._data[idx] == value:
-                return idx
-            idx += 1
-        raise ValueError("deque.index(x): x not in deque")
+            stop = len(self)
+        return int(_MOLT_DEQUE_INDEX(self._handle, value, start, stop))
 
     def insert(self, index: int, value: Any) -> None:
-        if self._maxlen is not None and len(self._data) == self._maxlen:
-            raise IndexError("deque already at its maximum size")
-        if index < 0:
-            index += len(self._data)
-        if index < 0:
-            index = 0
-        if index > len(self._data):
-            index = len(self._data)
-        self._data = self._data[:index] + [value] + self._data[index:]
+        _MOLT_DEQUE_INSERT(self._handle, index, value)
 
     def remove(self, value: Any) -> None:
-        idx = 0
-        while idx < len(self._data):
-            if self._data[idx] == value:
-                self._data = self._data[:idx] + self._data[idx + 1 :]
-                return
-            idx += 1
-        raise ValueError("deque.remove(x): x not in deque")
+        _MOLT_DEQUE_REMOVE(self._handle, value)
 
     def extend(self, iterable: Iterable[Any]) -> None:
-        items = list(iterable)
-        if not items:
-            return
-        combined = self._data + items
-        if self._maxlen is not None and len(combined) > self._maxlen:
-            combined = combined[-self._maxlen :]
-        self._data = combined
+        if isinstance(iterable, (list, tuple)):
+            _MOLT_DEQUE_EXTEND(self._handle, iterable)
+        else:
+            _MOLT_DEQUE_EXTEND(self._handle, list(iterable))
 
     def extendleft(self, iterable: Iterable[Any]) -> None:
-        items = list(iterable)
-        if not items:
-            return
-        items.reverse()
-        combined = items + self._data
-        if self._maxlen is not None and len(combined) > self._maxlen:
-            combined = combined[: self._maxlen]
-        self._data = combined
+        if isinstance(iterable, (list, tuple)):
+            _MOLT_DEQUE_EXTENDLEFT(self._handle, iterable)
+        else:
+            _MOLT_DEQUE_EXTENDLEFT(self._handle, list(iterable))
 
     def reverse(self) -> None:
-        self._data = self._data[::-1]
+        _MOLT_DEQUE_REVERSE(self._handle)
 
-    def __reversed__(self) -> Iterator[Any]:
-        return reversed(self._data)
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, deque):
+            return NotImplemented
+        if len(self) != len(other):
+            return False
+        for a, b in zip(self, other):
+            if a != b:
+                return False
+        return True
+
+    def __ne__(self, other) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __lt__(self, other) -> bool:
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) < list(other)
+
+    def __le__(self, other) -> bool:
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) <= list(other)
+
+    def __gt__(self, other) -> bool:
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) > list(other)
+
+    def __ge__(self, other) -> bool:
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) >= list(other)
+
+    def __add__(self, other):
+        if not isinstance(other, deque):
+            return NotImplemented
+        result = self.copy()
+        result.extend(other)
+        return result
+
+    def __iadd__(self, other):
+        self.extend(other)
+        return self
+
+    def __mul__(self, n):
+        if not isinstance(n, int):
+            return NotImplemented
+        items = list(self) * n
+        ml = self.maxlen
+        return deque(items, maxlen=ml)
+
+    def __imul__(self, n):
+        if not isinstance(n, int):
+            return NotImplemented
+        items = list(self) * n
+        ml = self.maxlen
+        self.clear()
+        if ml is not None and len(items) > ml:
+            items = items[-ml:]
+        for item in items:
+            self.append(item)
+        return self
+
+    def __hash__(self):
+        raise TypeError("unhashable type: 'deque'")
+
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _MOLT_DEQUE_DROP(handle)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# namedtuple — kept as-is (pure Python, no intrinsic needed)
+# ---------------------------------------------------------------------------
 
 
 def namedtuple(
@@ -385,352 +514,24 @@ def namedtuple(
     return cls
 
 
-class Counter(dict):
-    def __init__(
-        self,
-        iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        if iterable is not None:
-            if isinstance(iterable, dict):
-                for key in iterable:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) + iterable[key])
-            elif hasattr(iterable, "items"):
-                mapping = cast(abc.Mapping[Any, Any], iterable)
-                for key in mapping:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) + mapping[key])
-            else:
-                for item in iterable:
-                    dict.__setitem__(self, item, dict.get(self, item, 0) + 1)
-        if kwargs:
-            kw_map: dict[str, Any] = kwargs
-            for key in kw_map:
-                dict.__setitem__(self, key, dict.get(self, key, 0) + kw_map[key])
-
-    def __missing__(self, key: Any) -> int:
-        return 0
-
-    def __getitem__(self, key: Any) -> int:
-        if key in self:
-            return dict.__getitem__(self, key)
-        return 0
-
-    def __setitem__(self, key: Any, value: int) -> None:
-        dict.__setitem__(self, key, value)
-
-    def __delitem__(self, key: Any) -> None:
-        dict.__delitem__(self, key)
-
-    def __iter__(self):
-        return dict.__iter__(self)
-
-    def keys(self):
-        return dict.keys(self)
-
-    def values(self):
-        return dict.values(self)
-
-    def __len__(self) -> int:
-        return dict.__len__(self)
-
-    def __contains__(self, key: Any) -> bool:
-        return dict.__contains__(self, key)
-
-    def clear(self) -> None:
-        keys = list(self)
-        for key in keys:
-            dict.__delitem__(self, key)
-
-    def __repr__(self) -> str:
-        if len(self) == 0:
-            return "Counter()"
-        items: list[str] = []
-        for key, count in self.most_common():
-            items.append(f"{key!r}: {count!r}")
-        return f"Counter({{{', '.join(items)}}})"
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, dict):
-            return False
-        if len(self) != len(other):
-            return False
-        for key in self:
-            if dict.get(self, key, 0) != dict.get(other, key, _MISSING):
-                return False
-        for key in other:
-            if key not in self:
-                return False
-        return True
-
-    def pop(self, key: Any, default: Any = _MISSING) -> Any:
-        if key in self:
-            val = dict.__getitem__(self, key)
-            dict.__delitem__(self, key)
-            return val
-        if default is _MISSING:
-            raise KeyError(key)
-        return default
-
-    def popitem(self):
-        last_key = _MISSING
-        for key in self:
-            last_key = key
-        if last_key is _MISSING:
-            raise KeyError("popitem(): dictionary is empty")
-        val = dict.__getitem__(self, last_key)
-        dict.__delitem__(self, last_key)
-        return (last_key, val)
-
-    def setdefault(self, key: Any, default: Any = None) -> Any:
-        if key in self:
-            return dict.__getitem__(self, key)
-        dict.__setitem__(self, key, default)
-        return default
-
-    def get(self, key: Any, default: int | None = None) -> int | None:
-        if key in self:
-            return dict.__getitem__(self, key)
-        return default
-
-    def update(self, *args: Any, **kwargs: Any) -> None:
-        iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None
-        if args:
-            if len(args) > 1:
-                raise TypeError(f"update expected at most 1 argument, got {len(args)}")
-            iterable = args[0]
-        if iterable is not None:
-            if isinstance(iterable, dict):
-                for key in iterable:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) + iterable[key])
-            elif hasattr(iterable, "items"):
-                mapping = cast(abc.Mapping[Any, Any], iterable)
-                for key in mapping:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) + mapping[key])
-            else:
-                for item in iterable:
-                    dict.__setitem__(self, item, dict.get(self, item, 0) + 1)
-        if kwargs:
-            kw_map: dict[str, Any] = kwargs
-            for key in kw_map:
-                dict.__setitem__(self, key, dict.get(self, key, 0) + kw_map[key])
-
-    def subtract(
-        self,
-        iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        if iterable is not None:
-            if isinstance(iterable, dict):
-                for key in iterable:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) - iterable[key])
-            elif hasattr(iterable, "items"):
-                mapping = cast(abc.Mapping[Any, Any], iterable)
-                for key in mapping:
-                    dict.__setitem__(self, key, dict.get(self, key, 0) - mapping[key])
-            else:
-                for item in iterable:
-                    dict.__setitem__(self, item, dict.get(self, item, 0) - 1)
-        if kwargs:
-            kw_map: dict[str, Any] = kwargs
-            for key in kw_map:
-                dict.__setitem__(self, key, dict.get(self, key, 0) - kw_map[key])
-
-    def elements(self):
-        return _CounterElementsIter(self)
-
-    def items(self):
-        return _CounterItemsView(self)
-
-    def most_common(self, n: int | None = None):
-        items: list[tuple[Any, int]] = []
-        for key in self:
-            items.append((key, dict.get(self, key, 0)))
-        items.sort(key=lambda item: item[1], reverse=True)
-        if n is None:
-            return items
-        if n <= 0:
-            return []
-        return items[:n]
-
-    def total(self):
-        total = 0
-        for key in self:
-            total += dict.get(self, key, 0)
-        return total
-
-    def copy(self) -> "Counter":
-        return Counter(self)
-
-    def __add__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = Counter(())
-        for key in self:
-            count = dict.get(self, key, 0) + dict.get(other, key, 0)
-            if count > 0:
-                result[key] = count
-        for key in other:
-            if key in self:
-                continue
-            count = dict.get(self, key, 0) + dict.get(other, key, 0)
-            if count > 0:
-                result[key] = count
-        return result
-
-    def __sub__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = Counter(())
-        for key in self:
-            count = dict.get(self, key, 0) - dict.get(other, key, 0)
-            if count > 0:
-                result[key] = count
-        for key in other:
-            if key in self:
-                continue
-            count = dict.get(self, key, 0) - dict.get(other, key, 0)
-            if count > 0:
-                result[key] = count
-        return result
-
-    def __or__(  # type: ignore[override]
-        self, other: dict[Any, int]
-    ) -> "Counter | NotImplementedType":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = Counter(())
-        for key in self:
-            count = max(dict.get(self, key, 0), dict.get(other, key, 0))
-            if count > 0:
-                result[key] = count
-        for key in other:
-            if key in self:
-                continue
-            count = max(dict.get(self, key, 0), dict.get(other, key, 0))
-            if count > 0:
-                result[key] = count
-        return result
-
-    def __and__(self, other: "Counter") -> "Counter":
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = Counter(())
-        for key in self:
-            if key not in other:
-                continue
-            count = min(dict.get(self, key, 0), dict.get(other, key, 0))
-            if count > 0:
-                result[key] = count
-        return result
-
-    def __iadd__(self, other: "Counter"):
-        result = self + other
-        if result is NotImplemented:
-            return NotImplemented
-        self.clear()
-        for key, value in result.items():
-            dict.__setitem__(self, key, value)
-        return self
-
-    def __isub__(self, other: "Counter"):
-        result = self - other
-        if result is NotImplemented:
-            return NotImplemented
-        self.clear()
-        for key, value in result.items():
-            dict.__setitem__(self, key, value)
-        return self
-
-    def __ior__(  # type: ignore[override]
-        self, other: dict[Any, int]
-    ) -> "Counter | NotImplementedType":
-        result = self | other
-        if result is NotImplemented:
-            return NotImplemented
-        self.clear()
-        for key, value in result.items():
-            dict.__setitem__(self, key, value)
-        return self
-
-    def __iand__(self, other: "Counter"):
-        result = self & other
-        if result is NotImplemented:
-            return NotImplemented
-        self.clear()
-        for key, value in result.items():
-            dict.__setitem__(self, key, value)
-        return self
-
-
-class defaultdict(dict):
-    def __init__(self, default_factory=None, *args: Any, **kwargs: Any) -> None:
-        self.default_factory = default_factory
-        if len(args) > 1:
-            raise TypeError("defaultdict expected at most 1 positional argument")
-        if args:
-            dict.update(self, args[0])
-        if kwargs:
-            dict.update(self, kwargs)
-
-    def __getitem__(self, key: Any) -> Any:
-        try:
-            return dict.__getitem__(self, key)
-        except KeyError:
-            return self.__missing__(key)
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        dict.__setitem__(self, key, value)
-
-    def __delitem__(self, key: Any) -> None:
-        dict.__delitem__(self, key)
-
-    def __iter__(self):
-        return dict.__iter__(self)
-
-    def items(self):
-        return dict.items(self)
-
-    def keys(self):
-        return dict.keys(self)
-
-    def values(self):
-        return dict.values(self)
-
-    def __len__(self) -> int:
-        return dict.__len__(self)
-
-    def __contains__(self, key: Any) -> bool:
-        return dict.__contains__(self, key)
-
-    def get(self, key: Any, default: Any = None) -> Any:
-        return dict.get(self, key, default)
-
-    def __missing__(self, key: Any) -> Any:
-        factory = self.default_factory
-        if factory is None:
-            raise KeyError(key)
-        if factory is list:
-            value = []
-        elif factory is dict:
-            value = {}
-        else:
-            value = factory()
-        dict.__setitem__(self, key, value)
-        return value
-
-    def __repr__(self) -> str:
-        return f"defaultdict({self.default_factory!r}, {dict(self)!r})"
+# ---------------------------------------------------------------------------
+# Counter — intrinsic-backed (handle-based, NOT a dict subclass)
+# ---------------------------------------------------------------------------
+# NOTE: isinstance(counter, dict) is False. This is a known Molt breakage
+# since Counter uses handle-based storage delegated to Rust intrinsics.
+# ---------------------------------------------------------------------------
 
 
 class _CounterElementsIter:
-    def __init__(self, counter: Counter) -> None:
-        items: list[tuple[Any, int]] = []
-        for key in counter:
-            items.append((key, dict.get(counter, key, 0)))
-        self._items = items
+    """Iterator for Counter.elements() backed by intrinsic."""
+
+    __slots__ = ("_items", "_index", "_remaining", "_current_key")
+
+    def __init__(self, counter: "Counter") -> None:
+        self._items = _MOLT_COUNTER_ITEMS(counter._handle)
         self._index = 0
         self._remaining = 0
-        self._current_key: Any | None = None
+        self._current_key = None
 
     @staticmethod
     def _coerce_count(count: Any) -> int:
@@ -774,10 +575,9 @@ class _CounterElementsIter:
 
 
 class _CounterItemsIter:
-    def __init__(self, counter: Counter) -> None:
-        items: list[tuple[Any, int]] = []
-        for key in counter:
-            items.append((key, dict.get(counter, key, 0)))
+    __slots__ = ("_items", "_index")
+
+    def __init__(self, items) -> None:
         self._items = items
         self._index = 0
 
@@ -793,11 +593,13 @@ class _CounterItemsIter:
 
 
 class _CounterItemsView:
-    def __init__(self, counter: Counter) -> None:
+    __slots__ = ("_counter",)
+
+    def __init__(self, counter: "Counter") -> None:
         self._counter = counter
 
     def __iter__(self):
-        return _CounterItemsIter(self._counter)
+        return _CounterItemsIter(_MOLT_COUNTER_ITEMS(self._counter._handle))
 
     def __len__(self) -> int:
         return len(self._counter)
@@ -806,7 +608,372 @@ class _CounterItemsView:
         if not isinstance(item, tuple) or len(item) != 2:
             return False
         key, value = item
-        return dict.get(self._counter, key, 0) == value
+        return _MOLT_COUNTER_GETITEM(self._counter._handle, key) == value
 
     def __repr__(self) -> str:
         return f"dict_items({list(self)!r})"
+
+
+class _CounterKeysIter:
+    __slots__ = ("_items", "_index")
+
+    def __init__(self, items) -> None:
+        self._items = items
+        self._index = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._index >= len(self._items):
+            raise StopIteration
+        key, _count = self._items[self._index]
+        self._index += 1
+        return key
+
+
+class _CounterValuesIter:
+    __slots__ = ("_items", "_index")
+
+    def __init__(self, items) -> None:
+        self._items = items
+        self._index = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._index >= len(self._items):
+            raise StopIteration
+        _key, count = self._items[self._index]
+        self._index += 1
+        return count
+
+
+class Counter:
+    __slots__ = ("_handle",)
+
+    def __init__(
+        self,
+        iterable=None,
+        **kwargs,
+    ) -> None:
+        if iterable is not None:
+            if isinstance(iterable, dict) or hasattr(iterable, "items"):
+                if isinstance(iterable, dict):
+                    pairs = list(iterable.items())
+                else:
+                    pairs = [(k, iterable[k]) for k in iterable]
+                self._handle = _MOLT_COUNTER_FROM_MAPPING(pairs)
+            else:
+                if isinstance(iterable, (list, tuple)):
+                    self._handle = _MOLT_COUNTER_FROM_ITERABLE(iterable)
+                else:
+                    self._handle = _MOLT_COUNTER_FROM_ITERABLE(list(iterable))
+        else:
+            self._handle = _MOLT_COUNTER_NEW()
+        if kwargs:
+            _MOLT_COUNTER_UPDATE(self._handle, list(kwargs.items()))
+
+    @classmethod
+    def _from_handle(cls, handle) -> "Counter":
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+
+    def __missing__(self, key: Any) -> int:
+        return 0
+
+    def __getitem__(self, key: Any) -> int:
+        return _MOLT_COUNTER_GETITEM(self._handle, key)
+
+    def __setitem__(self, key: Any, value: int) -> None:
+        _MOLT_COUNTER_SETITEM(self._handle, key, value)
+
+    def __delitem__(self, key: Any) -> None:
+        _MOLT_COUNTER_DELITEM(self._handle, key)
+
+    def __contains__(self, key: Any) -> bool:
+        return bool(_MOLT_COUNTER_CONTAINS(self._handle, key))
+
+    def __len__(self) -> int:
+        return int(_MOLT_COUNTER_LEN(self._handle))
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __iter__(self):
+        return _CounterKeysIter(_MOLT_COUNTER_ITEMS(self._handle))
+
+    def keys(self):
+        items = _MOLT_COUNTER_ITEMS(self._handle)
+        return [k for k, _v in items]
+
+    def values(self):
+        items = _MOLT_COUNTER_ITEMS(self._handle)
+        return [v for _k, v in items]
+
+    def items(self):
+        return _CounterItemsView(self)
+
+    def get(self, key: Any, default=None):
+        if _MOLT_COUNTER_CONTAINS(self._handle, key):
+            return _MOLT_COUNTER_GETITEM(self._handle, key)
+        return default
+
+    def pop(self, key: Any, *args):
+        if len(args) > 1:
+            raise TypeError(f"pop expected at most 2 arguments, got {1 + len(args)}")
+        if _MOLT_COUNTER_CONTAINS(self._handle, key):
+            count = _MOLT_COUNTER_GETITEM(self._handle, key)
+            _MOLT_COUNTER_DELITEM(self._handle, key)
+            return count
+        if args:
+            return args[0]
+        raise KeyError(key)
+
+    def popitem(self):
+        if not len(self):
+            raise KeyError("popitem(): dictionary is empty")
+        items = _MOLT_COUNTER_ITEMS(self._handle)
+        key, count = items[-1]
+        _MOLT_COUNTER_DELITEM(self._handle, key)
+        return (key, count)
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        if _MOLT_COUNTER_CONTAINS(self._handle, key):
+            return _MOLT_COUNTER_GETITEM(self._handle, key)
+        _MOLT_COUNTER_SETITEM(self._handle, key, default)
+        return default
+
+    def clear(self) -> None:
+        _MOLT_COUNTER_CLEAR(self._handle)
+
+    def copy(self) -> "Counter":
+        return Counter._from_handle(_MOLT_COUNTER_COPY(self._handle))
+
+    def update(self, *args, **kwargs) -> None:
+        if args:
+            if len(args) > 1:
+                raise TypeError(f"update expected at most 1 argument, got {len(args)}")
+            source = args[0]
+            if isinstance(source, Counter):
+                _MOLT_COUNTER_UPDATE(self._handle, _MOLT_COUNTER_ITEMS(source._handle))
+            elif isinstance(source, dict) or hasattr(source, "items"):
+                if isinstance(source, dict):
+                    pairs = list(source.items())
+                else:
+                    pairs = [(k, source[k]) for k in source]
+                _MOLT_COUNTER_UPDATE(self._handle, pairs)
+            else:
+                if isinstance(source, (list, tuple)):
+                    _MOLT_COUNTER_UPDATE(self._handle, source)
+                else:
+                    _MOLT_COUNTER_UPDATE(self._handle, list(source))
+        if kwargs:
+            _MOLT_COUNTER_UPDATE(self._handle, list(kwargs.items()))
+
+    def subtract(self, iterable=None, **kwargs) -> None:
+        if iterable is not None:
+            if isinstance(iterable, Counter):
+                _MOLT_COUNTER_SUBTRACT(
+                    self._handle, _MOLT_COUNTER_ITEMS(iterable._handle)
+                )
+            elif isinstance(iterable, dict) or hasattr(iterable, "items"):
+                if isinstance(iterable, dict):
+                    pairs = list(iterable.items())
+                else:
+                    pairs = [(k, iterable[k]) for k in iterable]
+                _MOLT_COUNTER_SUBTRACT(self._handle, pairs)
+            else:
+                if isinstance(iterable, (list, tuple)):
+                    _MOLT_COUNTER_SUBTRACT(self._handle, iterable)
+                else:
+                    _MOLT_COUNTER_SUBTRACT(self._handle, list(iterable))
+        if kwargs:
+            _MOLT_COUNTER_SUBTRACT(self._handle, list(kwargs.items()))
+
+    def elements(self):
+        return _CounterElementsIter(self)
+
+    def most_common(self, n: int | None = None):
+        return _MOLT_COUNTER_MOST_COMMON(self._handle, n)
+
+    def total(self):
+        return _MOLT_COUNTER_TOTAL(self._handle)
+
+    def __repr__(self) -> str:
+        if len(self) == 0:
+            return "Counter()"
+        mc = self.most_common()
+        items: list[str] = []
+        for key, count in mc:
+            items.append(f"{key!r}: {count!r}")
+        return f"Counter({{{', '.join(items)}}})"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, Counter):
+            if len(self) != len(other):
+                return False
+            for key in self:
+                if self[key] != other[key]:
+                    return False
+            for key in other:
+                if key not in self:
+                    return False
+            return True
+        if isinstance(other, dict):
+            if len(self) != len(other):
+                return False
+            for key in self:
+                if self[key] != other.get(key, _MISSING):
+                    return False
+            for key in other:
+                if key not in self:
+                    return False
+            return True
+        return NotImplemented
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __add__(self, other: "Counter") -> "Counter":
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return Counter._from_handle(_MOLT_COUNTER_ADD(self._handle, other._handle))
+
+    def __sub__(self, other: "Counter") -> "Counter":
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return Counter._from_handle(_MOLT_COUNTER_SUB(self._handle, other._handle))
+
+    def __or__(self, other) -> "Counter":
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return Counter._from_handle(_MOLT_COUNTER_OR(self._handle, other._handle))
+
+    def __and__(self, other: "Counter") -> "Counter":
+        if not isinstance(other, Counter):
+            return NotImplemented
+        return Counter._from_handle(_MOLT_COUNTER_AND(self._handle, other._handle))
+
+    def __iadd__(self, other: "Counter"):
+        if not isinstance(other, Counter):
+            return NotImplemented
+        new_handle = _MOLT_COUNTER_ADD(self._handle, other._handle)
+        old_handle = self._handle
+        self._handle = new_handle
+        try:
+            _MOLT_COUNTER_DROP(old_handle)
+        except Exception:
+            pass
+        return self
+
+    def __isub__(self, other: "Counter"):
+        if not isinstance(other, Counter):
+            return NotImplemented
+        new_handle = _MOLT_COUNTER_SUB(self._handle, other._handle)
+        old_handle = self._handle
+        self._handle = new_handle
+        try:
+            _MOLT_COUNTER_DROP(old_handle)
+        except Exception:
+            pass
+        return self
+
+    def __ior__(self, other):
+        if not isinstance(other, Counter):
+            return NotImplemented
+        new_handle = _MOLT_COUNTER_OR(self._handle, other._handle)
+        old_handle = self._handle
+        self._handle = new_handle
+        try:
+            _MOLT_COUNTER_DROP(old_handle)
+        except Exception:
+            pass
+        return self
+
+    def __iand__(self, other: "Counter"):
+        if not isinstance(other, Counter):
+            return NotImplemented
+        new_handle = _MOLT_COUNTER_AND(self._handle, other._handle)
+        old_handle = self._handle
+        self._handle = new_handle
+        try:
+            _MOLT_COUNTER_DROP(old_handle)
+        except Exception:
+            pass
+        return self
+
+    def __hash__(self):
+        raise TypeError("unhashable type: 'Counter'")
+
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _MOLT_COUNTER_DROP(handle)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# defaultdict — subclasses dict, uses intrinsic for factory/__missing__
+# ---------------------------------------------------------------------------
+
+
+class defaultdict(dict):
+    __slots__ = ("_dd_handle",)
+
+    def __init__(self, default_factory=None, *args: Any, **kwargs: Any) -> None:
+        self._dd_handle = _MOLT_DEFAULTDICT_NEW(default_factory)
+        if len(args) > 1:
+            raise TypeError("defaultdict expected at most 1 positional argument")
+        if args:
+            dict.update(self, args[0])
+        if kwargs:
+            dict.update(self, kwargs)
+
+    @property
+    def default_factory(self):
+        return _MOLT_DEFAULTDICT_FACTORY(self._dd_handle)
+
+    @default_factory.setter
+    def default_factory(self, value):
+        old_handle = self._dd_handle
+        self._dd_handle = _MOLT_DEFAULTDICT_NEW(value)
+        try:
+            _MOLT_DEFAULTDICT_DROP(old_handle)
+        except Exception:
+            pass
+
+    def __getitem__(self, key: Any) -> Any:
+        try:
+            return dict.__getitem__(self, key)
+        except KeyError:
+            return self.__missing__(key)
+
+    def __missing__(self, key: Any) -> Any:
+        result = _MOLT_DEFAULTDICT_MISSING(self._dd_handle, key)
+        dict.__setitem__(self, key, result)
+        return result
+
+    def copy(self) -> "defaultdict":
+        factory = self.default_factory
+        new_dd = defaultdict(factory)
+        dict.update(new_dd, self)
+        return new_dd
+
+    def __repr__(self) -> str:
+        return f"defaultdict({self.default_factory!r}, {dict(self)!r})"
+
+    def __del__(self):
+        handle = getattr(self, "_dd_handle", None)
+        if handle is not None:
+            try:
+                _MOLT_DEFAULTDICT_DROP(handle)
+            except Exception:
+                pass
