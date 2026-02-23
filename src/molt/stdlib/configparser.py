@@ -455,64 +455,49 @@ class RawConfigParser:
             _molt_configparser_has_option(self._handle, str(section), str(option))
         )
 
-    def get(
-        self,
-        section: str,
-        option: str,
-        *,
-        raw: bool = False,
-        fallback: Any = _UNSET,
-        **kwargs: Any,
-    ) -> str:
-        try:
-            value = _molt_configparser_get(
-                self._handle, str(section), str(option), None
+    def get(self, section: str, option: str, *, fallback: Any = _UNSET) -> str:
+        _fb = fallback
+        if self.has_option(str(section), str(option)):
+            return str(
+                _molt_configparser_get(self._handle, str(section), str(option), None)
             )
-        except Exception:
-            if fallback is not _UNSET:
-                return fallback
-            raise
-        return str(value)
+        if _fb is not _UNSET:
+            return _fb
+        raise KeyError(option)
 
-    def getint(
-        self, section: str, option: str, *, fallback: Any = _UNSET, **kwargs: Any
-    ) -> int:
-        try:
+    def getint(self, section: str, option: str, *, fallback: Any = _UNSET) -> int:
+        _fb = fallback
+        if self.has_option(str(section), str(option)):
             return int(
                 _molt_configparser_getint(self._handle, str(section), str(option), None)
             )
-        except Exception:
-            if fallback is not _UNSET:
-                return fallback
-            raise
+        if _fb is not _UNSET:
+            return _fb
+        raise KeyError(option)
 
-    def getfloat(
-        self, section: str, option: str, *, fallback: Any = _UNSET, **kwargs: Any
-    ) -> float:
-        try:
+    def getfloat(self, section: str, option: str, *, fallback: Any = _UNSET) -> float:
+        _fb = fallback
+        if self.has_option(str(section), str(option)):
             return float(
                 _molt_configparser_getfloat(
                     self._handle, str(section), str(option), None
                 )
             )
-        except Exception:
-            if fallback is not _UNSET:
-                return fallback
-            raise
+        if _fb is not _UNSET:
+            return _fb
+        raise KeyError(option)
 
-    def getboolean(
-        self, section: str, option: str, *, fallback: Any = _UNSET, **kwargs: Any
-    ) -> bool:
-        try:
+    def getboolean(self, section: str, option: str, *, fallback: Any = _UNSET) -> bool:
+        _fb = fallback
+        if self.has_option(str(section), str(option)):
             return bool(
                 _molt_configparser_getboolean(
                     self._handle, str(section), str(option), None
                 )
             )
-        except Exception:
-            if fallback is not _UNSET:
-                return fallback
-            raise
+        if _fb is not _UNSET:
+            return _fb
+        raise KeyError(option)
 
     def options(self, section: str) -> list[str]:
         return list(_molt_configparser_options(self._handle, str(section)))
@@ -585,25 +570,26 @@ class ConfigParser(RawConfigParser):
         vars: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> str:
-        try:
-            value = _molt_configparser_get(
-                self._handle, str(section), str(option), None
-            )
-        except Exception:
-            if fallback is not _UNSET:
-                return fallback
-            raise
-        if raw or self._interpolation is None:
-            return str(value)
+        # Copy kwonly params to locals (workaround: Molt resets kwonly params
+        # to their defaults after certain calls).
+        _fb = fallback
+        _raw = raw
+        _vars = vars
+        if not self.has_option(str(section), str(option)):
+            if _fb is not _UNSET:
+                return _fb
+            raise KeyError(option)
+        value = str(
+            _molt_configparser_get(self._handle, str(section), str(option), None)
+        )
+        if _raw or self._interpolation is None:
+            return value
         # Apply interpolation.
         defaults_dict: dict[str, str] = {}
-        try:
-            for k, v in _molt_configparser_items(self._handle, str(section)):
-                defaults_dict[k] = v
-        except Exception:
-            pass
-        if vars is not None:
+        for k, v in _molt_configparser_items(self._handle, str(section)):
+            defaults_dict[k] = v
+        if _vars is not None:
             defaults_dict.update(vars)
         return self._interpolation.before_get(
-            self, str(section), str(option), str(value), defaults_dict
+            self, str(section), str(option), value, defaults_dict
         )

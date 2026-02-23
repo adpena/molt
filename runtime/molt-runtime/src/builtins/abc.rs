@@ -464,17 +464,31 @@ fn abc_subclasscheck_impl(
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
-            if !is_not_implemented_bits(_py, hook_res) {
-                let verdict = is_truthy(_py, obj_from_bits(hook_res));
-                if verdict {
-                    set_add(_py, cache_bits, subclass_bits)?;
-                } else {
-                    set_add(_py, neg_cache_bits, subclass_bits)?;
-                }
+            let true_bits = MoltObject::from_bool(true).bits();
+            let false_bits = MoltObject::from_bool(false).bits();
+            if hook_res == true_bits {
+                set_add(_py, cache_bits, subclass_bits)?;
                 if !obj_from_bits(hook_res).is_none() {
                     dec_ref_bits(_py, hook_res);
                 }
-                return Ok(verdict);
+                return Ok(true);
+            }
+            if hook_res == false_bits {
+                set_add(_py, neg_cache_bits, subclass_bits)?;
+                if !obj_from_bits(hook_res).is_none() {
+                    dec_ref_bits(_py, hook_res);
+                }
+                return Ok(false);
+            }
+            if !is_not_implemented_bits(_py, hook_res) {
+                if !obj_from_bits(hook_res).is_none() {
+                    dec_ref_bits(_py, hook_res);
+                }
+                return Err(raise_exception::<_>(
+                    _py,
+                    "AssertionError",
+                    "__subclasshook__ must return either False, True, or NotImplemented",
+                ));
             }
             if !obj_from_bits(hook_res).is_none() {
                 dec_ref_bits(_py, hook_res);

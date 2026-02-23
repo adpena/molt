@@ -40,11 +40,16 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from abc import ABCMeta, abstractmethod
 import sys
 
-Any = object  # type: ignore[assignment]
+_Any = object  # type: ignore[assignment]
 
 
-def cast(_tp, value):  # type: ignore[override]
+def _cast(_tp, value):  # type: ignore[override]
     return value
+
+
+# Keep local compatibility aliases for internal typing-era code paths.
+Any = _Any
+cast = _cast
 
 
 _MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap", globals())
@@ -143,27 +148,36 @@ if _missing_runtime_type_names:
         "collections.abc lowering payload missing required types: "
         + ", ".join(_missing_runtime_type_names)
     )
-bytes_iterator = cast(type[Any], _runtime_type_payload["bytes_iterator"])
-bytearray_iterator = cast(type[Any], _runtime_type_payload["bytearray_iterator"])
-dict_keyiterator = cast(type[Any], _runtime_type_payload["dict_keyiterator"])
-dict_valueiterator = cast(type[Any], _runtime_type_payload["dict_valueiterator"])
-dict_itemiterator = cast(type[Any], _runtime_type_payload["dict_itemiterator"])
-list_iterator = cast(type[Any], _runtime_type_payload["list_iterator"])
-list_reverseiterator = cast(type[Any], _runtime_type_payload["list_reverseiterator"])
-range_iterator = cast(type[Any], _runtime_type_payload["range_iterator"])
-longrange_iterator = cast(type[Any], _runtime_type_payload["longrange_iterator"])
-set_iterator = cast(type[Any], _runtime_type_payload["set_iterator"])
-str_iterator = cast(type[Any], _runtime_type_payload["str_iterator"])
-tuple_iterator = cast(type[Any], _runtime_type_payload["tuple_iterator"])
-zip_iterator = cast(type[Any], _runtime_type_payload["zip_iterator"])
-dict_keys = cast(type[Any], _runtime_type_payload["dict_keys"])
-dict_values = cast(type[Any], _runtime_type_payload["dict_values"])
-dict_items = cast(type[Any], _runtime_type_payload["dict_items"])
-mappingproxy = cast(type[Any], _runtime_type_payload["mappingproxy"])
-framelocalsproxy = cast(type[Any], _runtime_type_payload["framelocalsproxy"])
-generator = cast(type[Any], _runtime_type_payload["generator"])
-coroutine = cast(type[Any], _runtime_type_payload["coroutine"])
-async_generator = cast(type[Any], _runtime_type_payload["async_generator"])
+bytes_iterator = _cast(type[object], _runtime_type_payload["bytes_iterator"])
+bytearray_iterator = _cast(type[object], _runtime_type_payload["bytearray_iterator"])
+dict_keyiterator = _cast(type[object], _runtime_type_payload["dict_keyiterator"])
+dict_valueiterator = _cast(type[object], _runtime_type_payload["dict_valueiterator"])
+dict_itemiterator = _cast(type[object], _runtime_type_payload["dict_itemiterator"])
+list_iterator = _cast(type[object], _runtime_type_payload["list_iterator"])
+list_reverseiterator = _cast(
+    type[object], _runtime_type_payload["list_reverseiterator"]
+)
+range_iterator = _cast(type[object], _runtime_type_payload["range_iterator"])
+longrange_iterator = _cast(type[object], _runtime_type_payload["longrange_iterator"])
+set_iterator = _cast(type[object], _runtime_type_payload["set_iterator"])
+str_iterator = _cast(type[object], _runtime_type_payload["str_iterator"])
+tuple_iterator = _cast(type[object], _runtime_type_payload["tuple_iterator"])
+zip_iterator = _cast(type[object], _runtime_type_payload["zip_iterator"])
+dict_keys = _cast(type[object], _runtime_type_payload["dict_keys"])
+dict_values = _cast(type[object], _runtime_type_payload["dict_values"])
+dict_items = _cast(type[object], _runtime_type_payload["dict_items"])
+mappingproxy = _cast(type[object], _runtime_type_payload["mappingproxy"])
+framelocalsproxy = _cast(type[object], _runtime_type_payload["framelocalsproxy"])
+generator = _cast(type[object], _runtime_type_payload["generator"])
+coroutine = _cast(type[object], _runtime_type_payload["coroutine"])
+async_generator = _cast(type[object], _runtime_type_payload["async_generator"])
+
+# Keep mapping-view runtime types deterministic even during early bootstrap import order.
+_dict_probe = {}
+dict_keys = type(_dict_probe.keys())
+dict_values = type(_dict_probe.values())
+dict_items = type(_dict_probe.items())
+del _dict_probe
 
 for _name in _RUNTIME_TYPE_NAMES:
     _value = _runtime_type_payload[_name]
@@ -174,8 +188,6 @@ for _name in _RUNTIME_TYPE_NAMES:
 del _missing_runtime_type_names
 del _runtime_type_payload
 del _RUNTIME_TYPE_NAMES
-
-
 ### ONE-TRICK PONIES ###
 
 

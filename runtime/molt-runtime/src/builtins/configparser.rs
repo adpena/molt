@@ -601,11 +601,12 @@ pub extern "C" fn molt_configparser_get(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let fallback = opt_str(fallback_bits);
+        // Look up without fallback first; if missing, return fallback_bits
+        // directly (avoids round-tripping fallback through string conversion).
         let result = CONFIG_HANDLES.with(|map| {
             map.borrow()
                 .get(&id)
-                .and_then(|state| state.get(&section, &option, fallback.as_deref()))
+                .and_then(|state| state.get(&section, &option, None))
         });
         match result {
             Some(val) => {
@@ -617,6 +618,9 @@ pub extern "C" fn molt_configparser_get(
                 }
             }
             None => {
+                if !obj_from_bits(fallback_bits).is_none() {
+                    return fallback_bits;
+                }
                 let msg = format!("No option '{option}' in section '{section}'");
                 raise_exception::<u64>(_py, "KeyError", &msg)
             }
@@ -641,11 +645,10 @@ pub extern "C" fn molt_configparser_getint(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let fallback = opt_str(fallback_bits);
         let result = CONFIG_HANDLES.with(|map| {
             map.borrow()
                 .get(&id)
-                .and_then(|state| state.get(&section, &option, fallback.as_deref()))
+                .and_then(|state| state.get(&section, &option, None))
         });
         match result {
             Some(val) => match val.trim().parse::<i64>() {
@@ -658,14 +661,7 @@ pub extern "C" fn molt_configparser_getint(
             },
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    let fallback_val = string_obj_to_owned(obj_from_bits(fallback_bits));
-                    if let Some(f) = fallback_val {
-                        if let Ok(n) = f.trim().parse::<i64>() {
-                            return MoltObject::from_int(n).bits();
-                        }
-                    } else if let Some(n) = to_i64(obj_from_bits(fallback_bits)) {
-                        return MoltObject::from_int(n).bits();
-                    }
+                    return fallback_bits;
                 }
                 raise_exception::<u64>(
                     _py,
@@ -694,11 +690,10 @@ pub extern "C" fn molt_configparser_getfloat(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let fallback = opt_str(fallback_bits);
         let result = CONFIG_HANDLES.with(|map| {
             map.borrow()
                 .get(&id)
-                .and_then(|state| state.get(&section, &option, fallback.as_deref()))
+                .and_then(|state| state.get(&section, &option, None))
         });
         match result {
             Some(val) => match val.trim().parse::<f64>() {
@@ -710,10 +705,8 @@ pub extern "C" fn molt_configparser_getfloat(
                 ),
             },
             None => {
-                if !obj_from_bits(fallback_bits).is_none()
-                    && let Some(f) = to_f64(obj_from_bits(fallback_bits))
-                {
-                    return MoltObject::from_float(f).bits();
+                if !obj_from_bits(fallback_bits).is_none() {
+                    return fallback_bits;
                 }
                 raise_exception::<u64>(
                     _py,
@@ -742,11 +735,10 @@ pub extern "C" fn molt_configparser_getboolean(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let fallback = opt_str(fallback_bits);
         let result = CONFIG_HANDLES.with(|map| {
             map.borrow()
                 .get(&id)
-                .and_then(|state| state.get(&section, &option, fallback.as_deref()))
+                .and_then(|state| state.get(&section, &option, None))
         });
 
         fn parse_bool(s: &str) -> Option<bool> {
@@ -764,13 +756,7 @@ pub extern "C" fn molt_configparser_getboolean(
             },
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    let fb = obj_from_bits(fallback_bits);
-                    if let Some(b) = fb.as_bool() {
-                        return MoltObject::from_bool(b).bits();
-                    }
-                    if let Some(n) = to_i64(fb) {
-                        return MoltObject::from_bool(n != 0).bits();
-                    }
+                    return fallback_bits;
                 }
                 raise_exception::<u64>(
                     _py,

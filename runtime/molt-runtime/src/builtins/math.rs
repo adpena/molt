@@ -3,17 +3,20 @@ use crate::builtins::callable::molt_is_callable;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_from_obj, int_bits_from_bigint};
 use crate::object::ops::{format_obj, type_name};
 use crate::{
-    MoltObject, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_list, alloc_tuple,
+    MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    alloc_list, alloc_tuple, bytes_like_slice,
     attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits,
-    bigint_ref, bigint_to_inline, call_callable0, class_name_for_error, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, exception_pending, inc_ref_bits, intern_static_name,
-    is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, molt_mul, molt_sorted_builtin,
-    obj_from_bits, object_type_id, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
-    to_i64, type_of_bits,
+    bigint_ref, bigint_to_inline, call_callable0, class_name_for_error, dec_ref_bits, dict_get_in_place,
+    dict_set_in_place, exception_pending, inc_ref_bits, intern_static_name, is_truthy, maybe_ptr_from_bits,
+    molt_iter, molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id,
+    raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64,
+    type_of_bits,
 };
+use digest::Digest;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+use sha2::Sha512;
 
 #[derive(Debug)]
 enum RealValue {
@@ -2908,6 +2911,274 @@ fn statistics_coerce_elem_fast_f64(_py: &PyToken<'_>, val_bits: u64, name: &str)
     coerce_to_f64(_py, real)
 }
 
+const STATISTICS_RANDOM_N: usize = 624;
+const STATISTICS_RANDOM_M: usize = 397;
+const STATISTICS_RANDOM_MATRIX_A: u32 = 0x9908_B0DF;
+const STATISTICS_RANDOM_UPPER_MASK: u32 = 0x8000_0000;
+const STATISTICS_RANDOM_LOWER_MASK: u32 = 0x7FFF_FFFF;
+const STATISTICS_RANDOM_RECIP_BPF: f64 = 1.0 / 9_007_199_254_740_992.0;
+
+#[derive(Clone)]
+struct StatisticsRandomRng {
+    mt: [u32; STATISTICS_RANDOM_N],
+    index: usize,
+}
+
+impl StatisticsRandomRng {
+    fn from_seed_key(seed_key: &[u32]) -> Self {
+        let mut out = Self {
+            mt: [0; STATISTICS_RANDOM_N],
+            index: STATISTICS_RANDOM_N,
+        };
+        out.init_by_array(seed_key);
+        out.index = STATISTICS_RANDOM_N;
+        out
+    }
+
+    fn init_genrand(&mut self, seed: u32) {
+        self.mt[0] = seed;
+        for i in 1..STATISTICS_RANDOM_N {
+            let prev = self.mt[i - 1];
+            self.mt[i] = 1_812_433_253u32
+                .wrapping_mul(prev ^ (prev >> 30))
+                .wrapping_add(i as u32);
+        }
+    }
+
+    fn init_by_array(&mut self, init_key: &[u32]) {
+        self.init_genrand(19_650_218);
+        let mut i = 1usize;
+        let mut j = 0usize;
+        let key_length = init_key.len();
+        let k = STATISTICS_RANDOM_N.max(key_length);
+
+        for _ in 0..k {
+            let prev = self.mt[i - 1];
+            let mixed =
+                self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_664_525));
+            self.mt[i] = mixed.wrapping_add(init_key[j]).wrapping_add(j as u32);
+
+            i += 1;
+            j += 1;
+            if i >= STATISTICS_RANDOM_N {
+                self.mt[0] = self.mt[STATISTICS_RANDOM_N - 1];
+                i = 1;
+            }
+            if j >= key_length {
+                j = 0;
+            }
+        }
+
+        for _ in 0..(STATISTICS_RANDOM_N - 1) {
+            let prev = self.mt[i - 1];
+            let mixed =
+                self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_566_083_941));
+            self.mt[i] = mixed.wrapping_sub(i as u32);
+            i += 1;
+            if i >= STATISTICS_RANDOM_N {
+                self.mt[0] = self.mt[STATISTICS_RANDOM_N - 1];
+                i = 1;
+            }
+        }
+
+        self.mt[0] = STATISTICS_RANDOM_UPPER_MASK;
+    }
+
+    fn twist(&mut self) {
+        for i in 0..STATISTICS_RANDOM_N {
+            let y = (self.mt[i] & STATISTICS_RANDOM_UPPER_MASK)
+                | (self.mt[(i + 1) % STATISTICS_RANDOM_N] & STATISTICS_RANDOM_LOWER_MASK);
+            let mut value = self.mt[(i + STATISTICS_RANDOM_M) % STATISTICS_RANDOM_N] ^ (y >> 1);
+            if y & 1 != 0 {
+                value ^= STATISTICS_RANDOM_MATRIX_A;
+            }
+            self.mt[i] = value;
+        }
+        self.index = 0;
+    }
+
+    fn rand_u32(&mut self) -> u32 {
+        if self.index >= STATISTICS_RANDOM_N {
+            self.twist();
+        }
+        let mut y = self.mt[self.index];
+        self.index += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9D2C_5680;
+        y ^= (y << 15) & 0xEFC6_0000;
+        y ^= y >> 18;
+        y
+    }
+
+    fn random(&mut self) -> f64 {
+        let a = (self.rand_u32() >> 5) as u64;
+        let b = (self.rand_u32() >> 6) as u64;
+        (a as f64 * 67_108_864.0 + b as f64) * STATISTICS_RANDOM_RECIP_BPF
+    }
+}
+
+fn statistics_seed_type_error<T>(_py: &PyToken<'_>) -> Option<T> {
+    raise_exception::<Option<T>>(
+        _py,
+        "TypeError",
+        "The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.",
+    )
+}
+
+fn statistics_seed_bigint(_py: &PyToken<'_>, seed_bits: u64) -> Option<BigInt> {
+    let seed_obj = obj_from_bits(seed_bits);
+    if let Some(i) = to_i64(seed_obj) {
+        return Some(BigInt::from(i).abs());
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(seed_bits) {
+        return Some(unsafe { bigint_ref(ptr).abs() });
+    }
+    if seed_obj.as_float().is_some() {
+        let hash_bits = crate::molt_hash_builtin(seed_bits);
+        if exception_pending(_py) {
+            return None;
+        }
+        let hash_obj = obj_from_bits(hash_bits);
+        let hash_u64 = if let Some(i) = to_i64(hash_obj) {
+            i as u64
+        } else if let Some(ptr) = bigint_ptr_from_bits(hash_bits) {
+            let hash_big = unsafe { bigint_ref(ptr).clone() };
+            let modulus = BigInt::one() << 64;
+            hash_big.mod_floor(&modulus).to_u64().unwrap_or(0)
+        } else {
+            if maybe_ptr_from_bits(hash_bits).is_some() {
+                dec_ref_bits(_py, hash_bits);
+            }
+            return raise_exception::<Option<BigInt>>(
+                _py,
+                "TypeError",
+                "hash() should return an integer",
+            );
+        };
+        if maybe_ptr_from_bits(hash_bits).is_some() {
+            dec_ref_bits(_py, hash_bits);
+        }
+        return Some(BigInt::from(hash_u64));
+    }
+
+    let Some(seed_ptr) = seed_obj.as_ptr() else {
+        return statistics_seed_type_error(_py);
+    };
+    let seed_bytes: Vec<u8> = unsafe {
+        match object_type_id(seed_ptr) {
+            TYPE_ID_STRING => {
+                std::slice::from_raw_parts(string_bytes(seed_ptr), string_len(seed_ptr)).to_vec()
+            }
+            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                let Some(slice) = bytes_like_slice(seed_ptr) else {
+                    return statistics_seed_type_error(_py);
+                };
+                slice.to_vec()
+            }
+            _ => return statistics_seed_type_error(_py),
+        }
+    };
+    let digest = Sha512::digest(&seed_bytes);
+    let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
+    payload.extend_from_slice(&seed_bytes);
+    payload.extend_from_slice(&digest);
+    Some(BigInt::from(BigUint::from_bytes_be(&payload)))
+}
+
+fn statistics_seed_key(seed: &BigInt) -> Vec<u32> {
+    let mut key = seed.abs().to_biguint().map_or_else(Vec::new, |v| v.to_u32_digits());
+    if key.is_empty() {
+        key.push(0);
+    }
+    key
+}
+
+fn statistics_normal_dist_sample_count(_py: &PyToken<'_>, n_bits: u64) -> Option<usize> {
+    let n_type = type_name(_py, obj_from_bits(n_bits));
+    let err = format!("'{n_type}' object cannot be interpreted as an integer");
+    let Some(n_big) = index_bigint_from_obj(_py, n_bits, &err) else {
+        return None;
+    };
+    if n_big.is_negative() {
+        return Some(0);
+    }
+    if let Some(n) = n_big.to_usize() {
+        return Some(n);
+    }
+    raise_exception::<Option<usize>>(
+        _py,
+        "OverflowError",
+        "Python int too large to convert to C ssize_t",
+    )
+}
+
+fn statistics_normal_dist_samples_value(
+    _py: &PyToken<'_>,
+    mu_bits: u64,
+    sigma_bits: u64,
+    n_bits: u64,
+    seed_bits: u64,
+    random_fn_bits: u64,
+) -> Option<u64> {
+    let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
+        return None;
+    };
+    let count = statistics_normal_dist_sample_count(_py, n_bits)?;
+    let mut out_bits: Vec<u64> = Vec::with_capacity(count);
+
+    let mut seeded_rng = if obj_from_bits(seed_bits).is_none() {
+        None
+    } else {
+        let seed_big = statistics_seed_bigint(_py, seed_bits)?;
+        Some(StatisticsRandomRng::from_seed_key(&statistics_seed_key(&seed_big)))
+    };
+
+    for _ in 0..count {
+        let p = if let Some(rng) = seeded_rng.as_mut() {
+            rng.random()
+        } else {
+            let p_bits = unsafe { call_callable0(_py, random_fn_bits) };
+            if exception_pending(_py) {
+                return None;
+            }
+            let p_obj = obj_from_bits(p_bits);
+            let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
+                if p_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, p_bits);
+                }
+                return None;
+            };
+            let Some(p_float) = coerce_to_f64(_py, p_real) else {
+                if p_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, p_bits);
+                }
+                return None;
+            };
+            if p_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, p_bits);
+            }
+            p_float
+        };
+
+        if p <= 0.0 || p >= 1.0 {
+            return raise_exception::<Option<u64>>(
+                _py,
+                "ValueError",
+                "inv_cdf undefined for these parameters",
+            );
+        }
+
+        let sample = statistics_normal_dist_inv_cdf_raw(p, mu, sigma);
+        out_bits.push(MoltObject::from_float(sample).bits());
+    }
+
+    let list_ptr = alloc_list(_py, &out_bits);
+    if list_ptr.is_null() {
+        return None;
+    }
+    Some(MoltObject::from_ptr(list_ptr).bits())
+}
+
 fn statistics_normal_dist_params(
     _py: &PyToken<'_>,
     mu_bits: u64,
@@ -3377,6 +3648,29 @@ pub extern "C" fn molt_statistics_normal_dist_new(mu_bits: u64, sigma_bits: u64)
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_statistics_normal_dist_samples(
+    mu_bits: u64,
+    sigma_bits: u64,
+    n_bits: u64,
+    seed_bits: u64,
+    random_fn_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = statistics_normal_dist_samples_value(
+            _py,
+            mu_bits,
+            sigma_bits,
+            n_bits,
+            seed_bits,
+            random_fn_bits,
+        ) else {
+            return MoltObject::none().bits();
+        };
+        value
     })
 }
 
