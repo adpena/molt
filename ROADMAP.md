@@ -414,6 +414,7 @@ Sign-off criteria:
   reducing Python task-scan/callback loops in cancellation/error and
   ready-dispatch hot paths.
 - Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, and `collections` (capability-gated env access).
+- Implemented: top-level `_collections` now exposes an intrinsic-backed `OrderedDict` wrapper (with `deque`/`defaultdict` compatibility re-exports); broader collections-family parity remains partial.
 - Partial: `decimal` shim backed by Rust intrinsics (contexts/traps/flags, quantize/compare/normalize/exp/div, `as_tuple`, `str`/`repr`/float conversions) with native Rust backend when vendored `libmpdec` sources are unavailable.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
 - Implemented: strict intrinsics registry + removal of CPython shim fallbacks in tooling/tests; JSON/MsgPack helpers now use runtime intrinsics only.

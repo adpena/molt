@@ -68,8 +68,8 @@ result = cp.remove_option("main", "temp")
 print(result)
 print(cp.has_option("main", "temp"))
 
-# TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P1, status:divergent): configparser fallback= kwarg crashes in Rust intrinsic; re-enable when fixed.
-# print(cp.get("main", "missing", fallback="default_val"))
-# print(cp.getint("main", "missing", fallback=42))
-# print(cp.getfloat("main", "missing", fallback=2.5))
-# print(cp.getboolean("main", "missing", fallback=False))
+# fallback
+print(cp.get("main", "missing", fallback="default_val"))
+print(cp.getint("main", "missing", fallback=42))
+print(cp.getfloat("main", "missing", fallback=2.5))
+print(cp.getboolean("main", "missing", fallback=False))
