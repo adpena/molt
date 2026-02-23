@@ -112,6 +112,8 @@ pub(crate) use crate::async_rt::{
     molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
+pub use crate::builtins::argparse::*;
+pub use crate::builtins::array_mod::*;
 pub use crate::builtins::ast::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
@@ -126,13 +128,19 @@ pub(crate) use crate::builtins::attr::{
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::binascii::*;
+pub use crate::builtins::bz2::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
     builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
+pub use crate::builtins::cmath_mod::*;
 pub use crate::builtins::codecs::*;
+pub use crate::builtins::codecs_ext::*;
+pub use crate::builtins::collections_ext::*;
 pub use crate::builtins::colorsys::*;
+pub use crate::builtins::concurrent::*;
+pub use crate::builtins::configparser::*;
 pub(crate) use crate::builtins::containers::{
     dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
     dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
@@ -154,7 +162,11 @@ pub(crate) use crate::builtins::contextlib::{
     contextlib_async_exitstack_enter_context_task_drop, contextlib_async_exitstack_exit_task_drop,
     contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
 };
+pub use crate::builtins::csv::*;
+pub use crate::builtins::datetime::*;
 pub use crate::builtins::decimal::*;
+pub use crate::builtins::difflib::*;
+pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
     GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception,
@@ -184,19 +196,24 @@ pub(crate) use crate::builtins::exceptions::{
     task_last_exception_drop, task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
+pub use crate::builtins::fractions::*;
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::graphlib::*;
+pub use crate::builtins::gzip::*;
 pub use crate::builtins::hashlib::*;
 pub use crate::builtins::hmac::*;
+pub use crate::builtins::html::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
     DecodeFailure, close_payload, file_handle_detached_message, file_handle_enter,
     file_handle_exit, file_handle_is_closed, path_from_bits,
 };
+pub use crate::builtins::ipaddress::*;
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
+pub use crate::builtins::lzma::*;
 pub use crate::builtins::math::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
@@ -209,9 +226,16 @@ pub(crate) use crate::builtins::numbers::{
     round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
+pub use crate::builtins::os_ext::*;
 pub use crate::builtins::platform::*;
+pub use crate::builtins::platform_mod::*;
+pub use crate::builtins::regex::*;
+pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
+pub use crate::builtins::shutil::*;
+pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
+pub use crate::builtins::ssl::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -221,12 +245,16 @@ pub(crate) use crate::builtins::strings::{
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
 pub use crate::builtins::structs::*;
+pub use crate::builtins::subprocess_ext::*;
+pub use crate::builtins::tarfile::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
     issubclass_bits, issubclass_runtime, type_of_bits,
 };
 pub use crate::builtins::types::*;
+pub use crate::builtins::unicodedata_mod::*;
 pub use crate::builtins::zlib::*;
+pub use crate::builtins::zoneinfo::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
