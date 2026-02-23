@@ -100,7 +100,8 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(type-coverage, owner:runtime, milestone:TC1, priority:P1, status:partial): recursion limits + `RecursionError` guard semantics.
 - TODO(type-coverage, owner:tests, milestone:TC1, priority:P1, status:planned): add exception + set coverage to molt_diff.
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): generator state objects + StopIteration.
-- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): comprehension lowering to iterators.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): comprehension lowering currently routes through iterator/generator paths with a narrow `LIST_FROM_RANGE` fast path; broaden lowering coverage while preserving CPython semantics.
+- TODO(perf, owner:compiler, milestone:TC2, priority:P1, status:planned): implement PEP 709-style comprehension inlining for list/set/dict comprehensions (beyond the simple range fast path), and gate rollout with pyperformance `comprehensions` + targeted differential comprehension tranche benchmarks.
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin numeric ops (`abs`, `round`, `pow`, `divmod`, `min`, `max`, `sum`).
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin conversions (`int`, `float`, `complex`, `str`, `bool`).

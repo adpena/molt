@@ -4445,8 +4445,47 @@ fn importlib_target_minor(_py: &PyToken<'_>) -> i64 {
     12
 }
 
+const REMOVED_STDLIB_MODULES_313: [&str; 19] = [
+    "aifc",
+    "audioop",
+    "cgi",
+    "cgitb",
+    "chunk",
+    "crypt",
+    "imghdr",
+    "mailcap",
+    "msilib",
+    "nis",
+    "nntplib",
+    "ossaudiodev",
+    "pipes",
+    "sndhdr",
+    "spwd",
+    "sunau",
+    "telnetlib",
+    "uu",
+    "xdrlib",
+];
+
+fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
+    REMOVED_STDLIB_MODULES_313
+        .iter()
+        .copied()
+        .find(|&module| {
+            resolved == module
+                || resolved
+                    .strip_prefix(module)
+                    .is_some_and(|tail| tail.starts_with('.'))
+        })
+}
+
 fn importlib_known_absent_missing_name(_py: &PyToken<'_>, resolved: &str) -> Option<String> {
     let target_minor = importlib_target_minor(_py);
+    if target_minor >= 13
+        && let Some(missing_name) = removed_stdlib_313_missing_name(resolved)
+    {
+        return Some(missing_name.to_string());
+    }
     match resolved {
         "asyncio.graph" if target_minor < 14 => Some(resolved.to_string()),
         "json.__main__" if target_minor < 14 => Some(resolved.to_string()),
