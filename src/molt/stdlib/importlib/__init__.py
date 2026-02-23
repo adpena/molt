@@ -64,7 +64,13 @@ def import_module(name: str, package: str | None = None):
         modules = _runtime_modules()
         modules[resolved] = target
         return target
-    mod = _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
+    try:
+        mod = _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
+    except BaseException as exc:
+        kind = type(exc).__name__
+        if kind in {"ImportError", "ModuleNotFoundError"}:
+            raise ImportError(str(exc))
+        raise
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]
