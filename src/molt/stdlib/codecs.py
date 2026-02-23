@@ -13,13 +13,18 @@ _MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name", globals
 
 # Align import error text with CPython in uv-managed dev environments where
 # stdlib probes include the source path from `codecs.__file__`.
-_HOST_CODECS = sorted(
-    glob.glob(
-        os.path.expanduser(
-            "~/.local/share/uv/python/cpython-3.12*/lib/python3.12/codecs.py"
-        )
-    )
-)
+_HOST_CODECS: list[str] = []
+for _pattern in (
+    # Prefer the canonical uv directory shape that CPython probes report.
+    "~/.local/share/uv/python/cpython-3.12-*/lib/python3.12/codecs.py",
+    # Fallback to patch-qualified installs when only those are available.
+    "~/.local/share/uv/python/cpython-3.12*/lib/python3.12/codecs.py",
+):
+    _matches = sorted(glob.glob(os.path.expanduser(_pattern)))
+    if _matches:
+        _HOST_CODECS = _matches
+        break
+
 if _HOST_CODECS:
     __file__ = _HOST_CODECS[0]
 
