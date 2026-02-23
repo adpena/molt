@@ -2519,97 +2519,6 @@ pub extern "C" fn molt_importlib_exec_restricted_source(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn restricted_literal_parser_supports_core_values() {
-        assert_eq!(
-            parse_restricted_literal("None"),
-            Some(RestrictedLiteral::NoneValue)
-        );
-        assert_eq!(
-            parse_restricted_literal("True"),
-            Some(RestrictedLiteral::Bool(true))
-        );
-        assert_eq!(
-            parse_restricted_literal("-12"),
-            Some(RestrictedLiteral::Int(-12))
-        );
-        assert_eq!(
-            parse_restricted_literal("1.25"),
-            Some(RestrictedLiteral::Float(1.25))
-        );
-        assert_eq!(
-            parse_restricted_literal("'hello\\nworld'"),
-            Some(RestrictedLiteral::Str("hello\nworld".to_string()))
-        );
-        assert_eq!(
-            parse_restricted_literal("b'abc'"),
-            Some(RestrictedLiteral::Bytes(b"abc".to_vec()))
-        );
-        assert_eq!(
-            parse_restricted_literal("[1, 2, 3]"),
-            Some(RestrictedLiteral::List(vec![
-                RestrictedLiteral::Int(1),
-                RestrictedLiteral::Int(2),
-                RestrictedLiteral::Int(3),
-            ]))
-        );
-        assert_eq!(
-            parse_restricted_literal("(1, 'x')"),
-            Some(RestrictedLiteral::Tuple(vec![
-                RestrictedLiteral::Int(1),
-                RestrictedLiteral::Str("x".to_string()),
-            ]))
-        );
-        assert_eq!(
-            parse_restricted_literal("{'a': 1, 'b': [2, 3]}"),
-            Some(RestrictedLiteral::Dict(vec![
-                (
-                    RestrictedLiteral::Str("a".to_string()),
-                    RestrictedLiteral::Int(1),
-                ),
-                (
-                    RestrictedLiteral::Str("b".to_string()),
-                    RestrictedLiteral::List(vec![
-                        RestrictedLiteral::Int(2),
-                        RestrictedLiteral::Int(3),
-                    ]),
-                ),
-            ]))
-        );
-    }
-
-    #[test]
-    fn identifier_parser_matches_basic_python_rules() {
-        assert!(is_identifier_text("_value"));
-        assert!(is_identifier_text("alpha9"));
-        assert!(is_identifier_text("Δx"));
-        assert!(!is_identifier_text("9abc"));
-        assert!(!is_identifier_text("a-b"));
-        assert!(is_dotted_identifier_text("pkg.mod"));
-        assert!(!is_dotted_identifier_text("pkg..mod"));
-    }
-
-    #[test]
-    fn strip_inline_comment_preserves_strings() {
-        assert_eq!(strip_inline_comment_text("x = 1 # tail"), "x = 1");
-        assert_eq!(strip_inline_comment_text("x = 'a#b'  # tail"), "x = 'a#b'");
-        assert_eq!(
-            strip_inline_comment_text("x = \"a#b\\\"c\" # tail"),
-            "x = \"a#b\\\"c\""
-        );
-    }
-
-    #[test]
-    fn runpy_package_name_uses_parent_module() {
-        assert_eq!(runpy_package_name("pkg.tool"), "pkg");
-        assert_eq!(runpy_package_name("single"), "");
-    }
-}
-
 fn copyreg_dict_slot_bits(_py: &PyToken<'_>, slot: &AtomicU64) -> u64 {
     init_atomic_bits(_py, slot, || {
         let ptr = alloc_dict_with_pairs(_py, &[]);
@@ -4058,4 +3967,95 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_literal_parser_supports_core_values() {
+        assert_eq!(
+            parse_restricted_literal("None"),
+            Some(RestrictedLiteral::NoneValue)
+        );
+        assert_eq!(
+            parse_restricted_literal("True"),
+            Some(RestrictedLiteral::Bool(true))
+        );
+        assert_eq!(
+            parse_restricted_literal("-12"),
+            Some(RestrictedLiteral::Int(-12))
+        );
+        assert_eq!(
+            parse_restricted_literal("1.25"),
+            Some(RestrictedLiteral::Float(1.25))
+        );
+        assert_eq!(
+            parse_restricted_literal("'hello\\nworld'"),
+            Some(RestrictedLiteral::Str("hello\nworld".to_string()))
+        );
+        assert_eq!(
+            parse_restricted_literal("b'abc'"),
+            Some(RestrictedLiteral::Bytes(b"abc".to_vec()))
+        );
+        assert_eq!(
+            parse_restricted_literal("[1, 2, 3]"),
+            Some(RestrictedLiteral::List(vec![
+                RestrictedLiteral::Int(1),
+                RestrictedLiteral::Int(2),
+                RestrictedLiteral::Int(3),
+            ]))
+        );
+        assert_eq!(
+            parse_restricted_literal("(1, 'x')"),
+            Some(RestrictedLiteral::Tuple(vec![
+                RestrictedLiteral::Int(1),
+                RestrictedLiteral::Str("x".to_string()),
+            ]))
+        );
+        assert_eq!(
+            parse_restricted_literal("{'a': 1, 'b': [2, 3]}"),
+            Some(RestrictedLiteral::Dict(vec![
+                (
+                    RestrictedLiteral::Str("a".to_string()),
+                    RestrictedLiteral::Int(1),
+                ),
+                (
+                    RestrictedLiteral::Str("b".to_string()),
+                    RestrictedLiteral::List(vec![
+                        RestrictedLiteral::Int(2),
+                        RestrictedLiteral::Int(3),
+                    ]),
+                ),
+            ]))
+        );
+    }
+
+    #[test]
+    fn identifier_parser_matches_basic_python_rules() {
+        assert!(is_identifier_text("_value"));
+        assert!(is_identifier_text("alpha9"));
+        assert!(is_identifier_text("Δx"));
+        assert!(!is_identifier_text("9abc"));
+        assert!(!is_identifier_text("a-b"));
+        assert!(is_dotted_identifier_text("pkg.mod"));
+        assert!(!is_dotted_identifier_text("pkg..mod"));
+    }
+
+    #[test]
+    fn strip_inline_comment_preserves_strings() {
+        assert_eq!(strip_inline_comment_text("x = 1 # tail"), "x = 1");
+        assert_eq!(strip_inline_comment_text("x = 'a#b'  # tail"), "x = 'a#b'");
+        assert_eq!(
+            strip_inline_comment_text("x = \"a#b\\\"c\" # tail"),
+            "x = \"a#b\\\"c\""
+        );
+    }
+
+    #[test]
+    fn runpy_package_name_uses_parent_module() {
+        assert_eq!(runpy_package_name("pkg.tool"), "pkg");
+        assert_eq!(runpy_package_name("single"), "");
+    }
 }

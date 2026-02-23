@@ -453,7 +453,7 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
                     );
                 }
             };
-            if !(state.nfinished < state.npassedout || !ready_snapshot.is_empty()) {
+            if state.nfinished >= state.npassedout && ready_snapshot.is_empty() {
                 break;
             }
             for &idx in ready_snapshot.iter() {

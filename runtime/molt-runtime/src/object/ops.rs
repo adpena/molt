@@ -2742,9 +2742,7 @@ fn string_percent_format_impl(_py: &PyToken<'_>, text: &str, rhs_bits: u64) -> O
         if drop_value {
             dec_ref_bits(_py, value_bits);
         }
-        let Some(rendered) = rendered else {
-            return None;
-        };
+        let rendered = rendered?;
         out.push_str(&rendered);
         literal_start = idx;
     }
@@ -5366,7 +5364,7 @@ fn parse_float_fromhex_text(text: &str) -> Result<f64, ()> {
     let Some(hex_src) = src.strip_prefix("0x").or_else(|| src.strip_prefix("0X")) else {
         return Err(());
     };
-    let mut split = hex_src.split(|c| c == 'p' || c == 'P');
+    let mut split = hex_src.split(['p', 'P']);
     let significand = split.next().ok_or(())?;
     let exponent_text = split.next().ok_or(())?;
     if split.next().is_some() {
@@ -14802,10 +14800,10 @@ fn dir_add_builtin_method_surface(
                 return false;
             }
         }
-        if dir_runtime_python_at_least(_py, 3, 14) {
-            if !add_name(&b"count"[..]) || !add_name(&b"index"[..]) {
-                return false;
-            }
+        if dir_runtime_python_at_least(_py, 3, 14)
+            && (!add_name(&b"count"[..]) || !add_name(&b"index"[..]))
+        {
+            return false;
         }
         return true;
     }
@@ -20945,8 +20943,8 @@ pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u
             let Ok(prefix_str) = std::str::from_utf8(prefix_bytes) else {
                 return MoltObject::none().bits();
             };
-            let out = if hay_str.starts_with(prefix_str) {
-                &hay_str[prefix_str.len()..]
+            let out = if let Some(stripped) = hay_str.strip_prefix(prefix_str) {
+                stripped
             } else {
                 hay_str
             };
@@ -21096,7 +21094,7 @@ pub extern "C" fn molt_string_center(hay_bits: u64, width_bits: u64, fill_bits: 
                     Err(_) => usize::MAX,
                 };
                 let pad = width_usize.saturating_sub(string_char_count(hay_str));
-                let left = (pad + 1) / 2;
+                let left = pad.div_ceil(2);
                 let right = pad - left;
                 align_string_with_fill(hay_str, fill_char, left, right)
             };
@@ -22923,9 +22921,9 @@ fn bytes_align_impl(
             BytesAlignKind::Right => (pad, 0),
         };
         let mut out = Vec::with_capacity(total);
-        out.extend(std::iter::repeat(fill_byte).take(left_pad));
+        out.extend(std::iter::repeat_n(fill_byte, left_pad));
         out.extend_from_slice(hay_bytes);
-        out.extend(std::iter::repeat(fill_byte).take(right_pad));
+        out.extend(std::iter::repeat_n(fill_byte, right_pad));
         let ptr = alloc_bytes_like_for_type(_py, type_id, &out);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -22961,14 +22959,14 @@ fn bytes_zfill_impl(_py: &PyToken<'_>, hay_bits: u64, width_bits: u64, type_id: 
         if let Some(first) = hay_bytes.first().copied() {
             if first == b'+' || first == b'-' {
                 out.push(first);
-                out.extend(std::iter::repeat(b'0').take(pad));
+                out.extend(std::iter::repeat_n(b'0', pad));
                 out.extend_from_slice(&hay_bytes[1..]);
             } else {
-                out.extend(std::iter::repeat(b'0').take(pad));
+                out.extend(std::iter::repeat_n(b'0', pad));
                 out.extend_from_slice(hay_bytes);
             }
         } else {
-            out.extend(std::iter::repeat(b'0').take(pad));
+            out.extend(std::iter::repeat_n(b'0', pad));
         }
         let ptr = alloc_bytes_like_for_type(_py, type_id, &out);
         if ptr.is_null() {
@@ -22985,7 +22983,7 @@ fn bytes_expandtabs_ascii(bytes: &[u8], tabsize: i64) -> Vec<u8> {
     for &b in bytes {
         if b == b'\t' {
             let spaces = if tab == 0 { 0 } else { tab - (column % tab) };
-            out.extend(std::iter::repeat(b' ').take(spaces));
+            out.extend(std::iter::repeat_n(b' ', spaces));
             column = column.saturating_add(spaces);
         } else {
             out.push(b);
@@ -37668,9 +37666,7 @@ fn bisect_search_index(
     }
     while lo < hi {
         let mid = lo + ((hi - lo) / 2);
-        let Some((item_bits, item_owned)) = bisect_item_at(_py, seq, mid) else {
-            return None;
-        };
+        let (item_bits, item_owned) = bisect_item_at(_py, seq, mid)?;
         let Some((item_key_bits, key_owned)) = bisect_key_value(_py, key_bits, item_bits) else {
             if item_owned {
                 dec_ref_bits(_py, item_bits);
@@ -37688,9 +37684,7 @@ fn bisect_search_index(
         if item_owned {
             dec_ref_bits(_py, item_bits);
         }
-        let Some(lt) = cmp else {
-            return None;
-        };
+        let lt = cmp?;
         if lt {
             lo = mid + 1;
         } else {

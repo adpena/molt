@@ -115,22 +115,6 @@ pub(crate) unsafe fn zip_set_strict_bits(ptr: *mut u8, bits: u64) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{zip_set_strict_bits, zip_strict_bits};
-
-    #[test]
-    fn zip_strict_bits_unaligned_roundtrip() {
-        let mut buf = [0u8; 32];
-        let ptr = unsafe { buf.as_mut_ptr().add(1) };
-        let value = 0xA5A5_5A5A_DEAD_BEEFu64;
-        unsafe {
-            zip_set_strict_bits(ptr, value);
-            assert_eq!(zip_strict_bits(ptr), value);
-        }
-    }
-}
-
 pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
@@ -584,4 +568,20 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
     let step_abs = -step;
     let span = start - stop - 1;
     1 + span / step_abs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zip_set_strict_bits, zip_strict_bits};
+
+    #[test]
+    fn zip_strict_bits_unaligned_roundtrip() {
+        let mut buf = [0u8; 32];
+        let ptr = unsafe { buf.as_mut_ptr().add(1) };
+        let value = 0xA5A5_5A5A_DEAD_BEEFu64;
+        unsafe {
+            zip_set_strict_bits(ptr, value);
+            assert_eq!(zip_strict_bits(ptr), value);
+        }
+    }
 }

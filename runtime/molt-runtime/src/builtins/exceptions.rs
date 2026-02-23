@@ -4837,53 +4837,6 @@ pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        generator_exception_stack_drop, generator_exception_stack_store,
-        generator_exception_stack_take, task_exception_stack_drop, task_exception_stack_store,
-        task_exception_stack_take,
-    };
-    use molt_obj_model::MoltObject;
-
-    #[test]
-    fn generator_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            let boxed = Box::new(0_u8);
-            let ptr = Box::into_raw(boxed);
-            let bits = vec![MoltObject::none().bits(), MoltObject::none().bits()];
-            generator_exception_stack_store(ptr, bits);
-            generator_exception_stack_drop(_py, ptr);
-            let after = generator_exception_stack_take(ptr);
-            assert!(
-                after.is_empty(),
-                "generator exception stack should be cleared on drop"
-            );
-            unsafe {
-                drop(Box::from_raw(ptr));
-            }
-        });
-    }
-
-    #[test]
-    fn task_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            let boxed = Box::new(0_u8);
-            let ptr = Box::into_raw(boxed);
-            let bits = vec![MoltObject::none().bits()];
-            task_exception_stack_store(_py, ptr, bits);
-            task_exception_stack_drop(_py, ptr);
-            let after = task_exception_stack_take(_py, ptr);
-            assert!(after.is_empty(), "task exception stack should be cleared");
-            unsafe {
-                drop(Box::from_raw(ptr));
-            }
-        });
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -5493,4 +5446,51 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        generator_exception_stack_drop, generator_exception_stack_store,
+        generator_exception_stack_take, task_exception_stack_drop, task_exception_stack_store,
+        task_exception_stack_take,
+    };
+    use molt_obj_model::MoltObject;
+
+    #[test]
+    fn generator_exception_stack_drop_clears_entries() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            let boxed = Box::new(0_u8);
+            let ptr = Box::into_raw(boxed);
+            let bits = vec![MoltObject::none().bits(), MoltObject::none().bits()];
+            generator_exception_stack_store(ptr, bits);
+            generator_exception_stack_drop(_py, ptr);
+            let after = generator_exception_stack_take(ptr);
+            assert!(
+                after.is_empty(),
+                "generator exception stack should be cleared on drop"
+            );
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        });
+    }
+
+    #[test]
+    fn task_exception_stack_drop_clears_entries() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            let boxed = Box::new(0_u8);
+            let ptr = Box::into_raw(boxed);
+            let bits = vec![MoltObject::none().bits()];
+            task_exception_stack_store(_py, ptr, bits);
+            task_exception_stack_drop(_py, ptr);
+            let after = task_exception_stack_take(_py, ptr);
+            assert!(after.is_empty(), "task exception stack should be cleared");
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        });
+    }
 }

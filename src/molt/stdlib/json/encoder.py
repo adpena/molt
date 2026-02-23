@@ -3,12 +3,12 @@
 import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from _json import encode_basestring
-from _json import encode_basestring as c_encode_basestring
-from _json import encode_basestring_ascii
-from _json import encode_basestring_ascii as c_encode_basestring_ascii
-from _json import make_encoder as c_make_encoder
-from json import JSONEncoder
+from _json import encode_basestring  # noqa: F401
+from _json import encode_basestring as c_encode_basestring  # noqa: F401
+from _json import encode_basestring_ascii  # noqa: F401
+from _json import encode_basestring_ascii as c_encode_basestring_ascii  # noqa: F401
+from _json import make_encoder as c_make_encoder  # noqa: F401
+from json import JSONEncoder  # noqa: F401
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
 

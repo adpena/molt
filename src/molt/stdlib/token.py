@@ -125,6 +125,9 @@ for _constant_name in _CONSTANT_ORDER:
         _CONSTANTS.get(_constant_name), f"constants.{_constant_name}"
     )
 
+NT_OFFSET = _expect_int(_CONSTANTS.get("NT_OFFSET"), "constants.NT_OFFSET")
+ENDMARKER = _expect_int(_CONSTANTS.get("ENDMARKER"), "constants.ENDMARKER")
+
 tok_name = _load_tok_name(_PAYLOAD, _CONSTANTS)
 __all__.extend(_CONSTANT_ORDER)
 

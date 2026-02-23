@@ -233,22 +233,19 @@ fn qp_decode(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut idx = 0usize;
     while idx < input.len() {
-        if input[idx] == b'=' {
-            if idx + 2 < input.len() {
-                if input[idx + 1] == b'\r' && input[idx + 2] == b'\n' {
-                    idx += 3;
-                    continue;
-                }
-                if input[idx + 1] == b'\n' {
-                    idx += 2;
-                    continue;
-                }
-                if let (Some(a), Some(b)) = (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2]))
-                {
-                    out.push((a << 4) | b);
-                    idx += 3;
-                    continue;
-                }
+        if input[idx] == b'=' && idx + 2 < input.len() {
+            if input[idx + 1] == b'\r' && input[idx + 2] == b'\n' {
+                idx += 3;
+                continue;
+            }
+            if input[idx + 1] == b'\n' {
+                idx += 2;
+                continue;
+            }
+            if let (Some(a), Some(b)) = (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2])) {
+                out.push((a << 4) | b);
+                idx += 3;
+                continue;
             }
         }
         out.push(input[idx]);

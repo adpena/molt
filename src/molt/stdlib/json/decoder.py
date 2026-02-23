@@ -3,10 +3,10 @@
 import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-import json.scanner as scanner
+import json.scanner as scanner  # noqa: F401
 from _json import scanstring as c_scanstring
-from json import JSONDecodeError
-from json import JSONDecoder
+from json import JSONDecodeError  # noqa: F401
+from json import JSONDecoder  # noqa: F401
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
 
@@ -20,6 +20,7 @@ BACKSLASH = {
     "r": "\r",
     "t": "\t",
 }
+
 
 # Keep CPython surface shape: `FLAGS` reports type name `RegexFlag`.
 class _RegexFlag:
@@ -63,7 +64,9 @@ def JSONArray(_s_and_end, _scan_once, _memo, _ws, _ws_end):
     raise NotImplementedError("JSONArray runtime path is not implemented")
 
 
-def JSONObject(_s_and_end, _strict, _scan_once, _object_hook, _object_pairs_hook, _memo):
+def JSONObject(
+    _s_and_end, _strict, _scan_once, _object_hook, _object_pairs_hook, _memo
+):
     raise NotImplementedError("JSONObject runtime path is not implemented")
 
 

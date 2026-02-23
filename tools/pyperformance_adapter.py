@@ -222,8 +222,8 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
         print(json.dumps(payload, sort_keys=True))
     else:
         print(f"suite_root={suite_root}")
-        print(f"benchmark_count={catalog.benchmark_count}")
-        print("groups=" + ",".join(catalog.groups))
+        print(f"benchmark_count={int(payload['benchmark_count'])}")
+        print("groups=" + ",".join(payload["groups"]))
         print("smoke_available=" + ",".join(payload["smoke_available"]))
     return 0
 
