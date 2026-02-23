@@ -199,10 +199,14 @@ class NormalDist:
         return cls(mean(data), stdev(data))
 
     def samples(self, n: int, *, seed: _Any = None) -> list[float]:
-        gauss = random.gauss if seed is None else random.Random(seed).gauss
-        mu = self._mu
-        sigma = self._sigma
-        return [gauss(mu, sigma) for _ in repeat(None, n)]
+        try:
+            return list(
+                _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
+                    self._mu, self._sigma, n, seed, random.random
+                )
+            )
+        except ValueError:
+            raise ValueError("inv_cdf undefined for these parameters") from None
 
     def pdf(self, x: _Any) -> float:
         try:
@@ -348,6 +352,9 @@ _MOLT_STATISTICS_LINEAR_REGRESSION = _require_intrinsic(
 )
 _MOLT_STATISTICS_NORMAL_DIST_NEW = _require_intrinsic(
     "molt_statistics_normal_dist_new", globals()
+)
+_MOLT_STATISTICS_NORMAL_DIST_SAMPLES = _require_intrinsic(
+    "molt_statistics_normal_dist_samples", globals()
 )
 _MOLT_STATISTICS_NORMAL_DIST_PDF = _require_intrinsic(
     "molt_statistics_normal_dist_pdf", globals()

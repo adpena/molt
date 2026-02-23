@@ -18,6 +18,7 @@ repeated = b"abcdefgh" * 1000
 repeated_compressed = lzma.compress(repeated)
 repeated_roundtrip = lzma.decompress(repeated_compressed)
 print("repeated roundtrip:", repeated_roundtrip == repeated)
+print("repeated compressed smaller:", len(repeated_compressed) < len(repeated))
 
 # --- Round-trip: binary data with all byte values ---
 all_bytes = bytes(range(256)) * 10

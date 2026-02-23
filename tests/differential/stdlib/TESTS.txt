@@ -161,6 +161,7 @@ tests/differential/basic/unicode_surrogate_handling.py
 tests/differential/stdlib/_bisect_basic.py
 tests/differential/stdlib/_opcode_basic.py
 tests/differential/stdlib/abc_basic.py
+tests/differential/stdlib/abc_subclasshook_return_contract.py
 tests/differential/stdlib/abc_update_abstractmethods_intrinsic.py
 tests/differential/stdlib/argparse_basic.py
 tests/differential/stdlib/argparse_filetype_basic.py
@@ -1750,6 +1751,7 @@ tests/differential/stdlib/statistics_median_grouped.py
 tests/differential/stdlib/statistics_median_low_high.py
 tests/differential/stdlib/statistics_multimode.py
 tests/differential/stdlib/statistics_normal_dist_basic.py
+tests/differential/stdlib/statistics_normal_dist_samples_semantics.py
 tests/differential/stdlib/statistics_quantiles.py
 tests/differential/stdlib/statistics_variance.py
 tests/differential/stdlib/statistics_variance_pvariance_pstdev_basic.py

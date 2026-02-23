@@ -1,6 +1,6 @@
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
-use std::io::Cursor;
+use std::io::{Read, Write};
 
 // ── Format constants (mirror CPython lzma module) ────────────────────────────
 
@@ -111,21 +111,37 @@ fn opt_i64(_py: &PyToken<'_>, bits: u64, default: i64, name: &str) -> Result<i64
     Ok(val)
 }
 
-// lzma-rs does not expose compression-level tuning through its public API.
-// The preset parameter is accepted for CPython API compatibility but the underlying
-// crate always uses its internal default compression settings.
+/// Map CPython preset to xz2 preset level (0-9), honouring PRESET_EXTREME flag.
+fn resolve_preset(preset: i64) -> u32 {
+    const LIBLZMA_PRESET_EXTREME: u32 = 1u32 << 31;
+    let extreme = preset & PRESET_EXTREME != 0;
+    let level = (preset & 0x1f).clamp(0, 9) as u32;
+    if extreme {
+        level | LIBLZMA_PRESET_EXTREME
+    } else {
+        level
+    }
+}
+
+/// Map Molt check constant to xz2 Check enum.
+fn resolve_check(check: i64) -> xz2::stream::Check {
+    match check {
+        0 => xz2::stream::Check::None,
+        1 => xz2::stream::Check::Crc32,
+        4 => xz2::stream::Check::Crc64,
+        10 => xz2::stream::Check::Sha256,
+        _ => xz2::stream::Check::Crc64, // default
+    }
+}
 
 // ── One-shot compress ─────────────────────────────────────────────────────────
 
 /// `lzma.compress(data, format=FORMAT_XZ, check=-1, preset=None) -> bytes`
-///
-/// Supports FORMAT_XZ (default) and FORMAT_ALONE (.lzma).
-/// FORMAT_RAW / FORMAT_AUTO follow the same path as FORMAT_ALONE for now.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compress(
     data_bits: u64,
     format_bits: u64,
-    _check_bits: u64,
+    check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -137,26 +153,59 @@ pub extern "C" fn molt_lzma_compress(
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let _preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
+        let preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let mut out = Vec::new();
-        let ok = match format {
+        let check_val = match opt_i64(_py, check_bits, -1, "check") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let xz_preset = resolve_preset(preset);
+        let xz_check = if check_val < 0 {
+            xz2::stream::Check::Crc64
+        } else {
+            resolve_check(check_val)
+        };
+        let result: Result<Vec<u8>, std::io::Error> = match format {
             FORMAT_XZ | FORMAT_AUTO => {
-                lzma_rs::xz_compress(&mut Cursor::new(data), &mut out).is_ok()
+                let stream =
+                    match xz2::stream::Stream::new_easy_encoder(xz_preset, xz_check) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let msg = format!("lzma init error: {e}");
+                            return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                        }
+                    };
+                let mut enc =
+                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                enc.write_all(data).and_then(|()| enc.finish())
             }
             FORMAT_ALONE | FORMAT_RAW => {
-                lzma_rs::lzma_compress(&mut Cursor::new(data), &mut out).is_ok()
+                let opts = xz2::stream::LzmaOptions::new_preset(xz_preset)
+                    .unwrap_or_else(|_| xz2::stream::LzmaOptions::new_preset(6).unwrap());
+                let stream = match xz2::stream::Stream::new_lzma_encoder(&opts) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let msg = format!("lzma init error: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                };
+                let mut enc =
+                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                enc.write_all(data).and_then(|()| enc.finish())
             }
             _ => {
                 return raise_exception::<u64>(_py, "ValueError", "unknown format");
             }
         };
-        if !ok {
-            return raise_exception::<u64>(_py, "lzma.LZMAError", "lzma compress failed");
+        match result {
+            Ok(out) => return_bytes(_py, &out),
+            Err(e) => {
+                let msg = format!("lzma compress failed: {e}");
+                raise_exception::<u64>(_py, "lzma.LZMAError", &msg)
+            }
         }
-        return_bytes(_py, &out)
     })
 }
 
@@ -178,33 +227,55 @@ pub extern "C" fn molt_lzma_decompress(
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let mut out = Vec::new();
-        // For FORMAT_AUTO, try XZ first then LZMA-alone.
-        let ok = match format {
-            FORMAT_XZ => lzma_rs::xz_decompress(&mut Cursor::new(data), &mut out).is_ok(),
+        let result: Result<Vec<u8>, std::io::Error> = match format {
+            FORMAT_XZ => {
+                let mut dec = xz2::read::XzDecoder::new(data);
+                let mut out = Vec::new();
+                dec.read_to_end(&mut out).map(|_| out)
+            }
             FORMAT_ALONE | FORMAT_RAW => {
-                lzma_rs::lzma_decompress(&mut Cursor::new(data), &mut out).is_ok()
+                let stream = match xz2::stream::Stream::new_lzma_decoder(u64::MAX) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let msg = format!("lzma init error: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                };
+                let mut dec = xz2::read::XzDecoder::new_stream(data, stream);
+                let mut out = Vec::new();
+                dec.read_to_end(&mut out).map(|_| out)
             }
             FORMAT_AUTO => {
                 // XZ streams start with 0xfd '7zXZ\0'
                 if data.starts_with(b"\xfd7zXZ\x00") {
-                    lzma_rs::xz_decompress(&mut Cursor::new(data), &mut out).is_ok()
+                    let mut dec = xz2::read::XzDecoder::new(data);
+                    let mut out = Vec::new();
+                    dec.read_to_end(&mut out).map(|_| out)
                 } else {
-                    lzma_rs::lzma_decompress(&mut Cursor::new(data), &mut out).is_ok()
+                    let stream = match xz2::stream::Stream::new_lzma_decoder(u64::MAX) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let msg = format!("lzma init error: {e}");
+                            return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                        }
+                    };
+                    let mut dec = xz2::read::XzDecoder::new_stream(data, stream);
+                    let mut out = Vec::new();
+                    dec.read_to_end(&mut out).map(|_| out)
                 }
             }
             _ => {
                 return raise_exception::<u64>(_py, "ValueError", "unknown format");
             }
         };
-        if !ok {
-            return raise_exception::<u64>(
+        match result {
+            Ok(out) => return_bytes(_py, &out),
+            Err(_) => raise_exception::<u64>(
                 _py,
                 "lzma.LZMAError",
                 "Input data is not a valid XZ/LZMA stream",
-            );
+            ),
         }
-        return_bytes(_py, &out)
     })
 }
 
@@ -212,6 +283,8 @@ pub extern "C" fn molt_lzma_decompress(
 
 struct LzmaCompressorHandle {
     format: i64,
+    preset: u32,
+    check: xz2::stream::Check,
     buffer: Vec<u8>,
     flushed: bool,
 }
@@ -227,7 +300,7 @@ fn lzma_compressor_from_bits(bits: u64) -> Option<&'static mut LzmaCompressorHan
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_new(
     format_bits: u64,
-    _check_bits: u64,
+    check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -235,12 +308,22 @@ pub extern "C" fn molt_lzma_compressor_new(
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let _preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
+        let preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let check_val = match opt_i64(_py, check_bits, -1, "check") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
         let handle = Box::new(LzmaCompressorHandle {
             format,
+            preset: resolve_preset(preset),
+            check: if check_val < 0 {
+                xz2::stream::Check::Crc64
+            } else {
+                resolve_check(check_val)
+            },
             buffer: Vec::new(),
             flushed: false,
         });
@@ -250,10 +333,6 @@ pub extern "C" fn molt_lzma_compressor_new(
 }
 
 /// `compressor.compress(data) -> bytes`
-///
-/// Buffers data; output is only available after `flush()`.
-/// This matches CPython's LZMACompressor behaviour where data accumulates
-/// until `flush()` is called.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_compress(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -268,8 +347,6 @@ pub extern "C" fn molt_lzma_compressor_compress(handle_bits: u64, data_bits: u64
             Err(bits) => return bits,
         };
         handle.buffer.extend_from_slice(data);
-        // Return empty bytes — consistent with CPython's streaming compressor
-        // that accumulates until flush/EOF.
         return_bytes(_py, &[])
     })
 }
@@ -290,20 +367,47 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
         }
         handle.flushed = true;
         let input = std::mem::take(&mut handle.buffer);
-        let mut out = Vec::new();
-        let ok = match handle.format {
+        let result: Result<Vec<u8>, std::io::Error> = match handle.format {
             FORMAT_XZ | FORMAT_AUTO => {
-                lzma_rs::xz_compress(&mut Cursor::new(&input), &mut out).is_ok()
+                let stream = match xz2::stream::Stream::new_easy_encoder(
+                    handle.preset,
+                    handle.check,
+                ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let msg = format!("lzma init error: {e}");
+                            return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                        }
+                    };
+                let mut enc =
+                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                enc.write_all(&input).and_then(|()| enc.finish())
             }
             FORMAT_ALONE | FORMAT_RAW => {
-                lzma_rs::lzma_compress(&mut Cursor::new(&input), &mut out).is_ok()
+                let opts = xz2::stream::LzmaOptions::new_preset(handle.preset)
+                    .unwrap_or_else(|_| xz2::stream::LzmaOptions::new_preset(6).unwrap());
+                let stream = match xz2::stream::Stream::new_lzma_encoder(&opts) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let msg = format!("lzma init error: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                };
+                let mut enc =
+                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                enc.write_all(&input).and_then(|()| enc.finish())
             }
-            _ => return raise_exception::<u64>(_py, "ValueError", "unknown format"),
+            _ => {
+                return raise_exception::<u64>(_py, "ValueError", "unknown format");
+            }
         };
-        if !ok {
-            return raise_exception::<u64>(_py, "lzma.LZMAError", "lzma compress failed");
+        match result {
+            Ok(out) => return_bytes(_py, &out),
+            Err(e) => {
+                let msg = format!("lzma compress failed: {e}");
+                raise_exception::<u64>(_py, "lzma.LZMAError", &msg)
+            }
         }
-        return_bytes(_py, &out)
     })
 }
 
@@ -381,9 +485,7 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
         };
         handle.input_buffer.extend_from_slice(new_data);
         let input = std::mem::take(&mut handle.input_buffer);
-        let mut out = Vec::new();
         let format = handle.format;
-        // Detect format for FORMAT_AUTO
         let effective_format = if format == FORMAT_AUTO {
             if input.starts_with(b"\xfd7zXZ\x00") {
                 FORMAT_XZ
@@ -393,32 +495,45 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
         } else {
             format
         };
-        let result = match effective_format {
-            FORMAT_XZ => lzma_rs::xz_decompress(&mut Cursor::new(&input), &mut out),
+        let result: Result<Vec<u8>, std::io::Error> = match effective_format {
+            FORMAT_XZ => {
+                let mut dec = xz2::read::XzDecoder::new(input.as_slice());
+                let mut out = Vec::new();
+                dec.read_to_end(&mut out).map(|_| out)
+            }
             FORMAT_ALONE | FORMAT_RAW => {
-                lzma_rs::lzma_decompress(&mut Cursor::new(&input), &mut out)
+                let stream = match xz2::stream::Stream::new_lzma_decoder(u64::MAX) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        handle.input_buffer = input;
+                        let msg = format!("lzma init error: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                };
+                let mut dec = xz2::read::XzDecoder::new_stream(input.as_slice(), stream);
+                let mut out = Vec::new();
+                dec.read_to_end(&mut out).map(|_| out)
             }
             _ => {
                 return raise_exception::<u64>(_py, "ValueError", "unknown format");
             }
         };
         match result {
-            Ok(()) => {
+            Ok(mut out) => {
                 handle.eof = true;
                 handle.needs_input = false;
                 handle.unused_data = Vec::new();
+                if max_len >= 0 && out.len() > max_len as usize {
+                    out.truncate(max_len as usize);
+                }
+                return_bytes(_py, &out)
             }
             Err(_) => {
-                // Store input for next call in case it was incomplete
                 handle.input_buffer = input;
                 handle.needs_input = true;
+                return_bytes(_py, &[])
             }
         }
-        // Honour max_length
-        if max_len >= 0 && out.len() > max_len as usize {
-            out.truncate(max_len as usize);
-        }
-        return_bytes(_py, &out)
     })
 }
 
