@@ -17,14 +17,14 @@
 - Examples: `molt_json`, `molt_msgpack`, `molt_cbor`, data/IO connectors.
 - Capability gating enforced at package boundaries.
 - C-extension compatibility is achieved by recompiling against `libmolt`
-  (see `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`).
+  (see `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`).
 
 ### 1.3 Tier C: CPython Bridge (Explicit Escape Hatch)
 - Primary C-extension strategy is to recompile against `libmolt` (Tier B).
 - The CPython bridge is opt-in and capability-gated, never the default.
 - When enabled, run in a CPython worker process with Arrow IPC and structured codecs.
 - Deterministic mode restricts nondeterministic APIs unless explicitly allowed.
- - See `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md` for bridge modes,
+ - See `docs/spec/areas/compat/contracts/cpython_bridge_policy.md` for bridge modes,
    capability rules, and performance guardrails.
 
 ---

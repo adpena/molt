@@ -6,7 +6,7 @@ Molt’s long-term stance:
 - Tier 0: no CPython C-extension loading.
 - Tier 1: `libmolt` C-API for recompiled extensions (primary path).
 - Tier 2: optional CPython bridge mode with strict constraints.
-- See `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md` for the PyO3 bridge spec and
+- See `docs/spec/areas/compat/contracts/cpython_bridge_policy.md` for the PyO3 bridge spec and
   capability-gated CPython fallback design.
 
 ## Interop modes

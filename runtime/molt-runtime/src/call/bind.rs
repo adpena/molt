@@ -978,6 +978,42 @@ pub(crate) unsafe fn callargs_dec_ref_all(_py: &PyToken<'_>, args_ptr: *mut Call
     }
 }
 
+/// Protect a call result from callargs cleanup.
+///
+/// When `molt_call_bind` (or its IC fast-path) calls the target function, the
+/// callee may return one of the values that was passed through the CallArgs
+/// builder. The `PtrDropGuard` will dec-ref the entire CallArgs (including all
+/// stored positional and keyword values) as soon as the enclosing scope exits.
+/// If the return value aliases a stored value, that dec-ref would free it before
+/// the caller can use it — a use-after-free.
+///
+/// This function checks whether `result` bit-equals any value in the CallArgs
+/// positional or keyword-value slots. If so, it inc-refs `result` so that the
+/// caller receives an independently-owned reference that survives the CallArgs
+/// cleanup.
+///
+/// # Safety
+/// `args_ptr` must be null or point to a valid `CallArgs`.
+unsafe fn protect_callargs_aliased_return(
+    _py: &PyToken<'_>,
+    result: u64,
+    args_ptr: *mut CallArgs,
+) -> u64 {
+    unsafe {
+        if args_ptr.is_null() {
+            return result;
+        }
+        let args = &*args_ptr;
+        for &val in args.pos.iter().chain(args.kw_values.iter()) {
+            if val == result {
+                inc_ref_bits(_py, result);
+                break;
+            }
+        }
+        result
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1389,7 +1425,8 @@ unsafe fn call_bind_ic_dispatch(
                 && let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr)
             {
                 profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
-                return res;
+                let args_ptr = callargs_ptr(builder_ptr);
+                return protect_callargs_aliased_return(_py, res, args_ptr);
             }
         }
 
@@ -2007,7 +2044,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 }
                 return obj_bits;
             }
-            call_function_obj_vec(_py, func_bits, final_args.as_slice())
+            let result = call_function_obj_vec(_py, func_bits, final_args.as_slice());
+            protect_callargs_aliased_return(_py, result, args_ptr)
         }
     })
 }

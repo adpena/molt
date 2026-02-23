@@ -23,6 +23,7 @@ hello_molt
 *_molt
 *_molt.exe
 logs/
+docs/python_documentation/
 third_party/
 winget-pkgs/
 bench/results/*

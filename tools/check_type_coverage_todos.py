@@ -13,8 +13,8 @@ def _extract_todos(text: str, pattern: str) -> set[str]:
 
 
 def main() -> int:
-    matrix = Path("docs/spec/0014_TYPE_COVERAGE_MATRIX.md")
-    stdlib = Path("docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md")
+    matrix = Path("docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md")
+    stdlib = Path("docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md")
     roadmap = Path("ROADMAP.md")
 
     matrix_todos = _extract_todos(_load(matrix), r"TODO\\(type-coverage[^)]*\\)")

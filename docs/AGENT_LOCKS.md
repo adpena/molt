@@ -46,7 +46,7 @@ codex -> src/molt/stdlib/weakref.py
 codex -> runtime/molt-runtime/src/object/weakref.rs
 codex -> runtime/molt-runtime/src/builtins/functions.rs
 codex -> src/molt/stdlib/runpy.py
-codex -> docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md
+codex -> docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md
 codex -> docs/spec/STATUS.md
 codex -> ROADMAP.md
 codex -> tests/differential/COVERAGE_INDEX.yaml
