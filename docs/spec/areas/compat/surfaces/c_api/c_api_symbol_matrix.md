@@ -9,7 +9,7 @@
 - **Source Compatibility:** We aim for source compatibility for a high-value subset of the Limited API (Py_LIMITED_API).
 - **Primary Path:** `libmolt` is the primary C-extension compatibility path; CPython bridge modes are explicit, opt-in escape hatches.
 - **V0 Contract:** The target surface area and semantics are defined in
-  `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`.
+  `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`.
 - **Current Status:** No C API layer is implemented in the repo yet; all symbols below are targets and should be treated as **Missing** until a `libmolt` shim lands.
 - **Hollow Symbols (future):** Some symbols may exist but return generic errors or empty values if their functionality (e.g., GC inspection) is not supported (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): define hollow-symbol policy + error surface).
 

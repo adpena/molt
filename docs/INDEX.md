@@ -46,14 +46,13 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0192 Idioms And Semantic Patterns: [docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md](docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md)
 
 ## Compatibility and Stdlib
-- 0014 Type Coverage Matrix: [docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md](docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md)
-- 0015 Stdlib Compatibility Matrix: [docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md](docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md)
-- 0015-IB Stdlib Intrinsics Backing Tracker: [docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md](docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md)
-- 0016 Stdlib Intrinsics Audit: [docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md](docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md)
-- 0027 Stdlib Union Baseline: [docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md](docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md)
-- 0028 Stdlib Intrinsics Execution Plan: [docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md](docs/spec/areas/compat/0028_STDLIB_INTRINSICS_EXECUTION_PLAN.md)
-- 0026 Rust Lowering Program: [docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md](docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md)
-- 0214 libmolt C-API v0: [docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md](docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md)
+- Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
+- Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
+- Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
+- C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
+- Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
+- Compatibility fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
+- Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Testing and Benchmarks
 - 0007 Testing: [docs/spec/areas/testing/0007-testing.md](docs/spec/areas/testing/0007-testing.md)
@@ -67,8 +66,8 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - [docs/CAPABILITIES.md](docs/CAPABILITIES.md)
 - [docs/SECURITY.md](docs/SECURITY.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
-- 0211 Compatibility And Fallback Contract: [docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md](docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md)
-- 0215 Verified Subset Contract: [docs/spec/areas/compat/0215_VERIFIED_SUBSET_CONTRACT.md](docs/spec/areas/compat/0215_VERIFIED_SUBSET_CONTRACT.md)
+- 0211 Compatibility And Fallback Contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
+- 0215 Verified Subset Contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Web, DB, and WASM
 - 0900 HTTP Server Runtime: [docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md](docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md)

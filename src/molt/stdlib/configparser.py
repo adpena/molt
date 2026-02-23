@@ -456,47 +456,43 @@ class RawConfigParser:
         )
 
     def get(self, section: str, option: str, *, fallback: Any = _UNSET) -> str:
-        _fb = fallback
         if self.has_option(str(section), str(option)):
             return str(
                 _molt_configparser_get(self._handle, str(section), str(option), None)
             )
-        if _fb is not _UNSET:
-            return _fb
+        if fallback is not _UNSET:
+            return fallback
         raise KeyError(option)
 
     def getint(self, section: str, option: str, *, fallback: Any = _UNSET) -> int:
-        _fb = fallback
         if self.has_option(str(section), str(option)):
             return int(
                 _molt_configparser_getint(self._handle, str(section), str(option), None)
             )
-        if _fb is not _UNSET:
-            return _fb
+        if fallback is not _UNSET:
+            return fallback
         raise KeyError(option)
 
     def getfloat(self, section: str, option: str, *, fallback: Any = _UNSET) -> float:
-        _fb = fallback
         if self.has_option(str(section), str(option)):
             return float(
                 _molt_configparser_getfloat(
                     self._handle, str(section), str(option), None
                 )
             )
-        if _fb is not _UNSET:
-            return _fb
+        if fallback is not _UNSET:
+            return fallback
         raise KeyError(option)
 
     def getboolean(self, section: str, option: str, *, fallback: Any = _UNSET) -> bool:
-        _fb = fallback
         if self.has_option(str(section), str(option)):
             return bool(
                 _molt_configparser_getboolean(
                     self._handle, str(section), str(option), None
                 )
             )
-        if _fb is not _UNSET:
-            return _fb
+        if fallback is not _UNSET:
+            return fallback
         raise KeyError(option)
 
     def options(self, section: str) -> list[str]:
@@ -570,25 +566,20 @@ class ConfigParser(RawConfigParser):
         vars: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> str:
-        # Copy kwonly params to locals (workaround: Molt resets kwonly params
-        # to their defaults after certain calls).
-        _fb = fallback
-        _raw = raw
-        _vars = vars
         if not self.has_option(str(section), str(option)):
-            if _fb is not _UNSET:
-                return _fb
+            if fallback is not _UNSET:
+                return fallback
             raise KeyError(option)
         value = str(
             _molt_configparser_get(self._handle, str(section), str(option), None)
         )
-        if _raw or self._interpolation is None:
+        if raw or self._interpolation is None:
             return value
         # Apply interpolation.
         defaults_dict: dict[str, str] = {}
         for k, v in _molt_configparser_items(self._handle, str(section)):
             defaults_dict[k] = v
-        if _vars is not None:
+        if vars is not None:
             defaults_dict.update(vars)
         return self._interpolation.before_get(
             self, str(section), str(option), value, defaults_dict
