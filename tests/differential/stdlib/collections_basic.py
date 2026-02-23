@@ -1,6 +1,7 @@
 """Purpose: differential coverage for collections basic."""
 
 import collections
+import _collections
 
 d = collections.deque([1, 2])
 d.appendleft(0)
@@ -35,3 +36,6 @@ try:
     print("noerror")
 except KeyError:
     print("keyerror")
+
+od_intrinsic = _collections.OrderedDict([("x", 10), ("y", 20)])
+print(list(od_intrinsic.items()))

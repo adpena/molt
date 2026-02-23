@@ -75,8 +75,26 @@ fn csin(re: f64, im: f64) -> (f64, f64) {
 }
 
 // cos(a + bi) = cos(a)cosh(b) - i*sin(a)sinh(b)
+// C99 Annex G: ccos(+0+0i) = 1-0i  — must preserve signed-zero imaginary.
 fn ccos(re: f64, im: f64) -> (f64, f64) {
-    (re.cos() * libm::cosh(im), -re.sin() * libm::sinh(im))
+    let real = re.cos() * libm::cosh(im);
+    let sin_re = re.sin();
+    let sinh_im = libm::sinh(im);
+    // When both factors are ±0.0 the product sign can be lost by the
+    // hardware/optimiser.  Use copysign to reconstruct the correct sign:
+    // sign(imag) = -(sign(sin_re) XOR sign(sinh_im)).
+    let imag = if sin_re == 0.0 && sinh_im == 0.0 {
+        // Product magnitude is zero; compute sign manually.
+        let sign = if sin_re.is_sign_negative() ^ sinh_im.is_sign_negative() {
+            1.0_f64 // negative * positive → negative, negate → positive
+        } else {
+            -1.0_f64 // same signs → positive product, negate → negative
+        };
+        f64::copysign(0.0, sign)
+    } else {
+        -sin_re * sinh_im
+    };
+    (real, imag)
 }
 
 // tan(z) = sin(z)/cos(z) — computed directly via identity

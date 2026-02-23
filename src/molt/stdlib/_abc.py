@@ -5,33 +5,17 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-_bootstrap = _require_intrinsic("molt_abc_bootstrap", globals())
-data = _bootstrap()
-if not isinstance(data, dict):
-    raise RuntimeError("_abc intrinsics unavailable")
-
-get_cache_token = data["get_cache_token"]
-_abc_init = data["_abc_init"]
-_abc_register = data["_abc_register"]
-_abc_instancecheck = data["_abc_instancecheck"]
-_abc_subclasscheck = data["_abc_subclasscheck"]
-_get_dump = data["_get_dump"]
-_reset_registry = data["_reset_registry"]
-_reset_caches = data["_reset_caches"]
-
-
-def abstractmethod(funcobj):
-    funcobj.__isabstractmethod__ = True
-    return funcobj
-
-
-class ABC:
-    __slots__ = ()
+get_cache_token = _require_intrinsic("molt_abc_get_cache_token", globals())
+_abc_init = _require_intrinsic("molt_abc_init", globals())
+_abc_register = _require_intrinsic("molt_abc_register", globals())
+_abc_instancecheck = _require_intrinsic("molt_abc_instancecheck", globals())
+_abc_subclasscheck = _require_intrinsic("molt_abc_subclasscheck", globals())
+_get_dump = _require_intrinsic("molt_abc_get_dump", globals())
+_reset_registry = _require_intrinsic("molt_abc_reset_registry", globals())
+_reset_caches = _require_intrinsic("molt_abc_reset_caches", globals())
 
 
 __all__ = [
-    "ABC",
-    "abstractmethod",
     "get_cache_token",
     "_abc_init",
     "_abc_register",
