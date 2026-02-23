@@ -6,7 +6,7 @@ use crate::{
     MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE,
     alloc_list, alloc_tuple, bytes_like_slice,
     attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits,
-    bigint_ref, bigint_to_inline, call_callable0, class_name_for_error, dec_ref_bits, dict_get_in_place,
+    bigint_ref, bigint_to_inline, call_callable0, call_callable2, class_name_for_error, dec_ref_bits, dict_get_in_place,
     dict_set_in_place, exception_pending, inc_ref_bits, intern_static_name, is_truthy, maybe_ptr_from_bits,
     molt_iter, molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id,
     raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64,
@@ -2922,6 +2922,7 @@ const STATISTICS_RANDOM_RECIP_BPF: f64 = 1.0 / 9_007_199_254_740_992.0;
 struct StatisticsRandomRng {
     mt: [u32; STATISTICS_RANDOM_N],
     index: usize,
+    gauss_next: Option<f64>,
 }
 
 impl StatisticsRandomRng {
@@ -2929,9 +2930,11 @@ impl StatisticsRandomRng {
         let mut out = Self {
             mt: [0; STATISTICS_RANDOM_N],
             index: STATISTICS_RANDOM_N,
+            gauss_next: None,
         };
         out.init_by_array(seed_key);
         out.index = STATISTICS_RANDOM_N;
+        out.gauss_next = None;
         out
     }
 
@@ -3015,6 +3018,19 @@ impl StatisticsRandomRng {
         let b = (self.rand_u32() >> 6) as u64;
         (a as f64 * 67_108_864.0 + b as f64) * STATISTICS_RANDOM_RECIP_BPF
     }
+
+    fn gauss(&mut self, mu: f64, sigma: f64) -> f64 {
+        let z = if let Some(next) = self.gauss_next.take() {
+            next
+        } else {
+            let x2pi = self.random() * core::f64::consts::TAU;
+            let g2rad = math_sqrt(-2.0 * math_log(1.0 - self.random()));
+            let z = math_cos(x2pi) * g2rad;
+            self.gauss_next = Some(math_sin(x2pi) * g2rad);
+            z
+        };
+        mu + z * sigma
+    }
 }
 
 fn statistics_seed_type_error<T>(_py: &PyToken<'_>) -> Option<T> {
@@ -3096,9 +3112,7 @@ fn statistics_seed_key(seed: &BigInt) -> Vec<u32> {
 fn statistics_normal_dist_sample_count(_py: &PyToken<'_>, n_bits: u64) -> Option<usize> {
     let n_type = type_name(_py, obj_from_bits(n_bits));
     let err = format!("'{n_type}' object cannot be interpreted as an integer");
-    let Some(n_big) = index_bigint_from_obj(_py, n_bits, &err) else {
-        return None;
-    };
+    let n_big = index_bigint_from_obj(_py, n_bits, &err)?;
     if n_big.is_negative() {
         return Some(0);
     }
@@ -3120,11 +3134,11 @@ fn statistics_normal_dist_samples_value(
     seed_bits: u64,
     random_fn_bits: u64,
 ) -> Option<u64> {
-    let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
-        return None;
-    };
+    let (mu, sigma) = statistics_normal_dist_params(_py, mu_bits, sigma_bits)?;
     let count = statistics_normal_dist_sample_count(_py, n_bits)?;
     let mut out_bits: Vec<u64> = Vec::with_capacity(count);
+    let mu_arg_bits = MoltObject::from_float(mu).bits();
+    let sigma_arg_bits = MoltObject::from_float(sigma).bits();
 
     let mut seeded_rng = if obj_from_bits(seed_bits).is_none() {
         None
@@ -3134,41 +3148,31 @@ fn statistics_normal_dist_samples_value(
     };
 
     for _ in 0..count {
-        let p = if let Some(rng) = seeded_rng.as_mut() {
-            rng.random()
+        let sample = if let Some(rng) = seeded_rng.as_mut() {
+            rng.gauss(mu, sigma)
         } else {
-            let p_bits = unsafe { call_callable0(_py, random_fn_bits) };
+            let sample_bits = unsafe { call_callable2(_py, random_fn_bits, mu_arg_bits, sigma_arg_bits) };
             if exception_pending(_py) {
                 return None;
             }
-            let p_obj = obj_from_bits(p_bits);
-            let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
-                if p_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, p_bits);
+            let sample_obj = obj_from_bits(sample_bits);
+            let Some(sample_real) = coerce_real_named(_py, sample_bits, "sample") else {
+                if sample_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, sample_bits);
                 }
                 return None;
             };
-            let Some(p_float) = coerce_to_f64(_py, p_real) else {
-                if p_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, p_bits);
+            let Some(sample_float) = coerce_to_f64(_py, sample_real) else {
+                if sample_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, sample_bits);
                 }
                 return None;
             };
-            if p_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, p_bits);
+            if sample_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, sample_bits);
             }
-            p_float
+            sample_float
         };
-
-        if p <= 0.0 || p >= 1.0 {
-            return raise_exception::<Option<u64>>(
-                _py,
-                "ValueError",
-                "inv_cdf undefined for these parameters",
-            );
-        }
-
-        let sample = statistics_normal_dist_inv_cdf_raw(p, mu, sigma);
         out_bits.push(MoltObject::from_float(sample).bits());
     }
 

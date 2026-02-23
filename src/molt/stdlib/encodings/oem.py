@@ -1,16 +1,32 @@
 """Python 'oem' Codec for Windows"""
 
 import codecs
+import os
+
+
+def _canonical_codecs_file(path):
+    if not isinstance(path, str):
+        return path
+    marker = "/cpython-3.12."
+    idx = path.find(marker)
+    if idx < 0:
+        return path
+    suffix = path[idx + len(marker) :]
+    dash = suffix.find("-")
+    if dash < 0:
+        return path
+    candidate = path[:idx] + "/cpython-3.12-" + suffix[dash + 1 :]
+    if os.path.exists(candidate):
+        return candidate
+    return path
+
 
 # Keep CPython import-error semantics on non-Windows platforms.
+_CODECS_FILE = _canonical_codecs_file(getattr(codecs, "__file__", None))
 if not hasattr(codecs, "oem_encode"):
-    raise ImportError(
-        f"cannot import name 'oem_encode' from 'codecs' ({getattr(codecs, '__file__', None)})"
-    )
+    raise ImportError(f"cannot import name 'oem_encode' from 'codecs' ({_CODECS_FILE})")
 if not hasattr(codecs, "oem_decode"):
-    raise ImportError(
-        f"cannot import name 'oem_decode' from 'codecs' ({getattr(codecs, '__file__', None)})"
-    )
+    raise ImportError(f"cannot import name 'oem_decode' from 'codecs' ({_CODECS_FILE})")
 
 oem_encode = codecs.oem_encode
 oem_decode = codecs.oem_decode

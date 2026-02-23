@@ -199,14 +199,21 @@ class NormalDist:
         return cls(mean(data), stdev(data))
 
     def samples(self, n: int, *, seed: _Any = None) -> list[float]:
-        try:
-            return list(
-                _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
-                    self._mu, self._sigma, n, seed, random.random
-                )
+        # CPython switched NormalDist.samples implementation in 3.14.
+        if sys.version_info >= (3, 14):
+            rnd = random.random if seed is None else random.Random(seed).random
+            inv_cdf = _MOLT_STATISTICS_NORMAL_DIST_INV_CDF
+            mu = self._mu
+            sigma = self._sigma
+            try:
+                return [float(inv_cdf(rnd(), mu, sigma)) for _ in repeat(None, n)]
+            except ValueError:
+                raise ValueError("inv_cdf undefined for these parameters") from None
+        return list(
+            _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
+                self._mu, self._sigma, n, seed, random.gauss
             )
-        except ValueError:
-            raise ValueError("inv_cdf undefined for these parameters") from None
+        )
 
     def pdf(self, x: _Any) -> float:
         try:
