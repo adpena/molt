@@ -8,7 +8,7 @@ This tracker is no longer maintained as a hand-edited per-module table.
 
 Canonical intrinsic-backing status now comes from:
 - gate script: `tools/check_stdlib_intrinsics.py`
-- generated audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+- generated audit: `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
 The gate computes `intrinsic-backed`, `intrinsic-partial`, `probe-only`, and
 `python-only` directly from `src/molt/stdlib/**` source and intrinsic usage.
@@ -20,7 +20,7 @@ Top-level + submodule name coverage is enforced against the CPython
 - generator: `tools/gen_stdlib_module_union.py`
 - stub sync: `tools/sync_stdlib_top_level_stubs.py`
 - submodule stub sync: `tools/sync_stdlib_submodule_stubs.py`
-- workflow doc: `docs/spec/areas/compat/0027_STDLIB_TOP_LEVEL_UNION_BASELINE.md`
+- workflow doc: `docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md`
 
 ## Daily Commands
 - Audit + lint:

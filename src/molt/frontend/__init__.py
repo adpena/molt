@@ -15370,7 +15370,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     else:
                         alternative = (
                             "import from an allowlisted module (see docs/spec/"
-                            "0015_STDLIB_COMPATIBILITY_MATRIX.md)"
+                            "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
                         )
                     detail = (
                         "Tier 0 only allows direct calls to allowlisted module-level"
@@ -18627,7 +18627,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 alternative = (
                     "import from an allowlisted module (see docs/spec/"
-                    "0015_STDLIB_COMPATIBILITY_MATRIX.md)"
+                    "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
                 )
             detail = (
                 "Tier 0 only allows direct calls to allowlisted module-level"

@@ -2170,18 +2170,18 @@ def _topo_sort_modules(
 
 def _stdlib_allowlist() -> set[str]:
     allowlist: set[str] = set()
-    spec_path = Path("docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md")
+    spec_path = Path("docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md")
     if not spec_path.exists():
         project_root = os.environ.get("MOLT_PROJECT_ROOT")
         if project_root:
             spec_path = (
                 Path(project_root)
-                / "docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md"
+                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
             )
         else:
             spec_path = (
                 Path(__file__).resolve().parents[2]
-                / "docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md"
+                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
             )
     if not spec_path.exists():
         return allowlist
@@ -12327,7 +12327,10 @@ def main() -> int:
     package_parser.add_argument("artifact", help="Path to the package artifact.")
     package_parser.add_argument(
         "manifest",
-        help="Path to manifest JSON (fields per docs/spec/0018_MOLT_PACKAGE_ABI.md).",
+        help=(
+            "Path to manifest JSON (fields per "
+            "docs/spec/areas/compat/contracts/package_abi_contract.md)."
+        ),
     )
     package_parser.add_argument(
         "--output",

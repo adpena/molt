@@ -59,7 +59,7 @@ Failure of any invariant is a hard CI failure.
 - Enforcer:
   - `tools/check_stdlib_intrinsics.py`
 - Generated status artifact:
-  - `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+  - `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
 ## 5. Standard Operator Workflows
 ### 5.1 Daily/Feature Work (No Version Change)
@@ -88,7 +88,7 @@ Failure of any invariant is a hard CI failure.
 6. Update documentation:
    - `docs/spec/STATUS.md`
    - `ROADMAP.md`
-   - `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
    - this file (`0027`) if workflow semantics changed.
 
 ### 5.3 Regenerate Baseline To Alternate Path (Dry/Inspection)
@@ -173,6 +173,6 @@ Before release or large lowering tranche merge:
   they remain subject to intrinsic-first stub policy until fully lowered.
 
 ## 10. Related Specs
-- `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
-- `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
-- `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+- `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
+- `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
+- `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`

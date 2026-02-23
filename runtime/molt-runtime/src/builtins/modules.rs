@@ -14,8 +14,10 @@ use crate::{
     TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bytes,
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
     call_callable1, call_callable2, call_function_obj_vec, class_mro_vec, class_name_for_error,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    exception_pending, format_exception_with_traceback, has_capability, inc_ref_bits,
+    clear_exception, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
+    dict_set_in_place,
+    exception_pending, format_exception_with_traceback, format_obj_str, has_capability,
+    inc_ref_bits,
     init_atomic_bits, int_bits_from_i64, intern_static_name, is_missing_bits, is_truthy,
     missing_bits, module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
     molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
@@ -89,6 +91,28 @@ fn trace_op_sigtrap_enabled() -> bool {
             Some("1")
         )
     })
+}
+
+fn normalize_pending_import_exception(_py: &PyToken<'_>) {
+    if !exception_pending(_py) {
+        return;
+    }
+    let exc_bits = molt_exception_last();
+    let mut kind = "RuntimeError".to_string();
+    let mut message = "module import failed".to_string();
+    if !obj_from_bits(exc_bits).is_none() {
+        let kind_bits = molt_exception_kind(exc_bits);
+        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits)) {
+            kind = name;
+        }
+        message = format_obj_str(_py, obj_from_bits(exc_bits));
+        if message.starts_with("No module named ") {
+            kind = "ModuleNotFoundError".to_string();
+        }
+        dec_ref_bits(_py, exc_bits);
+    }
+    clear_exception(_py);
+    let _ = raise_exception::<u64>(_py, &kind, &message);
 }
 
 static TRACE_LAST_OP: AtomicU64 = AtomicU64::new(0);
@@ -437,8 +461,49 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                 let module_bits = unsafe { molt_isolate_import(name_key_bits) };
 
                 'result: {
-                    if !exception_pending(_py) {
-                        let mut canonical_bits: Option<u64> = None;
+                    if exception_pending(_py) {
+                        normalize_pending_import_exception(_py);
+                        if !obj_from_bits(module_bits).is_none() {
+                            dec_ref_bits(_py, module_bits);
+                        }
+                        break 'result MoltObject::none().bits();
+                    }
+                    let mut canonical_bits: Option<u64> = None;
+                    let sys_bits = {
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                        let guard = cache.lock().unwrap();
+                        guard.get("sys").copied()
+                    };
+                    if let Some(sys_bits) = sys_bits
+                        && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                    {
+                        let from_sys_bits =
+                            unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                        if exception_pending(_py) {
+                            break 'result MoltObject::none().bits();
+                        }
+                        if let Some(bits) = from_sys_bits
+                            && let Some(ptr) = obj_from_bits(bits).as_ptr()
+                        {
+                            let ty = unsafe { object_type_id(ptr) };
+                            if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                                canonical_bits = Some(bits);
+                            }
+                        }
+                    }
+                    if canonical_bits.is_none() {
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                        let guard = cache.lock().unwrap();
+                        if let Some(bits) = guard.get(&name)
+                            && let Some(ptr) = obj_from_bits(*bits).as_ptr()
+                        {
+                            let ty = unsafe { object_type_id(ptr) };
+                            if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                                canonical_bits = Some(*bits);
+                            }
+                        }
+                    }
+                    if let Some(bits) = canonical_bits {
                         let sys_bits = {
                             let cache = crate::builtins::exceptions::internals::module_cache(_py);
                             let guard = cache.lock().unwrap();
@@ -447,97 +512,58 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                         if let Some(sys_bits) = sys_bits
                             && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                         {
-                            let from_sys_bits =
-                                unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                            unsafe {
+                                dict_set_in_place(_py, modules_ptr, name_key_bits, bits);
+                            }
                             if exception_pending(_py) {
+                                if bits != module_bits && !obj_from_bits(module_bits).is_none() {
+                                    dec_ref_bits(_py, module_bits);
+                                }
                                 break 'result MoltObject::none().bits();
                             }
-                            if let Some(bits) = from_sys_bits
-                                && let Some(ptr) = obj_from_bits(bits).as_ptr()
-                            {
-                                let ty = unsafe { object_type_id(ptr) };
-                                if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
-                                    canonical_bits = Some(bits);
-                                }
-                            }
                         }
-                        if canonical_bits.is_none() {
+                        if bits != module_bits {
+                            if !obj_from_bits(module_bits).is_none() {
+                                dec_ref_bits(_py, module_bits);
+                            }
+                            inc_ref_bits(_py, bits);
+                        }
+                        break 'result bits;
+                    }
+                    let module_obj = obj_from_bits(module_bits);
+                    if !module_obj.is_none() {
+                        let is_valid_module = if let Some(ptr) = module_obj.as_ptr() {
+                            let ty = unsafe { object_type_id(ptr) };
+                            ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
+                        } else {
+                            false
+                        };
+                        if !is_valid_module {
+                            // Isolate import should only yield module-like objects. If we
+                            // get a scalar/status payload instead, treat this as a missing
+                            // module for `import` semantics instead of surfacing an
+                            // internal payload type to user code.
+                            dec_ref_bits(_py, module_bits);
+                            let msg = format!("No module named '{name}'");
+                            break 'result raise_exception::<_>(_py, "ImportError", &msg);
+                        }
+
+                        // Keep sys.modules synchronized with successful runtime imports so
+                        // importlib.reload()/sys.modules round-trips remain consistent.
+                        let sys_bits = {
                             let cache = crate::builtins::exceptions::internals::module_cache(_py);
                             let guard = cache.lock().unwrap();
-                            if let Some(bits) = guard.get(&name)
-                                && let Some(ptr) = obj_from_bits(*bits).as_ptr()
-                            {
-                                let ty = unsafe { object_type_id(ptr) };
-                                if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
-                                    canonical_bits = Some(*bits);
-                                }
+                            guard.get("sys").copied()
+                        };
+                        if let Some(sys_bits) = sys_bits
+                            && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                        {
+                            unsafe {
+                                dict_set_in_place(_py, modules_ptr, name_key_bits, module_bits);
                             }
-                        }
-                        if let Some(bits) = canonical_bits {
-                            let sys_bits = {
-                                let cache =
-                                    crate::builtins::exceptions::internals::module_cache(_py);
-                                let guard = cache.lock().unwrap();
-                                guard.get("sys").copied()
-                            };
-                            if let Some(sys_bits) = sys_bits
-                                && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-                            {
-                                unsafe {
-                                    dict_set_in_place(_py, modules_ptr, name_key_bits, bits);
-                                }
-                                if exception_pending(_py) {
-                                    if bits != module_bits && !obj_from_bits(module_bits).is_none()
-                                    {
-                                        dec_ref_bits(_py, module_bits);
-                                    }
-                                    break 'result MoltObject::none().bits();
-                                }
-                            }
-                            if bits != module_bits {
-                                if !obj_from_bits(module_bits).is_none() {
-                                    dec_ref_bits(_py, module_bits);
-                                }
-                                inc_ref_bits(_py, bits);
-                            }
-                            break 'result bits;
-                        }
-                        let module_obj = obj_from_bits(module_bits);
-                        if !module_obj.is_none() {
-                            let is_valid_module = if let Some(ptr) = module_obj.as_ptr() {
-                                let ty = unsafe { object_type_id(ptr) };
-                                ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
-                            } else {
-                                false
-                            };
-                            if !is_valid_module {
-                                // Isolate import should only yield module-like objects. If we
-                                // get a scalar/status payload instead, treat this as a missing
-                                // module for `import` semantics instead of surfacing an
-                                // internal payload type to user code.
+                            if exception_pending(_py) {
                                 dec_ref_bits(_py, module_bits);
-                                let msg = format!("No module named '{name}'");
-                                break 'result raise_exception::<_>(_py, "ImportError", &msg);
-                            }
-
-                            // Keep sys.modules synchronized with successful runtime imports so
-                            // importlib.reload()/sys.modules round-trips remain consistent.
-                            let sys_bits = {
-                                let cache =
-                                    crate::builtins::exceptions::internals::module_cache(_py);
-                                let guard = cache.lock().unwrap();
-                                guard.get("sys").copied()
-                            };
-                            if let Some(sys_bits) = sys_bits
-                                && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-                            {
-                                unsafe {
-                                    dict_set_in_place(_py, modules_ptr, name_key_bits, module_bits);
-                                }
-                                if exception_pending(_py) {
-                                    dec_ref_bits(_py, module_bits);
-                                    break 'result MoltObject::none().bits();
-                                }
+                                break 'result MoltObject::none().bits();
                             }
                         }
                     }

@@ -121,14 +121,14 @@ Use this map when deciding where a change belongs and what else it touches.
    - Examples: `compiler/molt/frontend/`, `compiler/molt/codegen/`
 4. **Frontend + CLI (Python)**: parsing, CLI UX, packaging, stdlib shims.
    - Paths: `src/molt/`, `src/molt/cli.py`, `src/molt/stdlib/`
-   - Specs: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+   - Specs: `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
    - Examples: `src/molt/cli.py`, `src/molt/type_facts.py`, `src/molt/stdlib/`
 5. **Tooling + Tests**: dev scripts, benchmarks, differential tests, fixtures.
    - Paths: `tools/`, `tests/`, `bench/`, `examples/`
    - Examples: `tools/dev.py`, `tools/bench.py`, `tools/bench_wasm.py`, `tools/wasm_link.py`, `tools/wasm_profile.py`, `tests/differential/`, `tests/test_wasm_*.py`
 6. **Specs + Roadmap**: contracts, parity status, scope limits, future work.
    - Paths: `docs/spec/`, `docs/spec/STATUS.md`, `ROADMAP.md`
-   - Examples: `docs/spec/areas/core/0000-vision.md`, `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
+   - Examples: `docs/spec/areas/core/0000-vision.md`, `docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md`
 
 ### Rules Of Thumb For New Work
 Use this decision order for both parity work and optimization work:
@@ -144,7 +144,7 @@ We recommend reading them in this order:
 
 1.  **`docs/spec/areas/core/0002-architecture.md`**: The high-level view of the pipeline and IR stack.
 2.  **`docs/spec/areas/runtime/0003-runtime.md`**: Details on the object model and memory management.
-3.  **`docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`**: What types are currently supported.
+3.  **`docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md`**: What types are currently supported.
 4.  **`docs/spec/STATUS.md`**: The current canonical status of the project.
 
 ### Directory Structure
