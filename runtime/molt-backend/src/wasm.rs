@@ -1915,8 +1915,15 @@ impl WasmBackend {
                 func_to_index.insert(runtime_key, *wrapper_idx);
                 table_indices.push(*wrapper_idx);
             } else {
-                func_to_index.insert(runtime_key, self.import_ids[*import_name]);
-                table_indices.push(self.import_ids[*import_name]);
+                let import_idx = self
+                    .import_ids
+                    .get(*import_name)
+                    .copied()
+                    // Avoid panicking on malformed/partial import tables; route missing entries
+                    // to the sentinel so lowering remains total and callers can surface errors.
+                    .unwrap_or(sentinel_func_idx);
+                func_to_index.insert(runtime_key, import_idx);
+                table_indices.push(import_idx);
             }
         }
 

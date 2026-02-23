@@ -25,25 +25,29 @@ class _CodecInfoFallback:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
-def quopri_encode(input, errors='strict'):
-    assert errors == 'strict'
+
+def quopri_encode(input, errors="strict"):
+    assert errors == "strict"
     out = _MOLT_QUOPRI_ENCODE(input, True, False)
     return (bytes(out), len(input))
 
-def quopri_decode(input, errors='strict'):
-    assert errors == 'strict'
+
+def quopri_decode(input, errors="strict"):
+    assert errors == "strict"
     out = _MOLT_QUOPRI_DECODE(input, False)
     return (bytes(out), len(input))
 
+
 class Codec(_CodecBase):
-    def encode(self, input, errors='strict'):
+    def encode(self, input, errors="strict"):
         return quopri_encode(input, errors)
 
-    def decode(self, input, errors='strict'):
+    def decode(self, input, errors="strict"):
         return quopri_decode(input, errors)
 
+
 class IncrementalEncoder(_IncrementalEncoderBase):
-    def __init__(self, errors='strict'):
+    def __init__(self, errors="strict"):
         try:
             super().__init__(errors)  # type: ignore[misc]
         except Exception:
@@ -54,8 +58,9 @@ class IncrementalEncoder(_IncrementalEncoderBase):
     def encode(self, input, final=False):
         return quopri_encode(input, self.errors)[0]
 
+
 class IncrementalDecoder(_IncrementalDecoderBase):
-    def __init__(self, errors='strict'):
+    def __init__(self, errors="strict"):
         try:
             super().__init__(errors)  # type: ignore[misc]
         except Exception:
@@ -66,17 +71,21 @@ class IncrementalDecoder(_IncrementalDecoderBase):
     def decode(self, input, final=False):
         return quopri_decode(input, self.errors)[0]
 
+
 class StreamWriter(Codec, _StreamWriterBase):
     charbuffertype = bytes
+
 
 class StreamReader(Codec, _StreamReaderBase):
     charbuffertype = bytes
 
+
 # encodings module API
+
 
 def getregentry():
     return _CodecInfoFallback(
-        name='quopri',
+        name="quopri",
         encode=quopri_encode,
         decode=quopri_decode,
         incrementalencoder=IncrementalEncoder,

@@ -122,26 +122,28 @@ fn json_scanstring_decode(
                         code = (code << 4) | digit;
                     }
                     idx += 4;
-                    if (0xD800..=0xDBFF).contains(&code) {
-                        if idx + 6 <= len && chars[idx + 1] == '\\' && chars[idx + 2] == 'u' {
-                            let mut low: u32 = 0;
-                            let mut valid = true;
-                            for c in &chars[idx + 3..idx + 7] {
-                                if let Some(d) = c.to_digit(16) {
-                                    low = (low << 4) | d;
-                                } else {
-                                    valid = false;
-                                    break;
-                                }
+                    if (0xD800..=0xDBFF).contains(&code)
+                        && idx + 6 <= len
+                        && chars[idx + 1] == '\\'
+                        && chars[idx + 2] == 'u'
+                    {
+                        let mut low: u32 = 0;
+                        let mut valid = true;
+                        for c in &chars[idx + 3..idx + 7] {
+                            if let Some(d) = c.to_digit(16) {
+                                low = (low << 4) | d;
+                            } else {
+                                valid = false;
+                                break;
                             }
-                            if valid && (0xDC00..=0xDFFF).contains(&low) {
-                                let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                                if let Some(real) = char::from_u32(combined) {
-                                    out.push(real);
-                                    idx += 6;
-                                    idx += 1;
-                                    continue;
-                                }
+                        }
+                        if valid && (0xDC00..=0xDFFF).contains(&low) {
+                            let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                            if let Some(real) = char::from_u32(combined) {
+                                out.push(real);
+                                idx += 6;
+                                idx += 1;
+                                continue;
                             }
                         }
                     }

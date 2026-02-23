@@ -5129,18 +5129,15 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
             && parent != path
+            && let Err(err) = create_parent_dir(parent)
         {
-            if let Err(err) = create_parent_dir(parent) {
-                let msg = err.to_string();
-                return match err.kind() {
-                    ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                };
-            }
+            let msg = err.to_string();
+            return match err.kind() {
+                ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
+                ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
+                _ => raise_exception::<_>(_py, "OSError", &msg),
+            };
         }
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
@@ -6041,34 +6038,9 @@ fn metadata_time_seconds(value: Result<SystemTime, std::io::Error>) -> i128 {
     }
 }
 
-fn stat_tuple_from_values(
-    _py: &PyToken<'_>,
-    st_mode: i128,
-    st_ino: i128,
-    st_dev: i128,
-    st_nlink: i128,
-    st_uid: i128,
-    st_gid: i128,
-    st_size: i128,
-    st_atime: i128,
-    st_mtime: i128,
-    st_ctime: i128,
-) -> u64 {
-    let tuple_ptr = alloc_tuple(
-        _py,
-        &[
-            int_bits_from_i128(_py, st_mode),
-            int_bits_from_i128(_py, st_ino),
-            int_bits_from_i128(_py, st_dev),
-            int_bits_from_i128(_py, st_nlink),
-            int_bits_from_i128(_py, st_uid),
-            int_bits_from_i128(_py, st_gid),
-            int_bits_from_i128(_py, st_size),
-            int_bits_from_i128(_py, st_atime),
-            int_bits_from_i128(_py, st_mtime),
-            int_bits_from_i128(_py, st_ctime),
-        ],
-    );
+fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
+    let tuple_fields = fields.map(|value| int_bits_from_i128(_py, value));
+    let tuple_ptr = alloc_tuple(_py, &tuple_fields);
     if tuple_ptr.is_null() {
         return raise_exception::<_>(_py, "MemoryError", "out of memory");
     }
@@ -6080,16 +6052,18 @@ fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> 
     use std::os::unix::fs::MetadataExt;
     stat_tuple_from_values(
         _py,
-        i128::from(metadata.mode()),
-        metadata.ino() as i128,
-        metadata.dev() as i128,
-        metadata.nlink() as i128,
-        i128::from(metadata.uid()),
-        i128::from(metadata.gid()),
-        metadata.size() as i128,
-        i128::from(metadata.atime()),
-        i128::from(metadata.mtime()),
-        i128::from(metadata.ctime()),
+        [
+            i128::from(metadata.mode()),
+            metadata.ino() as i128,
+            metadata.dev() as i128,
+            metadata.nlink() as i128,
+            i128::from(metadata.uid()),
+            i128::from(metadata.gid()),
+            metadata.size() as i128,
+            i128::from(metadata.atime()),
+            i128::from(metadata.mtime()),
+            i128::from(metadata.ctime()),
+        ],
     )
 }
 
@@ -6113,16 +6087,18 @@ fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> 
     };
     stat_tuple_from_values(
         _py,
-        kind | i128::from(mode_bits),
-        0,
-        0,
-        0,
-        0,
-        0,
-        i128::from(metadata.len()),
-        metadata_time_seconds(metadata.accessed()),
-        metadata_time_seconds(metadata.modified()),
-        metadata_time_seconds(metadata.created()),
+        [
+            kind | i128::from(mode_bits),
+            0,
+            0,
+            0,
+            0,
+            0,
+            i128::from(metadata.len()),
+            metadata_time_seconds(metadata.accessed()),
+            metadata_time_seconds(metadata.modified()),
+            metadata_time_seconds(metadata.created()),
+        ],
     )
 }
 

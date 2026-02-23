@@ -49,14 +49,20 @@ HAVE_ARGUMENT = _expect_int(_PAYLOAD.get("HAVE_ARGUMENT"), "HAVE_ARGUMENT")
 MIN_INSTRUMENTED_OPCODE = _expect_int(
     _PAYLOAD.get("MIN_INSTRUMENTED_OPCODE"), "MIN_INSTRUMENTED_OPCODE"
 )
-opmap = {str(k): int(v) for k, v in _expect_dict(_PAYLOAD.get("opmap"), "opmap").items()}
+opmap = {
+    str(k): int(v) for k, v in _expect_dict(_PAYLOAD.get("opmap"), "opmap").items()
+}
 _specialized_opmap = {
     str(k): int(v)
-    for k, v in _expect_dict(_PAYLOAD.get("_specialized_opmap"), "_specialized_opmap").items()
+    for k, v in _expect_dict(
+        _PAYLOAD.get("_specialized_opmap"), "_specialized_opmap"
+    ).items()
 }
 _specializations = {
     str(k): [str(x) for x in _expect_list(v, f"_specializations.{k}")]
-    for k, v in _expect_dict(_PAYLOAD.get("_specializations"), "_specializations").items()
+    for k, v in _expect_dict(
+        _PAYLOAD.get("_specializations"), "_specializations"
+    ).items()
 }
 
 del _PAYLOAD

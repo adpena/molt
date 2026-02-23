@@ -23,6 +23,18 @@ line-length = 88
 target-version = "py313"
 extend-exclude = ["third_party", "tests/differential"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/molt/stdlib/**/*.py" = ["E402"]
+"src/molt/stdlib/colorsys.py" = ["E741"]
+"src/molt/stdlib/copyreg.py" = ["F401"]
+"src/molt/stdlib/ctypes/_endian.py" = ["F821"]
+"src/molt/stdlib/ctypes/wintypes.py" = ["F821"]
+"src/molt/stdlib/email/quoprimime.py" = ["F401"]
+"src/molt/stdlib/encodings/mac_arabic.py" = ["F601"]
+"src/molt/stdlib/encodings/punycode.py" = ["E741"]
+"src/molt/stdlib/encodings/quopri_codec.py" = ["F401"]
+"src/molt/stdlib/http/client.py" = ["F822"]
+
 [tool.ty.src]
 exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 

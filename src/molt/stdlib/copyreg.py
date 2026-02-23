@@ -18,7 +18,9 @@ _MOLT_COPYREG_BOOTSTRAP = _require_intrinsic("molt_copyreg_bootstrap", globals()
 _MOLT_COPYREG_PICKLE = _require_intrinsic("molt_copyreg_pickle", globals())
 _MOLT_COPYREG_NEWOBJ = _require_intrinsic("molt_copyreg_newobj", globals())
 _MOLT_COPYREG_NEWOBJ_EX = _require_intrinsic("molt_copyreg_newobj_ex", globals())
-_MOLT_COPYREG_RECONSTRUCTOR = _require_intrinsic("molt_copyreg_reconstructor", globals())
+_MOLT_COPYREG_RECONSTRUCTOR = _require_intrinsic(
+    "molt_copyreg_reconstructor", globals()
+)
 _MOLT_COPYREG_REDUCE_EX = _require_intrinsic("molt_copyreg_reduce_ex", globals())
 _MOLT_COPYREG_CONSTRUCTOR = _require_intrinsic("molt_copyreg_constructor", globals())
 _MOLT_COPYREG_ADD_EXTENSION = _require_intrinsic(

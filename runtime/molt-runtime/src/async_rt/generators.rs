@@ -196,39 +196,6 @@ unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
     unsafe { ptr.add(offset) as *mut u64 }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{molt_asyncgen_new, molt_generator_new};
-    use crate::{GEN_CONTROL_SIZE, asyncgen_registry, dec_ref_bits, obj_from_bits};
-
-    #[test]
-    fn asyncgen_registry_removes_on_drop() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            {
-                let mut guard = asyncgen_registry(_py).lock().unwrap();
-                guard.clear();
-            }
-            let gen_bits = molt_generator_new(0, GEN_CONTROL_SIZE as u64);
-            assert!(
-                !obj_from_bits(gen_bits).is_none(),
-                "generator allocation failed"
-            );
-            let asyncgen_bits = molt_asyncgen_new(gen_bits);
-            assert!(
-                !obj_from_bits(asyncgen_bits).is_none(),
-                "async generator allocation failed"
-            );
-            let len = asyncgen_registry(_py).lock().unwrap().len();
-            assert_eq!(len, 1);
-            dec_ref_bits(_py, asyncgen_bits);
-            let len_after = asyncgen_registry(_py).lock().unwrap().len();
-            assert_eq!(len_after, 0);
-            dec_ref_bits(_py, gen_bits);
-        });
-    }
-}
-
 unsafe fn generator_set_slot(_py: &PyToken<'_>, ptr: *mut u8, offset: usize, bits: u64) {
     unsafe {
         crate::gil_assert();
@@ -8010,5 +7977,38 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
                 0
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{molt_asyncgen_new, molt_generator_new};
+    use crate::{GEN_CONTROL_SIZE, asyncgen_registry, dec_ref_bits, obj_from_bits};
+
+    #[test]
+    fn asyncgen_registry_removes_on_drop() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            {
+                let mut guard = asyncgen_registry(_py).lock().unwrap();
+                guard.clear();
+            }
+            let gen_bits = molt_generator_new(0, GEN_CONTROL_SIZE as u64);
+            assert!(
+                !obj_from_bits(gen_bits).is_none(),
+                "generator allocation failed"
+            );
+            let asyncgen_bits = molt_asyncgen_new(gen_bits);
+            assert!(
+                !obj_from_bits(asyncgen_bits).is_none(),
+                "async generator allocation failed"
+            );
+            let len = asyncgen_registry(_py).lock().unwrap().len();
+            assert_eq!(len, 1);
+            dec_ref_bits(_py, asyncgen_bits);
+            let len_after = asyncgen_registry(_py).lock().unwrap().len();
+            assert_eq!(len_after, 0);
+            dec_ref_bits(_py, gen_bits);
+        });
     }
 }

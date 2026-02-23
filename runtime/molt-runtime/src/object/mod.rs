@@ -626,21 +626,26 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
     }
 }
 
+unsafe fn object_class_bits_from_state(state: i64) -> u64 {
+    let bits = state as u64;
+    if bits == 0 {
+        return 0;
+    }
+    // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
+    // Treat it as a class only when it points to an actual type object.
+    let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
+        return 0;
+    };
+    if unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return 0;
+    }
+    bits
+}
+
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
     unsafe {
-        let bits = (*header_from_obj_ptr(ptr)).state as u64;
-        if bits == 0 {
-            return 0;
-        }
-        // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
-        // Treat it as a class only when it points to an actual type object.
-        let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
-            return 0;
-        };
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return 0;
-        }
-        bits
+        let state = (*header_from_obj_ptr(ptr)).state;
+        object_class_bits_from_state(state)
     }
 }
 
@@ -807,69 +812,6 @@ pub(crate) fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     obj.as_ptr()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_object_zeroed_with_pool,
-        dec_ref_ptr, object_pool, object_pool_index, object_pool_take,
-    };
-    use crate::PyToken;
-    use std::alloc::Layout;
-
-    fn drain_pool(_py: &PyToken<'_>, total_size: usize) {
-        let Some(idx) = object_pool_index(total_size) else {
-            return;
-        };
-        let layout = Layout::from_size_align(total_size, 8).unwrap();
-        while let Some(ptr) = object_pool_take(_py, total_size) {
-            unsafe { std::alloc::dealloc(ptr, layout) };
-        }
-        OBJECT_POOL_TLS.with(|pool| {
-            if let Some(bucket) = pool.borrow_mut().get_mut(idx) {
-                bucket.clear();
-            }
-        });
-        let mut guard = object_pool(_py).lock().unwrap();
-        if let Some(bucket) = guard.get_mut(idx) {
-            bucket.clear();
-        }
-    }
-
-    #[test]
-    fn object_pool_reuses_object_allocations() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 16;
-            drain_pool(_py, total_size);
-            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
-            assert!(!ptr1.is_null());
-            unsafe { dec_ref_ptr(_py, ptr1) };
-            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
-            assert_eq!(ptr1, ptr2);
-            unsafe { dec_ref_ptr(_py, ptr2) };
-        });
-    }
-
-    #[test]
-    fn non_object_allocations_do_not_fill_pool() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 16;
-            drain_pool(_py, total_size);
-            let idx = object_pool_index(total_size).expect("pool index should be valid");
-            let tls_before = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
-            let global_before = object_pool(_py).lock().unwrap()[idx].len();
-            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
-            assert!(!ptr.is_null());
-            unsafe { dec_ref_ptr(_py, ptr) };
-            let tls_after = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
-            let global_after = object_pool(_py).lock().unwrap()[idx].len();
-            assert_eq!(tls_after, tls_before);
-            assert_eq!(global_after, global_before);
-        });
-    }
-}
-
 #[inline]
 pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
     let obj = obj_from_bits(bits);
@@ -955,7 +897,7 @@ unsafe fn maybe_run_object_finalizer(
     if (header.flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return false;
     }
-    let class_bits = unsafe { object_class_bits(ptr) };
+    let class_bits = unsafe { object_class_bits_from_state(header.state) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
     }
@@ -1625,5 +1567,68 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
             std::alloc::dealloc(header_ptr as *mut u8, layout);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_object_zeroed_with_pool,
+        dec_ref_ptr, object_pool, object_pool_index, object_pool_take,
+    };
+    use crate::PyToken;
+    use std::alloc::Layout;
+
+    fn drain_pool(_py: &PyToken<'_>, total_size: usize) {
+        let Some(idx) = object_pool_index(total_size) else {
+            return;
+        };
+        let layout = Layout::from_size_align(total_size, 8).unwrap();
+        while let Some(ptr) = object_pool_take(_py, total_size) {
+            unsafe { std::alloc::dealloc(ptr, layout) };
+        }
+        OBJECT_POOL_TLS.with(|pool| {
+            if let Some(bucket) = pool.borrow_mut().get_mut(idx) {
+                bucket.clear();
+            }
+        });
+        let mut guard = object_pool(_py).lock().unwrap();
+        if let Some(bucket) = guard.get_mut(idx) {
+            bucket.clear();
+        }
+    }
+
+    #[test]
+    fn object_pool_reuses_object_allocations() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            let total_size = std::mem::size_of::<MoltHeader>() + 16;
+            drain_pool(_py, total_size);
+            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+            assert!(!ptr1.is_null());
+            unsafe { dec_ref_ptr(_py, ptr1) };
+            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+            assert_eq!(ptr1, ptr2);
+            unsafe { dec_ref_ptr(_py, ptr2) };
+        });
+    }
+
+    #[test]
+    fn non_object_allocations_do_not_fill_pool() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            let total_size = std::mem::size_of::<MoltHeader>() + 16;
+            drain_pool(_py, total_size);
+            let idx = object_pool_index(total_size).expect("pool index should be valid");
+            let tls_before = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
+            let global_before = object_pool(_py).lock().unwrap()[idx].len();
+            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+            assert!(!ptr.is_null());
+            unsafe { dec_ref_ptr(_py, ptr) };
+            let tls_after = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
+            let global_after = object_pool(_py).lock().unwrap()[idx].len();
+            assert_eq!(tls_after, tls_before);
+            assert_eq!(global_after, global_before);
+        });
     }
 }

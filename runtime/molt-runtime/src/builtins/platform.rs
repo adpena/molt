@@ -4576,13 +4576,13 @@ fn importlib_existing_spec_from_modules_bits(
     };
 
     let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
-    if let Some(spec_bits) = getattr_optional_bits(_py, existing_bits, spec_name)? {
-        if !obj_from_bits(spec_bits).is_none() {
-            if !obj_from_bits(module_name_key_bits).is_none() {
-                dec_ref_bits(_py, module_name_key_bits);
-            }
-            return Ok(spec_bits);
+    if let Some(spec_bits) = getattr_optional_bits(_py, existing_bits, spec_name)?
+        && !obj_from_bits(spec_bits).is_none()
+    {
+        if !obj_from_bits(module_name_key_bits).is_none() {
+            dec_ref_bits(_py, module_name_key_bits);
         }
+        return Ok(spec_bits);
     }
 
     let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
@@ -4862,13 +4862,10 @@ fn importlib_clear_mapping_like_best_effort(_py: &PyToken<'_>, mapping_bits: u64
     if !obj_from_bits(clear_bits).is_none() {
         dec_ref_bits(_py, clear_bits);
     }
-    match result {
-        Ok(result_bits) => {
-            if !obj_from_bits(result_bits).is_none() {
-                dec_ref_bits(_py, result_bits);
-            }
-        }
-        Err(_) => {}
+    if let Ok(result_bits) = result
+        && !obj_from_bits(result_bits).is_none()
+    {
+        dec_ref_bits(_py, result_bits);
     }
     if exception_pending(_py) {
         clear_exception(_py);
@@ -5216,10 +5213,7 @@ fn importlib_find_spec_object_bits(
     static CACHED_NAME: AtomicU64 = AtomicU64::new(0);
     static HAS_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
 
-    let fullname_bits = match alloc_str_bits(_py, fullname) {
-        Ok(bits) => bits,
-        Err(err) => return Err(err),
-    };
+    let fullname_bits = alloc_str_bits(_py, fullname)?;
     let origin_bits = match payload.origin.as_deref() {
         Some(origin) => match alloc_str_bits(_py, origin) {
             Ok(bits) => bits,
@@ -9200,14 +9194,16 @@ pub extern "C" fn molt_importlib_find_spec(
         let package_context = is_truthy(_py, obj_from_bits(package_context_bits));
         match importlib_find_spec_with_runtime_state_bits(
             _py,
-            &fullname,
-            &search_paths,
-            module_file,
-            meta_path_bits,
-            path_hooks_bits,
-            path_importer_cache_bits,
-            package_context,
-            machinery_bits,
+            ImportlibRuntimeSpecContext {
+                fullname: &fullname,
+                search_paths: &search_paths,
+                module_file,
+                meta_path_bits,
+                path_hooks_bits,
+                path_importer_cache_bits,
+                package_context,
+                machinery_bits,
+            },
         ) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -9292,37 +9288,44 @@ pub extern "C" fn molt_importlib_find_spec_from_path_hooks(
         let package_context = is_truthy(_py, obj_from_bits(package_context_bits));
         importlib_find_spec_from_path_hooks_impl(
             _py,
-            &fullname,
-            &search_paths,
-            module_file,
-            path_hooks_bits,
-            path_importer_cache_bits,
-            package_context,
-            machinery_bits,
+            ImportlibPathHooksContext {
+                fullname: &fullname,
+                search_paths: &search_paths,
+                module_file,
+                path_hooks_bits,
+                path_importer_cache_bits,
+                package_context,
+                machinery_bits,
+            },
         )
     })
 }
 
-fn importlib_find_spec_from_path_hooks_impl(
-    _py: &PyToken<'_>,
-    fullname: &str,
-    search_paths: &[String],
+struct ImportlibPathHooksContext<'a> {
+    fullname: &'a str,
+    search_paths: &'a [String],
     module_file: Option<String>,
     path_hooks_bits: u64,
     path_importer_cache_bits: u64,
     package_context: bool,
     machinery_bits: u64,
+}
+
+fn importlib_find_spec_from_path_hooks_impl(
+    _py: &PyToken<'_>,
+    ctx: ImportlibPathHooksContext<'_>,
 ) -> u64 {
-    let path_hooks_count = match iterable_count_arg_from_bits(_py, path_hooks_bits, "path_hooks") {
-        Ok(value) => value,
-        Err(bits) => return bits,
-    };
+    let path_hooks_count =
+        match iterable_count_arg_from_bits(_py, ctx.path_hooks_bits, "path_hooks") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
     let via_path_hooks = match importlib_find_spec_via_path_hooks(
         _py,
-        fullname,
-        search_paths,
-        path_hooks_bits,
-        path_importer_cache_bits,
+        ctx.fullname,
+        ctx.search_paths,
+        ctx.path_hooks_bits,
+        ctx.path_importer_cache_bits,
     ) {
         Ok(value) => value,
         Err(bits) => return bits,
@@ -9330,7 +9333,7 @@ fn importlib_find_spec_from_path_hooks_impl(
     if let Some(spec_bits) = via_path_hooks {
         return spec_bits;
     }
-    if fullname != "math" && !has_capability(_py, "fs.read") {
+    if ctx.fullname != "math" && !has_capability(_py, "fs.read") {
         return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
     }
 
@@ -9339,36 +9342,40 @@ fn importlib_find_spec_from_path_hooks_impl(
     // Python sentinel object.
     let meta_path_count = 1;
     let Some(payload) = importlib_find_spec_payload(
-        fullname,
-        search_paths,
-        module_file,
+        ctx.fullname,
+        ctx.search_paths,
+        ctx.module_file,
         meta_path_count,
         path_hooks_count,
-        package_context,
+        ctx.package_context,
     ) else {
         return MoltObject::none().bits();
     };
-    match importlib_find_spec_object_bits(_py, fullname, &payload, machinery_bits) {
+    match importlib_find_spec_object_bits(_py, ctx.fullname, &payload, ctx.machinery_bits) {
         Ok(bits) => bits,
         Err(err) => err,
     }
 }
 
-fn importlib_find_spec_with_runtime_state_bits(
-    _py: &PyToken<'_>,
-    fullname: &str,
-    search_paths: &[String],
+struct ImportlibRuntimeSpecContext<'a> {
+    fullname: &'a str,
+    search_paths: &'a [String],
     module_file: Option<String>,
     meta_path_bits: u64,
     path_hooks_bits: u64,
     path_importer_cache_bits: u64,
     package_context: bool,
     machinery_bits: u64,
+}
+
+fn importlib_find_spec_with_runtime_state_bits(
+    _py: &PyToken<'_>,
+    ctx: ImportlibRuntimeSpecContext<'_>,
 ) -> Result<u64, u64> {
-    let meta_path_count = iterable_count_arg_from_bits(_py, meta_path_bits, "meta_path")?;
-    let path_hooks_count = iterable_count_arg_from_bits(_py, path_hooks_bits, "path_hooks")?;
+    let meta_path_count = iterable_count_arg_from_bits(_py, ctx.meta_path_bits, "meta_path")?;
+    let path_hooks_count = iterable_count_arg_from_bits(_py, ctx.path_hooks_bits, "path_hooks")?;
     let via_meta_path =
-        importlib_find_spec_via_meta_path(_py, fullname, search_paths, meta_path_bits)?;
+        importlib_find_spec_via_meta_path(_py, ctx.fullname, ctx.search_paths, ctx.meta_path_bits)?;
     if let Some(spec_bits) = via_meta_path {
         return Ok(spec_bits);
     }
@@ -9379,16 +9386,16 @@ fn importlib_find_spec_with_runtime_state_bits(
     } else {
         importlib_find_spec_via_path_hooks(
             _py,
-            fullname,
-            search_paths,
-            path_hooks_bits,
-            path_importer_cache_bits,
+            ctx.fullname,
+            ctx.search_paths,
+            ctx.path_hooks_bits,
+            ctx.path_importer_cache_bits,
         )?
     };
     if let Some(spec_bits) = via_path_hooks {
         return Ok(spec_bits);
     }
-    if fullname != "math" && !has_capability(_py, "fs.read") {
+    if ctx.fullname != "math" && !has_capability(_py, "fs.read") {
         return Err(raise_exception::<_>(
             _py,
             "PermissionError",
@@ -9396,16 +9403,16 @@ fn importlib_find_spec_with_runtime_state_bits(
         ));
     }
     let Some(payload) = importlib_find_spec_payload(
-        fullname,
-        search_paths,
-        module_file,
+        ctx.fullname,
+        ctx.search_paths,
+        ctx.module_file,
         meta_path_count,
         path_hooks_count,
-        package_context,
+        ctx.package_context,
     ) else {
         return Ok(MoltObject::none().bits());
     };
-    importlib_find_spec_object_bits(_py, fullname, &payload, machinery_bits)
+    importlib_find_spec_object_bits(_py, ctx.fullname, &payload, ctx.machinery_bits)
 }
 
 fn importlib_find_spec_orchestrated_search_paths(
@@ -9604,14 +9611,16 @@ fn importlib_find_spec_orchestrated_impl(
 
         let spec_bits = importlib_find_spec_with_runtime_state_bits(
             _py,
-            module_name,
-            &search_paths,
-            module_file,
-            runtime_state.meta_path_bits,
-            runtime_state.path_hooks_bits,
-            runtime_state.path_importer_cache_bits,
-            package_context,
-            machinery_bits,
+            ImportlibRuntimeSpecContext {
+                fullname: module_name,
+                search_paths: &search_paths,
+                module_file,
+                meta_path_bits: runtime_state.meta_path_bits,
+                path_hooks_bits: runtime_state.path_hooks_bits,
+                path_importer_cache_bits: runtime_state.path_importer_cache_bits,
+                package_context,
+                machinery_bits,
+            },
         )?;
         unsafe {
             dict_set_in_place(_py, spec_cache_ptr, cache_key_bits, spec_bits);
@@ -9795,13 +9804,15 @@ pub extern "C" fn molt_importlib_pathfinder_find_spec(
             };
         let result = importlib_find_spec_from_path_hooks_impl(
             _py,
-            &fullname,
-            &search_paths,
-            module_file,
-            path_hooks_bits,
-            path_importer_cache_bits,
-            package_context,
-            machinery_bits,
+            ImportlibPathHooksContext {
+                fullname: &fullname,
+                search_paths: &search_paths,
+                module_file,
+                path_hooks_bits,
+                path_importer_cache_bits,
+                package_context,
+                machinery_bits,
+            },
         );
         if owns_path_hooks && !obj_from_bits(path_hooks_bits).is_none() {
             dec_ref_bits(_py, path_hooks_bits);
@@ -9841,13 +9852,15 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
         let search_paths = vec![path];
         let result = importlib_find_spec_from_path_hooks_impl(
             _py,
-            &fullname,
-            &search_paths,
-            module_file,
-            path_hooks_bits,
-            path_importer_cache_bits,
-            true,
-            machinery_bits,
+            ImportlibPathHooksContext {
+                fullname: &fullname,
+                search_paths: &search_paths,
+                module_file,
+                path_hooks_bits,
+                path_importer_cache_bits,
+                package_context: true,
+                machinery_bits,
+            },
         );
         if owns_path_hooks && !obj_from_bits(path_hooks_bits).is_none() {
             dec_ref_bits(_py, path_hooks_bits);
@@ -10712,13 +10725,12 @@ pub extern "C" fn molt_importlib_existing_spec(
                 }
                 return err;
             }
-        } {
-            if !obj_from_bits(spec_bits).is_none() {
-                if !obj_from_bits(module_name_key_bits).is_none() {
-                    dec_ref_bits(_py, module_name_key_bits);
-                }
-                return spec_bits;
+        } && !obj_from_bits(spec_bits).is_none()
+        {
+            if !obj_from_bits(module_name_key_bits).is_none() {
+                dec_ref_bits(_py, module_name_key_bits);
             }
+            return spec_bits;
         }
 
         let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
@@ -11565,7 +11577,7 @@ pub extern "C" fn molt_importlib_resources_contents_from_package(
         let mut entries: BTreeSet<String> = BTreeSet::new();
         let mut has_init_py = false;
         for root in &payload.roots {
-            let root_payload = importlib_resources_path_payload(&root);
+            let root_payload = importlib_resources_path_payload(root);
             has_init_py = has_init_py || root_payload.has_init_py;
             for entry in root_payload.entries {
                 entries.insert(entry);
@@ -12730,17 +12742,17 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
             }
 
             let origin_name = intern_static_name(_py, &ORIGIN_NAME, b"origin");
-            if let Some(origin_bits) = getattr_optional_bits(_py, spec_bits, origin_name)? {
-                if !obj_from_bits(origin_bits).is_none() {
-                    importlib_set_attr(
-                        _py,
-                        module_bits,
-                        &DUNDER_FILE_NAME,
-                        b"__file__",
-                        origin_bits,
-                    )?;
-                    dec_ref_bits(_py, origin_bits);
-                }
+            if let Some(origin_bits) = getattr_optional_bits(_py, spec_bits, origin_name)?
+                && !obj_from_bits(origin_bits).is_none()
+            {
+                importlib_set_attr(
+                    _py,
+                    module_bits,
+                    &DUNDER_FILE_NAME,
+                    b"__file__",
+                    origin_bits,
+                )?;
+                dec_ref_bits(_py, origin_bits);
             }
 
             let cached_bits = importlib_required_attribute(
@@ -14463,8 +14475,30 @@ mod tests {
             ],
             || {
                 let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
-                assert_eq!(state.pythonpath_entries, vec!["alpha", "beta"]);
-                assert_eq!(state.module_roots_entries, vec!["gamma", "beta", "delta"]);
+                let path_sep = if sys_platform_str().starts_with("win") {
+                    '\\'
+                } else {
+                    '/'
+                };
+                let expected_alpha =
+                    bootstrap_resolve_path_entry("alpha", "/tmp/molt_pwd", path_sep);
+                let expected_beta = bootstrap_resolve_path_entry("beta", "/tmp/molt_pwd", path_sep);
+                let expected_gamma =
+                    bootstrap_resolve_path_entry("gamma", "/tmp/molt_pwd", path_sep);
+                let expected_delta =
+                    bootstrap_resolve_path_entry("delta", "/tmp/molt_pwd", path_sep);
+                assert_eq!(
+                    state.pythonpath_entries,
+                    vec![expected_alpha.clone(), expected_beta.clone()]
+                );
+                assert_eq!(
+                    state.module_roots_entries,
+                    vec![
+                        expected_gamma.clone(),
+                        expected_beta.clone(),
+                        expected_delta.clone()
+                    ]
+                );
                 assert_eq!(state.stdlib_root, Some(expected_stdlib_root()));
                 assert_eq!(state.pwd, "/tmp/molt_pwd");
                 assert!(state.include_cwd);
@@ -14472,11 +14506,11 @@ mod tests {
                     state.path,
                     vec![
                         "".to_string(),
-                        "alpha".to_string(),
-                        "beta".to_string(),
+                        expected_alpha,
+                        expected_beta,
                         expected_stdlib_root(),
-                        "gamma".to_string(),
-                        "delta".to_string(),
+                        expected_gamma,
+                        expected_delta,
                     ]
                 );
             },
@@ -14828,6 +14862,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn importlib_find_in_path_resolves_zip_source_module_and_package() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -14886,6 +14921,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -14941,10 +14977,19 @@ mod tests {
             ],
             || {
                 let resolved =
-                    importlib_search_paths(&vec!["src".to_string()], Some(bootstrap_module_file()));
+                    importlib_search_paths(&["src".to_string()], Some(bootstrap_module_file()));
                 assert!(resolved.iter().any(|entry| entry == "src"));
-                assert!(resolved.iter().any(|entry| entry == "vendor"));
-                assert!(resolved.iter().any(|entry| entry == "extra"));
+                let path_sep = if sys_platform_str().starts_with("win") {
+                    '\\'
+                } else {
+                    '/'
+                };
+                let expected_vendor =
+                    bootstrap_resolve_path_entry("vendor", "/tmp/bootstrap_pwd", path_sep);
+                let expected_extra =
+                    bootstrap_resolve_path_entry("extra", "/tmp/bootstrap_pwd", path_sep);
+                assert!(resolved.iter().any(|entry| entry == &expected_vendor));
+                assert!(resolved.iter().any(|entry| entry == &expected_extra));
                 assert!(resolved.iter().any(|entry| {
                     entry.ends_with("/molt/stdlib") || entry.ends_with("\\molt\\stdlib")
                 }));
@@ -14988,6 +15033,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn importlib_namespace_paths_finds_zip_namespace_dirs() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15013,11 +15059,8 @@ mod tests {
 
         let archive_text = archive.to_string_lossy().into_owned();
         let expected = format!("{archive_text}/nszip/pkg");
-        let resolved = importlib_namespace_paths(
-            "nszip.pkg",
-            &vec![archive_text],
-            Some(bootstrap_module_file()),
-        );
+        let resolved =
+            importlib_namespace_paths("nszip.pkg", &[archive_text], Some(bootstrap_module_file()));
         assert!(resolved.iter().any(|entry| entry == &expected));
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -15043,7 +15086,7 @@ mod tests {
         let dist_info_text = dist_info.to_string_lossy().into_owned();
         let egg_info_text = egg_info.to_string_lossy().into_owned();
         let resolved = importlib_metadata_dist_paths(
-            &vec![tmp.to_string_lossy().into_owned()],
+            &[tmp.to_string_lossy().into_owned()],
             Some(bootstrap_module_file()),
         );
         assert!(resolved.iter().any(|entry| entry == &dist_info_text));
@@ -15085,6 +15128,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn importlib_resources_zip_payload_reports_entries_and_init_marker() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15144,7 +15188,7 @@ mod tests {
 
         let package_meta = importlib_resources_package_payload(
             "pkg",
-            &vec![archive_text.clone()],
+            std::slice::from_ref(&archive_text),
             Some(bootstrap_module_file()),
         );
         assert!(package_meta.has_regular_package);
@@ -15165,6 +15209,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn importlib_resources_whl_payload_reports_archive_member_flag() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15313,7 +15358,7 @@ mod tests {
             .expect("write top_level two");
 
         let payload = importlib_metadata_packages_distributions_payload(
-            &vec![tmp.to_string_lossy().into_owned()],
+            &[tmp.to_string_lossy().into_owned()],
             Some(bootstrap_module_file()),
         );
         let mapping: BTreeMap<String, Vec<String>> = payload.into_iter().collect();
@@ -15345,9 +15390,18 @@ mod tests {
             ],
             || {
                 let payload = importlib_bootstrap_payload(
-                    &vec!["src".to_string()],
+                    &["src".to_string()],
                     Some(bootstrap_module_file()),
                 );
+                let path_sep = if sys_platform_str().starts_with("win") {
+                    '\\'
+                } else {
+                    '/'
+                };
+                let expected_alpha =
+                    bootstrap_resolve_path_entry("alpha", "/tmp/bootstrap_pwd", path_sep);
+                let expected_vendor =
+                    bootstrap_resolve_path_entry("vendor", "/tmp/bootstrap_pwd", path_sep);
                 assert!(
                     payload
                         .resolved_search_paths
@@ -15360,12 +15414,12 @@ mod tests {
                         .iter()
                         .any(|entry| entry == &expected_stdlib_root())
                 );
-                assert_eq!(payload.pythonpath_entries, vec!["alpha".to_string()]);
+                assert_eq!(payload.pythonpath_entries, vec![expected_alpha]);
                 assert!(
                     payload
                         .module_roots_entries
                         .iter()
-                        .any(|entry| entry == "vendor")
+                        .any(|entry| entry == &expected_vendor)
                 );
                 assert!(payload.venv_site_packages_entries.is_empty());
                 assert!(payload.include_cwd);
@@ -15401,7 +15455,7 @@ mod tests {
         )
         .expect("write entry_points two");
         let payload = importlib_metadata_entry_points_payload(
-            &vec![tmp.to_string_lossy().into_owned()],
+            &[tmp.to_string_lossy().into_owned()],
             Some(bootstrap_module_file()),
         );
         assert!(payload.iter().any(|(name, value, group)| name == "one"
@@ -15517,7 +15571,7 @@ mod tests {
         .expect("write metadata two");
 
         let payloads = importlib_metadata_distributions_payload(
-            &vec![tmp.to_string_lossy().into_owned()],
+            &[tmp.to_string_lossy().into_owned()],
             Some(bootstrap_module_file()),
         );
         assert_eq!(payloads.len(), 2);

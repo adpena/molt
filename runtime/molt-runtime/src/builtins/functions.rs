@@ -5925,10 +5925,9 @@ fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
     pi == pat_chars.len()
 }
 
-fn fnmatch_parse_char_class_bytes(
-    pat: &[u8],
-    mut idx: usize,
-) -> Option<(Vec<u8>, Vec<(u8, u8)>, bool, usize)> {
+type FnmatchByteCharClass = (Vec<u8>, Vec<(u8, u8)>, bool, usize);
+
+fn fnmatch_parse_char_class_bytes(pat: &[u8], mut idx: usize) -> Option<FnmatchByteCharClass> {
     if idx >= pat.len() || pat[idx] != b'[' {
         return None;
     }
@@ -6066,8 +6065,8 @@ fn fnmatch_normcase_bytes(input: &[u8]) -> Vec<u8> {
             let mut ch = *b;
             if ch == b'/' {
                 ch = b'\\';
-            } else if (b'A'..=b'Z').contains(&ch) {
-                ch = ch + 32;
+            } else if ch.is_ascii_uppercase() {
+                ch += 32;
             }
             out.push(ch);
         }
@@ -6102,10 +6101,7 @@ fn fnmatch_translate_impl(pat: &str) -> String {
         i += 1;
         match ch {
             '*' => {
-                if res
-                    .last()
-                    .map_or(true, |token| !matches!(token, Token::Star))
-                {
+                if res.last().is_none_or(|token| !matches!(token, Token::Star)) {
                     res.push(Token::Star);
                 }
             }
@@ -6137,13 +6133,10 @@ fn fnmatch_translate_impl(pat: &str) -> String {
                         sub_i + 1
                     };
                     loop {
-                        let mut found = None;
-                        for idx in k..j {
-                            if chars[idx] == '-' {
-                                found = Some(idx);
-                                break;
-                            }
-                        }
+                        let found = chars[k..j]
+                            .iter()
+                            .position(|ch| *ch == '-')
+                            .map(|offset| k + offset);
                         let Some(k_idx) = found else {
                             break;
                         };
@@ -6160,17 +6153,16 @@ fn fnmatch_translate_impl(pat: &str) -> String {
                     for idx in (1..chunks.len()).rev() {
                         if let (Some(prev_last), Some(next_first)) =
                             (chunks[idx - 1].chars().last(), chunks[idx].chars().next())
+                            && prev_last > next_first
                         {
-                            if prev_last > next_first {
-                                let mut updated = chunks[idx - 1].chars().collect::<Vec<_>>();
-                                updated.pop();
-                                let mut new_chunk: String = updated.into_iter().collect();
-                                let mut next_chars = chunks[idx].chars();
-                                next_chars.next();
-                                new_chunk.push_str(&next_chars.collect::<String>());
-                                chunks[idx - 1] = new_chunk;
-                                chunks.remove(idx);
-                            }
+                            let mut updated = chunks[idx - 1].chars().collect::<Vec<_>>();
+                            updated.pop();
+                            let mut new_chunk: String = updated.into_iter().collect();
+                            let mut next_chars = chunks[idx].chars();
+                            next_chars.next();
+                            new_chunk.push_str(&next_chars.collect::<String>());
+                            chunks[idx - 1] = new_chunk;
+                            chunks.remove(idx);
                         }
                     }
                     let escaped_chunks: Vec<String> = chunks
@@ -6207,10 +6199,10 @@ fn fnmatch_translate_impl(pat: &str) -> String {
                 } else {
                     if stuff.starts_with('!') {
                         stuff = format!("^{}", &stuff[1..]);
-                    } else if let Some(first) = stuff.chars().next() {
-                        if first == '^' || first == '[' {
-                            stuff = format!("\\{}", stuff);
-                        }
+                    } else if let Some(first) = stuff.chars().next()
+                        && (first == '^' || first == '[')
+                    {
+                        stuff = format!("\\{}", stuff);
                     }
                     res.push(Token::Text(format!("[{stuff}]")));
                 }
@@ -6260,9 +6252,7 @@ fn fnmatch_translate_impl(pat: &str) -> String {
 
 fn fnmatch_bytes_from_bits(bits: u64) -> Option<Vec<u8>> {
     let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return None;
-    };
+    let ptr = obj.as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_BYTES {
             return None;
@@ -8103,14 +8093,14 @@ fn urllib_response_with<T>(handle: i64, f: impl FnOnce(&MoltUrllibResponse) -> T
 }
 
 fn urllib_response_drop(_py: &crate::PyToken<'_>, handle: i64) {
-    if let Ok(mut guard) = urllib_response_registry().lock() {
-        if let Some(mut response) = guard.remove(&(handle as u64)) {
-            if let Some(bits) = response.headers_dict_cache.take() {
-                dec_ref_bits(_py, bits);
-            }
-            if let Some(bits) = response.headers_list_cache.take() {
-                dec_ref_bits(_py, bits);
-            }
+    if let Ok(mut guard) = urllib_response_registry().lock()
+        && let Some(mut response) = guard.remove(&(handle as u64))
+    {
+        if let Some(bits) = response.headers_dict_cache.take() {
+            dec_ref_bits(_py, bits);
+        }
+        if let Some(bits) = response.headers_list_cache.take() {
+            dec_ref_bits(_py, bits);
         }
     }
 }
@@ -8611,8 +8601,7 @@ fn http_cookies_expires_text(_py: &crate::PyToken<'_>, expires_bits: u64) -> Opt
     http_cookies_attr_text(_py, expires_bits)
 }
 
-fn http_cookies_render_morsel_impl(
-    _py: &crate::PyToken<'_>,
+struct HttpCookieMorselInput {
     name_bits: u64,
     value_bits: u64,
     path_bits: u64,
@@ -8620,36 +8609,57 @@ fn http_cookies_render_morsel_impl(
     httponly_bits: u64,
     max_age_bits: u64,
     expires_bits: u64,
+}
+
+fn http_cookies_render_morsel_impl(
+    _py: &crate::PyToken<'_>,
+    input: HttpCookieMorselInput,
 ) -> String {
-    let name = crate::format_obj_str(_py, obj_from_bits(name_bits));
-    let value = crate::format_obj_str(_py, obj_from_bits(value_bits));
+    let name = crate::format_obj_str(_py, obj_from_bits(input.name_bits));
+    let value = crate::format_obj_str(_py, obj_from_bits(input.value_bits));
     let mut segments: Vec<String> = vec![format!("{name}={value}")];
 
-    if let Some(expires_value) = http_cookies_expires_text(_py, expires_bits) {
+    if let Some(expires_value) = http_cookies_expires_text(_py, input.expires_bits) {
         segments.push(format!("expires={expires_value}"));
     }
 
-    if !obj_from_bits(httponly_bits).is_none() && is_truthy(_py, obj_from_bits(httponly_bits)) {
+    if !obj_from_bits(input.httponly_bits).is_none()
+        && is_truthy(_py, obj_from_bits(input.httponly_bits))
+    {
         segments.push("HttpOnly".to_string());
     }
 
-    if !obj_from_bits(max_age_bits).is_none() {
-        if let Some(max_age_int) = to_i64(obj_from_bits(max_age_bits)) {
+    if !obj_from_bits(input.max_age_bits).is_none() {
+        if let Some(max_age_int) = to_i64(obj_from_bits(input.max_age_bits)) {
             segments.push(format!("Max-Age={max_age_int}"));
-        } else if let Some(max_age_text) = http_cookies_attr_text(_py, max_age_bits) {
+        } else if let Some(max_age_text) = http_cookies_attr_text(_py, input.max_age_bits) {
             segments.push(format!("Max-Age={max_age_text}"));
         }
     }
 
-    if let Some(path_value) = http_cookies_attr_text(_py, path_bits) {
+    if let Some(path_value) = http_cookies_attr_text(_py, input.path_bits) {
         segments.push(format!("Path={path_value}"));
     }
 
-    if !obj_from_bits(secure_bits).is_none() && is_truthy(_py, obj_from_bits(secure_bits)) {
+    if !obj_from_bits(input.secure_bits).is_none()
+        && is_truthy(_py, obj_from_bits(input.secure_bits))
+    {
         segments.push("Secure".to_string());
     }
 
     segments.join("; ")
+}
+
+struct HttpClientExecuteInput {
+    host: String,
+    port: u16,
+    timeout: Option<f64>,
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    skip_host: bool,
+    skip_accept_encoding: bool,
 }
 
 fn urllib_http_extract_headers_mapping(
@@ -9099,41 +9109,33 @@ fn http_client_connection_handle_from_bits(
 
 fn http_client_execute_request(
     _py: &crate::PyToken<'_>,
-    host: String,
-    port: u16,
-    timeout: Option<f64>,
-    method: String,
-    url: String,
-    mut headers: Vec<(String, String)>,
-    body: Vec<u8>,
-    skip_host: bool,
-    skip_accept_encoding: bool,
+    mut input: HttpClientExecuteInput,
 ) -> Result<i64, u64> {
     http_client_apply_default_headers(
-        &mut headers,
-        host.as_str(),
-        port,
-        skip_host,
-        skip_accept_encoding,
+        &mut input.headers,
+        input.host.as_str(),
+        input.port,
+        input.skip_host,
+        input.skip_accept_encoding,
     );
-    let request_target = if url.is_empty() {
+    let request_target = if input.url.is_empty() {
         "/".to_string()
     } else {
-        url.clone()
+        input.url.clone()
     };
-    let host_header = if port == 80 {
-        host.clone()
+    let host_header = if input.port == 80 {
+        input.host.clone()
     } else {
-        format!("{host}:{port}")
+        format!("{}:{}", input.host, input.port)
     };
     let req = UrllibHttpRequest {
-        host: host.clone(),
-        port,
+        host: input.host.clone(),
+        port: input.port,
         path: request_target.clone(),
-        method,
-        headers,
-        body,
-        timeout,
+        method: input.method,
+        headers: input.headers,
+        body: input.body,
+        timeout: input.timeout,
     };
     let (code, reason, resp_headers, resp_body) =
         match urllib_http_try_inmemory_dispatch(_py, &req, &request_target, &host_header) {
@@ -9149,8 +9151,8 @@ fn http_client_execute_request(
             },
             Err(bits) => return Err(bits),
         };
-    let response_url = if url.starts_with("http://") || url.starts_with("https://") {
-        url
+    let response_url = if input.url.starts_with("http://") || input.url.starts_with("https://") {
+        input.url
     } else if request_target.starts_with('/') {
         format!("http://{host_header}{request_target}")
     } else {
@@ -12133,7 +12135,7 @@ fn opcode_num_pushed_312(opcode: i64, oparg: i64) -> Option<i64> {
         1 => Some(0),                                            // POP_TOP
         2 => Some(1),                                            // PUSH_NULL
         3 => Some(0),                                            // INTERPRETER_EXIT
-        4 => Some(0 + 0),                                        // END_FOR
+        4 => Some(0),                                            // END_FOR
         5 => Some(1),                                            // END_SEND
         9 => Some(0),                                            // NOP
         11 => Some(1),                                           // UNARY_NEGATIVE
@@ -12262,7 +12264,7 @@ fn opcode_num_pushed_312(opcode: i64, oparg: i64) -> Option<i64> {
 }
 
 fn opcode_is_noarg_pseudo_312(opcode: i64) -> bool {
-    matches!(opcode, 256 | 257 | 258 | 259)
+    matches!(opcode, 256..=259)
 }
 
 fn opcode_stack_effect_pseudo_312(opcode: i64) -> Option<i64> {
@@ -13221,28 +13223,25 @@ pub extern "C" fn molt_stat_constants() -> u64 {
     crate::with_gil_entry!(_py, {
         fn stat_target_minor(_py: &crate::PyToken<'_>) -> i64 {
             let state = crate::runtime_state(_py);
-            if let Some(info) = state.sys_version_info.lock().unwrap().as_ref() {
-                if info.major == 3 {
-                    return info.minor;
-                }
+            if let Some(info) = state.sys_version_info.lock().unwrap().as_ref()
+                && info.major == 3
+            {
+                return info.minor;
             }
-            if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION") {
-                if let Some((major_raw, minor_raw)) = raw.split_once('.') {
-                    if major_raw.trim() == "3" {
-                        if let Ok(minor) = minor_raw.trim().parse::<i64>() {
-                            return minor;
-                        }
-                    }
-                }
+            if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
+                && let Some((major_raw, minor_raw)) = raw.split_once('.')
+                && major_raw.trim() == "3"
+                && let Ok(minor) = minor_raw.trim().parse::<i64>()
+            {
+                return minor;
             }
             if let Ok(raw) = std::env::var("MOLT_SYS_VERSION_INFO") {
                 let mut parts = raw.split(',');
-                if let (Some(major_raw), Some(minor_raw)) = (parts.next(), parts.next()) {
-                    if major_raw.trim() == "3" {
-                        if let Ok(minor) = minor_raw.trim().parse::<i64>() {
-                            return minor;
-                        }
-                    }
+                if let (Some(major_raw), Some(minor_raw)) = (parts.next(), parts.next())
+                    && major_raw.trim() == "3"
+                    && let Ok(minor) = minor_raw.trim().parse::<i64>()
+                {
+                    return minor;
                 }
             }
             12
@@ -14199,13 +14198,15 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     crate::with_gil_entry!(_py, {
         let out = http_cookies_render_morsel_impl(
             _py,
-            name_bits,
-            value_bits,
-            path_bits,
-            secure_bits,
-            httponly_bits,
-            max_age_bits,
-            expires_bits,
+            HttpCookieMorselInput {
+                name_bits,
+                value_bits,
+                path_bits,
+                secure_bits,
+                httponly_bits,
+                max_age_bits,
+                expires_bits,
+            },
         );
         let Some(bits) = alloc_string_bits(_py, &out) else {
             return MoltObject::none().bits();
@@ -16778,10 +16779,10 @@ pub extern "C" fn molt_http_client_connection_endheaders(handle_bits: u64, body_
             if conn.method.is_none() || conn.url.is_none() {
                 return Err("request not started");
             }
-            if !conn
+            if conn
                 .buffer
                 .last()
-                .is_some_and(|line| line.as_slice() == b"\r\n")
+                .is_none_or(|line| line.as_slice() != b"\r\n")
             {
                 http_client_apply_default_headers(
                     &mut conn.headers,
@@ -16937,7 +16938,18 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
             }
         };
         let response_handle = match http_client_execute_request(
-            _py, host, port, timeout, method, url, headers, body, true, true,
+            _py,
+            HttpClientExecuteInput {
+                host,
+                port,
+                timeout,
+                method,
+                url,
+                headers,
+                body,
+                skip_host: true,
+                skip_accept_encoding: true,
+            },
         ) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -17037,7 +17049,18 @@ pub extern "C" fn molt_http_client_execute(
             }
         };
         match http_client_execute_request(
-            _py, host, port, timeout, method, url, headers, body, true, true,
+            _py,
+            HttpClientExecuteInput {
+                host,
+                port,
+                timeout,
+                method,
+                url,
+                headers,
+                body,
+                skip_host: true,
+                skip_accept_encoding: true,
+            },
         ) {
             Ok(handle) => MoltObject::from_int(handle).bits(),
             Err(bits) => bits,
@@ -17542,12 +17565,12 @@ fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pya
     if source.trim_end().ends_with(':') {
         return true;
     }
-    if source.contains('\n') && !source.ends_with('\n') {
-        if let pyast::Mod::Interactive(module) = parsed
-            && let Some(first) = module.body.first()
-        {
-            return codeop_stmt_is_compound(first);
-        }
+    if source.contains('\n')
+        && !source.ends_with('\n')
+        && let pyast::Mod::Interactive(module) = parsed
+        && let Some(first) = module.body.first()
+    {
+        return codeop_stmt_is_compound(first);
     }
     false
 }
@@ -18423,9 +18446,9 @@ pub extern "C" fn molt_codeop_compile_command(
                 return MoltObject::from_ptr(result_ptr).bits();
             }
             CodeopCompileStatus::Error {
-                error_type,
-                message: _,
-            } if error_type == "SyntaxError" => {}
+                error_type: "SyntaxError",
+                ..
+            } => {}
             CodeopCompileStatus::Error {
                 error_type,
                 message,
@@ -19405,17 +19428,14 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                 let handler_bits = if class_name == "logging.StreamHandler" {
                     let stream_arg_bits = match logging_config_dict_lookup(_py, cfg_bits, "stream")
                     {
-                        Ok(Some(bits)) => {
-                            let resolved = match logging_config_resolve_ext_stream(_py, bits) {
-                                Ok(resolved_bits) => resolved_bits,
-                                Err(err_bits) => {
-                                    dec_ref_bits(_py, name_bits);
-                                    dec_ref_bits(_py, cfg_bits);
-                                    return err_bits;
-                                }
-                            };
-                            resolved
-                        }
+                        Ok(Some(bits)) => match logging_config_resolve_ext_stream(_py, bits) {
+                            Ok(resolved_bits) => resolved_bits,
+                            Err(err_bits) => {
+                                dec_ref_bits(_py, name_bits);
+                                dec_ref_bits(_py, cfg_bits);
+                                return err_bits;
+                            }
+                        },
                         Ok(None) => MoltObject::none().bits(),
                         Err(bits) => {
                             dec_ref_bits(_py, name_bits);
