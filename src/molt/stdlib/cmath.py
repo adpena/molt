@@ -34,13 +34,13 @@ _MOLT_CMATH_CONSTANTS = _require_intrinsic("molt_cmath_constants", globals())
 # --- constants ---
 
 _consts = _MOLT_CMATH_CONSTANTS()
-pi: float = _consts["pi"]
-e: float = _consts["e"]
-tau: float = _consts["tau"]
-inf: float = _consts["inf"]
-infj: complex = _consts["infj"]
-nan: float = _consts["nan"]
-nanj: complex = _consts["nanj"]
+pi: float = _consts[0]
+e: float = _consts[1]
+tau: float = _consts[2]
+inf: float = _consts[3]
+infj: complex = complex(_consts[4], _consts[5])
+nan: float = _consts[6]
+nanj: complex = complex(_consts[7], _consts[8])
 del _consts
 
 
