@@ -11,7 +11,7 @@
 
 use crate::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ─── Handle counters ──────────────────────────────────────────────────────────
@@ -914,6 +914,1631 @@ pub extern "C" fn molt_chainmap_drop(handle_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         CHAINMAP_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        MoltObject::none().bits()
+    })
+}
+// ─── Handle counter ─────────────────────────────────────────────────────────
+
+static NEXT_DEQUE_HANDLE: AtomicI64 = AtomicI64::new(1);
+
+fn next_deque_handle() -> i64 {
+    NEXT_DEQUE_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+// ─── Deque state ────────────────────────────────────────────────────────────
+
+struct DequeState {
+    data: VecDeque<u64>,
+    maxlen: Option<usize>,
+}
+
+thread_local! {
+    static DEQUE_HANDLES: RefCell<HashMap<i64, DequeState>> =
+        RefCell::new(HashMap::new());
+}
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+fn deque_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(handle_bits);
+    let Some(id) = to_i64(obj) else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "deque handle must be an int");
+        return None;
+    };
+    Some(id)
+}
+
+/// Parse maxlen_bits into Option<usize>.
+/// Returns Ok(None) for Python None (unbounded), Ok(Some(n)) for non-negative int,
+/// or Err(()) after raising ValueError for negative.
+fn parse_maxlen(_py: &PyToken<'_>, maxlen_bits: u64) -> Result<Option<usize>, ()> {
+    let obj = obj_from_bits(maxlen_bits);
+    if obj.is_none() {
+        return Ok(None);
+    }
+    let Some(n) = to_i64(obj) else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "an integer is required");
+        return Err(());
+    };
+    if n < 0 {
+        let _ = raise_exception::<u64>(_py, "ValueError", "maxlen must be non-negative");
+        return Err(());
+    }
+    Ok(Some(n as usize))
+}
+
+/// Extract elements from a list or tuple pointer. Returns None and raises
+/// TypeError if the bits are not a list or tuple.
+fn extract_iterable_elements(_py: &PyToken<'_>, iterable_bits: u64) -> Option<&'static Vec<u64>> {
+    let obj = obj_from_bits(iterable_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
+        return None;
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
+        return None;
+    }
+    Some(unsafe { seq_vec_ref(ptr) })
+}
+
+/// Resolve a potentially negative index against a given length.
+/// Returns the resolved index or None if out of bounds.
+fn resolve_index(index: i64, len: usize) -> Option<usize> {
+    let resolved = if index < 0 {
+        index + len as i64
+    } else {
+        index
+    };
+    if resolved < 0 || resolved >= len as i64 {
+        None
+    } else {
+        Some(resolved as usize)
+    }
+}
+
+// ─── Public intrinsics: deque ───────────────────────────────────────────────
+
+/// Create a new empty deque with optional maxlen. Returns an integer handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let maxlen = match parse_maxlen(_py, maxlen_bits) {
+            Ok(m) => m,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let id = next_deque_handle();
+        DEQUE_HANDLES.with(|h| {
+            h.borrow_mut().insert(id, DequeState {
+                data: VecDeque::new(),
+                maxlen,
+            });
+        });
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Create a deque from an iterable (list/tuple) with optional maxlen.
+/// If maxlen is set and the iterable is longer, keeps only the last maxlen elements.
+/// Returns handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let maxlen = match parse_maxlen(_py, maxlen_bits) {
+            Ok(m) => m,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
+            return MoltObject::none().bits();
+        };
+        let data: VecDeque<u64> = if let Some(ml) = maxlen {
+            // If bounded and iterable longer than maxlen, keep only the last maxlen elements.
+            if elems.len() > ml {
+                elems[elems.len() - ml..].iter().copied().collect()
+            } else {
+                elems.iter().copied().collect()
+            }
+        } else {
+            elems.iter().copied().collect()
+        };
+        let id = next_deque_handle();
+        DEQUE_HANDLES.with(|h| {
+            h.borrow_mut().insert(id, DequeState { data, maxlen });
+        });
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Append item to the right end. If bounded and full, pop from the left.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                if let Some(ml) = state.maxlen {
+                    if ml == 0 {
+                        // maxlen is 0, element is silently dropped.
+                        return;
+                    }
+                    if state.data.len() == ml {
+                        state.data.pop_front();
+                    }
+                }
+                state.data.push_back(item_bits);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Append item to the left end. If bounded and full, pop from the right.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                if let Some(ml) = state.maxlen {
+                    if ml == 0 {
+                        return;
+                    }
+                    if state.data.len() == ml {
+                        state.data.pop_back();
+                    }
+                }
+                state.data.push_front(item_bits);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Remove and return the rightmost element.
+/// Raises IndexError if the deque is empty.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let result =
+            DEQUE_HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.data.pop_back()));
+        match result {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
+        }
+    })
+}
+
+/// Remove and return the leftmost element.
+/// Raises IndexError if the deque is empty.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let result =
+            DEQUE_HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.data.pop_front()));
+        match result {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
+        }
+    })
+}
+
+/// Extend the right side from an iterable (list/tuple).
+/// For bounded deques, evicts from the left as needed.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
+            return MoltObject::none().bits();
+        };
+        // Clone the elements to avoid holding the borrow across the mutation.
+        let elems_owned: Vec<u64> = elems.clone();
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                for &item in &elems_owned {
+                    if let Some(ml) = state.maxlen {
+                        if ml == 0 {
+                            continue;
+                        }
+                        if state.data.len() == ml {
+                            state.data.pop_front();
+                        }
+                    }
+                    state.data.push_back(item);
+                }
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Extend the left side from an iterable (list/tuple).
+/// NOTE: per CPython semantics, this reverses the order of elements from the
+/// iterable (equivalent to appendleft() for each element in order).
+/// For bounded deques, evicts from the right as needed.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
+            return MoltObject::none().bits();
+        };
+        let elems_owned: Vec<u64> = elems.clone();
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                // Each element is prepended in order, which reverses the iterable.
+                for &item in &elems_owned {
+                    if let Some(ml) = state.maxlen {
+                        if ml == 0 {
+                            continue;
+                        }
+                        if state.data.len() == ml {
+                            state.data.pop_back();
+                        }
+                    }
+                    state.data.push_front(item);
+                }
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Rotate the deque n steps.
+/// n > 0: rotate right (equivalent to appendleft(pop()) n times).
+/// n < 0: rotate left (equivalent to append(popleft()) |n| times).
+/// n == 0 or empty deque: no-op.
+/// Uses VecDeque::rotate_right/rotate_left for O(min(n, len)) performance.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let n_obj = obj_from_bits(n_bits);
+        let Some(n) = to_i64(n_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                let len = state.data.len();
+                if len == 0 {
+                    return;
+                }
+                if n > 0 {
+                    let steps = (n as usize) % len;
+                    if steps > 0 {
+                        state.data.rotate_right(steps);
+                    }
+                } else if n < 0 {
+                    let steps = ((-n) as usize) % len;
+                    if steps > 0 {
+                        state.data.rotate_left(steps);
+                    }
+                }
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Return the length of the deque as a NaN-boxed int.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let len =
+            DEQUE_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.data.len()).unwrap_or(0));
+        MoltObject::from_int(len as i64).bits()
+    })
+}
+
+/// Get element at index. Supports negative indexing.
+/// Raises IndexError "deque index out of range" if out of bounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let idx_obj = obj_from_bits(index_bits);
+        let Some(index) = to_i64(idx_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        let result = DEQUE_HANDLES.with(|h| {
+            let map = h.borrow();
+            let state = map.get(&id)?;
+            let resolved = resolve_index(index, state.data.len())?;
+            state.data.get(resolved).copied()
+        });
+        match result {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
+        }
+    })
+}
+
+/// Set element at index. Supports negative indexing.
+/// Raises IndexError if out of bounds.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let idx_obj = obj_from_bits(index_bits);
+        let Some(index) = to_i64(idx_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        let ok = DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            let Some(state) = map.get_mut(&id) else {
+                return false;
+            };
+            let Some(resolved) = resolve_index(index, state.data.len()) else {
+                return false;
+            };
+            state.data[resolved] = value_bits;
+            true
+        });
+        if !ok {
+            return raise_exception::<_>(_py, "IndexError", "deque index out of range");
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Delete element at index. Supports negative indexing.
+/// Uses VecDeque::remove() which is O(min(i, n-i)).
+/// Raises IndexError if out of bounds.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let idx_obj = obj_from_bits(index_bits);
+        let Some(index) = to_i64(idx_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        let ok = DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            let Some(state) = map.get_mut(&id) else {
+                return false;
+            };
+            let Some(resolved) = resolve_index(index, state.data.len()) else {
+                return false;
+            };
+            state.data.remove(resolved);
+            true
+        });
+        if !ok {
+            return raise_exception::<_>(_py, "IndexError", "deque index out of range");
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Return True if item is found in the deque via obj_eq comparison.
+/// Uses iterator, no allocation.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        // Snapshot the elements to avoid holding the borrow during obj_eq calls,
+        // which may re-enter the runtime.
+        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.data.iter().copied().collect())
+                .unwrap_or_default()
+        });
+        let target = obj_from_bits(item_bits);
+        for &elem_bits in &elements {
+            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+                return MoltObject::from_bool(true).bits();
+            }
+        }
+        MoltObject::from_bool(false).bits()
+    })
+}
+
+/// Count elements equal to item via obj_eq. Returns count as NaN-boxed int.
+/// Uses iterator, no allocation beyond the snapshot.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.data.iter().copied().collect())
+                .unwrap_or_default()
+        });
+        let target = obj_from_bits(item_bits);
+        let mut count: i64 = 0;
+        for &elem_bits in &elements {
+            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+                count += 1;
+            }
+        }
+        MoltObject::from_int(count).bits()
+    })
+}
+
+/// Search for item in range [start, stop). Negative indices resolved relative
+/// to length, clamped to [0, len].
+/// Raises ValueError "x is not in deque" if not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_index(
+    handle_bits: u64,
+    item_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let stop_obj = obj_from_bits(stop_bits);
+        let Some(start_raw) = to_i64(start_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        let Some(stop_raw) = to_i64(stop_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        // Snapshot elements to avoid holding borrow during obj_eq.
+        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.data.iter().copied().collect())
+                .unwrap_or_default()
+        });
+        let len = elements.len() as i64;
+        // Resolve negative indices.
+        let mut start = if start_raw < 0 { start_raw + len } else { start_raw };
+        let mut stop = if stop_raw < 0 { stop_raw + len } else { stop_raw };
+        // Clamp to [0, len].
+        if start < 0 {
+            start = 0;
+        }
+        if start > len {
+            start = len;
+        }
+        if stop < 0 {
+            stop = 0;
+        }
+        if stop > len {
+            stop = len;
+        }
+        let target = obj_from_bits(item_bits);
+        let start_usize = start as usize;
+        let stop_usize = stop as usize;
+        for (i, &elem_bits) in elements.iter().enumerate().take(stop_usize).skip(start_usize) {
+            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+                return MoltObject::from_int(i as i64).bits();
+            }
+        }
+        raise_exception::<_>(_py, "ValueError", "x is not in deque")
+    })
+}
+
+/// Insert item at index position. If bounded and len == maxlen, raises
+/// IndexError "deque already at its maximum size".
+/// Negative indices resolve but clamp to 0. Index beyond len clamps to len.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let idx_obj = obj_from_bits(index_bits);
+        let Some(index) = to_i64(idx_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        };
+        let ok = DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            let Some(state) = map.get_mut(&id) else {
+                return Ok(());
+            };
+            // Check maxlen constraint before insertion.
+            if let Some(ml) = state.maxlen
+                && state.data.len() >= ml
+            {
+                return Err(());
+            }
+            let len = state.data.len() as i64;
+            // Resolve negative index, clamp to [0, len].
+            let mut resolved = if index < 0 { index + len } else { index };
+            if resolved < 0 {
+                resolved = 0;
+            }
+            if resolved > len {
+                resolved = len;
+            }
+            // VecDeque::insert panics if index > len, but we clamped above.
+            state.data.insert(resolved as usize, item_bits);
+            Ok(())
+        });
+        match ok {
+            Ok(()) => MoltObject::none().bits(),
+            Err(()) => {
+                raise_exception::<_>(_py, "IndexError", "deque already at its maximum size")
+            }
+        }
+    })
+}
+
+/// Remove first occurrence of item. Raises ValueError
+/// "deque.remove(x): x not in deque" if not found.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        // Snapshot to find the index without holding the borrow during obj_eq.
+        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.data.iter().copied().collect())
+                .unwrap_or_default()
+        });
+        let target = obj_from_bits(item_bits);
+        let mut found_idx: Option<usize> = None;
+        for (i, &elem_bits) in elements.iter().enumerate() {
+            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+                found_idx = Some(i);
+                break;
+            }
+        }
+        let Some(idx) = found_idx else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "deque.remove(x): x not in deque",
+            );
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                state.data.remove(idx);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Reverse the deque in place.
+/// Uses make_contiguous() + reverse() for performance.
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                state.data.make_contiguous().reverse();
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Clear all elements. Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEQUE_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                state.data.clear();
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Create a shallow copy. Uses VecDeque::clone() — no element-by-element copy.
+/// Returns a new handle with the same maxlen.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let cloned = DEQUE_HANDLES.with(|h| {
+            h.borrow().get(&id).map(|s| DequeState {
+                data: s.data.clone(),
+                maxlen: s.maxlen,
+            })
+        });
+        let Some(new_state) = cloned else {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid deque handle");
+        };
+        let new_id = next_deque_handle();
+        DEQUE_HANDLES.with(|h| h.borrow_mut().insert(new_id, new_state));
+        MoltObject::from_int(new_id).bits()
+    })
+}
+
+/// Return maxlen as NaN-boxed int, or None if unbounded.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let maxlen = DEQUE_HANDLES.with(|h| h.borrow().get(&id).and_then(|s| s.maxlen));
+        match maxlen {
+            Some(ml) => MoltObject::from_int(ml as i64).bits(),
+            None => MoltObject::none().bits(),
+        }
+    })
+}
+
+/// Remove handle from thread-local map. Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_deque_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEQUE_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        MoltObject::none().bits()
+    })
+}
+
+// ─── Counter intrinsics ─────────────────────────────────────────────────────
+//
+// Handle model: thread-local HashMap<i64, CounterState> keyed by an atomically-
+// issued handle ID, returned to Python as a NaN-boxed integer.  Matches the
+// pattern established by builtins/collections_ext.rs (OrderedDict, ChainMap).
+//
+// Internal state: Vec<(u64, i64)> for insertion-order.
+// Key lookup uses content-based equality (obj_eq) to correctly handle
+// heap-allocated values like strings where identical content may have
+// different NaN-boxed bit patterns.
+
+// ─── Counter state ─────────────────────────────────────────────────────────
+
+struct CounterState {
+    /// Insertion-ordered (element_bits, count_bits) pairs.
+    /// `count_bits` is NaN-boxed: usually an int, but can be any value (e.g. float)
+    /// when assigned via `__setitem__`.
+    entries: Vec<(u64, u64)>,
+}
+
+/// Extract an i64 count from NaN-boxed bits, defaulting to 0 for non-integers.
+#[inline]
+fn count_to_i64(bits: u64) -> i64 {
+    to_i64(obj_from_bits(bits)).unwrap_or(0)
+}
+
+/// Convert an i64 count to NaN-boxed bits.
+#[inline]
+fn i64_to_count(n: i64) -> u64 {
+    MoltObject::from_int(n).bits()
+}
+
+impl CounterState {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Find the index of `key` using content-based equality.
+    /// Fast path: bit-exact match first, then obj_eq for heap values.
+    #[inline]
+    fn find_key(&self, _py: &PyToken<'_>, key: u64) -> Option<usize> {
+        let target = obj_from_bits(key);
+        for (i, &(k, _)) in self.entries.iter().enumerate() {
+            if k == key || obj_eq(_py, obj_from_bits(k), target) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Return raw NaN-boxed count bits for `key` (0 if missing).
+    #[inline]
+    fn get_count_bits(&self, _py: &PyToken<'_>, key: u64) -> u64 {
+        self.find_key(_py, key)
+            .map(|i| self.entries[i].1)
+            .unwrap_or_else(|| i64_to_count(0))
+    }
+
+    /// Add an integer delta to the count for `key`.
+    /// If the existing count is non-integer, it is treated as 0.
+    #[inline]
+    fn add_count(&mut self, _py: &PyToken<'_>, key: u64, delta: i64) {
+        if let Some(idx) = self.find_key(_py, key) {
+            let cur = count_to_i64(self.entries[idx].1);
+            self.entries[idx].1 = i64_to_count(cur + delta);
+        } else {
+            inc_ref_bits(_py, key);
+            self.entries.push((key, i64_to_count(delta)));
+        }
+    }
+
+    /// Store raw NaN-boxed bits as the count for `key` (used by `__setitem__`).
+    #[inline]
+    fn set_count_raw(&mut self, _py: &PyToken<'_>, key: u64, count_bits: u64) {
+        if let Some(idx) = self.find_key(_py, key) {
+            self.entries[idx].1 = count_bits;
+        } else {
+            inc_ref_bits(_py, key);
+            self.entries.push((key, count_bits));
+        }
+    }
+
+    /// Store an i64 count for `key` (used by `from_mapping`).
+    #[inline]
+    fn set_count_i64(&mut self, _py: &PyToken<'_>, key: u64, count: i64) {
+        self.set_count_raw(_py, key, i64_to_count(count));
+    }
+
+    fn remove(&mut self, _py: &PyToken<'_>, key: u64) -> Option<u64> {
+        let idx = self.find_key(_py, key)?;
+        let (old_key, count_bits) = self.entries.swap_remove(idx);
+        dec_ref_bits(_py, old_key);
+        Some(count_bits)
+    }
+
+    #[inline]
+    fn contains(&self, _py: &PyToken<'_>, key: u64) -> bool {
+        self.find_key(_py, key).is_some()
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn clear(&mut self, _py: &PyToken<'_>) {
+        for &(key, _) in &self.entries {
+            dec_ref_bits(_py, key);
+        }
+        self.entries.clear();
+    }
+
+    fn clone_state(&self, _py: &PyToken<'_>) -> Self {
+        for &(key, _) in &self.entries {
+            inc_ref_bits(_py, key);
+        }
+        Self {
+            entries: self.entries.clone(),
+        }
+    }
+}
+
+// ─── defaultdict state ─────────────────────────────────────────────────────
+
+struct DefaultDictState {
+    factory_bits: u64,
+}
+
+// ─── Handle counters ────────────────────────────────────────────────────────
+
+static NEXT_COUNTER_HANDLE: AtomicI64 = AtomicI64::new(1);
+static NEXT_DEFAULTDICT_HANDLE: AtomicI64 = AtomicI64::new(1);
+
+fn next_counter_handle() -> i64 {
+    NEXT_COUNTER_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_defaultdict_handle() -> i64 {
+    NEXT_DEFAULTDICT_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+// ─── Thread-local handle maps ───────────────────────────────────────────────
+
+thread_local! {
+    static COUNTER_HANDLES: RefCell<HashMap<i64, CounterState>> =
+        RefCell::new(HashMap::new());
+    static DEFAULTDICT_HANDLES: RefCell<HashMap<i64, DefaultDictState>> =
+        RefCell::new(HashMap::new());
+}
+
+// ─── Handle helpers ─────────────────────────────────────────────────────────
+
+fn counter_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(handle_bits);
+    let Some(id) = to_i64(obj) else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "Counter handle must be an int");
+        return None;
+    };
+    Some(id)
+}
+
+fn dd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(handle_bits);
+    let Some(id) = to_i64(obj) else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "defaultdict handle must be an int");
+        return None;
+    };
+    Some(id)
+}
+
+// ─── Counter intrinsics: construction ───────────────────────────────────────
+
+/// Create an empty Counter.  Returns an integer handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_new() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = next_counter_handle();
+        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, CounterState::new()));
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Create a Counter by counting elements from a list/tuple iterable.
+/// Each element becomes a key with count incremented by 1.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(iterable_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected a list or tuple");
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "expected a list or tuple");
+        }
+        let elems = unsafe { seq_vec_ref(ptr) };
+        let mut state = CounterState::new();
+        for &elem_bits in elems.iter() {
+            state.add_count(_py, elem_bits, 1);
+        }
+        let id = next_counter_handle();
+        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Create a Counter from a list of (key, count) pairs.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(mapping_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected a list of (key, count) pairs");
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "expected a list of (key, count) pairs",
+            );
+        }
+        let elems = unsafe { seq_vec_ref(ptr) };
+        let mut state = CounterState::new();
+        for &elem_bits in elems.iter() {
+            let elem_obj = obj_from_bits(elem_bits);
+            let Some(elem_ptr) = elem_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+            };
+            let elem_type = unsafe { object_type_id(elem_ptr) };
+            if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
+                return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+            }
+            let pair = unsafe { seq_vec_ref(elem_ptr) };
+            if pair.len() < 2 {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "each pair must have 2 elements",
+                );
+            }
+            let count_obj = obj_from_bits(pair[1]);
+            let Some(count) = to_i64(count_obj) else {
+                return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+            };
+            state.set_count_i64(_py, pair[0], count);
+        }
+        let id = next_counter_handle();
+        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        MoltObject::from_int(id).bits()
+    })
+}
+
+// ─── Counter intrinsics: item access ────────────────────────────────────────
+
+/// Return count for key.  Missing keys return 0 (not KeyError).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_getitem(handle_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        COUNTER_HANDLES
+            .with(|h| {
+                h.borrow()
+                    .get(&id)
+                    .map(|s| s.get_count_bits(_py, key_bits))
+                    .unwrap_or_else(|| i64_to_count(0))
+            })
+    })
+}
+
+/// Set count for key.  Accepts any NaN-boxed value (int, float, etc.).
+/// Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_setitem(
+    handle_bits: u64,
+    key_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        COUNTER_HANDLES.with(|h| {
+            if let Some(state) = h.borrow_mut().get_mut(&id) {
+                state.set_count_raw(_py, key_bits, count_bits);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Delete key.  Raises KeyError if not found.  Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_delitem(handle_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let removed = COUNTER_HANDLES
+            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(_py, key_bits)));
+        if removed.is_none() {
+            return raise_key_error_with_key::<u64>(_py, key_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+// ─── Counter intrinsics: query ──────────────────────────────────────────────
+
+/// Return a flat list of elements, each repeated by its count.
+/// Elements with count <= 0 are skipped.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_elements(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let items: Vec<u64> = COUNTER_HANDLES.with(|h| {
+            let map = h.borrow();
+            let Some(state) = map.get(&id) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for &(elem_bits, count_bits) in &state.entries {
+                let count = count_to_i64(count_bits);
+                if count > 0 {
+                    for _ in 0..count {
+                        out.push(elem_bits);
+                    }
+                }
+            }
+            out
+        });
+        let ptr = alloc_list(_py, &items);
+        if ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// Return (element, count) pairs sorted by count descending.
+/// If n_bits is None, return ALL pairs.  If n_bits is an int, return top n.
+/// Uses stable sort; for ties, insertion order is preserved.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_most_common(handle_bits: u64, n_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let n_obj = obj_from_bits(n_bits);
+        let n_limit: Option<usize> = if n_obj.is_none() {
+            None
+        } else {
+            let Some(n) = to_i64(n_obj) else {
+                return raise_exception::<_>(_py, "TypeError", "n must be an integer or None");
+            };
+            if n < 0 {
+                Some(0)
+            } else {
+                Some(n as usize)
+            }
+        };
+
+        let mut pairs: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.entries.clone())
+                .unwrap_or_default()
+        });
+
+        let cmp_count =
+            |a: &(u64, u64), b: &(u64, u64)| count_to_i64(b.1).cmp(&count_to_i64(a.1));
+
+        // Always use stable sort to preserve insertion order for equal counts.
+        match n_limit {
+            Some(0) => {
+                pairs.clear();
+            }
+            _ => {
+                pairs.sort_by(cmp_count);
+                if let Some(n) = n_limit {
+                    pairs.truncate(n);
+                }
+            }
+        }
+
+        let mut tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
+        for (elem_bits, count_bits) in &pairs {
+            let tptr = alloc_tuple(_py, &[*elem_bits, *count_bits]);
+            if tptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+            }
+            tuple_bits.push(MoltObject::from_ptr(tptr).bits());
+        }
+        let lptr = alloc_list(_py, &tuple_bits);
+        if lptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+        }
+        MoltObject::from_ptr(lptr).bits()
+    })
+}
+
+/// Sum all counts.  Returns as NaN-boxed int.  No allocation for iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_total(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let total: i64 = COUNTER_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.entries.iter().map(|(_, c)| count_to_i64(*c)).sum())
+                .unwrap_or(0)
+        });
+        MoltObject::from_int(total).bits()
+    })
+}
+
+// ─── Counter intrinsics: mutation ───────────────────────────────────────────
+
+/// Update counter from source.
+/// If source is a flat list: count each element (+1 per occurrence).
+/// If source is a list of 2-tuples: add count for each key.
+/// Detection: check if first element is a tuple.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let src_obj = obj_from_bits(source_bits);
+        let Some(src_ptr) = src_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "update source must be a list or tuple");
+        };
+        let src_type = unsafe { object_type_id(src_ptr) };
+        if src_type != TYPE_ID_LIST && src_type != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "update source must be a list or tuple");
+        }
+        let elems = unsafe { seq_vec_ref(src_ptr) }.clone();
+        if elems.is_empty() {
+            return MoltObject::none().bits();
+        }
+
+        let first_obj = obj_from_bits(elems[0]);
+        let is_mapping = first_obj.as_ptr().is_some_and(|fptr| {
+            let ft = unsafe { object_type_id(fptr) };
+            ft == TYPE_ID_TUPLE || ft == TYPE_ID_LIST
+        });
+
+        if is_mapping {
+            let mut deltas: Vec<(u64, i64)> = Vec::with_capacity(elems.len());
+            for &elem_bits in &elems {
+                let elem_obj = obj_from_bits(elem_bits);
+                let Some(elem_ptr) = elem_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                };
+                let elem_type = unsafe { object_type_id(elem_ptr) };
+                if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
+                    return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                }
+                let pair = unsafe { seq_vec_ref(elem_ptr) };
+                if pair.len() < 2 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "each pair must have 2 elements",
+                    );
+                }
+                let count_obj = obj_from_bits(pair[1]);
+                let Some(count) = to_i64(count_obj) else {
+                    return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+                };
+                deltas.push((pair[0], count));
+            }
+            COUNTER_HANDLES.with(|h| {
+                if let Some(state) = h.borrow_mut().get_mut(&id) {
+                    for (key, delta) in deltas {
+                        state.add_count(_py, key, delta);
+                    }
+                }
+            });
+        } else {
+            COUNTER_HANDLES.with(|h| {
+                if let Some(state) = h.borrow_mut().get_mut(&id) {
+                    for &elem_bits in &elems {
+                        state.add_count(_py, elem_bits, 1);
+                    }
+                }
+            });
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Subtract counts from source.  Same detection logic as update.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let src_obj = obj_from_bits(source_bits);
+        let Some(src_ptr) = src_obj.as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "subtract source must be a list or tuple",
+            );
+        };
+        let src_type = unsafe { object_type_id(src_ptr) };
+        if src_type != TYPE_ID_LIST && src_type != TYPE_ID_TUPLE {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "subtract source must be a list or tuple",
+            );
+        }
+        let elems = unsafe { seq_vec_ref(src_ptr) }.clone();
+        if elems.is_empty() {
+            return MoltObject::none().bits();
+        }
+
+        let first_obj = obj_from_bits(elems[0]);
+        let is_mapping = first_obj.as_ptr().is_some_and(|fptr| {
+            let ft = unsafe { object_type_id(fptr) };
+            ft == TYPE_ID_TUPLE || ft == TYPE_ID_LIST
+        });
+
+        if is_mapping {
+            let mut deltas: Vec<(u64, i64)> = Vec::with_capacity(elems.len());
+            for &elem_bits in &elems {
+                let elem_obj = obj_from_bits(elem_bits);
+                let Some(elem_ptr) = elem_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                };
+                let elem_type = unsafe { object_type_id(elem_ptr) };
+                if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
+                    return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                }
+                let pair = unsafe { seq_vec_ref(elem_ptr) };
+                if pair.len() < 2 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "each pair must have 2 elements",
+                    );
+                }
+                let count_obj = obj_from_bits(pair[1]);
+                let Some(count) = to_i64(count_obj) else {
+                    return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+                };
+                deltas.push((pair[0], count));
+            }
+            COUNTER_HANDLES.with(|h| {
+                if let Some(state) = h.borrow_mut().get_mut(&id) {
+                    for (key, delta) in deltas {
+                        state.add_count(_py, key, -delta);
+                    }
+                }
+            });
+        } else {
+            COUNTER_HANDLES.with(|h| {
+                if let Some(state) = h.borrow_mut().get_mut(&id) {
+                    for &elem_bits in &elems {
+                        state.add_count(_py, elem_bits, -1);
+                    }
+                }
+            });
+        }
+        MoltObject::none().bits()
+    })
+}
+
+// ─── Counter intrinsics: iteration / inspection ─────────────────────────────
+
+/// Return list of (element, count) 2-tuples in insertion order.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_items(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let pairs: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.entries.clone())
+                .unwrap_or_default()
+        });
+        let mut tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
+        for (elem_bits, count_bits) in &pairs {
+            let tptr = alloc_tuple(_py, &[*elem_bits, *count_bits]);
+            if tptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+            }
+            tuple_bits.push(MoltObject::from_ptr(tptr).bits());
+        }
+        let lptr = alloc_list(_py, &tuple_bits);
+        if lptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+        }
+        MoltObject::from_ptr(lptr).bits()
+    })
+}
+
+/// Return number of unique elements.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_len(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let len = COUNTER_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.len()).unwrap_or(0));
+        MoltObject::from_int(len as i64).bits()
+    })
+}
+
+/// Return True if key exists in counter, False otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_contains(handle_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let found = COUNTER_HANDLES.with(|h| {
+            h.borrow()
+                .get(&id)
+                .map(|s| s.contains(_py, key_bits))
+                .unwrap_or(false)
+        });
+        MoltObject::from_bool(found).bits()
+    })
+}
+
+// ─── Counter intrinsics: arithmetic (binary, produce new Counter) ───────────
+
+/// Helper: collect all unique keys from two counters without allocating a
+/// separate HashSet — reuse the new counter's index for dedup.
+fn counter_binary_op(
+    _py: &PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+    combine: fn(i64, i64) -> i64,
+) -> u64 {
+    let Some(a_id) = counter_handle_from_bits(_py, a_bits) else {
+        return MoltObject::none().bits();
+    };
+    let Some(b_id) = counter_handle_from_bits(_py, b_bits) else {
+        return MoltObject::none().bits();
+    };
+
+    let a_entries: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
+        h.borrow()
+            .get(&a_id)
+            .map(|s| s.entries.clone())
+            .unwrap_or_default()
+    });
+    let b_entries: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
+        h.borrow()
+            .get(&b_id)
+            .map(|s| s.entries.clone())
+            .unwrap_or_default()
+    });
+
+    let mut result = CounterState::new();
+
+    // Process keys from a: look up corresponding b count via content-based scan.
+    for &(key, a_count_bits) in &a_entries {
+        let a_count = count_to_i64(a_count_bits);
+        let b_count = {
+            let target = obj_from_bits(key);
+            b_entries
+                .iter()
+                .find(|(k, _)| *k == key || obj_eq(_py, obj_from_bits(*k), target))
+                .map(|(_, c)| count_to_i64(*c))
+                .unwrap_or(0)
+        };
+        let combined = combine(a_count, b_count);
+        if combined > 0 {
+            result.set_count_i64(_py, key, combined);
+        }
+    }
+
+    // Process keys only in b (not already in result).
+    for &(key, b_count_bits) in &b_entries {
+        if result.contains(_py, key) {
+            continue;
+        }
+        let combined = combine(0, count_to_i64(b_count_bits));
+        if combined > 0 {
+            result.set_count_i64(_py, key, combined);
+        }
+    }
+
+    let id = next_counter_handle();
+    COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, result));
+    MoltObject::from_int(id).bits()
+}
+
+/// c + d: For each key, sum counts.  Only keep positive counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_add(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        counter_binary_op(_py, a_bits, b_bits, |a, b| a + b)
+    })
+}
+
+/// c - d: For each key, subtract counts.  Only keep positive counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_sub(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        counter_binary_op(_py, a_bits, b_bits, |a, b| a - b)
+    })
+}
+
+/// c | d: Union — max(c[x], d[x]) for each key.  Only keep positive counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_or(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        counter_binary_op(_py, a_bits, b_bits, |a, b| a.max(b))
+    })
+}
+
+/// c & d: Intersection — min(c[x], d[x]) for each key.  Only keep positive.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_and(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        counter_binary_op(_py, a_bits, b_bits, |a, b| a.min(b))
+    })
+}
+
+// ─── Counter intrinsics: copy / clear / pop / drop ──────────────────────────
+
+/// Deep copy.  Returns new handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_copy(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let cloned =
+            COUNTER_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.clone_state(_py)));
+        let Some(new_state) = cloned else {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid Counter handle");
+        };
+        let new_id = next_counter_handle();
+        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(new_id, new_state));
+        MoltObject::from_int(new_id).bits()
+    })
+}
+
+/// Clear all entries.  Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_clear(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        COUNTER_HANDLES.with(|h| {
+            if let Some(state) = h.borrow_mut().get_mut(&id) {
+                state.clear(_py);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Remove key and return its count.  If key not found and default_bits is not
+/// None, return default.  Otherwise raise KeyError.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_pop(
+    handle_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let removed = COUNTER_HANDLES
+            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(_py, key_bits)));
+        match removed {
+            Some(count_bits) => count_bits,
+            None => {
+                let default_obj = obj_from_bits(default_bits);
+                if default_obj.is_none() {
+                    raise_key_error_with_key::<u64>(_py, key_bits)
+                } else {
+                    default_bits
+                }
+            }
+        }
+    })
+}
+
+/// Release handle resources.  Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let removed = COUNTER_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        if let Some(state) = removed {
+            for &(key, _) in &state.entries {
+                dec_ref_bits(_py, key);
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+// ─── defaultdict intrinsics ─────────────────────────────────────────────────
+
+/// Create a new defaultdict handle storing the factory callable (or None).
+/// Returns integer handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = next_defaultdict_handle();
+        DEFAULTDICT_HANDLES.with(|h| {
+            h.borrow_mut()
+                .insert(id, DefaultDictState { factory_bits });
+        });
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Called when __getitem__ doesn't find a key.
+/// If factory is None, raise KeyError.
+/// If factory is not None, call it with 0 args and return the default value
+/// bits.  The Python caller is responsible for inserting the value into the
+/// underlying dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let factory = DEFAULTDICT_HANDLES
+            .with(|h| h.borrow().get(&id).map(|s| s.factory_bits));
+        let Some(factory_bits) = factory else {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
+        };
+        let factory_obj = obj_from_bits(factory_bits);
+        if factory_obj.is_none() {
+            return raise_key_error_with_key::<u64>(_py, key_bits);
+        }
+        // Call the factory with 0 arguments (supports types, functions, bound methods).
+        let val = unsafe { crate::call::dispatch::call_callable0(_py, factory_bits) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        val
+    })
+}
+
+/// Return the factory_bits.  If None, return None bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEFAULTDICT_HANDLES
+            .with(|h| {
+                h.borrow()
+                    .get(&id)
+                    .map(|s| s.factory_bits)
+                    .unwrap_or_else(|| MoltObject::none().bits())
+            })
+    })
+}
+
+/// Create new handle with the same factory_bits.  Returns new handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        let factory = DEFAULTDICT_HANDLES
+            .with(|h| h.borrow().get(&id).map(|s| s.factory_bits));
+        let Some(factory_bits) = factory else {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
+        };
+        let new_id = next_defaultdict_handle();
+        DEFAULTDICT_HANDLES.with(|h| {
+            h.borrow_mut()
+                .insert(new_id, DefaultDictState { factory_bits });
+        });
+        MoltObject::from_int(new_id).bits()
+    })
+}
+
+/// Release defaultdict handle.  Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        DEFAULTDICT_HANDLES.with(|h| h.borrow_mut().remove(&id));
         MoltObject::none().bits()
     })
 }
