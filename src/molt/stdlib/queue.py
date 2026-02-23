@@ -64,13 +64,12 @@ if _PY_GE_313:
         pass
 
 
-def _normalize_timeout(
-    block: bool, timeout: float | None, *, op_name: str
-) -> float | None:
+def _normalize_timeout(block: bool, timeout: float | None) -> float | None:
+    # CPython ignores timeout for non-blocking Queue.put/get calls.
+    if not block:
+        return None
     if timeout is None:
         return None
-    if not block:
-        raise ValueError(f"can't specify a timeout for a non-blocking {op_name}")
     value = float(timeout)
     if value < 0.0:
         raise ValueError("'timeout' must be a non-negative number")
@@ -96,7 +95,7 @@ class Queue:
         return bool(_MOLT_QUEUE_FULL(self._handle))
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        wait = _normalize_timeout(bool(block), timeout, op_name="put")
+        wait = _normalize_timeout(bool(block), timeout)
         ok = bool(_MOLT_QUEUE_PUT(self._handle, item, bool(block), wait))
         if not ok:
             if _queue_is_shutdown(self._handle):
@@ -107,7 +106,7 @@ class Queue:
         self.put(item, block=False)
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        wait = _normalize_timeout(bool(block), timeout, op_name="get")
+        wait = _normalize_timeout(bool(block), timeout)
         item = _MOLT_QUEUE_GET(self._handle, bool(block), wait, _GET_TIMEOUT)
         if item is _GET_TIMEOUT:
             if _queue_is_shutdown(self._handle):

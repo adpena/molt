@@ -218,8 +218,7 @@ def molt_textwrap_wrap_ex(
     drop_whitespace: bool,
     break_on_hyphens: bool,
     tabsize: int,
-    max_lines: int | None,
-    placeholder: str,
+    max_lines_placeholder: tuple[int | None, str],
 ) -> list[str]: ...
 def molt_textwrap_fill(text: str, width: int) -> str: ...
 def molt_textwrap_fill_ex(
@@ -234,8 +233,7 @@ def molt_textwrap_fill_ex(
     drop_whitespace: bool,
     break_on_hyphens: bool,
     tabsize: int,
-    max_lines: int | None,
-    placeholder: str,
+    max_lines_placeholder: tuple[int | None, str],
 ) -> str: ...
 def molt_textwrap_indent(text: str, prefix: str) -> str: ...
 def molt_textwrap_indent_ex(text: str, prefix: str, predicate: Any | None) -> str: ...
