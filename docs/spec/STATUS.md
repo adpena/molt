@@ -237,7 +237,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
 - Bitwise invert (`~`) supported for ints/bools/bigints (bool returns int result).
 - Format mini-language for ints/floats + `__format__` dispatch + `str.format` field resolution (positional/keyword, attr/index, conversion flags, nested format specs).
-- memoryview exposes `format`/`shape`/`strides`/`nbytes`, `cast`, tuple scalar indexing, and 1D slicing/assignment for bytes/bytearray-backed views.
+- memoryview exposes `format`/`shape`/`strides`/`nbytes`, `cast`, tuple scalar indexing, and 1D slicing/assignment/count/index for bytes/bytearray-backed views; multi-dimensional `count`/`index` retain CPython `NotImplementedError` behavior.
 - `str.find`/`str.count`/`str.startswith`/`str.endswith` support start/end slices with Unicode-aware offsets; `str.split`/`str.rsplit` support `None` separators and `maxsplit` for str/bytes/bytearray; `str.replace` supports `count`; `str.strip`/`str.lstrip`/`str.rstrip` support default whitespace and `chars` argument; `str.join` accepts arbitrary iterables.
 - Range materialization lowering now emits a dedicated runtime fast path (`list_from_range`) for `list(range(...))` and simple `[i for i in range(...)]` comprehensions, avoiding generator/list-append call overhead on hot loops.
 - Dict increment idioms of the form `d[k] = d.get(k, 0) + delta` now lower to a dedicated runtime op (`dict_inc`) with int fast path + generic add fallback.
