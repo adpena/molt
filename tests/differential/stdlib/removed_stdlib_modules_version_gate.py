@@ -31,7 +31,12 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 version = tuple(sys.version_info[:3])
 is_313_plus = sys.version_info >= (3, 13)
-statuses: list[tuple[str, str]] = []
+print("version", version)
+print("is_313_plus", is_313_plus)
+
+if not is_313_plus:
+    print("pre_313_skip", True)
+    raise SystemExit(0)
 
 for module_name in REMOVED_MODULES:
     try:
@@ -39,17 +44,11 @@ for module_name in REMOVED_MODULES:
     except ModuleNotFoundError:
         status = "absent"
     except Exception as exc:  # noqa: BLE001
-        status = f"error:{type(exc).__name__}"
-    else:
-        status = "present"
-
-    if is_313_plus and status != "absent":
         raise AssertionError(
-            f"{module_name} must raise ModuleNotFoundError on Python >= 3.13, got {status}"
+            f"{module_name} must raise ModuleNotFoundError on Python >= 3.13, got {type(exc).__name__}"
+        ) from exc
+    else:
+        raise AssertionError(
+            f"{module_name} must raise ModuleNotFoundError on Python >= 3.13, got present"
         )
-    statuses.append((module_name, status))
-
-print("version", version)
-print("is_313_plus", is_313_plus)
-for module_name, status in statuses:
-    print(module_name, status)
+    print(module_name, "absent")

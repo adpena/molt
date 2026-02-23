@@ -721,13 +721,16 @@ def TypeVar(
         raise TypeError("TypeVar cannot have both bound and constraints")
     if default is not _TYPEVAR_NO_DEFAULT and not _SUPPORTS_TYPEVAR_DEFAULTS:
         raise TypeError("'default' is an invalid keyword argument for typevar()")
+    resolved_default = default
+    if _SUPPORTS_TYPEVAR_DEFAULTS and default is _TYPEVAR_NO_DEFAULT:
+        resolved_default = NoDefault
     return _TypeVar(
         name=name,
         covariant=covariant,
         contravariant=contravariant,
         bound=bound,
         constraints=tuple(constraints),
-        default=default,
+        default=resolved_default,
         pep695=False,
     )
 
