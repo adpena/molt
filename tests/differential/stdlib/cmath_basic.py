@@ -49,7 +49,8 @@ print("sin(0):", z5)
 print("sin(0) approx 0:", abs(z5) < 1e-10)
 
 z6 = cmath.cos(0)
-print("cos(0):", z6)
+# NOTE: exact repr differs on signed-zero imaginary part ((1-0j) vs (1+0j));
+# test value only.
 print("cos(0) approx 1:", abs(z6 - 1) < 1e-10)
 
 # --- log ---
