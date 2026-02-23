@@ -42,6 +42,7 @@ __all__ = [
     "catch_warnings",
     "formatwarning",
     "showwarning",
+    "deprecated",
 ]
 
 _filters: list[tuple[str, Any, type | None, Any, int]] = []
@@ -569,6 +570,71 @@ class _CatchWarnings:
         if self._saved_filters_version is not None:
             _filters_version = self._saved_filters_version
         return False
+
+
+class deprecated:
+    """Indicate that a class, function or overload is deprecated.
+
+    PEP 702 -- added in Python 3.13.
+
+    Usage::
+
+        @deprecated("Use new_func instead")
+        def old_func():
+            ...
+
+        @deprecated("Use NewClass instead")
+        class OldClass:
+            ...
+    """
+
+    def __init__(
+        self,
+        message: str,
+        /,
+        *,
+        category: type = DeprecationWarning,
+        stacklevel: int = 1,
+    ):
+        if not isinstance(message, str):
+            raise TypeError("expected a string as the first argument")
+        self.message = message
+        self.category = category
+        self.stacklevel = stacklevel
+
+    def __call__(self, arg: Any) -> Any:
+        if isinstance(arg, type):
+            original_init = arg.__init__
+
+            def new_init(self_inner: Any, *args: Any, **kwargs: Any) -> None:
+                warn(
+                    self.message,
+                    category=self.category,
+                    stacklevel=self.stacklevel + 1,
+                )
+                original_init(self_inner, *args, **kwargs)
+
+            new_init.__name__ = "__init__"
+            new_init.__qualname__ = f"{arg.__qualname__}.__init__"
+            arg.__init__ = new_init  # type: ignore[assignment]
+            arg.__deprecated__ = self.message  # type: ignore[attr-defined]
+            return arg
+        else:
+
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                warn(
+                    self.message,
+                    category=self.category,
+                    stacklevel=self.stacklevel + 1,
+                )
+                return arg(*args, **kwargs)
+
+            wrapper.__name__ = getattr(arg, "__name__", wrapper.__name__)
+            wrapper.__qualname__ = getattr(arg, "__qualname__", wrapper.__qualname__)
+            wrapper.__doc__ = getattr(arg, "__doc__", None)
+            wrapper.__wrapped__ = arg  # type: ignore[attr-defined]
+            wrapper.__deprecated__ = self.message  # type: ignore[attr-defined]
+            return wrapper
 
 
 def catch_warnings(record: bool = False, module: Any | None = None) -> _CatchWarnings:

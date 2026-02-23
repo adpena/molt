@@ -296,7 +296,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: `molt_path_isabs`/`molt_path_parts`/`molt_path_parents` now use runtime-owned splitroot-aware shaping so Windows drive/UNC absolute semantics are intrinsic-backed (no Python fallback logic), and `pathlib.Path` now supports reverse-division (`\"prefix\" / Path(\"leaf\")`) via intrinsic path joins.
 - Implemented: `glob` now lowers through Rust intrinsics (`molt_glob_has_magic`, `molt_glob`) with the Python shim reduced to intrinsic forwarding + output validation; runtime-owned matching now covers `root_dir`, recursive `**` gating (`recursive=True`), `include_hidden`, trailing-separator directory semantics, pathlike `root_dir`, bytes-pattern outputs (`list[bytes]`), mixed bytes/str parity errors, and intrinsic `dir_fd` relative traversal on native hosts (Linux `/proc`/`/dev/fd`, Apple `fcntl(F_GETPATH)`, and Windows handle-path resolution). Wasm hosts use capability-aware behavior: server/WASI targets support `dir_fd` when fd-path resolution is exposed, while browser-like hosts raise explicit `NotImplementedError` for relative `dir_fd` globbing.
 - Implemented: `fnmatch` and `shlex` now route matching/tokenization through Rust intrinsics (`molt_fnmatch`, `molt_fnmatchcase`, `molt_fnmatch_filter`, `molt_fnmatch_translate`, `molt_shlex_split_ex`, `molt_shlex_join`) with Python modules reduced to argument normalization + iterator glue.
-- Implemented: `stat`, `textwrap`, and `urllib.parse` core surfaces are now runtime-owned through dedicated intrinsics (`molt_stat_*`, `molt_textwrap_*`, `molt_urllib_*`); `stat` now includes intrinsic-backed file-type constants, permission/set-id bits, `ST_*` indexes, and helper functions (`S_IFMT`/`S_IMODE` + `S_IS*`) with a thin Python shim and no host fallback path, and targeted `textwrap` differential coverage now asserts width/fill + `indent` semantics plus explicit option-contract checks for `drop_whitespace`/`expand_tabs`/`break_on_hyphens` under the current intrinsic wrapper contract.
+- Implemented: `stat`, `textwrap`, and `urllib.parse` core surfaces are now runtime-owned through dedicated intrinsics (`molt_stat_*`, `molt_textwrap_*`, `molt_urllib_*`); `stat` now includes intrinsic-backed file-type constants, permission/set-id bits, `ST_*` indexes, and helper functions (`S_IFMT`/`S_IMODE` + `S_IS*`) with a thin Python shim and no host fallback path, and `textwrap` now routes `TextWrapper` option-rich wrap/fill + predicate-aware `indent` through `molt_textwrap_wrap_ex`/`molt_textwrap_fill_ex`/`molt_textwrap_indent_ex` with targeted differential coverage for option-sensitive behavior (`drop_whitespace`, `expand_tabs`, `break_on_hyphens`, `max_lines`).
 - Implemented: `urllib.parse.urlencode` now lowers through runtime intrinsic `molt_urllib_urlencode`; the shim keeps only query-item normalization and output validation.
 - Implemented: `urllib.error` now lowers exception construction/formatting through dedicated runtime intrinsics (`molt_urllib_error_urlerror_init`, `molt_urllib_error_urlerror_str`, `molt_urllib_error_httperror_init`, `molt_urllib_error_httperror_str`, `molt_urllib_error_content_too_short_init`) for `URLError`, `HTTPError`, and `ContentTooShortError`; the module shim is reduced to class shell wiring and raises immediately when intrinsics are unavailable.
 - Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
@@ -371,7 +371,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Classes/object model: no metaclasses or dynamic `type()` construction.
 - Implemented: `types.GenericAlias.__parameters__` derives `TypeVar`/`ParamSpec`/`TypeVarTuple` from `__args__`.
 - Implemented: PEP 695 core-lane lowering uses Rust intrinsics for type parameter creation and GenericAlias construction/call dispatch (`molt_typing_type_param`, `molt_generic_alias_new`) for `typing`/frontend paths.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): finish PEP 695 type params (defaults + alias metadata/TypeAliasType; ParamSpec/TypeVarTuple + bounds/constraints now implemented).
+- Implemented: Type parameter defaults now lower through `typing._molt_type_param` for `ast.TypeVar.default_value`, and `typing.TypeVar(default=...)` is version-gated to Python >= 3.13 semantics (`typing.NoDefault`/`has_default` available only on 3.13+ targets).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): finish remaining PEP 695 metadata work (alias metadata/TypeAliasType) and broaden type-parameter default coverage beyond current TypeVar path where required.
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
   user-defined `__slots__` beyond dataclass lowering; object-level
   class `__dict__` returns a mappingproxy view.
@@ -626,6 +627,11 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 ## Thread Safety + GIL Notes
 - Runtime mutation is serialized by a GIL-like lock; only one host thread may
   execute Python/runtime code at a time within the process.
+- PEP 684 (per-interpreter GIL) and PEP 703 (free-threading) are currently out of
+  scope for shipped runtime semantics; current contract is single-GIL with explicit
+  roadmap tasks for per-runtime isolation and safe cross-thread ownership.
+- PEP 744 (JIT) is N/A for Molt's current architecture: Molt remains an AOT
+  compiler/runtime pipeline.
 - Runtime state and object headers are not thread-safe; `Value` and heap objects
   are not `Send`/`Sync` unless explicitly documented otherwise.
 - Cross-thread sharing of live Python objects is unsupported by default; serialize or

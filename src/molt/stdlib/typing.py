@@ -71,8 +71,10 @@ __all__ = [
     "get_args",
     "get_origin",
     "get_type_hints",
+    "override",
     "overload",
     "runtime_checkable",
+    "deprecated",
 ]
 
 _NoneType = type(None)
@@ -80,6 +82,22 @@ try:
     _UnionType = type(int | str)
 except Exception:
     _UnionType = None
+
+_SUPPORTS_TYPEVAR_DEFAULTS = tuple(_sys.version_info[:2]) >= (3, 13)
+_TYPEVAR_NO_DEFAULT = object()
+
+if _SUPPORTS_TYPEVAR_DEFAULTS:
+
+    class _NoDefaultType:
+        __slots__ = ()
+
+        def __repr__(self) -> str:
+            return "typing.NoDefault"
+
+    NoDefault = _NoDefaultType()
+    __all__.append("NoDefault")
+else:
+    NoDefault = _TYPEVAR_NO_DEFAULT
 
 
 class _AnnotatedOrigin:
@@ -562,6 +580,7 @@ class _TypeVarLike(_TypingBase):
         "_contravariant",
         "_bound",
         "_constraints",
+        "_default",
         "_pep695",
     )
 
@@ -572,6 +591,7 @@ class _TypeVarLike(_TypingBase):
         contravariant: bool,
         bound: object | None,
         constraints: tuple[object, ...],
+        default: object = _TYPEVAR_NO_DEFAULT,
         pep695: bool = False,
     ) -> None:
         self.__name__ = name
@@ -579,6 +599,7 @@ class _TypeVarLike(_TypingBase):
         self._contravariant = contravariant
         self._bound = bound
         self._constraints = constraints
+        self._default = default
         self._pep695 = pep695
 
     @property
@@ -596,6 +617,18 @@ class _TypeVarLike(_TypingBase):
     @property
     def __contravariant__(self) -> bool:
         return self._contravariant
+
+
+if _SUPPORTS_TYPEVAR_DEFAULTS:
+
+    def _typevarlike_default(self: _TypeVarLike) -> object:
+        return self._default
+
+    def _typevarlike_has_default(self: _TypeVarLike) -> bool:
+        return self._default is not NoDefault
+
+    _TypeVarLike.__default__ = property(_typevarlike_default)  # type: ignore[attr-defined]
+    _TypeVarLike.has_default = _typevarlike_has_default  # type: ignore[attr-defined]
 
 
 class _TypeVar(_TypeVarLike):
@@ -682,15 +715,19 @@ def TypeVar(
     bound: object | None = None,
     covariant: bool = False,
     contravariant: bool = False,
+    default: object = _TYPEVAR_NO_DEFAULT,
 ) -> _TypeVar:
     if constraints and bound is not None:
         raise TypeError("TypeVar cannot have both bound and constraints")
+    if default is not _TYPEVAR_NO_DEFAULT and not _SUPPORTS_TYPEVAR_DEFAULTS:
+        raise TypeError("'default' is an invalid keyword argument for typevar()")
     return _TypeVar(
         name=name,
         covariant=covariant,
         contravariant=contravariant,
         bound=bound,
         constraints=tuple(constraints),
+        default=default,
         pep695=False,
     )
 
@@ -717,8 +754,18 @@ def TypeVarTuple(name: str) -> _TypeVarTuple:
     return _TypeVarTuple(name)
 
 
-def _molt_type_param(name: str) -> _TypeVar:
-    return _typing_cast(_TypeVar, _MOLT_TYPING_TYPE_PARAM(TypeVar, name))
+def _molt_type_param(name: str, default: object = _TYPEVAR_NO_DEFAULT) -> _TypeVar:
+    if default is _TYPEVAR_NO_DEFAULT:
+        return _typing_cast(_TypeVar, _MOLT_TYPING_TYPE_PARAM(TypeVar, name))
+    if not _SUPPORTS_TYPEVAR_DEFAULTS:
+        raise TypeError("'default' is an invalid keyword argument for typevar()")
+
+    def _typevar_ctor_with_default(param_name: str) -> _TypeVar:
+        return TypeVar(param_name, default=default)
+
+    return _typing_cast(
+        _TypeVar, _MOLT_TYPING_TYPE_PARAM(_typevar_ctor_with_default, name)
+    )
 
 
 def _molt_class_getitem(cls: object, params: object) -> object:
@@ -929,6 +976,55 @@ def cast(_typ: object, value: object) -> object:
 
 def overload(func):
     return func
+
+
+def override(method):
+    """Indicate that a method is intended to override a method in a base class.
+
+    PEP 698 -- added in Python 3.12.
+    """
+    try:
+        method.__override__ = True
+    except (AttributeError, TypeError):
+        pass
+    return method
+
+
+def _load_deprecated():
+    """Lazy-load ``warnings.deprecated`` to avoid importing warnings at typing
+    import time (prevents circular import pressure)."""
+    import warnings as _warnings_mod
+
+    return _warnings_mod.deprecated
+
+
+class deprecated:
+    """Indicate that a class, function or overload is deprecated.
+
+    PEP 702 -- added in Python 3.13.  Re-exported here for convenience;
+    the canonical implementation lives in ``warnings.deprecated``.
+
+    Usage::
+
+        @deprecated("Use new_func instead")
+        def old_func():
+            ...
+
+        @deprecated("Use NewClass instead")
+        class OldClass:
+            ...
+    """
+
+    def __init__(self, message, /, *, category=DeprecationWarning, stacklevel=1):
+        self._impl = _load_deprecated()(
+            message, category=category, stacklevel=stacklevel
+        )
+        self.message = self._impl.message
+        self.category = self._impl.category
+        self.stacklevel = self._impl.stacklevel
+
+    def __call__(self, arg):
+        return self._impl(arg)
 
 
 def get_origin(tp: object) -> object | None:
