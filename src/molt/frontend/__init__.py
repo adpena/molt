@@ -3683,12 +3683,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(param, ast.TypeVar):
                 name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[param.name], result=name_val))
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC", args=[type_param_func, name_val], result=res
+                call_args: list[MoltValue] = [type_param_func, name_val]
+                default_expr = getattr(param, "default_value", None)
+                if default_expr is not None:
+                    default_val = self._emit_annotation_value(
+                        default_expr, stringize=self.future_annotations
                     )
-                )
+                    call_args.append(default_val)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="CALL_FUNC", args=call_args, result=res))
                 values.append(res)
                 mapping[param.name] = res
                 continue
