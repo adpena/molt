@@ -547,6 +547,21 @@ struct ImportlibFindSpecPayload {
     path_hooks_count: i64,
 }
 
+struct ImportlibParentSearchPathsPayload {
+    has_parent: bool,
+    parent_name: Option<String>,
+    search_paths: Vec<String>,
+    needs_parent_spec: bool,
+    package_context: bool,
+}
+
+struct ImportlibRuntimeStateViewBits {
+    modules_bits: u64,
+    meta_path_bits: u64,
+    path_hooks_bits: u64,
+    path_importer_cache_bits: u64,
+}
+
 struct ImportlibSpecFromFileLocationPayload {
     path: String,
     is_package: bool,
@@ -589,6 +604,20 @@ struct ImportlibMetadataPayload {
     requires_dist: Vec<String>,
     provides_extra: Vec<String>,
     requires_python: Option<String>,
+}
+
+struct ImportlibResourcesFilesPayload {
+    package_name: String,
+    roots: Vec<String>,
+    is_namespace: bool,
+    reader_bits: Option<u64>,
+    files_traversable_bits: Option<u64>,
+}
+
+struct ImportlibMetadataRecordEntry {
+    path: String,
+    hash: Option<String>,
+    size: Option<String>,
 }
 
 fn bootstrap_path_sep() -> char {
@@ -1354,6 +1383,18 @@ fn importlib_metadata_entry_points_payload(
     importlib_metadata_entry_points_select_payload(search_paths, module_file, None, None)
 }
 
+fn importlib_metadata_distributions_payload(
+    search_paths: &[String],
+    module_file: Option<String>,
+) -> Vec<ImportlibMetadataPayload> {
+    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    let mut out: Vec<ImportlibMetadataPayload> = Vec::with_capacity(dist_paths.len());
+    for path in dist_paths {
+        out.push(importlib_metadata_payload(&path));
+    }
+    out
+}
+
 fn importlib_metadata_entry_points_select_payload(
     search_paths: &[String],
     module_file: Option<String>,
@@ -1372,6 +1413,39 @@ fn importlib_metadata_entry_points_select_payload(
             }
             if let Some(expected_name) = name
                 && entry_name != expected_name
+            {
+                continue;
+            }
+            out.push((entry_name, entry_value, entry_group));
+        }
+    }
+    out
+}
+
+fn importlib_metadata_entry_points_filter_payload(
+    search_paths: &[String],
+    module_file: Option<String>,
+    group: Option<&str>,
+    name: Option<&str>,
+    value: Option<&str>,
+) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    for path in dist_paths {
+        let payload = importlib_metadata_payload(&path);
+        for (entry_name, entry_value, entry_group) in payload.entry_points {
+            if let Some(expected_group) = group
+                && entry_group != expected_group
+            {
+                continue;
+            }
+            if let Some(expected_name) = name
+                && entry_name != expected_name
+            {
+                continue;
+            }
+            if let Some(expected_value) = value
+                && entry_value != expected_value
             {
                 continue;
             }
@@ -1935,41 +2009,59 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
         )?;
     }
 
-    let keys_and_values: [(&[u8], u64); 4] = [
-        (b"modules", modules_bits),
-        (b"meta_path", meta_path_bits),
-        (b"path_hooks", path_hooks_bits),
-        (b"path_importer_cache", path_importer_cache_bits),
+    let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+    if dict_ptr.is_null() {
+        for bits in [
+            modules_bits,
+            meta_path_bits,
+            path_hooks_bits,
+            path_importer_cache_bits,
+        ] {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
+            }
+        }
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    let entries = [
+        (
+            intern_static_name(_py, &MODULES_NAME, b"modules"),
+            modules_bits,
+        ),
+        (
+            intern_static_name(_py, &META_PATH_NAME, b"meta_path"),
+            meta_path_bits,
+        ),
+        (
+            intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks"),
+            path_hooks_bits,
+        ),
+        (
+            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache"),
+            path_importer_cache_bits,
+        ),
     ];
-    let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-    let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-    for (key, value_bits) in keys_and_values {
-        let key_ptr = alloc_string(_py, key);
-        if key_ptr.is_null() {
-            for bits in owned {
+    for (key_bits, value_bits) in entries {
+        unsafe {
+            dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+        }
+        if exception_pending(_py) {
+            for (_, bits) in entries {
                 if !obj_from_bits(bits).is_none() {
                     dec_ref_bits(_py, bits);
                 }
             }
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            dec_ref_bits(_py, dict_bits);
+            return Err(MoltObject::none().bits());
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        pairs.push(key_bits);
-        pairs.push(value_bits);
-        owned.push(key_bits);
-        owned.push(value_bits);
     }
-    let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-    for bits in owned {
+    for (_, bits) in entries {
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
         }
     }
-    if dict_ptr.is_null() {
-        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
-    } else {
-        Ok(MoltObject::from_ptr(dict_ptr).bits())
-    }
+    Ok(dict_bits)
 }
 
 fn importlib_resources_path_payload(path: &str) -> ImportlibResourcesPathPayload {
@@ -2084,6 +2176,137 @@ fn importlib_resources_open_resource_bytes_from_package_impl(
     Err(raise_exception::<_>(_py, "FileNotFoundError", resource))
 }
 
+fn importlib_resources_join_parts_path(parts: &[String]) -> String {
+    let sep = bootstrap_path_sep();
+    let mut out = String::new();
+    for part in parts {
+        out = path_join_text(out, part, sep);
+    }
+    out
+}
+
+fn importlib_resources_name_parts(name: &str) -> Vec<String> {
+    let normalized = name.replace('\\', "/");
+    normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_string())
+        .collect()
+}
+
+fn importlib_resources_candidate_path(root: &str, resource: &str) -> String {
+    if resource.is_empty() {
+        root.to_string()
+    } else {
+        let sep = bootstrap_path_sep();
+        path_join_text(root.to_string(), resource, sep)
+    }
+}
+
+fn importlib_resources_open_resource_bytes_from_package_parts_impl(
+    _py: &PyToken<'_>,
+    package: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    path_parts: &[String],
+) -> Result<Vec<u8>, u64> {
+    let payload =
+        importlib_resources_required_package_payload(_py, package, search_paths, module_file)?;
+    let resource = importlib_resources_join_parts_path(path_parts);
+    let mut first_dir: Option<String> = None;
+    for root in &payload.roots {
+        let candidate = importlib_resources_candidate_path(root, &resource);
+        let payload = importlib_resources_path_payload(&candidate);
+        if payload.is_file {
+            return importlib_read_file_bytes(_py, &candidate);
+        }
+        if payload.is_dir && first_dir.is_none() {
+            first_dir = Some(candidate);
+        }
+    }
+    if let Some(path) = first_dir {
+        return Err(raise_exception::<_>(_py, "IsADirectoryError", &path));
+    }
+    let not_found = if resource.is_empty() {
+        package
+    } else {
+        resource.as_str()
+    };
+    Err(raise_exception::<_>(_py, "FileNotFoundError", not_found))
+}
+
+fn importlib_resources_is_resource_from_package_parts_impl(
+    _py: &PyToken<'_>,
+    package: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    path_parts: &[String],
+) -> Result<bool, u64> {
+    if path_parts.is_empty() {
+        return Ok(false);
+    }
+    let payload =
+        importlib_resources_required_package_payload(_py, package, search_paths, module_file)?;
+    let resource = importlib_resources_join_parts_path(path_parts);
+    for root in &payload.roots {
+        let candidate = importlib_resources_candidate_path(root, &resource);
+        let payload = importlib_resources_path_payload(&candidate);
+        if payload.is_file {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn importlib_resources_contents_from_package_parts_impl(
+    _py: &PyToken<'_>,
+    package: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    path_parts: &[String],
+) -> Result<Vec<String>, u64> {
+    let payload =
+        importlib_resources_required_package_payload(_py, package, search_paths, module_file)?;
+    let resource = importlib_resources_join_parts_path(path_parts);
+    let mut entries: BTreeSet<String> = BTreeSet::new();
+    let mut has_init_py = false;
+    for root in &payload.roots {
+        let candidate = importlib_resources_candidate_path(root, &resource);
+        let payload = importlib_resources_path_payload(&candidate);
+        if !payload.is_dir {
+            continue;
+        }
+        has_init_py = has_init_py || payload.has_init_py;
+        for entry in payload.entries {
+            entries.insert(entry);
+        }
+    }
+    if has_init_py {
+        entries.insert(String::from("__pycache__"));
+    }
+    Ok(entries.into_iter().collect())
+}
+
+fn importlib_resources_resource_path_from_package_parts_impl(
+    _py: &PyToken<'_>,
+    package: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    path_parts: &[String],
+) -> Result<Option<String>, u64> {
+    let payload =
+        importlib_resources_required_package_payload(_py, package, search_paths, module_file)?;
+    let resource = importlib_resources_join_parts_path(path_parts);
+    for root in &payload.roots {
+        let candidate = importlib_resources_candidate_path(root, &resource);
+        let payload = importlib_resources_path_payload(&candidate);
+        if payload.exists && !payload.is_archive_member {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 fn importlib_resources_required_package_payload(
     _py: &PyToken<'_>,
     package: &str,
@@ -2107,6 +2330,37 @@ fn importlib_resources_first_file_candidate(roots: &[String], resource: &str) ->
         }
     }
     None
+}
+
+fn importlib_resources_files_payload(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    fallback_bits: u64,
+    search_paths: &[String],
+    module_file: Option<String>,
+) -> Result<ImportlibResourcesFilesPayload, u64> {
+    let package_name = importlib_resources_module_name_from_bits(_py, module_bits, fallback_bits)?;
+    let package_payload =
+        importlib_resources_package_payload(&package_name, search_paths, module_file);
+    let reader_bits = importlib_resources_loader_reader_from_bits(_py, module_bits, &package_name)?;
+    let mut roots = package_payload.roots;
+    let mut is_namespace = package_payload.is_namespace;
+    let mut files_traversable_bits: Option<u64> = None;
+    if let Some(reader_bits_value) = reader_bits {
+        files_traversable_bits = importlib_reader_files_traversable_bits(_py, reader_bits_value)?;
+        let reader_roots = importlib_resources_reader_roots_impl(_py, reader_bits_value)?;
+        if !reader_roots.is_empty() {
+            roots = reader_roots;
+            is_namespace = package_payload.is_namespace && roots.len() > 1;
+        }
+    }
+    Ok(ImportlibResourcesFilesPayload {
+        package_name,
+        roots,
+        is_namespace,
+        reader_bits,
+        files_traversable_bits,
+    })
 }
 
 fn importlib_resources_first_fs_file_candidate(roots: &[String], resource: &str) -> Option<String> {
@@ -2189,6 +2443,111 @@ fn importlib_metadata_parse_entry_points(text: &str) -> Vec<(String, String, Str
         ));
     }
     out
+}
+
+fn importlib_metadata_parse_csv_row(row: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = row.chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek().is_some_and(|next| *next == '"') {
+                    current.push('"');
+                    let _ = chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            ',' => {
+                out.push(current);
+                current = String::new();
+            }
+            '"' => in_quotes = true,
+            _ => current.push(ch),
+        }
+    }
+    out.push(current);
+    out
+}
+
+fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordEntry> {
+    let sep = bootstrap_path_sep();
+    let record_path = path_join_text(path.to_string(), "RECORD", sep);
+    let record_text = match std::fs::read(&record_path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<ImportlibMetadataRecordEntry> = Vec::new();
+    for raw_line in record_text.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields = importlib_metadata_parse_csv_row(line);
+        let Some(path_field) = fields.first() else {
+            continue;
+        };
+        let rel_path = path_field.trim();
+        if rel_path.is_empty() {
+            continue;
+        }
+        let hash = fields
+            .get(1)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let size = fields
+            .get(2)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        out.push(ImportlibMetadataRecordEntry {
+            path: rel_path.to_string(),
+            hash,
+            size,
+        });
+    }
+    out
+}
+
+fn importlib_metadata_packages_distributions_payload(
+    search_paths: &[String],
+    module_file: Option<String>,
+) -> Vec<(String, Vec<String>)> {
+    let mut mapping: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let sep = bootstrap_path_sep();
+    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    for path in dist_paths {
+        let payload = importlib_metadata_payload(&path);
+        let dist_name = payload.name.trim().to_string();
+        if dist_name.is_empty() {
+            continue;
+        }
+        let top_level_path = path_join_text(path, "top_level.txt", sep);
+        let top_level_text = match std::fs::read(&top_level_path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => continue,
+        };
+        for line in top_level_text.lines() {
+            let package = line.trim();
+            if package.is_empty() {
+                continue;
+            }
+            mapping
+                .entry(package.to_string())
+                .or_default()
+                .insert(dist_name.clone());
+        }
+    }
+    mapping
+        .into_iter()
+        .map(|(package, providers)| (package, providers.into_iter().collect()))
+        .collect()
 }
 
 fn importlib_metadata_payload(path: &str) -> ImportlibMetadataPayload {
@@ -3377,7 +3736,7 @@ fn importlib_resources_reader_resource_path_impl(
         return Ok(None);
     }
 
-    let parts = vec![name.to_string()];
+    let parts = importlib_resources_name_parts(name);
     if let Some(target_bits) = importlib_traversable_bits_for_parts(_py, reader_bits, &parts)? {
         let out = match path_from_bits(_py, target_bits) {
             Ok(path_buf) => {
@@ -3560,7 +3919,7 @@ fn importlib_resources_reader_is_resource_impl(
             "invalid loader resource is_resource payload",
         ));
     }
-    let parts = vec![name.to_string()];
+    let parts = importlib_resources_name_parts(name);
     let Some(target_bits) = importlib_traversable_bits_for_parts(_py, reader_bits, &parts)? else {
         if let Some((_joined, payload)) =
             importlib_reader_root_payload_for_parts(_py, reader_bits, &parts)?
@@ -3594,7 +3953,7 @@ fn importlib_resources_reader_open_resource_bytes_impl(
         dec_ref_bits(_py, call_bits);
         if exception_pending(_py) {
             if clear_pending_if_kind(_py, &["NotImplementedError"]) {
-                let parts = vec![name.to_string()];
+                let parts = importlib_resources_name_parts(name);
                 let Some(target_bits) =
                     importlib_traversable_bits_for_parts(_py, reader_bits, &parts)?
                 else {
@@ -3673,7 +4032,7 @@ fn importlib_resources_reader_open_resource_bytes_impl(
         return Ok(bytes);
     }
 
-    let parts = vec![name.to_string()];
+    let parts = importlib_resources_name_parts(name);
     if let Some(target_bits) = importlib_traversable_bits_for_parts(_py, reader_bits, &parts)? {
         let out = importlib_traversable_open_bytes(_py, target_bits);
         if !obj_from_bits(target_bits).is_none() {
@@ -4166,6 +4525,385 @@ fn importlib_dict_del_string_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key_bits:
     }
 }
 
+fn importlib_dict_set_string_key(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    value_bits: u64,
+) -> Result<(), u64> {
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+    }
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(())
+}
+
+fn importlib_existing_spec_from_modules_bits(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    modules_bits: u64,
+    machinery_bits: u64,
+) -> Result<u64, u64> {
+    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
+    static FILE_NAME: AtomicU64 = AtomicU64::new(0);
+    static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+        return Err(importlib_modules_runtime_error(_py));
+    };
+    if unsafe { object_type_id(modules_ptr) } != TYPE_ID_DICT {
+        return Err(importlib_modules_runtime_error(_py));
+    }
+
+    let module_name_key_bits = alloc_str_bits(_py, module_name)?;
+    let existing_bits =
+        match importlib_dict_get_string_key_bits(_py, modules_ptr, module_name_key_bits) {
+            Ok(value) => value,
+            Err(err) => {
+                if !obj_from_bits(module_name_key_bits).is_none() {
+                    dec_ref_bits(_py, module_name_key_bits);
+                }
+                return Err(err);
+            }
+        };
+    let Some(existing_bits) = existing_bits else {
+        if !obj_from_bits(module_name_key_bits).is_none() {
+            dec_ref_bits(_py, module_name_key_bits);
+        }
+        return Ok(MoltObject::none().bits());
+    };
+
+    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+    if let Some(spec_bits) = getattr_optional_bits(_py, existing_bits, spec_name)? {
+        if !obj_from_bits(spec_bits).is_none() {
+            if !obj_from_bits(module_name_key_bits).is_none() {
+                dec_ref_bits(_py, module_name_key_bits);
+            }
+            return Ok(spec_bits);
+        }
+    }
+
+    let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+    let origin_bits = match getattr_optional_bits(_py, existing_bits, file_name)? {
+        Some(bits) => {
+            if string_obj_to_owned(obj_from_bits(bits)).is_some() {
+                bits
+            } else {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(_py, bits);
+                }
+                MoltObject::none().bits()
+            }
+        }
+        None => MoltObject::none().bits(),
+    };
+    let module_spec_cls_bits = match importlib_required_attribute(
+        _py,
+        machinery_bits,
+        &MODULE_SPEC_NAME,
+        b"ModuleSpec",
+        "importlib.machinery",
+    ) {
+        Ok(bits) => bits,
+        Err(err) => {
+            if !obj_from_bits(origin_bits).is_none() {
+                dec_ref_bits(_py, origin_bits);
+            }
+            if !obj_from_bits(module_name_key_bits).is_none() {
+                dec_ref_bits(_py, module_name_key_bits);
+            }
+            return Err(err);
+        }
+    };
+    let out = call_callable_positional(
+        _py,
+        module_spec_cls_bits,
+        &[
+            module_name_key_bits,
+            MoltObject::none().bits(),
+            origin_bits,
+            MoltObject::from_bool(false).bits(),
+        ],
+    );
+    if !obj_from_bits(module_spec_cls_bits).is_none() {
+        dec_ref_bits(_py, module_spec_cls_bits);
+    }
+    if !obj_from_bits(origin_bits).is_none() {
+        dec_ref_bits(_py, origin_bits);
+    }
+    if !obj_from_bits(module_name_key_bits).is_none() {
+        dec_ref_bits(_py, module_name_key_bits);
+    }
+    out
+}
+
+fn importlib_parent_search_paths_payload(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    modules_bits: u64,
+) -> Result<ImportlibParentSearchPathsPayload, u64> {
+    static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+        return Err(importlib_modules_runtime_error(_py));
+    };
+    if unsafe { object_type_id(modules_ptr) } != TYPE_ID_DICT {
+        return Err(importlib_modules_runtime_error(_py));
+    }
+
+    let parent_name = module_name
+        .rsplit_once('.')
+        .and_then(|(parent, _)| (!parent.is_empty()).then_some(parent.to_string()));
+    let Some(parent_name) = parent_name else {
+        return Ok(ImportlibParentSearchPathsPayload {
+            has_parent: false,
+            parent_name: None,
+            search_paths: Vec::new(),
+            needs_parent_spec: false,
+            package_context: false,
+        });
+    };
+
+    let parent_key_bits = alloc_str_bits(_py, &parent_name)?;
+    let parent_bits = match importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key_bits) {
+        Ok(value) => value,
+        Err(err) => {
+            if !obj_from_bits(parent_key_bits).is_none() {
+                dec_ref_bits(_py, parent_key_bits);
+            }
+            return Err(err);
+        }
+    };
+    if let Some(parent_bits) = parent_bits {
+        let path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
+        let parent_path_bits = match getattr_optional_bits(_py, parent_bits, path_name) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => MoltObject::none().bits(),
+            Err(err) => {
+                if !obj_from_bits(parent_key_bits).is_none() {
+                    dec_ref_bits(_py, parent_key_bits);
+                }
+                return Err(err);
+            }
+        };
+        let search_paths = match importlib_coerce_search_paths_values(
+            _py,
+            parent_path_bits,
+            "invalid parent package search path",
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                if !obj_from_bits(parent_path_bits).is_none() {
+                    dec_ref_bits(_py, parent_path_bits);
+                }
+                if !obj_from_bits(parent_key_bits).is_none() {
+                    dec_ref_bits(_py, parent_key_bits);
+                }
+                return Err(err);
+            }
+        };
+        if !obj_from_bits(parent_path_bits).is_none() {
+            dec_ref_bits(_py, parent_path_bits);
+        }
+        if !obj_from_bits(parent_key_bits).is_none() {
+            dec_ref_bits(_py, parent_key_bits);
+        }
+        return Ok(ImportlibParentSearchPathsPayload {
+            has_parent: true,
+            parent_name: Some(parent_name),
+            search_paths,
+            needs_parent_spec: false,
+            package_context: true,
+        });
+    }
+
+    if !obj_from_bits(parent_key_bits).is_none() {
+        dec_ref_bits(_py, parent_key_bits);
+    }
+    Ok(ImportlibParentSearchPathsPayload {
+        has_parent: true,
+        parent_name: Some(parent_name),
+        search_paths: Vec::new(),
+        needs_parent_spec: true,
+        package_context: true,
+    })
+}
+
+fn importlib_runtime_state_view_bits(
+    _py: &PyToken<'_>,
+) -> Result<ImportlibRuntimeStateViewBits, u64> {
+    static MODULES_NAME: AtomicU64 = AtomicU64::new(0);
+    static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
+    static PATH_HOOKS_NAME: AtomicU64 = AtomicU64::new(0);
+    static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let runtime_state_bits = importlib_runtime_state_payload_bits(_py)?;
+    let out = (|| -> Result<ImportlibRuntimeStateViewBits, u64> {
+        let Some(runtime_state_ptr) = obj_from_bits(runtime_state_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "invalid importlib runtime state payload: dict expected",
+            ));
+        };
+        if unsafe { object_type_id(runtime_state_ptr) } != TYPE_ID_DICT {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "invalid importlib runtime state payload: dict expected",
+            ));
+        }
+
+        let modules_key = intern_static_name(_py, &MODULES_NAME, b"modules");
+        let meta_path_key = intern_static_name(_py, &META_PATH_NAME, b"meta_path");
+        let path_hooks_key = intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks");
+        let path_importer_cache_key =
+            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
+        let modules_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, modules_key) }
+            .unwrap_or(MoltObject::none().bits());
+        let meta_path_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, meta_path_key) }
+            .unwrap_or(MoltObject::none().bits());
+        let path_hooks_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, path_hooks_key) }
+            .unwrap_or(MoltObject::none().bits());
+        let path_importer_cache_bits =
+            unsafe { dict_get_in_place(_py, runtime_state_ptr, path_importer_cache_key) }
+                .unwrap_or(MoltObject::none().bits());
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+
+        let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+            return Err(importlib_modules_runtime_error(_py));
+        };
+        if unsafe { object_type_id(modules_ptr) } != TYPE_ID_DICT {
+            return Err(importlib_modules_runtime_error(_py));
+        }
+        if !obj_from_bits(path_importer_cache_bits).is_none() {
+            let Some(path_importer_cache_ptr) = obj_from_bits(path_importer_cache_bits).as_ptr()
+            else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "invalid importlib runtime state payload: path_importer_cache",
+                ));
+            };
+            if unsafe { object_type_id(path_importer_cache_ptr) } != TYPE_ID_DICT {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "invalid importlib runtime state payload: path_importer_cache",
+                ));
+            }
+        }
+
+        for bits in [
+            modules_bits,
+            meta_path_bits,
+            path_hooks_bits,
+            path_importer_cache_bits,
+        ] {
+            if !obj_from_bits(bits).is_none() {
+                inc_ref_bits(_py, bits);
+            }
+        }
+        Ok(ImportlibRuntimeStateViewBits {
+            modules_bits,
+            meta_path_bits,
+            path_hooks_bits,
+            path_importer_cache_bits,
+        })
+    })();
+    if !obj_from_bits(runtime_state_bits).is_none() {
+        dec_ref_bits(_py, runtime_state_bits);
+    }
+    out
+}
+
+fn importlib_lookup_callable_attr(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    slot: &AtomicU64,
+    name: &'static [u8],
+) -> Result<Option<u64>, u64> {
+    let attr_name = intern_static_name(_py, slot, name);
+    importlib_reader_lookup_callable(_py, target_bits, attr_name)
+}
+
+fn importlib_clear_mapping_like_best_effort(_py: &PyToken<'_>, mapping_bits: u64) {
+    static CLEAR_NAME: AtomicU64 = AtomicU64::new(0);
+    if obj_from_bits(mapping_bits).is_none() {
+        return;
+    }
+    if let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr()
+        && unsafe { object_type_id(mapping_ptr) } == TYPE_ID_DICT
+    {
+        unsafe {
+            dict_clear_in_place(_py, mapping_ptr);
+        }
+        if exception_pending(_py) {
+            clear_exception(_py);
+        }
+        return;
+    }
+    let clear_name = intern_static_name(_py, &CLEAR_NAME, b"clear");
+    let clear_bits = match importlib_reader_lookup_callable(_py, mapping_bits, clear_name) {
+        Ok(Some(bits)) => bits,
+        Ok(None) => return,
+        Err(_) => {
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            return;
+        }
+    };
+    let result = call_callable_positional(_py, clear_bits, &[]);
+    if !obj_from_bits(clear_bits).is_none() {
+        dec_ref_bits(_py, clear_bits);
+    }
+    match result {
+        Ok(result_bits) => {
+            if !obj_from_bits(result_bits).is_none() {
+                dec_ref_bits(_py, result_bits);
+            }
+        }
+        Err(_) => {}
+    }
+    if exception_pending(_py) {
+        clear_exception(_py);
+    }
+}
+
+fn importlib_clear_mapping_attr_best_effort(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    slot: &AtomicU64,
+    name: &'static [u8],
+) {
+    let attr_name = intern_static_name(_py, slot, name);
+    let attr_bits = match getattr_optional_bits(_py, target_bits, attr_name) {
+        Ok(Some(bits)) => bits,
+        Ok(None) => return,
+        Err(_) => {
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            return;
+        }
+    };
+    importlib_clear_mapping_like_best_effort(_py, attr_bits);
+    if !obj_from_bits(attr_bits).is_none() {
+        dec_ref_bits(_py, attr_bits);
+    }
+}
+
+fn importlib_module_cache_lookup_bits(_py: &PyToken<'_>, module_name: &str) -> Option<u64> {
+    let module_cache = crate::builtins::exceptions::internals::module_cache(_py);
+    let guard = module_cache.lock().unwrap();
+    guard.get(module_name).copied()
+}
+
 fn importlib_key_starts_with_underscore(key_bits: u64) -> bool {
     let Some(key_ptr) = obj_from_bits(key_bits).as_ptr() else {
         return false;
@@ -4365,26 +5103,6 @@ fn importlib_required_attribute(
             &format!("{owner}.{} is unavailable", String::from_utf8_lossy(name)),
         )),
     }
-}
-
-fn importlib_required_attribute_any(
-    _py: &PyToken<'_>,
-    target_bits: u64,
-    names: &[(&AtomicU64, &'static [u8])],
-    owner: &str,
-    logical_name: &str,
-) -> Result<u64, u64> {
-    for (name_slot, name) in names {
-        let attr_name = intern_static_name(_py, name_slot, name);
-        if let Some(bits) = getattr_optional_bits(_py, target_bits, attr_name)? {
-            return Ok(bits);
-        }
-    }
-    Err(raise_exception::<_>(
-        _py,
-        "RuntimeError",
-        &format!("{owner}.{logical_name} is unavailable"),
-    ))
 }
 
 fn importlib_loader_is_molt_loader(
@@ -6237,6 +6955,156 @@ fn importlib_alloc_string_tuple_bits(_py: &PyToken<'_>, values: &[String]) -> Re
     }
 }
 
+fn importlib_finder_signature_tuple_bits(
+    _py: &PyToken<'_>,
+    finders_bits: u64,
+    label: &str,
+) -> Result<u64, u64> {
+    let mut ids: Vec<u64> = Vec::new();
+    let iter_bits = molt_iter(finders_bits);
+    if exception_pending(_py) {
+        clear_exception(_py);
+        return Err(raise_exception::<_>(_py, "RuntimeError", label));
+    }
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
+            clear_exception(_py);
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        };
+        let pair = unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                clear_exception(_py);
+                return Err(raise_exception::<_>(_py, "RuntimeError", label));
+            }
+            seq_vec_ref(pair_ptr)
+        };
+        if pair.len() < 2 {
+            clear_exception(_py);
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        }
+        if is_truthy(_py, obj_from_bits(pair[1])) {
+            break;
+        }
+        let id_bits = crate::molt_id(pair[0]);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            if !obj_from_bits(id_bits).is_none() {
+                dec_ref_bits(_py, id_bits);
+            }
+            for owned in ids {
+                if !obj_from_bits(owned).is_none() {
+                    dec_ref_bits(_py, owned);
+                }
+            }
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        }
+        ids.push(id_bits);
+    }
+    let tuple_ptr = alloc_tuple(_py, &ids);
+    for owned in ids {
+        if !obj_from_bits(owned).is_none() {
+            dec_ref_bits(_py, owned);
+        }
+    }
+    if tuple_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(tuple_ptr).bits())
+    }
+}
+
+fn importlib_path_importer_cache_signature_tuple_bits(
+    _py: &PyToken<'_>,
+    path_importer_cache_bits: u64,
+    label: &str,
+) -> Result<u64, u64> {
+    if obj_from_bits(path_importer_cache_bits).is_none() {
+        let empty_ptr = alloc_tuple(_py, &[]);
+        if empty_ptr.is_null() {
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        return Ok(MoltObject::from_ptr(empty_ptr).bits());
+    }
+
+    let Some(cache_ptr) = obj_from_bits(path_importer_cache_bits).as_ptr() else {
+        return Err(raise_exception::<_>(_py, "RuntimeError", label));
+    };
+    if unsafe { object_type_id(cache_ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<_>(_py, "RuntimeError", label));
+    }
+
+    let mut pairs: Vec<(String, u64)> = Vec::new();
+    let entries = unsafe { dict_order(cache_ptr) };
+    for idx in (0..entries.len()).step_by(2) {
+        let key_bits = entries[idx];
+        let value_bits = entries[idx + 1];
+        let Some(key) = string_obj_to_owned(obj_from_bits(key_bits)) else {
+            continue;
+        };
+        let id_bits = crate::molt_id(value_bits);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            if !obj_from_bits(id_bits).is_none() {
+                dec_ref_bits(_py, id_bits);
+            }
+            for (_k, owned) in pairs {
+                if !obj_from_bits(owned).is_none() {
+                    dec_ref_bits(_py, owned);
+                }
+            }
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        }
+        pairs.push((key, id_bits));
+    }
+    pairs.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+    let mut pair_tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
+    for (key, id_bits) in pairs {
+        let key_bits = match alloc_str_bits(_py, &key) {
+            Ok(bits) => bits,
+            Err(err) => {
+                if !obj_from_bits(id_bits).is_none() {
+                    dec_ref_bits(_py, id_bits);
+                }
+                for owned in pair_tuple_bits {
+                    if !obj_from_bits(owned).is_none() {
+                        dec_ref_bits(_py, owned);
+                    }
+                }
+                return Err(err);
+            }
+        };
+        let item_ptr = alloc_tuple(_py, &[key_bits, id_bits]);
+        if !obj_from_bits(key_bits).is_none() {
+            dec_ref_bits(_py, key_bits);
+        }
+        if !obj_from_bits(id_bits).is_none() {
+            dec_ref_bits(_py, id_bits);
+        }
+        if item_ptr.is_null() {
+            for owned in pair_tuple_bits {
+                if !obj_from_bits(owned).is_none() {
+                    dec_ref_bits(_py, owned);
+                }
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        pair_tuple_bits.push(MoltObject::from_ptr(item_ptr).bits());
+    }
+    let out_ptr = alloc_tuple(_py, &pair_tuple_bits);
+    for owned in pair_tuple_bits {
+        if !obj_from_bits(owned).is_none() {
+            dec_ref_bits(_py, owned);
+        }
+    }
+    if out_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(out_ptr).bits())
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_coerce_search_paths(value_bits: u64, label_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -6262,57 +7130,9 @@ pub extern "C" fn molt_importlib_finder_signature(finders_bits: u64, label_bits:
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let mut ids: Vec<u64> = Vec::new();
-        let iter_bits = molt_iter(finders_bits);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return raise_exception::<_>(_py, "RuntimeError", &label);
-        }
-        loop {
-            let pair_bits = molt_iter_next(iter_bits);
-            let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-                clear_exception(_py);
-                return raise_exception::<_>(_py, "RuntimeError", &label);
-            };
-            let pair = unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    clear_exception(_py);
-                    return raise_exception::<_>(_py, "RuntimeError", &label);
-                }
-                seq_vec_ref(pair_ptr)
-            };
-            if pair.len() < 2 {
-                clear_exception(_py);
-                return raise_exception::<_>(_py, "RuntimeError", &label);
-            }
-            if is_truthy(_py, obj_from_bits(pair[1])) {
-                break;
-            }
-            let id_bits = crate::molt_id(pair[0]);
-            if exception_pending(_py) {
-                clear_exception(_py);
-                if !obj_from_bits(id_bits).is_none() {
-                    dec_ref_bits(_py, id_bits);
-                }
-                for owned in ids {
-                    if !obj_from_bits(owned).is_none() {
-                        dec_ref_bits(_py, owned);
-                    }
-                }
-                return raise_exception::<_>(_py, "RuntimeError", &label);
-            }
-            ids.push(id_bits);
-        }
-        let tuple_ptr = alloc_tuple(_py, &ids);
-        for owned in ids {
-            if !obj_from_bits(owned).is_none() {
-                dec_ref_bits(_py, owned);
-            }
-        }
-        if tuple_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
+        match importlib_finder_signature_tuple_bits(_py, finders_bits, &label) {
+            Ok(bits) => bits,
+            Err(err) => err,
         }
     })
 }
@@ -6327,89 +7147,13 @@ pub extern "C" fn molt_importlib_path_importer_cache_signature(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if obj_from_bits(path_importer_cache_bits).is_none() {
-            let empty_ptr = alloc_tuple(_py, &[]);
-            if empty_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            return MoltObject::from_ptr(empty_ptr).bits();
-        }
-
-        let Some(cache_ptr) = obj_from_bits(path_importer_cache_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "RuntimeError", &label);
-        };
-        if unsafe { object_type_id(cache_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "RuntimeError", &label);
-        }
-
-        let mut pairs: Vec<(String, u64)> = Vec::new();
-        let entries = unsafe { dict_order(cache_ptr) };
-        for idx in (0..entries.len()).step_by(2) {
-            let key_bits = entries[idx];
-            let value_bits = entries[idx + 1];
-            let Some(key) = string_obj_to_owned(obj_from_bits(key_bits)) else {
-                continue;
-            };
-            let id_bits = crate::molt_id(value_bits);
-            if exception_pending(_py) {
-                clear_exception(_py);
-                if !obj_from_bits(id_bits).is_none() {
-                    dec_ref_bits(_py, id_bits);
-                }
-                for (_k, owned) in pairs {
-                    if !obj_from_bits(owned).is_none() {
-                        dec_ref_bits(_py, owned);
-                    }
-                }
-                return raise_exception::<_>(_py, "RuntimeError", &label);
-            }
-            pairs.push((key, id_bits));
-        }
-        pairs.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-
-        let mut pair_tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
-        for (key, id_bits) in pairs {
-            let key_bits = match alloc_str_bits(_py, &key) {
-                Ok(bits) => bits,
-                Err(err) => {
-                    if !obj_from_bits(id_bits).is_none() {
-                        dec_ref_bits(_py, id_bits);
-                    }
-                    for owned in pair_tuple_bits {
-                        if !obj_from_bits(owned).is_none() {
-                            dec_ref_bits(_py, owned);
-                        }
-                    }
-                    return err;
-                }
-            };
-            let item_ptr = alloc_tuple(_py, &[key_bits, id_bits]);
-            if !obj_from_bits(key_bits).is_none() {
-                dec_ref_bits(_py, key_bits);
-            }
-            if !obj_from_bits(id_bits).is_none() {
-                dec_ref_bits(_py, id_bits);
-            }
-            if item_ptr.is_null() {
-                for owned in pair_tuple_bits {
-                    if !obj_from_bits(owned).is_none() {
-                        dec_ref_bits(_py, owned);
-                    }
-                }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            pair_tuple_bits.push(MoltObject::from_ptr(item_ptr).bits());
-        }
-        let out_ptr = alloc_tuple(_py, &pair_tuple_bits);
-        for owned in pair_tuple_bits {
-            if !obj_from_bits(owned).is_none() {
-                dec_ref_bits(_py, owned);
-            }
-        }
-        if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
+        match importlib_path_importer_cache_signature_tuple_bits(
+            _py,
+            path_importer_cache_bits,
+            &label,
+        ) {
+            Ok(bits) => bits,
+            Err(err) => err,
         }
     })
 }
@@ -7009,6 +7753,345 @@ pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -
             return MoltObject::none().bits();
         };
         match alloc_str_bits(_py, &name) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let name_bits = match alloc_str_bits(_py, &module_name) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let imported_bits = crate::molt_module_import(name_bits);
+        if !obj_from_bits(name_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+        }
+        if !exception_pending(_py) {
+            return imported_bits;
+        }
+        // Optional imports mirror `try: import x; except ImportError: ...`.
+        // They should not propagate module absence and simply yield None.
+        if clear_pending_if_kind(_py, &["ImportError", "ModuleNotFoundError"]) {
+            if !obj_from_bits(imported_bits).is_none() {
+                dec_ref_bits(_py, imported_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_import_or_fallback(
+    module_name_bits: u64,
+    fallback_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let name_bits = match alloc_str_bits(_py, &module_name) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let imported_bits = crate::molt_module_import(name_bits);
+        if !obj_from_bits(name_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+        }
+        if !exception_pending(_py) {
+            return imported_bits;
+        }
+        if clear_pending_if_kind(_py, &["ImportError", "ModuleNotFoundError"]) {
+            if !obj_from_bits(imported_bits).is_none() {
+                dec_ref_bits(_py, imported_bits);
+            }
+            inc_ref_bits(_py, fallback_bits);
+            return fallback_bits;
+        }
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_import_required(module_name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let name_bits = match alloc_str_bits(_py, &module_name) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let imported_bits = crate::molt_module_import(name_bits);
+        if !obj_from_bits(name_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+        }
+        if exception_pending(_py) {
+            if !obj_from_bits(imported_bits).is_none() {
+                dec_ref_bits(_py, imported_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        imported_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_export_attrs(
+    module_name_bits: u64,
+    export_names_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let export_names =
+            match string_sequence_arg_from_bits(_py, export_names_bits, "export names") {
+                Ok(values) => values,
+                Err(err) => return err,
+            };
+
+        let name_bits = match alloc_str_bits(_py, &module_name) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let module_bits = crate::molt_module_import(name_bits);
+        if !obj_from_bits(name_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+        }
+        if exception_pending(_py) {
+            if !obj_from_bits(module_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+            }
+            return MoltObject::none().bits();
+        }
+
+        let mut pairs: Vec<u64> = Vec::with_capacity(export_names.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(export_names.len() * 2);
+        let missing = missing_bits(_py);
+        for export_name in export_names {
+            let attr_name_bits = match alloc_str_bits(_py, &export_name) {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if !obj_from_bits(module_bits).is_none() {
+                        dec_ref_bits(_py, module_bits);
+                    }
+                    return err;
+                }
+            };
+            let value_bits = molt_getattr_builtin(module_bits, attr_name_bits, missing);
+            if !obj_from_bits(attr_name_bits).is_none() {
+                dec_ref_bits(_py, attr_name_bits);
+            }
+            if exception_pending(_py) {
+                if !obj_from_bits(value_bits).is_none() {
+                    dec_ref_bits(_py, value_bits);
+                }
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            if is_missing_bits(_py, value_bits) {
+                if !obj_from_bits(value_bits).is_none() {
+                    dec_ref_bits(_py, value_bits);
+                }
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                if !obj_from_bits(module_bits).is_none() {
+                    dec_ref_bits(_py, module_bits);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "AttributeError",
+                    &format!("module '{module_name}' has no attribute '{export_name}'"),
+                );
+            }
+
+            let key_bits = match alloc_str_bits(_py, &export_name) {
+                Ok(bits) => bits,
+                Err(err) => {
+                    if !obj_from_bits(value_bits).is_none() {
+                        dec_ref_bits(_py, value_bits);
+                    }
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if !obj_from_bits(module_bits).is_none() {
+                        dec_ref_bits(_py, module_bits);
+                    }
+                    return err;
+                }
+            };
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+            owned.push(value_bits);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if !obj_from_bits(module_bits).is_none() {
+            dec_ref_bits(_py, module_bits);
+        }
+        if dict_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_load_module_shim(
+    bootstrap_bits: u64,
+    loader_bits: u64,
+    fullname_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static LOAD_MODULE_SHIM_NAME: AtomicU64 = AtomicU64::new(0);
+
+        let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let call_bits = match importlib_required_callable(
+            _py,
+            bootstrap_bits,
+            &LOAD_MODULE_SHIM_NAME,
+            b"_load_module_shim",
+            "importlib._bootstrap",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let fullname_arg_bits = match alloc_str_bits(_py, &fullname) {
+            Ok(bits) => bits,
+            Err(err) => {
+                if !obj_from_bits(call_bits).is_none() {
+                    dec_ref_bits(_py, call_bits);
+                }
+                return err;
+            }
+        };
+        let out = unsafe { call_callable2(_py, call_bits, loader_bits, fullname_arg_bits) };
+        if !obj_from_bits(fullname_arg_bits).is_none() {
+            dec_ref_bits(_py, fullname_arg_bits);
+        }
+        if !obj_from_bits(call_bits).is_none() {
+            dec_ref_bits(_py, call_bits);
+        }
+        if exception_pending(_py) {
+            if !obj_from_bits(out).is_none() {
+                dec_ref_bits(_py, out);
+            }
+            return MoltObject::none().bits();
+        }
+        out
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static JOINPATH_NAME: AtomicU64 = AtomicU64::new(0);
+
+        let joinpath_name = intern_static_name(_py, &JOINPATH_NAME, b"joinpath");
+        let missing = missing_bits(_py);
+        let call_bits = molt_getattr_builtin(traversable_bits, joinpath_name, missing);
+        if exception_pending(_py) {
+            if !obj_from_bits(call_bits).is_none() {
+                dec_ref_bits(_py, call_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        if is_missing_bits(_py, call_bits) {
+            if !obj_from_bits(call_bits).is_none() {
+                dec_ref_bits(_py, call_bits);
+            }
+            return raise_exception::<_>(
+                _py,
+                "AttributeError",
+                "traversable has no attribute 'joinpath'",
+            );
+        }
+        let out = unsafe { call_callable1(_py, call_bits, child_bits) };
+        if !obj_from_bits(call_bits).is_none() {
+            dec_ref_bits(_py, call_bits);
+        }
+        if exception_pending(_py) {
+            if !obj_from_bits(out).is_none() {
+                dec_ref_bits(_py, out);
+            }
+            return MoltObject::none().bits();
+        }
+        out
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mode = match string_arg_from_bits(_py, mode_bits, "mode") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if mode == "r" {
+            return MoltObject::from_bool(true).bits();
+        }
+        if mode == "rb" {
+            return MoltObject::from_bool(false).bits();
+        }
+        raise_exception::<_>(
+            _py,
+            "ValueError",
+            &format!("Invalid mode value {mode:?}, only 'r' and 'rb' are supported"),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_package_leaf_name(package_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let leaf = package
+            .rsplit_once('.')
+            .map(|(_, tail)| tail)
+            .unwrap_or(package.as_str());
+        let leaf = if leaf.is_empty() {
+            package.as_str()
+        } else {
+            leaf
+        };
+        match alloc_str_bits(_py, leaf) {
             Ok(bits) => bits,
             Err(err) => err,
         }
@@ -7668,16 +8751,13 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         static SOURCE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
         static EXTENSION_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static FILE_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
-        static FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static FILE_LOADER_LEGACY_NAME: AtomicU64 = AtomicU64::new(0);
+        static PRIVATE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static NAMESPACE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static PATH_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
         static SOURCE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_LOADER_LEGACY_NAME: AtomicU64 = AtomicU64::new(0);
+        static PRIVATE_SOURCE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static SOURCELESS_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static LOADER_BASICS_NAME: AtomicU64 = AtomicU64::new(0);
-        static LOADER_BASICS_LEGACY_NAME: AtomicU64 = AtomicU64::new(0);
         static WINDOWS_REGISTRY_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
         static CACHE_FROM_SOURCE_NAME: AtomicU64 = AtomicU64::new(0);
         static DECODE_SOURCE_NAME: AtomicU64 = AtomicU64::new(0);
@@ -7834,15 +8914,12 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(file_finder_bits);
         values.push((b"FileFinder", file_finder_bits));
 
-        let file_loader_bits = match importlib_required_attribute_any(
+        let file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &[
-                (&FILE_LOADER_NAME, b"FileLoader"),
-                (&FILE_LOADER_LEGACY_NAME, b"_FileLoader"),
-            ],
+            &PRIVATE_FILE_LOADER_NAME,
+            b"_FileLoader",
             "importlib.machinery",
-            "FileLoader",
         ) {
             Ok(bits) => bits,
             Err(err) => {
@@ -7909,15 +8986,12 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(source_file_loader_bits);
         values.push((b"SourceFileLoader", source_file_loader_bits));
 
-        let source_loader_bits = match importlib_required_attribute_any(
+        let source_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &[
-                (&SOURCE_LOADER_NAME, b"SourceLoader"),
-                (&SOURCE_LOADER_LEGACY_NAME, b"_SourceLoader"),
-            ],
+            &PRIVATE_SOURCE_LOADER_NAME,
+            b"_SourceLoader",
             "importlib.machinery",
-            "SourceLoader",
         ) {
             Ok(bits) => bits,
             Err(err) => {
@@ -7948,15 +9022,12 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(sourceless_file_loader_bits);
         values.push((b"SourcelessFileLoader", sourceless_file_loader_bits));
 
-        let loader_basics_bits = match importlib_required_attribute_any(
+        let loader_basics_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &[
-                (&LOADER_BASICS_NAME, b"_LoaderBasics"),
-                (&LOADER_BASICS_LEGACY_NAME, b"_MoltLoader"),
-            ],
+            &LOADER_BASICS_NAME,
+            b"_LoaderBasics",
             "importlib.machinery",
-            "_LoaderBasics",
         ) {
             Ok(bits) => bits,
             Err(err) => {
@@ -8126,61 +9197,68 @@ pub extern "C" fn molt_importlib_find_spec(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let meta_path_count = match iterable_count_arg_from_bits(_py, meta_path_bits, "meta_path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path_hooks_count =
-            match iterable_count_arg_from_bits(_py, path_hooks_bits, "path_hooks") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
         let package_context = is_truthy(_py, obj_from_bits(package_context_bits));
-        let via_meta_path = match importlib_find_spec_via_meta_path(
+        match importlib_find_spec_with_runtime_state_bits(
             _py,
             &fullname,
             &search_paths,
+            module_file,
             meta_path_bits,
+            path_hooks_bits,
+            path_importer_cache_bits,
+            package_context,
+            machinery_bits,
         ) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_find_spec_orchestrate(
+    module_name_bits: u64,
+    path_snapshot_bits: u64,
+    module_file_bits: u64,
+    spec_cache_bits: u64,
+    machinery_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if let Some(spec_bits) = via_meta_path {
-            return spec_bits;
-        }
-        // CPython only consults path hooks via meta-path finders (notably PathFinder).
-        // If meta_path is empty, find_spec should not probe path_hooks directly.
-        let via_path_hooks = if meta_path_count == 0 {
-            None
-        } else {
-            match importlib_find_spec_via_path_hooks(
-                _py,
-                &fullname,
-                &search_paths,
-                path_hooks_bits,
-                path_importer_cache_bits,
-            ) {
+        let path_snapshot =
+            match string_sequence_arg_from_bits(_py, path_snapshot_bits, "search paths") {
                 Ok(value) => value,
                 Err(bits) => return bits,
-            }
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
         };
-        if let Some(spec_bits) = via_path_hooks {
-            return spec_bits;
+        let Some(spec_cache_ptr) = obj_from_bits(spec_cache_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "invalid importlib find_spec cache mapping",
+            );
+        };
+        if unsafe { object_type_id(spec_cache_ptr) } != TYPE_ID_DICT {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "invalid importlib find_spec cache mapping",
+            );
         }
-        if fullname != "math" && !has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let Some(payload) = importlib_find_spec_payload(
-            &fullname,
-            &search_paths,
+        match importlib_find_spec_orchestrated_impl(
+            _py,
+            &module_name,
+            &path_snapshot,
             module_file,
-            meta_path_count,
-            path_hooks_count,
-            package_context,
-        ) else {
-            return MoltObject::none().bits();
-        };
-        match importlib_find_spec_object_bits(_py, &fullname, &payload, machinery_bits) {
+            spec_cache_ptr,
+            machinery_bits,
+        ) {
             Ok(bits) => bits,
             Err(err) => err,
         }
@@ -8274,6 +9352,291 @@ fn importlib_find_spec_from_path_hooks_impl(
         Ok(bits) => bits,
         Err(err) => err,
     }
+}
+
+fn importlib_find_spec_with_runtime_state_bits(
+    _py: &PyToken<'_>,
+    fullname: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    meta_path_bits: u64,
+    path_hooks_bits: u64,
+    path_importer_cache_bits: u64,
+    package_context: bool,
+    machinery_bits: u64,
+) -> Result<u64, u64> {
+    let meta_path_count = iterable_count_arg_from_bits(_py, meta_path_bits, "meta_path")?;
+    let path_hooks_count = iterable_count_arg_from_bits(_py, path_hooks_bits, "path_hooks")?;
+    let via_meta_path =
+        importlib_find_spec_via_meta_path(_py, fullname, search_paths, meta_path_bits)?;
+    if let Some(spec_bits) = via_meta_path {
+        return Ok(spec_bits);
+    }
+    // CPython only consults path hooks via meta-path finders (notably PathFinder).
+    // If meta_path is empty, find_spec should not probe path_hooks directly.
+    let via_path_hooks = if meta_path_count == 0 {
+        None
+    } else {
+        importlib_find_spec_via_path_hooks(
+            _py,
+            fullname,
+            search_paths,
+            path_hooks_bits,
+            path_importer_cache_bits,
+        )?
+    };
+    if let Some(spec_bits) = via_path_hooks {
+        return Ok(spec_bits);
+    }
+    if fullname != "math" && !has_capability(_py, "fs.read") {
+        return Err(raise_exception::<_>(
+            _py,
+            "PermissionError",
+            "missing fs.read capability",
+        ));
+    }
+    let Some(payload) = importlib_find_spec_payload(
+        fullname,
+        search_paths,
+        module_file,
+        meta_path_count,
+        path_hooks_count,
+        package_context,
+    ) else {
+        return Ok(MoltObject::none().bits());
+    };
+    importlib_find_spec_object_bits(_py, fullname, &payload, machinery_bits)
+}
+
+fn importlib_find_spec_orchestrated_search_paths(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    modules_bits: u64,
+    path_snapshot: &[String],
+    module_file: Option<String>,
+    spec_cache_ptr: *mut u8,
+    machinery_bits: u64,
+) -> Result<(Vec<String>, bool), u64> {
+    let parent_payload = importlib_parent_search_paths_payload(_py, module_name, modules_bits)?;
+    if !parent_payload.has_parent {
+        return Ok((importlib_search_paths(path_snapshot, module_file), false));
+    }
+    if !parent_payload.needs_parent_spec {
+        return Ok((parent_payload.search_paths, parent_payload.package_context));
+    }
+
+    let Some(parent_name) = parent_payload.parent_name else {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "invalid importlib parent search paths payload: parent_name",
+        ));
+    };
+
+    static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
+    let parent_spec_bits = importlib_find_spec_orchestrated_impl(
+        _py,
+        &parent_name,
+        path_snapshot,
+        module_file.clone(),
+        spec_cache_ptr,
+        machinery_bits,
+    )?;
+    if obj_from_bits(parent_spec_bits).is_none() {
+        return Ok((Vec::new(), true));
+    }
+    let submodule_search_locations_name = intern_static_name(
+        _py,
+        &SUBMODULE_SEARCH_LOCATIONS_NAME,
+        b"submodule_search_locations",
+    );
+    let parent_paths_bits =
+        match getattr_optional_bits(_py, parent_spec_bits, submodule_search_locations_name) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => MoltObject::none().bits(),
+            Err(err) => {
+                if !obj_from_bits(parent_spec_bits).is_none() {
+                    dec_ref_bits(_py, parent_spec_bits);
+                }
+                return Err(err);
+            }
+        };
+    if !obj_from_bits(parent_spec_bits).is_none() {
+        dec_ref_bits(_py, parent_spec_bits);
+    }
+    let search_paths = match importlib_coerce_search_paths_values(
+        _py,
+        parent_paths_bits,
+        "invalid parent package search path",
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            if !obj_from_bits(parent_paths_bits).is_none() {
+                dec_ref_bits(_py, parent_paths_bits);
+            }
+            return Err(err);
+        }
+    };
+    if !obj_from_bits(parent_paths_bits).is_none() {
+        dec_ref_bits(_py, parent_paths_bits);
+    }
+    Ok((search_paths, true))
+}
+
+fn importlib_find_spec_orchestrated_impl(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    path_snapshot: &[String],
+    module_file: Option<String>,
+    spec_cache_ptr: *mut u8,
+    machinery_bits: u64,
+) -> Result<u64, u64> {
+    let runtime_state = importlib_runtime_state_view_bits(_py)?;
+    let out = (|| -> Result<u64, u64> {
+        let existing_spec_bits = importlib_existing_spec_from_modules_bits(
+            _py,
+            module_name,
+            runtime_state.modules_bits,
+            machinery_bits,
+        )?;
+        if !obj_from_bits(existing_spec_bits).is_none() {
+            return Ok(existing_spec_bits);
+        }
+
+        let (search_paths, package_context) = importlib_find_spec_orchestrated_search_paths(
+            _py,
+            module_name,
+            runtime_state.modules_bits,
+            path_snapshot,
+            module_file.clone(),
+            spec_cache_ptr,
+            machinery_bits,
+        )?;
+        let search_paths_bits = importlib_alloc_string_tuple_bits(_py, &search_paths)?;
+        let meta_path_sig_bits = match importlib_finder_signature_tuple_bits(
+            _py,
+            runtime_state.meta_path_bits,
+            "invalid meta_path iterable",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, search_paths_bits);
+                return Err(err);
+            }
+        };
+        let path_hooks_sig_bits = match importlib_finder_signature_tuple_bits(
+            _py,
+            runtime_state.path_hooks_bits,
+            "invalid path_hooks iterable",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, search_paths_bits);
+                dec_ref_bits(_py, meta_path_sig_bits);
+                return Err(err);
+            }
+        };
+        let path_importer_cache_sig_bits = match importlib_path_importer_cache_signature_tuple_bits(
+            _py,
+            runtime_state.path_importer_cache_bits,
+            "invalid path_importer_cache mapping",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, search_paths_bits);
+                dec_ref_bits(_py, meta_path_sig_bits);
+                dec_ref_bits(_py, path_hooks_sig_bits);
+                return Err(err);
+            }
+        };
+        let module_name_bits = match alloc_str_bits(_py, module_name) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, search_paths_bits);
+                dec_ref_bits(_py, meta_path_sig_bits);
+                dec_ref_bits(_py, path_hooks_sig_bits);
+                dec_ref_bits(_py, path_importer_cache_sig_bits);
+                return Err(err);
+            }
+        };
+        let cache_key_ptr = alloc_tuple(
+            _py,
+            &[
+                module_name_bits,
+                search_paths_bits,
+                meta_path_sig_bits,
+                path_hooks_sig_bits,
+                path_importer_cache_sig_bits,
+                MoltObject::from_bool(package_context).bits(),
+            ],
+        );
+        if !obj_from_bits(module_name_bits).is_none() {
+            dec_ref_bits(_py, module_name_bits);
+        }
+        if !obj_from_bits(search_paths_bits).is_none() {
+            dec_ref_bits(_py, search_paths_bits);
+        }
+        if !obj_from_bits(meta_path_sig_bits).is_none() {
+            dec_ref_bits(_py, meta_path_sig_bits);
+        }
+        if !obj_from_bits(path_hooks_sig_bits).is_none() {
+            dec_ref_bits(_py, path_hooks_sig_bits);
+        }
+        if !obj_from_bits(path_importer_cache_sig_bits).is_none() {
+            dec_ref_bits(_py, path_importer_cache_sig_bits);
+        }
+        if cache_key_ptr.is_null() {
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        let cache_key_bits = MoltObject::from_ptr(cache_key_ptr).bits();
+        let cached_bits = unsafe { dict_get_in_place(_py, spec_cache_ptr, cache_key_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, cache_key_bits);
+            return Err(MoltObject::none().bits());
+        }
+        if let Some(cached_bits) = cached_bits {
+            if !obj_from_bits(cached_bits).is_none() {
+                inc_ref_bits(_py, cached_bits);
+            }
+            dec_ref_bits(_py, cache_key_bits);
+            return Ok(cached_bits);
+        }
+
+        let spec_bits = importlib_find_spec_with_runtime_state_bits(
+            _py,
+            module_name,
+            &search_paths,
+            module_file,
+            runtime_state.meta_path_bits,
+            runtime_state.path_hooks_bits,
+            runtime_state.path_importer_cache_bits,
+            package_context,
+            machinery_bits,
+        )?;
+        unsafe {
+            dict_set_in_place(_py, spec_cache_ptr, cache_key_bits, spec_bits);
+        }
+        if exception_pending(_py) {
+            if !obj_from_bits(spec_bits).is_none() {
+                dec_ref_bits(_py, spec_bits);
+            }
+            dec_ref_bits(_py, cache_key_bits);
+            return Err(MoltObject::none().bits());
+        }
+        dec_ref_bits(_py, cache_key_bits);
+        Ok(spec_bits)
+    })();
+    for bits in [
+        runtime_state.modules_bits,
+        runtime_state.meta_path_bits,
+        runtime_state.path_hooks_bits,
+        runtime_state.path_importer_cache_bits,
+    ] {
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    out
 }
 
 fn importlib_sys_module_bits(_py: &PyToken<'_>) -> Option<u64> {
@@ -8493,6 +9856,430 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
             dec_ref_bits(_py, path_importer_cache_bits);
         }
         result
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
+    crate::with_gil_entry!(_py, {
+        static SPEC_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
+        static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
+
+        if let Some(util_bits) = importlib_module_cache_lookup_bits(_py, "importlib.util")
+            && !obj_from_bits(util_bits).is_none()
+        {
+            importlib_clear_mapping_attr_best_effort(
+                _py,
+                util_bits,
+                &SPEC_CACHE_NAME,
+                b"_SPEC_CACHE",
+            );
+        }
+        if let Some(sys_bits) = importlib_module_cache_lookup_bits(_py, "sys")
+            && !obj_from_bits(sys_bits).is_none()
+        {
+            importlib_clear_mapping_attr_best_effort(
+                _py,
+                sys_bits,
+                &PATH_IMPORTER_CACHE_NAME,
+                b"path_importer_cache",
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
+        static POP_NAME: AtomicU64 = AtomicU64::new(0);
+
+        let path = match string_arg_from_bits(_py, path_bits, "path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(sys_bits) = importlib_module_cache_lookup_bits(_py, "sys") else {
+            return MoltObject::none().bits();
+        };
+        if obj_from_bits(sys_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let path_importer_cache_name =
+            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
+        let path_importer_cache_bits =
+            match getattr_optional_bits(_py, sys_bits, path_importer_cache_name) {
+                Ok(Some(bits)) => bits,
+                Ok(None) => return MoltObject::none().bits(),
+                Err(_) => {
+                    if exception_pending(_py) {
+                        clear_exception(_py);
+                    }
+                    return MoltObject::none().bits();
+                }
+            };
+
+        if let Some(path_importer_cache_ptr) = obj_from_bits(path_importer_cache_bits).as_ptr() {
+            if unsafe { object_type_id(path_importer_cache_ptr) } == TYPE_ID_DICT {
+                let path_key_bits = match alloc_str_bits(_py, &path) {
+                    Ok(bits) => bits,
+                    Err(err) => {
+                        if !obj_from_bits(path_importer_cache_bits).is_none() {
+                            dec_ref_bits(_py, path_importer_cache_bits);
+                        }
+                        return err;
+                    }
+                };
+                importlib_dict_del_string_key(_py, path_importer_cache_ptr, path_key_bits);
+                if !obj_from_bits(path_key_bits).is_none() {
+                    dec_ref_bits(_py, path_key_bits);
+                }
+            } else {
+                let pop_result = match importlib_lookup_callable_attr(
+                    _py,
+                    path_importer_cache_bits,
+                    &POP_NAME,
+                    b"pop",
+                ) {
+                    Ok(Some(pop_bits)) => {
+                        let path_key_bits = match alloc_str_bits(_py, &path) {
+                            Ok(bits) => bits,
+                            Err(err) => {
+                                if !obj_from_bits(pop_bits).is_none() {
+                                    dec_ref_bits(_py, pop_bits);
+                                }
+                                if !obj_from_bits(path_importer_cache_bits).is_none() {
+                                    dec_ref_bits(_py, path_importer_cache_bits);
+                                }
+                                return err;
+                            }
+                        };
+                        let out = call_callable_positional(
+                            _py,
+                            pop_bits,
+                            &[path_key_bits, MoltObject::none().bits()],
+                        );
+                        if !obj_from_bits(pop_bits).is_none() {
+                            dec_ref_bits(_py, pop_bits);
+                        }
+                        if !obj_from_bits(path_key_bits).is_none() {
+                            dec_ref_bits(_py, path_key_bits);
+                        }
+                        out
+                    }
+                    Ok(None) => Ok(MoltObject::none().bits()),
+                    Err(_) => {
+                        if exception_pending(_py) {
+                            clear_exception(_py);
+                        }
+                        Ok(MoltObject::none().bits())
+                    }
+                };
+                if let Ok(result_bits) = pop_result
+                    && !obj_from_bits(result_bits).is_none()
+                {
+                    dec_ref_bits(_py, result_bits);
+                }
+                if exception_pending(_py) {
+                    clear_exception(_py);
+                }
+            }
+        }
+        if !obj_from_bits(path_importer_cache_bits).is_none() {
+            dec_ref_bits(_py, path_importer_cache_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_reload(
+    module_bits: u64,
+    util_bits: u64,
+    machinery_bits: u64,
+    import_module_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static NAME_NAME: AtomicU64 = AtomicU64::new(0);
+        static FILE_NAME: AtomicU64 = AtomicU64::new(0);
+        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
+        static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
+        static PATH_NAME: AtomicU64 = AtomicU64::new(0);
+        static SPEC_FROM_FILE_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
+        static FIND_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
+        static EXEC_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
+        static LOAD_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
+
+        let mut name_bits = MoltObject::none().bits();
+        let mut module_loader_bits = MoltObject::none().bits();
+        let mut module_loader_owned = false;
+        let mut modules_bits = MoltObject::none().bits();
+
+        let out = (|| -> Result<u64, u64> {
+            let module_name_name = intern_static_name(_py, &NAME_NAME, b"__name__");
+            let module_name_bits = match getattr_optional_bits(_py, module_bits, module_name_name)?
+            {
+                Some(bits) => bits,
+                None => {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "ImportError",
+                        "module has no __name__",
+                    ));
+                }
+            };
+            let Some(module_name) = string_obj_to_owned(obj_from_bits(module_name_bits))
+                .filter(|name| !name.is_empty())
+            else {
+                if !obj_from_bits(module_name_bits).is_none() {
+                    dec_ref_bits(_py, module_name_bits);
+                }
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    "module has no __name__",
+                ));
+            };
+            if !obj_from_bits(module_name_bits).is_none() {
+                dec_ref_bits(_py, module_name_bits);
+            }
+            name_bits = alloc_str_bits(_py, &module_name)?;
+            modules_bits = importlib_runtime_modules_bits(_py)?;
+            let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+                return Err(importlib_modules_runtime_error(_py));
+            };
+
+            let module_file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+            let module_file = match getattr_optional_bits(_py, module_bits, module_file_name)? {
+                Some(bits) => {
+                    let out = string_obj_to_owned(obj_from_bits(bits));
+                    if !obj_from_bits(bits).is_none() {
+                        dec_ref_bits(_py, bits);
+                    }
+                    out
+                }
+                None => None,
+            };
+
+            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
+            if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
+                if !obj_from_bits(spec_bits).is_none()
+                    && let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
+                    && !obj_from_bits(loader_bits).is_none()
+                {
+                    module_loader_bits = loader_bits;
+                    module_loader_owned = true;
+                }
+                if !obj_from_bits(spec_bits).is_none() {
+                    dec_ref_bits(_py, spec_bits);
+                }
+            }
+
+            if let Some(module_file) = module_file {
+                let module_file_bits = alloc_str_bits(_py, &module_file)?;
+                let mut locations_bits = MoltObject::none().bits();
+                let mut locations_owned = false;
+                let path_name = intern_static_name(_py, &PATH_NAME, b"__path__");
+                if let Some(path_bits) = getattr_optional_bits(_py, module_bits, path_name)? {
+                    if let Some(path_ptr) = obj_from_bits(path_bits).as_ptr() {
+                        let type_id = unsafe { object_type_id(path_ptr) };
+                        if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                            locations_bits = importlib_list_from_iterable(
+                                _py,
+                                path_bits,
+                                "submodule_search_locations",
+                            )?;
+                            locations_owned = true;
+                        }
+                    }
+                    if !obj_from_bits(path_bits).is_none() {
+                        dec_ref_bits(_py, path_bits);
+                    }
+                }
+
+                let mut loader_override_bits = module_loader_bits;
+                if !obj_from_bits(loader_override_bits).is_none()
+                    && importlib_loader_is_molt_loader(_py, loader_override_bits, machinery_bits)?
+                {
+                    loader_override_bits = MoltObject::none().bits();
+                }
+
+                let spec_from_file_location_bits = importlib_required_callable(
+                    _py,
+                    util_bits,
+                    &SPEC_FROM_FILE_LOCATION_NAME,
+                    b"spec_from_file_location",
+                    "importlib.util",
+                )?;
+                let spec_bits = call_callable_positional(
+                    _py,
+                    spec_from_file_location_bits,
+                    &[
+                        name_bits,
+                        module_file_bits,
+                        loader_override_bits,
+                        locations_bits,
+                    ],
+                )?;
+                if !obj_from_bits(spec_from_file_location_bits).is_none() {
+                    dec_ref_bits(_py, spec_from_file_location_bits);
+                }
+                if !obj_from_bits(module_file_bits).is_none() {
+                    dec_ref_bits(_py, module_file_bits);
+                }
+                if locations_owned && !obj_from_bits(locations_bits).is_none() {
+                    dec_ref_bits(_py, locations_bits);
+                }
+
+                if !obj_from_bits(spec_bits).is_none() {
+                    let mut loaded = false;
+                    if let Some(spec_loader_bits) =
+                        getattr_optional_bits(_py, spec_bits, loader_name)?
+                        && !obj_from_bits(spec_loader_bits).is_none()
+                    {
+                        if let Some(exec_bits) = importlib_lookup_callable_attr(
+                            _py,
+                            spec_loader_bits,
+                            &EXEC_MODULE_NAME,
+                            b"exec_module",
+                        )? {
+                            let exec_out_bits =
+                                call_callable_positional(_py, exec_bits, &[module_bits])?;
+                            if !obj_from_bits(exec_bits).is_none() {
+                                dec_ref_bits(_py, exec_bits);
+                            }
+                            if !obj_from_bits(exec_out_bits).is_none() {
+                                dec_ref_bits(_py, exec_out_bits);
+                            }
+                            importlib_dict_set_string_key(
+                                _py,
+                                modules_ptr,
+                                name_bits,
+                                module_bits,
+                            )?;
+                            inc_ref_bits(_py, module_bits);
+                            loaded = true;
+                        }
+                        if !obj_from_bits(spec_loader_bits).is_none() {
+                            dec_ref_bits(_py, spec_loader_bits);
+                        }
+                    }
+                    if !obj_from_bits(spec_bits).is_none() {
+                        dec_ref_bits(_py, spec_bits);
+                    }
+                    if loaded {
+                        return Ok(module_bits);
+                    }
+                }
+            }
+
+            if !obj_from_bits(module_loader_bits).is_none()
+                && let Some(exec_bits) = importlib_lookup_callable_attr(
+                    _py,
+                    module_loader_bits,
+                    &EXEC_MODULE_NAME,
+                    b"exec_module",
+                )?
+            {
+                let exec_out_bits = call_callable_positional(_py, exec_bits, &[module_bits])?;
+                if !obj_from_bits(exec_bits).is_none() {
+                    dec_ref_bits(_py, exec_bits);
+                }
+                if !obj_from_bits(exec_out_bits).is_none() {
+                    dec_ref_bits(_py, exec_out_bits);
+                }
+                importlib_dict_set_string_key(_py, modules_ptr, name_bits, module_bits)?;
+                inc_ref_bits(_py, module_bits);
+                return Ok(module_bits);
+            }
+
+            let find_spec_bits = importlib_required_callable(
+                _py,
+                util_bits,
+                &FIND_SPEC_NAME,
+                b"find_spec",
+                "importlib.util",
+            )?;
+            let spec_bits = call_callable_positional(
+                _py,
+                find_spec_bits,
+                &[name_bits, MoltObject::none().bits()],
+            )?;
+            if !obj_from_bits(find_spec_bits).is_none() {
+                dec_ref_bits(_py, find_spec_bits);
+            }
+            if !obj_from_bits(spec_bits).is_none() {
+                if let Some(spec_loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
+                    && !obj_from_bits(spec_loader_bits).is_none()
+                {
+                    if let Some(exec_bits) = importlib_lookup_callable_attr(
+                        _py,
+                        spec_loader_bits,
+                        &EXEC_MODULE_NAME,
+                        b"exec_module",
+                    )? {
+                        let exec_out_bits =
+                            call_callable_positional(_py, exec_bits, &[module_bits])?;
+                        if !obj_from_bits(exec_bits).is_none() {
+                            dec_ref_bits(_py, exec_bits);
+                        }
+                        if !obj_from_bits(exec_out_bits).is_none() {
+                            dec_ref_bits(_py, exec_out_bits);
+                        }
+                        if !obj_from_bits(spec_loader_bits).is_none() {
+                            dec_ref_bits(_py, spec_loader_bits);
+                        }
+                        if !obj_from_bits(spec_bits).is_none() {
+                            dec_ref_bits(_py, spec_bits);
+                        }
+                        inc_ref_bits(_py, module_bits);
+                        return Ok(module_bits);
+                    }
+                    if let Some(load_bits) = importlib_lookup_callable_attr(
+                        _py,
+                        spec_loader_bits,
+                        &LOAD_MODULE_NAME,
+                        b"load_module",
+                    )? {
+                        let loaded_bits = call_callable_positional(_py, load_bits, &[name_bits])?;
+                        if !obj_from_bits(load_bits).is_none() {
+                            dec_ref_bits(_py, load_bits);
+                        }
+                        if !obj_from_bits(spec_loader_bits).is_none() {
+                            dec_ref_bits(_py, spec_loader_bits);
+                        }
+                        if !obj_from_bits(spec_bits).is_none() {
+                            dec_ref_bits(_py, spec_bits);
+                        }
+                        return Ok(loaded_bits);
+                    }
+                    if !obj_from_bits(spec_loader_bits).is_none() {
+                        dec_ref_bits(_py, spec_loader_bits);
+                    }
+                }
+                if !obj_from_bits(spec_bits).is_none() {
+                    dec_ref_bits(_py, spec_bits);
+                }
+            }
+
+            importlib_dict_del_string_key(_py, modules_ptr, name_bits);
+            call_callable_positional(_py, import_module_bits, &[name_bits])
+        })();
+
+        if module_loader_owned && !obj_from_bits(module_loader_bits).is_none() {
+            dec_ref_bits(_py, module_loader_bits);
+        }
+        if !obj_from_bits(name_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+        }
+        if !obj_from_bits(modules_bits).is_none() {
+            dec_ref_bits(_py, modules_bits);
+        }
+        match out {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
     })
 }
 
@@ -8857,145 +10644,10 @@ pub extern "C" fn molt_importlib_runtime_modules() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_state_view() -> u64 {
     crate::with_gil_entry!(_py, {
-        static MODULES_NAME: AtomicU64 = AtomicU64::new(0);
-        static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_HOOKS_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-
-        let payload_bits = match importlib_runtime_state_payload_bits(_py) {
+        match importlib_runtime_state_payload_bits(_py) {
             Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let Some(payload_ptr) = obj_from_bits(payload_bits).as_ptr() else {
-            if !obj_from_bits(payload_bits).is_none() {
-                dec_ref_bits(_py, payload_bits);
-            }
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "invalid importlib runtime state payload: dict expected",
-            );
-        };
-        if unsafe { object_type_id(payload_ptr) } != TYPE_ID_DICT {
-            if !obj_from_bits(payload_bits).is_none() {
-                dec_ref_bits(_py, payload_bits);
-            }
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "invalid importlib runtime state payload: dict expected",
-            );
+            Err(err) => err,
         }
-
-        let module_cache = crate::builtins::exceptions::internals::module_cache(_py);
-        let sys_bits = {
-            let guard = module_cache.lock().unwrap();
-            guard.get("sys").copied()
-        };
-        let Some(sys_bits) = sys_bits else {
-            return payload_bits;
-        };
-        if obj_from_bits(sys_bits).is_none() {
-            return payload_bits;
-        }
-
-        let modules_name = intern_static_name(_py, &MODULES_NAME, b"modules");
-        let meta_path_name = intern_static_name(_py, &META_PATH_NAME, b"meta_path");
-        let path_hooks_name = intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks");
-        let path_importer_cache_name =
-            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
-
-        let override_modules =
-            match importlib_runtime_state_attr_bits(_py, sys_bits, &MODULES_NAME, b"modules") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    dec_ref_bits(_py, payload_bits);
-                    return err;
-                }
-            };
-        if let Some(ptr) = obj_from_bits(override_modules).as_ptr()
-            && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
-        {
-            unsafe {
-                dict_set_in_place(_py, payload_ptr, modules_name, override_modules);
-            }
-            if exception_pending(_py) {
-                if !obj_from_bits(override_modules).is_none() {
-                    dec_ref_bits(_py, override_modules);
-                }
-                dec_ref_bits(_py, payload_bits);
-                return MoltObject::none().bits();
-            }
-        }
-        if !obj_from_bits(override_modules).is_none() {
-            dec_ref_bits(_py, override_modules);
-        }
-
-        for (slot, slot_name, key_bits) in [
-            (&META_PATH_NAME, b"meta_path".as_slice(), meta_path_name),
-            (&PATH_HOOKS_NAME, b"path_hooks".as_slice(), path_hooks_name),
-        ] {
-            let live_bits = match importlib_runtime_state_attr_bits(_py, sys_bits, slot, slot_name)
-            {
-                Ok(bits) => bits,
-                Err(err) => {
-                    dec_ref_bits(_py, payload_bits);
-                    return err;
-                }
-            };
-            if !obj_from_bits(live_bits).is_none() {
-                unsafe {
-                    dict_set_in_place(_py, payload_ptr, key_bits, live_bits);
-                }
-                if exception_pending(_py) {
-                    if !obj_from_bits(live_bits).is_none() {
-                        dec_ref_bits(_py, live_bits);
-                    }
-                    dec_ref_bits(_py, payload_bits);
-                    return MoltObject::none().bits();
-                }
-            }
-            if !obj_from_bits(live_bits).is_none() {
-                dec_ref_bits(_py, live_bits);
-            }
-        }
-
-        let live_cache_bits = match importlib_runtime_state_attr_bits(
-            _py,
-            sys_bits,
-            &PATH_IMPORTER_CACHE_NAME,
-            b"path_importer_cache",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, payload_bits);
-                return err;
-            }
-        };
-        let allow_override_cache = if obj_from_bits(live_cache_bits).is_none() {
-            true
-        } else {
-            obj_from_bits(live_cache_bits)
-                .as_ptr()
-                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT })
-        };
-        if allow_override_cache {
-            unsafe {
-                dict_set_in_place(_py, payload_ptr, path_importer_cache_name, live_cache_bits);
-            }
-            if exception_pending(_py) {
-                if !obj_from_bits(live_cache_bits).is_none() {
-                    dec_ref_bits(_py, live_cache_bits);
-                }
-                dec_ref_bits(_py, payload_bits);
-                return MoltObject::none().bits();
-            }
-        }
-        if !obj_from_bits(live_cache_bits).is_none() {
-            dec_ref_bits(_py, live_cache_bits);
-        }
-
-        payload_bits
     })
 }
 
@@ -9613,6 +11265,52 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package_parts(
+    package_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    path_parts_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path_parts = match string_sequence_arg_from_bits(_py, path_parts_bits, "path names") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let bytes = match importlib_resources_open_resource_bytes_from_package_parts_impl(
+            _py,
+            &package,
+            &search_paths,
+            module_file,
+            &path_parts,
+        ) {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        let out_ptr = alloc_bytes(_py, &bytes);
+        if out_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_read_text_from_package(
     package_bits: u64,
     search_paths_bits: u64,
@@ -9657,6 +11355,116 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
             &search_paths,
             module_file,
             &resource,
+        ) {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        let bytes_ptr = alloc_bytes(_py, &bytes);
+        if bytes_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+        let decode_name = intern_static_name(_py, &DECODE_NAME, b"decode");
+        let decode_bits = match importlib_reader_lookup_callable(_py, bytes_bits, decode_name) {
+            Ok(Some(bits)) => bits,
+            Ok(None) => {
+                dec_ref_bits(_py, bytes_bits);
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "invalid bytes decode callable payload",
+                );
+            }
+            Err(err) => {
+                dec_ref_bits(_py, bytes_bits);
+                return err;
+            }
+        };
+        let encoding_arg_bits = match alloc_str_bits(_py, &encoding) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, decode_bits);
+                dec_ref_bits(_py, bytes_bits);
+                return err;
+            }
+        };
+        let errors_arg_bits = match alloc_str_bits(_py, &errors) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, encoding_arg_bits);
+                dec_ref_bits(_py, decode_bits);
+                dec_ref_bits(_py, bytes_bits);
+                return err;
+            }
+        };
+        let out_bits =
+            match call_callable_positional(_py, decode_bits, &[encoding_arg_bits, errors_arg_bits])
+            {
+                Ok(bits) => bits,
+                Err(err) => {
+                    dec_ref_bits(_py, errors_arg_bits);
+                    dec_ref_bits(_py, encoding_arg_bits);
+                    dec_ref_bits(_py, decode_bits);
+                    dec_ref_bits(_py, bytes_bits);
+                    return err;
+                }
+            };
+        dec_ref_bits(_py, errors_arg_bits);
+        dec_ref_bits(_py, encoding_arg_bits);
+        dec_ref_bits(_py, decode_bits);
+        dec_ref_bits(_py, bytes_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
+    package_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    path_parts_bits: u64,
+    encoding_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path_parts = match string_sequence_arg_from_bits(_py, path_parts_bits, "path names") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let encoding = match string_arg_from_bits(_py, encoding_bits, "encoding") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let errors = match string_arg_from_bits(_py, errors_bits, "errors") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let bytes = match importlib_resources_open_resource_bytes_from_package_parts_impl(
+            _py,
+            &package,
+            &search_paths,
+            module_file,
+            &path_parts,
         ) {
             Ok(value) => value,
             Err(err) => return err,
@@ -9775,6 +11583,51 @@ pub extern "C" fn molt_importlib_resources_contents_from_package(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_contents_from_package_parts(
+    package_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    path_parts_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path_parts = match string_sequence_arg_from_bits(_py, path_parts_bits, "path names") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let out = match importlib_resources_contents_from_package_parts_impl(
+            _py,
+            &package,
+            &search_paths,
+            module_file,
+            &path_parts,
+        ) {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        match alloc_string_list_bits(_py, &out) {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_is_resource_from_package(
     package_bits: u64,
     search_paths_bits: u64,
@@ -9818,6 +11671,47 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package(
             importlib_resources_first_file_candidate(&payload.roots, &resource).is_some(),
         )
         .bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_is_resource_from_package_parts(
+    package_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    path_parts_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path_parts = match string_sequence_arg_from_bits(_py, path_parts_bits, "path names") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        match importlib_resources_is_resource_from_package_parts_impl(
+            _py,
+            &package,
+            &search_paths,
+            module_file,
+            &path_parts,
+        ) {
+            Ok(value) => MoltObject::from_bool(value).bits(),
+            Err(err) => err,
+        }
     })
 }
 
@@ -9870,6 +11764,51 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package(
             };
         }
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_resource_path_from_package_parts(
+    package_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    path_parts_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let package = match string_arg_from_bits(_py, package_bits, "package") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let path_parts = match string_sequence_arg_from_bits(_py, path_parts_bits, "path names") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        match importlib_resources_resource_path_from_package_parts_impl(
+            _py,
+            &package,
+            &search_paths,
+            module_file,
+            &path_parts,
+        ) {
+            Ok(Some(path)) => match alloc_str_bits(_py, &path) {
+                Ok(bits) => bits,
+                Err(err) => err,
+            },
+            Ok(None) => MoltObject::none().bits(),
+            Err(err) => err,
+        }
     })
 }
 
@@ -9942,6 +11881,87 @@ pub extern "C" fn molt_importlib_resources_loader_reader(
             Ok(Some(bits)) => bits,
             Ok(None) => MoltObject::none().bits(),
             Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_resources_files_payload(
+    module_bits: u64,
+    fallback_bits: u64,
+    search_paths_bits: u64,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let payload = match importlib_resources_files_payload(
+            _py,
+            module_bits,
+            fallback_bits,
+            &search_paths,
+            module_file,
+        ) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let package_name_bits = match alloc_str_bits(_py, &payload.package_name) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let roots_bits = match alloc_string_list_bits(_py, &payload.roots) {
+            Some(bits) => bits,
+            None => {
+                dec_ref_bits(_py, package_name_bits);
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+        };
+        let is_namespace_bits = MoltObject::from_bool(payload.is_namespace).bits();
+        let reader_bits = payload.reader_bits.unwrap_or(MoltObject::none().bits());
+        let files_traversable_bits = payload
+            .files_traversable_bits
+            .unwrap_or(MoltObject::none().bits());
+        let keys_and_values: [(&[u8], u64); 5] = [
+            (b"package_name", package_name_bits),
+            (b"roots", roots_bits),
+            (b"is_namespace", is_namespace_bits),
+            (b"reader", reader_bits),
+            (b"files_traversable", files_traversable_bits),
+        ];
+        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        for (key, value_bits) in keys_and_values {
+            let key_ptr = alloc_string(_py, key);
+            if key_ptr.is_null() {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+            owned.push(value_bits);
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
         }
     })
 }
@@ -10193,6 +12213,53 @@ pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
+    search_paths_bits: u64,
+    module_file_bits: u64,
+    group_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let group = match optional_string_arg_from_bits(_py, group_bits, "group") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let name = match optional_string_arg_from_bits(_py, name_bits, "name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let value = match optional_string_arg_from_bits(_py, value_bits, "value") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let payload = importlib_metadata_entry_points_filter_payload(
+            &search_paths,
+            module_file,
+            group.as_deref(),
+            name.as_deref(),
+            value.as_deref(),
+        );
+        match alloc_string_triplets_list_bits(_py, &payload) {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
@@ -10206,6 +12273,121 @@ pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 
     })
 }
 
+fn alloc_importlib_metadata_payload_dict_bits(
+    _py: &PyToken<'_>,
+    payload: &ImportlibMetadataPayload,
+) -> Result<u64, u64> {
+    let path_bits = alloc_str_bits(_py, &payload.path)?;
+    let name_bits = match alloc_str_bits(_py, &payload.name) {
+        Ok(bits) => bits,
+        Err(err) => {
+            dec_ref_bits(_py, path_bits);
+            return Err(err);
+        }
+    };
+    let version_bits = match alloc_str_bits(_py, &payload.version) {
+        Ok(bits) => bits,
+        Err(err) => {
+            dec_ref_bits(_py, path_bits);
+            dec_ref_bits(_py, name_bits);
+            return Err(err);
+        }
+    };
+    let metadata_bits = match alloc_string_pairs_dict_bits(_py, &payload.metadata) {
+        Some(bits) => bits,
+        None => {
+            dec_ref_bits(_py, path_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, version_bits);
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+    };
+    let entry_points_bits = match alloc_string_triplets_list_bits(_py, &payload.entry_points) {
+        Some(bits) => bits,
+        None => {
+            dec_ref_bits(_py, path_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, version_bits);
+            dec_ref_bits(_py, metadata_bits);
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+    };
+    let requires_dist_bits = match alloc_string_list_bits(_py, &payload.requires_dist) {
+        Some(bits) => bits,
+        None => {
+            dec_ref_bits(_py, path_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, version_bits);
+            dec_ref_bits(_py, metadata_bits);
+            dec_ref_bits(_py, entry_points_bits);
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+    };
+    let provides_extra_bits = match alloc_string_list_bits(_py, &payload.provides_extra) {
+        Some(bits) => bits,
+        None => {
+            dec_ref_bits(_py, path_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, version_bits);
+            dec_ref_bits(_py, metadata_bits);
+            dec_ref_bits(_py, entry_points_bits);
+            dec_ref_bits(_py, requires_dist_bits);
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+    };
+    let requires_python_bits = match payload.requires_python.as_deref() {
+        Some(value) => match alloc_str_bits(_py, value) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, path_bits);
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, version_bits);
+                dec_ref_bits(_py, metadata_bits);
+                dec_ref_bits(_py, entry_points_bits);
+                dec_ref_bits(_py, requires_dist_bits);
+                dec_ref_bits(_py, provides_extra_bits);
+                return Err(err);
+            }
+        },
+        None => MoltObject::none().bits(),
+    };
+    let keys_and_values: [(&[u8], u64); 8] = [
+        (b"path", path_bits),
+        (b"name", name_bits),
+        (b"version", version_bits),
+        (b"metadata", metadata_bits),
+        (b"entry_points", entry_points_bits),
+        (b"requires_dist", requires_dist_bits),
+        (b"provides_extra", provides_extra_bits),
+        (b"requires_python", requires_python_bits),
+    ];
+    let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+    let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+    for (key, value_bits) in keys_and_values {
+        let key_ptr = alloc_string(_py, key);
+        if key_ptr.is_null() {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        pairs.push(key_bits);
+        pairs.push(value_bits);
+        owned.push(key_bits);
+        owned.push(value_bits);
+    }
+    let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+    for bits in owned {
+        dec_ref_bits(_py, bits);
+    }
+    if dict_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(dict_ptr).bits())
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -10217,115 +12399,188 @@ pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let payload = importlib_metadata_payload(&path);
-        let path_bits = match alloc_str_bits(_py, &payload.path) {
+        match alloc_importlib_metadata_payload_dict_bits(_py, &payload) {
             Ok(bits) => bits,
-            Err(err) => return err,
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_metadata_distributions_payload(
+    search_paths_bits: u64,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
         };
-        let name_bits = match alloc_str_bits(_py, &payload.name) {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, path_bits);
-                return err;
-            }
-        };
-        let version_bits = match alloc_str_bits(_py, &payload.version) {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, path_bits);
-                dec_ref_bits(_py, name_bits);
-                return err;
-            }
-        };
-        let metadata_bits = match alloc_string_pairs_dict_bits(_py, &payload.metadata) {
-            Some(bits) => bits,
-            None => {
-                dec_ref_bits(_py, path_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, version_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-        };
-        let entry_points_bits = match alloc_string_triplets_list_bits(_py, &payload.entry_points) {
-            Some(bits) => bits,
-            None => {
-                dec_ref_bits(_py, path_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, version_bits);
-                dec_ref_bits(_py, metadata_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-        };
-        let requires_dist_bits = match alloc_string_list_bits(_py, &payload.requires_dist) {
-            Some(bits) => bits,
-            None => {
-                dec_ref_bits(_py, path_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, version_bits);
-                dec_ref_bits(_py, metadata_bits);
-                dec_ref_bits(_py, entry_points_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-        };
-        let provides_extra_bits = match alloc_string_list_bits(_py, &payload.provides_extra) {
-            Some(bits) => bits,
-            None => {
-                dec_ref_bits(_py, path_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, version_bits);
-                dec_ref_bits(_py, metadata_bits);
-                dec_ref_bits(_py, entry_points_bits);
-                dec_ref_bits(_py, requires_dist_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-        };
-        let requires_python_bits = match payload.requires_python.as_deref() {
-            Some(value) => match alloc_str_bits(_py, value) {
+        let payloads = importlib_metadata_distributions_payload(&search_paths, module_file);
+        let mut item_bits: Vec<u64> = Vec::with_capacity(payloads.len());
+        for payload in &payloads {
+            let bits = match alloc_importlib_metadata_payload_dict_bits(_py, payload) {
                 Ok(bits) => bits,
                 Err(err) => {
-                    dec_ref_bits(_py, path_bits);
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, version_bits);
-                    dec_ref_bits(_py, metadata_bits);
-                    dec_ref_bits(_py, entry_points_bits);
-                    dec_ref_bits(_py, requires_dist_bits);
-                    dec_ref_bits(_py, provides_extra_bits);
+                    for value_bits in item_bits {
+                        dec_ref_bits(_py, value_bits);
+                    }
                     return err;
                 }
-            },
-            None => MoltObject::none().bits(),
+            };
+            item_bits.push(bits);
+        }
+        let list_ptr = alloc_list(_py, item_bits.as_slice());
+        for bits in item_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match string_arg_from_bits(_py, path_bits, "path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
         };
-        let keys_and_values: [(&[u8], u64); 8] = [
-            (b"path", path_bits),
-            (b"name", name_bits),
-            (b"version", version_bits),
-            (b"metadata", metadata_bits),
-            (b"entry_points", entry_points_bits),
-            (b"requires_dist", requires_dist_bits),
-            (b"provides_extra", provides_extra_bits),
-            (b"requires_python", requires_python_bits),
-        ];
-        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        for (key, value_bits) in keys_and_values {
-            let key_ptr = alloc_string(_py, key);
-            if key_ptr.is_null() {
-                for bits in owned {
+        let entries = importlib_metadata_record_payload(&path);
+        let mut tuple_bits_vec: Vec<u64> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let record_path_bits = match alloc_str_bits(_py, &entry.path) {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in tuple_bits_vec {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
+                }
+            };
+            let hash_bits = match entry.hash.as_deref() {
+                Some(value) => match alloc_str_bits(_py, value) {
+                    Ok(bits) => bits,
+                    Err(err) => {
+                        dec_ref_bits(_py, record_path_bits);
+                        for bits in tuple_bits_vec {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return err;
+                    }
+                },
+                None => MoltObject::none().bits(),
+            };
+            let size_bits = match entry.size.as_deref() {
+                Some(value) => match alloc_str_bits(_py, value) {
+                    Ok(bits) => bits,
+                    Err(err) => {
+                        if !obj_from_bits(hash_bits).is_none() {
+                            dec_ref_bits(_py, hash_bits);
+                        }
+                        dec_ref_bits(_py, record_path_bits);
+                        for bits in tuple_bits_vec {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return err;
+                    }
+                },
+                None => MoltObject::none().bits(),
+            };
+            let tuple_ptr = alloc_tuple(_py, &[record_path_bits, hash_bits, size_bits]);
+            dec_ref_bits(_py, record_path_bits);
+            if !obj_from_bits(hash_bits).is_none() {
+                dec_ref_bits(_py, hash_bits);
+            }
+            if !obj_from_bits(size_bits).is_none() {
+                dec_ref_bits(_py, size_bits);
+            }
+            if tuple_ptr.is_null() {
+                for bits in tuple_bits_vec {
                     dec_ref_bits(_py, bits);
                 }
-                return MoltObject::none().bits();
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
             }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned.push(key_bits);
-            owned.push(value_bits);
+            tuple_bits_vec.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, tuple_bits_vec.as_slice());
+        for bits in tuple_bits_vec {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
+    search_paths_bits: u64,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let search_paths =
+            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let module_file = match module_file_from_bits(_py, module_file_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let payload = importlib_metadata_packages_distributions_payload(&search_paths, module_file);
+        let mut pairs: Vec<u64> = Vec::with_capacity(payload.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(payload.len() * 2);
+        for (package, providers) in payload {
+            let package_bits = match alloc_str_bits(_py, &package) {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
+                }
+            };
+            let providers_bits = match alloc_string_list_bits(_py, &providers) {
+                Some(bits) => bits,
+                None => {
+                    dec_ref_bits(_py, package_bits);
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+            };
+            pairs.push(package_bits);
+            pairs.push(providers_bits);
+            owned.push(package_bits);
+            owned.push(providers_bits);
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
         for bits in owned {
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
-            MoltObject::none().bits()
+            raise_exception::<_>(_py, "MemoryError", "out of memory")
         } else {
             MoltObject::from_ptr(dict_ptr).bits()
         }
@@ -12146,6 +14401,7 @@ pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write;
 
     fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
@@ -12998,6 +15254,80 @@ mod tests {
     }
 
     #[test]
+    fn importlib_metadata_record_payload_parses_rows() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_metadata_record_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        let dist = tmp.join("demo_record-1.0.dist-info");
+        std::fs::create_dir_all(&dist).expect("create dist-info dir");
+        std::fs::write(
+            dist.join("RECORD"),
+            "demo_record/__init__.py,sha256=abc123,17\n\"demo_record/data,file.txt\",,\n",
+        )
+        .expect("write RECORD");
+
+        let payload = importlib_metadata_record_payload(&dist.to_string_lossy());
+        assert_eq!(payload.len(), 2);
+        assert_eq!(payload[0].path, "demo_record/__init__.py");
+        assert_eq!(payload[0].hash.as_deref(), Some("sha256=abc123"));
+        assert_eq!(payload[0].size.as_deref(), Some("17"));
+        assert_eq!(payload[1].path, "demo_record/data,file.txt");
+        assert!(payload[1].hash.is_none());
+        assert!(payload[1].size.is_none());
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn importlib_metadata_packages_distributions_payload_aggregates_top_level() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_metadata_packages_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let dist_one = tmp.join("demo_one-1.0.dist-info");
+        let dist_two = tmp.join("demo_two-2.0.dist-info");
+        std::fs::create_dir_all(&dist_one).expect("create dist one");
+        std::fs::create_dir_all(&dist_two).expect("create dist two");
+        std::fs::write(dist_one.join("METADATA"), "Name: demo-one\nVersion: 1.0\n")
+            .expect("write metadata one");
+        std::fs::write(dist_two.join("METADATA"), "Name: demo-two\nVersion: 2.0\n")
+            .expect("write metadata two");
+        std::fs::write(
+            dist_one.join("top_level.txt"),
+            "pkg_one\npkg_shared\npkg_shared\n",
+        )
+        .expect("write top_level one");
+        std::fs::write(dist_two.join("top_level.txt"), "pkg_two\npkg_shared\n")
+            .expect("write top_level two");
+
+        let payload = importlib_metadata_packages_distributions_payload(
+            &vec![tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        );
+        let mapping: BTreeMap<String, Vec<String>> = payload.into_iter().collect();
+        assert_eq!(mapping.get("pkg_one"), Some(&vec!["demo-one".to_string()]));
+        assert_eq!(mapping.get("pkg_two"), Some(&vec!["demo-two".to_string()]));
+        assert_eq!(
+            mapping.get("pkg_shared"),
+            Some(&vec!["demo-one".to_string(), "demo-two".to_string()])
+        );
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
         let sep = if sys_platform_str().starts_with("win") {
             ';'
@@ -13123,6 +15453,85 @@ mod tests {
         );
         assert_eq!(name_filtered.len(), 1);
         assert_eq!(name_filtered[0].0, "beta");
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn importlib_metadata_entry_points_filter_payload_filters_by_value() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_metadata_entry_points_filter_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let dist = tmp.join("demo_filter-1.0.dist-info");
+        std::fs::create_dir_all(&dist).expect("create dist");
+        std::fs::write(
+            dist.join("entry_points.txt"),
+            "[demo.group]\nalpha = demo:alpha\nbeta = demo:beta\n",
+        )
+        .expect("write entry points");
+        let search_paths = vec![tmp.to_string_lossy().into_owned()];
+        let filtered = importlib_metadata_entry_points_filter_payload(
+            &search_paths,
+            Some(bootstrap_module_file()),
+            Some("demo.group"),
+            None,
+            Some("demo:beta"),
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "beta");
+        assert_eq!(filtered[0].1, "demo:beta");
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn importlib_metadata_distributions_payload_aggregates_dist_payloads() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_metadata_distributions_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let dist_one = tmp.join("demo_bulk_one-1.0.dist-info");
+        let dist_two = tmp.join("demo_bulk_two-2.0.dist-info");
+        std::fs::create_dir_all(&dist_one).expect("create dist one");
+        std::fs::create_dir_all(&dist_two).expect("create dist two");
+        std::fs::write(
+            dist_one.join("METADATA"),
+            "Name: demo-bulk-one\nVersion: 1.0\n",
+        )
+        .expect("write metadata one");
+        std::fs::write(
+            dist_two.join("METADATA"),
+            "Name: demo-bulk-two\nVersion: 2.0\n",
+        )
+        .expect("write metadata two");
+
+        let payloads = importlib_metadata_distributions_payload(
+            &vec![tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        );
+        assert_eq!(payloads.len(), 2);
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.name == "demo-bulk-one" && payload.version == "1.0")
+        );
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.name == "demo-bulk-two" && payload.version == "2.0")
+        );
+
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
     }
 

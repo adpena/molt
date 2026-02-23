@@ -3,6 +3,9 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_RESOURCES_JOINPATH = _require_intrinsic(
+    "molt_importlib_resources_joinpath", globals()
+)
 
 import abc
 import io
@@ -80,10 +83,13 @@ class Traversable(Protocol):
             raise TraversalError(
                 "Target not found during traversal.", target, list(names)
             )
-        return match.joinpath(*names)
+        current = match
+        for child in names:
+            current = _MOLT_IMPORTLIB_RESOURCES_JOINPATH(current, child)
+        return current
 
     def __truediv__(self, child: StrPath) -> "Traversable":
-        return self.joinpath(child)
+        return _MOLT_IMPORTLIB_RESOURCES_JOINPATH(self, child)
 
     @abc.abstractmethod
     def open(self, mode="r", *args, **kwargs):
@@ -103,13 +109,13 @@ class TraversableResources(ResourceReader):
         """Return a Traversable object for the loaded package."""
 
     def open_resource(self, resource: StrPath) -> io.BufferedReader:
-        return self.files().joinpath(resource).open("rb")
+        return _MOLT_IMPORTLIB_RESOURCES_JOINPATH(self.files(), resource).open("rb")
 
     def resource_path(self, resource: Any) -> NoReturn:
         raise FileNotFoundError(resource)
 
     def is_resource(self, path: StrPath) -> bool:
-        return self.files().joinpath(path).is_file()
+        return _MOLT_IMPORTLIB_RESOURCES_JOINPATH(self.files(), path).is_file()
 
     def contents(self) -> Iterator[str]:
         return (item.name for item in self.files().iterdir())

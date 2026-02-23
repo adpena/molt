@@ -348,6 +348,9 @@ pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) ->
             if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    return 0;
+                }
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(i) = to_i64(res_obj) {
                     return i;

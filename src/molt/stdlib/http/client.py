@@ -58,6 +58,12 @@ _MOLT_HTTP_RESP_STATUS = _require_intrinsic(
 _MOLT_HTTP_RESP_REASON = _require_intrinsic(
     "molt_http_client_response_getreason", globals()
 )
+_MOLT_HTTP_RESP_GETHEADER = _require_intrinsic(
+    "molt_http_client_response_getheader", globals()
+)
+_MOLT_HTTP_RESP_GETHEADERS = _require_intrinsic(
+    "molt_http_client_response_getheaders", globals()
+)
 _MOLT_HTTP_RESP_MESSAGE = _require_intrinsic(
     "molt_http_client_response_message",
     globals(),
@@ -410,15 +416,11 @@ class HTTPResponse(metaclass=_ABCMeta):
         self._handle = None
 
     def getheader(self, name: str, default: _Any = None) -> _Any:
-        values = self.msg.get_all(str(name))
-        if not values:
-            return default
-        if len(values) == 1:
-            return values[0]
-        return ", ".join(values)
+        return _MOLT_HTTP_RESP_GETHEADER(self._handle, str(name), default)
 
     def getheaders(self) -> list[tuple[str, str]]:
-        return self.msg.items()
+        payload = _MOLT_HTTP_RESP_GETHEADERS(self._handle)
+        return [(str(k), str(v)) for (k, v) in payload]
 
     @property
     def status(self) -> int:

@@ -23,31 +23,33 @@ use crate::{
     is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits, issubclass_bits, list_len,
     lookup_call_attr, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
     molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
-    molt_bytearray_hex, molt_bytearray_rfind_slice, molt_bytearray_rsplit_max,
-    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
-    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
-    molt_bytes_hex, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rsplit_max,
-    molt_bytes_split_max, molt_bytes_splitlines, molt_bytes_startswith_slice, molt_class_set_base,
-    molt_dataclass_new, molt_dataclass_set_class, molt_dict_from_obj, molt_dict_new,
-    molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
-    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
-    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
-    molt_function_default_kind, molt_generator_new, molt_int_from_bytes, molt_int_new,
-    molt_int_to_bytes, molt_is_callable, molt_iter, molt_iter_next, molt_list_append,
-    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_object_init,
-    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
-    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
-    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
-    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
-    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
-    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
-    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
-    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
-    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
-    molt_type_call, molt_type_init, molt_type_new, obj_eq, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
-    raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned,
-    tuple_len, type_name, type_of_bits,
+    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
+    molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
+    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
+    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
+    molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
+    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
+    molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
+    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
+    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
+    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new,
+    molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable, molt_iter,
+    molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
+    molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
+    molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
+    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
+    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
+    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
+    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
+    molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
+    molt_type_init, molt_type_new, obj_eq, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
+    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, tuple_len, type_name,
+    type_of_bits,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -2140,7 +2142,10 @@ unsafe fn bind_builtin_call(
         if fn_ptr == fn_addr!(molt_list_pop) {
             return bind_builtin_list_pop(_py, args);
         }
-        if fn_ptr == fn_addr!(molt_list_index_range) {
+        if fn_ptr == fn_addr!(molt_bytearray_pop) {
+            return bind_builtin_list_pop(_py, args);
+        }
+        if fn_ptr == fn_addr!(molt_list_index_range) || fn_ptr == fn_addr!(molt_tuple_index_range) {
             return bind_builtin_list_index_range(_py, args);
         }
         if fn_ptr == fn_addr!(molt_string_find_slice) {
@@ -2149,10 +2154,16 @@ unsafe fn bind_builtin_call(
         if fn_ptr == fn_addr!(molt_string_rfind_slice) {
             return bind_builtin_string_find(_py, args, "rfind");
         }
-        if fn_ptr == fn_addr!(molt_string_index_slice) {
+        if fn_ptr == fn_addr!(molt_string_index_slice)
+            || fn_ptr == fn_addr!(molt_bytes_index_slice)
+            || fn_ptr == fn_addr!(molt_bytearray_index_slice)
+        {
             return bind_builtin_string_find(_py, args, "index");
         }
-        if fn_ptr == fn_addr!(molt_string_rindex_slice) {
+        if fn_ptr == fn_addr!(molt_string_rindex_slice)
+            || fn_ptr == fn_addr!(molt_bytes_rindex_slice)
+            || fn_ptr == fn_addr!(molt_bytearray_rindex_slice)
+        {
             return bind_builtin_string_find(_py, args, "rindex");
         }
         if fn_ptr == fn_addr!(molt_bytes_find_slice)
@@ -2199,7 +2210,10 @@ unsafe fn bind_builtin_call(
         {
             return bind_builtin_prefix_check(_py, args, "endswith", "suffix");
         }
-        if fn_ptr == fn_addr!(molt_bytes_hex) || fn_ptr == fn_addr!(molt_bytearray_hex) {
+        if fn_ptr == fn_addr!(molt_bytes_hex)
+            || fn_ptr == fn_addr!(molt_bytearray_hex)
+            || fn_ptr == fn_addr!(molt_memoryview_hex)
+        {
             return bind_builtin_bytes_hex(_py, args);
         }
         if fn_ptr == fn_addr!(molt_string_format_method) {

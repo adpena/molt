@@ -108,35 +108,72 @@ for name, val in sorted(set(names)):
             if let Some(mut stdin) = child.stdin.take() {
                 let script = r#"
 import unicodedata
-ranges = []
-start = None
-end = None
+
+KEYS = ("digit", "decimal", "numeric", "space", "printable")
+ranges = {key: [] for key in KEYS}
+active = {key: None for key in KEYS}
+titlecase_map = []
+
+def flush_key(key):
+    item = active[key]
+    if item is not None:
+        ranges[key].append(item)
+        active[key] = None
+
 for code in range(0x110000):
     ch = chr(code)
+    states = {}
     try:
         unicodedata.digit(ch)
-        is_digit = True
+        states["digit"] = True
     except ValueError:
-        is_digit = False
-    if is_digit:
-        if start is None:
-            start = code
-            end = code
-        elif code == end + 1:
-            end = code
-        else:
-            ranges.append((start, end))
-            start = code
-            end = code
-    elif start is not None:
-        ranges.append((start, end))
-        start = None
-        end = None
-if start is not None:
-    ranges.append((start, end))
+        states["digit"] = False
+    try:
+        unicodedata.decimal(ch)
+        states["decimal"] = True
+    except ValueError:
+        states["decimal"] = False
+    try:
+        unicodedata.numeric(ch)
+        states["numeric"] = True
+    except ValueError:
+        states["numeric"] = False
+    states["space"] = ch.isspace()
+    states["printable"] = ch.isprintable()
+    title = ch.title()
+    upper = ch.upper()
+    if title != upper:
+        titlecase_cps = ",".join(str(ord(c)) for c in title)
+        titlecase_map.append((code, titlecase_cps))
+
+    for key in KEYS:
+        is_member = states[key]
+        item = active[key]
+        if is_member:
+            if item is None:
+                active[key] = (code, code)
+            else:
+                lo, hi = item
+                if code == hi + 1:
+                    active[key] = (lo, code)
+                else:
+                    ranges[key].append(item)
+                    active[key] = (code, code)
+        elif item is not None:
+            ranges[key].append(item)
+            active[key] = None
+
+for key in KEYS:
+    flush_key(key)
+
 print(unicodedata.unidata_version)
-for lo, hi in ranges:
-    print(f"{lo},{hi}")
+for key in KEYS:
+    print(f"[{key}]")
+    for lo, hi in ranges[key]:
+        print(f"{lo},{hi}")
+print("[titlecase]")
+for code, cps in titlecase_map:
+    print(f"{code};{cps}")
 "#;
                 stdin.write_all(script.as_bytes())?;
             }
@@ -156,40 +193,177 @@ for lo, hi in ranges:
     let mut lines = stdout.lines();
     let version = lines.next().unwrap_or_default().trim().to_string();
     if version.is_empty() {
-        panic!("python3 unicode digit generation returned no version");
+        panic!("python3 unicode category generation returned no version");
     }
-    let mut ranges = Vec::new();
+
+    let mut digit_ranges = Vec::new();
+    let mut decimal_ranges = Vec::new();
+    let mut numeric_ranges = Vec::new();
+    let mut space_ranges = Vec::new();
+    let mut printable_ranges = Vec::new();
+    let mut titlecase_entries: Vec<(u32, String)> = Vec::new();
+
+    let mut current_section = "";
     for line in lines {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
+        if line.starts_with('[') && line.ends_with(']') && line.len() > 2 {
+            current_section = &line[1..line.len() - 1];
+            continue;
+        }
+        if current_section == "titlecase" {
+            let Some((code, cps)) = line.split_once(';') else {
+                continue;
+            };
+            let code: u32 = code.parse().expect("invalid unicode titlecase codepoint");
+            let mut mapped = String::new();
+            for cp in cps.split(',') {
+                if cp.is_empty() {
+                    continue;
+                }
+                let value: u32 = cp
+                    .parse()
+                    .expect("invalid unicode titlecase mapped codepoint");
+                let Some(ch) = char::from_u32(value) else {
+                    panic!("invalid unicode scalar in titlecase map: {value}");
+                };
+                mapped.push(ch);
+            }
+            if mapped.is_empty() {
+                panic!("unicode titlecase mapping must not be empty for codepoint {code}");
+            }
+            titlecase_entries.push((code, mapped));
+            continue;
+        }
         let Some((lo, hi)) = line.split_once(',') else {
             continue;
         };
-        let lo: u32 = lo.parse().expect("invalid unicode digit range start");
-        let hi: u32 = hi.parse().expect("invalid unicode digit range end");
-        ranges.push((lo, hi));
+        let lo: u32 = lo.parse().expect("invalid unicode range start");
+        let hi: u32 = hi.parse().expect("invalid unicode range end");
+        match current_section {
+            "digit" => digit_ranges.push((lo, hi)),
+            "decimal" => decimal_ranges.push((lo, hi)),
+            "numeric" => numeric_ranges.push((lo, hi)),
+            "space" => space_ranges.push((lo, hi)),
+            "printable" => printable_ranges.push((lo, hi)),
+            _ => {}
+        }
     }
-    if ranges.is_empty() {
-        panic!("python3 unicode digit generation returned no ranges");
+
+    if digit_ranges.is_empty()
+        || decimal_ranges.is_empty()
+        || numeric_ranges.is_empty()
+        || space_ranges.is_empty()
+        || printable_ranges.is_empty()
+        || titlecase_entries.is_empty()
+    {
+        panic!("python3 unicode category generation returned incomplete tables");
     }
-    let mut out = String::new();
-    out.push_str("#[allow(dead_code)]\n");
-    out.push_str(&format!(
-        "pub(crate) const UNICODE_DIGIT_VERSION: &str = \"{version}\";\n"
-    ));
-    out.push_str("pub(crate) const UNICODE_DIGIT_RANGES: &[(u32, u32)] = &[\n");
-    for (lo, hi) in ranges {
-        out.push_str(&format!("    ({lo}, {hi}),\n"));
-    }
-    out.push_str("];\n");
-    fs::write(out_dir.join("unicode_digit_ranges.rs"), out)
-        .expect("failed to write unicode_digit_ranges.rs");
+
+    write_unicode_range_module(
+        &out_dir,
+        "unicode_digit_ranges.rs",
+        "UNICODE_DIGIT_VERSION",
+        "UNICODE_DIGIT_RANGES",
+        &version,
+        &digit_ranges,
+    );
+    write_unicode_range_module(
+        &out_dir,
+        "unicode_decimal_ranges.rs",
+        "UNICODE_DECIMAL_VERSION",
+        "UNICODE_DECIMAL_RANGES",
+        &version,
+        &decimal_ranges,
+    );
+    write_unicode_range_module(
+        &out_dir,
+        "unicode_numeric_ranges.rs",
+        "UNICODE_NUMERIC_VERSION",
+        "UNICODE_NUMERIC_RANGES",
+        &version,
+        &numeric_ranges,
+    );
+    write_unicode_range_module(
+        &out_dir,
+        "unicode_space_ranges.rs",
+        "UNICODE_SPACE_VERSION",
+        "UNICODE_SPACE_RANGES",
+        &version,
+        &space_ranges,
+    );
+    write_unicode_range_module(
+        &out_dir,
+        "unicode_printable_ranges.rs",
+        "UNICODE_PRINTABLE_VERSION",
+        "UNICODE_PRINTABLE_RANGES",
+        &version,
+        &printable_ranges,
+    );
+    write_unicode_titlecase_module(
+        &out_dir,
+        "unicode_titlecase_map.rs",
+        "UNICODE_TITLECASE_VERSION",
+        "UNICODE_TITLECASE_MAP",
+        &version,
+        &titlecase_entries,
+    );
     println!("cargo:rerun-if-env-changed=PYTHONPATH");
     println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn write_unicode_range_module(
+    out_dir: &Path,
+    file_name: &str,
+    version_symbol: &str,
+    ranges_symbol: &str,
+    version: &str,
+    ranges: &[(u32, u32)],
+) {
+    let mut out = String::new();
+    out.push_str("#[allow(dead_code)]\n");
+    out.push_str(&format!(
+        "pub(crate) const {version_symbol}: &str = \"{version}\";\n"
+    ));
+    out.push_str(&format!(
+        "pub(crate) const {ranges_symbol}: &[(u32, u32)] = &[\n"
+    ));
+    for (lo, hi) in ranges {
+        out.push_str(&format!("    ({lo}, {hi}),\n"));
+    }
+    out.push_str("];\n");
+    fs::write(out_dir.join(file_name), out).unwrap_or_else(|err| {
+        panic!("failed to write {file_name}: {err}");
+    });
+}
+
+fn write_unicode_titlecase_module(
+    out_dir: &Path,
+    file_name: &str,
+    version_symbol: &str,
+    map_symbol: &str,
+    version: &str,
+    entries: &[(u32, String)],
+) {
+    let mut out = String::new();
+    out.push_str("#[allow(dead_code)]\n");
+    out.push_str(&format!(
+        "pub(crate) const {version_symbol}: &str = \"{version}\";\n"
+    ));
+    out.push_str(&format!(
+        "pub(crate) const {map_symbol}: &[(u32, &str)] = &[\n"
+    ));
+    for (code, mapped) in entries {
+        out.push_str(&format!("    ({code}, {mapped:?}),\n"));
+    }
+    out.push_str("];\n");
+    fs::write(out_dir.join(file_name), out).unwrap_or_else(|err| {
+        panic!("failed to write {file_name}: {err}");
+    });
 }
 
 fn build_libmpdec(

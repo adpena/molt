@@ -1111,7 +1111,7 @@ impl WasmBackend {
         add_import("math_lgamma", 2, &mut self.import_ids);
         add_import("path_exists", 2, &mut self.import_ids);
         add_import("path_listdir", 2, &mut self.import_ids);
-        add_import("path_mkdir", 2, &mut self.import_ids);
+        add_import("path_mkdir", 3, &mut self.import_ids);
         add_import("path_unlink", 2, &mut self.import_ids);
         add_import("path_rmdir", 2, &mut self.import_ids);
         add_import("path_chmod", 3, &mut self.import_ids);
@@ -1393,6 +1393,14 @@ impl WasmBackend {
             ("molt_trace_exit", "trace_exit", 0),
             ("molt_sys_version_info", "sys_version_info", 0),
             ("molt_sys_version", "sys_version", 0),
+            ("molt_sys_hexversion", "sys_hexversion", 0),
+            ("molt_sys_api_version", "sys_api_version", 0),
+            ("molt_sys_abiflags", "sys_abiflags", 0),
+            (
+                "molt_sys_implementation_payload",
+                "sys_implementation_payload",
+                0,
+            ),
             ("molt_sys_stdin", "sys_stdin", 0),
             ("molt_sys_stdout", "sys_stdout", 0),
             ("molt_sys_stderr", "sys_stderr", 0),
@@ -1468,7 +1476,7 @@ impl WasmBackend {
             ("molt_math_lgamma", "math_lgamma", 1),
             ("molt_path_exists", "path_exists", 1),
             ("molt_path_listdir", "path_listdir", 1),
-            ("molt_path_mkdir", "path_mkdir", 1),
+            ("molt_path_mkdir", "path_mkdir", 2),
             ("molt_path_unlink", "path_unlink", 1),
             ("molt_path_rmdir", "path_rmdir", 1),
             ("molt_path_chmod", "path_chmod", 2),

@@ -25,24 +25,72 @@ use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 use unicode_ident::{is_xid_continue, is_xid_start};
 use wtf8::{CodePoint, Wtf8};
 
+#[inline]
+fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
+    let mut lo = 0usize;
+    let mut hi = ranges.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let (start, end) = ranges[mid];
+        if code < start {
+            hi = mid;
+        } else if code > end {
+            lo = mid + 1;
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
 mod unicode_digit_table {
     include!(concat!(env!("OUT_DIR"), "/unicode_digit_ranges.rs"));
 
     pub(crate) fn is_digit(code: u32) -> bool {
-        let mut lo = 0usize;
-        let mut hi = UNICODE_DIGIT_RANGES.len();
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let (start, end) = UNICODE_DIGIT_RANGES[mid];
-            if code < start {
-                hi = mid;
-            } else if code > end {
-                lo = mid + 1;
-            } else {
-                return true;
-            }
-        }
-        false
+        super::unicode_range_contains(UNICODE_DIGIT_RANGES, code)
+    }
+}
+
+mod unicode_decimal_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_decimal_ranges.rs"));
+
+    pub(crate) fn is_decimal(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_DECIMAL_RANGES, code)
+    }
+}
+
+mod unicode_numeric_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_numeric_ranges.rs"));
+
+    pub(crate) fn is_numeric(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_NUMERIC_RANGES, code)
+    }
+}
+
+mod unicode_space_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_space_ranges.rs"));
+
+    pub(crate) fn is_space(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_SPACE_RANGES, code)
+    }
+}
+
+mod unicode_printable_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_printable_ranges.rs"));
+
+    pub(crate) fn is_printable(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_PRINTABLE_RANGES, code)
+    }
+}
+
+mod unicode_titlecase_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_titlecase_map.rs"));
+
+    pub(crate) fn titlecase(code: u32) -> Option<&'static str> {
+        let idx = UNICODE_TITLECASE_MAP
+            .binary_search_by_key(&code, |entry| entry.0)
+            .ok()?;
+        Some(UNICODE_TITLECASE_MAP[idx].1)
     }
 }
 
@@ -182,6 +230,54 @@ fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Opti
     i64::try_from(val).ok()
 }
 
+fn range_index_for_candidate(
+    start: &BigInt,
+    stop: &BigInt,
+    step: &BigInt,
+    val: &BigInt,
+) -> Option<BigInt> {
+    if step.is_zero() {
+        return None;
+    }
+    let in_range = if step.is_positive() {
+        val >= start && val < stop
+    } else {
+        val <= start && val > stop
+    };
+    if !in_range {
+        return None;
+    }
+    let offset = val - start;
+    let step_abs = if step.is_negative() {
+        -step
+    } else {
+        step.clone()
+    };
+    if !offset.mod_floor(&step_abs).is_zero() {
+        return None;
+    }
+    Some(offset / step)
+}
+
+fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
+    let val = obj_from_bits(val_bits);
+    if let Some(f) = val.as_float() {
+        if !f.is_finite() || f.fract() != 0.0 {
+            return None;
+        }
+        return Some(bigint_from_f64_trunc(f));
+    }
+    let type_err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(_py, val)
+    );
+    let candidate = index_bigint_from_obj(_py, val_bits, &type_err);
+    if candidate.is_none() && exception_pending(_py) {
+        molt_exception_clear();
+    }
+    candidate
+}
+
 #[inline]
 fn debug_index_enabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -317,6 +413,104 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
             dec_ref_bits(_py, range_bits);
             out_bits
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let range_obj = obj_from_bits(range_bits);
+        let Some(range_ptr) = range_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "count() argument must be range");
+        };
+        unsafe {
+            if object_type_id(range_ptr) != TYPE_ID_RANGE {
+                return raise_exception::<_>(_py, "TypeError", "count() argument must be range");
+            }
+        }
+
+        if let Some((start, stop, step)) = range_components_bigint(range_ptr)
+            && let Some(candidate) = range_lookup_candidate(_py, val_bits)
+        {
+            let hit = range_index_for_candidate(&start, &stop, &step, &candidate).is_some();
+            return MoltObject::from_int(if hit { 1 } else { 0 }).bits();
+        }
+
+        if let Some((start, stop, step)) = range_components_i64(range_ptr) {
+            let len = range_len_i128(start, stop, step);
+            if len <= 0 {
+                return MoltObject::from_int(0).bits();
+            }
+            let mut count = BigInt::from(0);
+            let mut idx = 0i128;
+            while idx < len {
+                let Some(value) = range_value_at_index_i64(start, stop, step, idx) else {
+                    break;
+                };
+                let elem_bits = MoltObject::from_int(value).bits();
+                let Some(eq) = (unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) }) else {
+                    return MoltObject::none().bits();
+                };
+                if eq {
+                    count += 1;
+                }
+                idx += 1;
+            }
+            if let Some(i) = count.to_i64() {
+                return MoltObject::from_int(i).bits();
+            }
+            return int_bits_from_bigint(_py, count);
+        }
+        MoltObject::from_int(0).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let range_obj = obj_from_bits(range_bits);
+        let Some(range_ptr) = range_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "index() argument must be range");
+        };
+        unsafe {
+            if object_type_id(range_ptr) != TYPE_ID_RANGE {
+                return raise_exception::<_>(_py, "TypeError", "index() argument must be range");
+            }
+        }
+
+        if let Some((start, stop, step)) = range_components_bigint(range_ptr)
+            && let Some(candidate) = range_lookup_candidate(_py, val_bits)
+        {
+            if let Some(idx) = range_index_for_candidate(&start, &stop, &step, &candidate) {
+                if let Some(i) = idx.to_i64() {
+                    return MoltObject::from_int(i).bits();
+                }
+                return int_bits_from_bigint(_py, idx);
+            }
+            return raise_exception::<_>(_py, "ValueError", "sequence.index(x): x not in sequence");
+        }
+
+        if let Some((start, stop, step)) = range_components_i64(range_ptr) {
+            let len = range_len_i128(start, stop, step);
+            let mut idx = 0i128;
+            while idx < len {
+                let Some(value) = range_value_at_index_i64(start, stop, step, idx) else {
+                    break;
+                };
+                let elem_bits = MoltObject::from_int(value).bits();
+                let Some(eq) = (unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) }) else {
+                    return MoltObject::none().bits();
+                };
+                if eq {
+                    if let Ok(i) = i64::try_from(idx) {
+                        return MoltObject::from_int(i).bits();
+                    }
+                    return int_bits_from_bigint(_py, BigInt::from(idx));
+                }
+                idx += 1;
+            }
+        }
+        raise_exception::<_>(_py, "ValueError", "sequence.index(x): x not in sequence")
     })
 }
 
@@ -1604,11 +1798,996 @@ pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
     })
 }
 
+#[derive(Clone, Copy, Default)]
+struct PercentFormatFlags {
+    left_adjust: bool,
+    sign_plus: bool,
+    sign_space: bool,
+    zero_pad: bool,
+    alternate: bool,
+}
+
+fn percent_object_has_getitem(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
+        return false;
+    };
+    let call_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) };
+    dec_ref_bits(_py, name_bits);
+    if let Some(call_bits) = call_bits {
+        dec_ref_bits(_py, call_bits);
+        return true;
+    }
+    false
+}
+
+fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> bool {
+    let Some(ptr) = rhs.as_ptr() else {
+        return false;
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_STRING || type_id == TYPE_ID_TUPLE {
+            return false;
+        }
+    }
+    percent_object_has_getitem(_py, ptr)
+}
+
+fn percent_parse_usize(
+    _py: &PyToken<'_>,
+    bytes: &[u8],
+    idx: &mut usize,
+    field_name: &str,
+) -> Option<usize> {
+    let start = *idx;
+    let mut out: usize = 0;
+    while *idx < bytes.len() && bytes[*idx].is_ascii_digit() {
+        let digit = (bytes[*idx] - b'0') as usize;
+        out = match out.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+            Some(v) => v,
+            None => {
+                let msg = format!("{field_name} too large in format string");
+                return raise_exception::<Option<usize>>(_py, "ValueError", &msg);
+            }
+        };
+        *idx += 1;
+    }
+    if *idx == start { None } else { Some(out) }
+}
+
+fn percent_unsupported_char(_py: &PyToken<'_>, ch: u8, idx: usize) -> Option<String> {
+    let ch_display = ch as char;
+    let msg = format!("unsupported format character '{ch_display}' (0x{ch:02x}) at index {idx}");
+    raise_exception::<Option<String>>(_py, "ValueError", &msg)
+}
+
+fn percent_apply_width(
+    text: String,
+    width: Option<usize>,
+    left_adjust: bool,
+    pad_char: char,
+) -> String {
+    let Some(width) = width else {
+        return text;
+    };
+    let text_len = text.chars().count();
+    if text_len >= width {
+        return text;
+    }
+    let pad_len = width - text_len;
+    let padding = pad_char.to_string().repeat(pad_len);
+    if left_adjust {
+        format!("{text}{padding}")
+    } else {
+        format!("{padding}{text}")
+    }
+}
+
+fn percent_apply_numeric_width(
+    prefix: &str,
+    body: String,
+    width: Option<usize>,
+    left_adjust: bool,
+    zero_pad: bool,
+) -> String {
+    let prefix_len = prefix.chars().count();
+    let body_len = body.chars().count();
+    if zero_pad
+        && !left_adjust
+        && let Some(width) = width
+        && width > prefix_len + body_len
+    {
+        let mut out = String::with_capacity(width);
+        out.push_str(prefix);
+        out.push_str(&"0".repeat(width - prefix_len - body_len));
+        out.push_str(&body);
+        return out;
+    }
+    let mut text = String::with_capacity(prefix.len() + body.len());
+    text.push_str(prefix);
+    text.push_str(&body);
+    percent_apply_width(text, width, left_adjust, ' ')
+}
+
+fn percent_raise_real_type_error_decimal(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+) -> Option<BigInt> {
+    let conv_ch = conv as char;
+    let msg = format!(
+        "%{conv_ch} format: a real number is required, not {}",
+        type_name(_py, obj)
+    );
+    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_integer_type_error(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+) -> Option<BigInt> {
+    let conv_ch = conv as char;
+    let msg = format!(
+        "%{conv_ch} format: an integer is required, not {}",
+        type_name(_py, obj)
+    );
+    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_real_type_error_f(_py: &PyToken<'_>, obj: MoltObject) -> Option<f64> {
+    let msg = format!("must be real number, not {}", type_name(_py, obj));
+    raise_exception::<Option<f64>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<char> {
+    let _ = obj;
+    raise_exception::<Option<char>>(_py, "TypeError", "%c requires int or char")
+}
+
+fn percent_char_from_bigint(_py: &PyToken<'_>, value: BigInt) -> Option<char> {
+    let max_code = BigInt::from(0x110000u32);
+    if value.sign() == Sign::Minus || value >= max_code {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    }
+    let Some(code) = value.to_u32() else {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    };
+    let Some(ch) = char::from_u32(code) else {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    };
+    Some(ch)
+}
+
+fn percent_decimal_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(i) = to_i64(obj) {
+        return Some(BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return Some(unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(f) = obj.as_float() {
+        if f.is_nan() {
+            return raise_exception::<Option<BigInt>>(
+                _py,
+                "ValueError",
+                "cannot convert float NaN to integer",
+            );
+        }
+        if f.is_infinite() {
+            return raise_exception::<Option<BigInt>>(
+                _py,
+                "OverflowError",
+                "cannot convert float infinity to integer",
+            );
+        }
+        return Some(bigint_from_f64_trunc(f));
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_real_type_error_decimal(_py, obj, conv);
+            }
+            let int_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, int_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__int__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_real_type_error_decimal(_py, obj, conv)
+}
+
+fn percent_integer_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(i) = to_i64(obj) {
+        return Some(BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return Some(unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_integer_type_error(_py, obj, conv);
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_integer_type_error(_py, obj, conv)
+}
+
+fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<char> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(text) = string_obj_to_owned(obj) {
+        let mut chars = text.chars();
+        return match chars.next() {
+            Some(ch) if chars.next().is_none() => Some(ch),
+            _ => percent_raise_char_type_error(_py, obj),
+        };
+    }
+    if let Some(i) = to_i64(obj) {
+        return percent_char_from_bigint(_py, BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return percent_char_from_bigint(_py, unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return percent_char_from_bigint(_py, BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return percent_char_from_bigint(_py, out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<char>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_char_type_error(_py, obj)
+}
+
+fn percent_float_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<f64> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(f) = obj.as_float() {
+        return Some(f);
+    }
+    if let Some(i) = to_i64(obj) {
+        return Some(i as f64);
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return match unsafe { bigint_ref(big_ptr) }.to_f64() {
+            Some(v) => Some(v),
+            None => raise_exception::<Option<f64>>(
+                _py,
+                "OverflowError",
+                "int too large to convert to float",
+            ),
+        };
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_real_type_error_f(_py, obj);
+            }
+            let float_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(f) = res_obj.as_float() {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(f);
+                }
+                let owner = class_name_for_error(type_of_bits(_py, value_bits));
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(i as f64);
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).to_f64();
+                    dec_ref_bits(_py, res_bits);
+                    return match out {
+                        Some(v) => Some(v),
+                        None => raise_exception::<Option<f64>>(
+                            _py,
+                            "OverflowError",
+                            "int too large to convert to float",
+                        ),
+                    };
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_real_type_error_f(_py, obj)
+}
+
+fn percent_numeric_prefix(is_negative: bool, flags: PercentFormatFlags) -> Option<char> {
+    if is_negative {
+        Some('-')
+    } else if flags.sign_plus {
+        Some('+')
+    } else if flags.sign_space {
+        Some(' ')
+    } else {
+        None
+    }
+}
+
+fn percent_format_text(
+    text: String,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+) -> String {
+    let rendered = if let Some(precision) = precision {
+        text.chars().take(precision).collect::<String>()
+    } else {
+        text
+    };
+    percent_apply_width(rendered, width, flags.left_adjust, ' ')
+}
+
+fn percent_format_decimal(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_decimal_from_obj(_py, value_bits, conv)?;
+    let negative = value.is_negative();
+    let mut body = value.abs().to_string();
+    if let Some(precision) = precision
+        && body.len() < precision
+    {
+        body = format!("{}{}", "0".repeat(precision - body.len()), body);
+    }
+    let mut prefix = String::new();
+    if let Some(sign) = percent_numeric_prefix(negative, flags) {
+        prefix.push(sign);
+    }
+    let zero_pad = flags.zero_pad && !flags.left_adjust;
+    Some(percent_apply_numeric_width(
+        prefix.as_str(),
+        body,
+        width,
+        flags.left_adjust,
+        zero_pad,
+    ))
+}
+
+fn percent_format_radix(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_integer_from_obj(_py, value_bits, conv)?;
+    let negative = value.is_negative();
+    let mut body = match conv {
+        b'o' => value.abs().to_str_radix(8),
+        b'x' | b'X' => value.abs().to_str_radix(16),
+        _ => value.abs().to_string(),
+    };
+    if conv == b'X' {
+        body = body.to_uppercase();
+    }
+    if let Some(precision) = precision
+        && body.len() < precision
+    {
+        body = format!("{}{}", "0".repeat(precision - body.len()), body);
+    }
+    let mut prefix = String::new();
+    if let Some(sign) = percent_numeric_prefix(negative, flags) {
+        prefix.push(sign);
+    }
+    if flags.alternate {
+        match conv {
+            b'o' => prefix.push_str("0o"),
+            b'x' => prefix.push_str("0x"),
+            b'X' => prefix.push_str("0X"),
+            _ => {}
+        }
+    }
+    Some(percent_apply_numeric_width(
+        prefix.as_str(),
+        body,
+        width,
+        flags.left_adjust,
+        flags.zero_pad && !flags.left_adjust,
+    ))
+}
+
+fn percent_format_float(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_float_from_obj(_py, value_bits)?;
+    let sign = if flags.sign_plus {
+        Some('+')
+    } else if flags.sign_space {
+        Some(' ')
+    } else {
+        None
+    };
+    let align = if flags.left_adjust {
+        Some('<')
+    } else if flags.zero_pad {
+        Some('=')
+    } else {
+        None
+    };
+    let spec = FormatSpec {
+        fill: if flags.zero_pad && !flags.left_adjust {
+            '0'
+        } else {
+            ' '
+        },
+        align,
+        sign,
+        alternate: flags.alternate,
+        width,
+        grouping: None,
+        precision,
+        ty: Some(conv as char),
+    };
+    match format_float_with_spec(MoltObject::from_float(value), &spec) {
+        Ok(text) => Some(text),
+        Err((kind, msg)) => raise_exception::<Option<String>>(_py, kind, msg.as_ref()),
+    }
+}
+
+fn percent_format_ascii(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+) -> Option<String> {
+    let rendered_bits = molt_ascii_from_obj(value_bits);
+    if exception_pending(_py) {
+        if obj_from_bits(rendered_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, rendered_bits);
+        }
+        return None;
+    }
+    let rendered = string_obj_to_owned(obj_from_bits(rendered_bits));
+    if obj_from_bits(rendered_bits).as_ptr().is_some() {
+        dec_ref_bits(_py, rendered_bits);
+    }
+    let rendered = rendered.unwrap_or_default();
+    Some(percent_format_text(rendered, width, precision, flags))
+}
+
+fn percent_format_char(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    flags: PercentFormatFlags,
+) -> Option<String> {
+    let ch = percent_char_from_obj(_py, value_bits)?;
+    Some(percent_apply_width(
+        ch.to_string(),
+        width,
+        flags.left_adjust,
+        ' ',
+    ))
+}
+
+fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &str) -> Option<(u64, bool)> {
+    let rhs_obj = obj_from_bits(rhs_bits);
+    let Some(rhs_ptr) = rhs_obj.as_ptr() else {
+        return raise_exception::<Option<(u64, bool)>>(
+            _py,
+            "TypeError",
+            "format requires a mapping",
+        );
+    };
+    unsafe {
+        let rhs_type = object_type_id(rhs_ptr);
+        if rhs_type == TYPE_ID_TUPLE {
+            return raise_exception::<Option<(u64, bool)>>(
+                _py,
+                "TypeError",
+                "format requires a mapping",
+            );
+        }
+        let key_ptr = alloc_string(_py, key.as_bytes());
+        if key_ptr.is_null() {
+            return None;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        if rhs_type == TYPE_ID_DICT {
+            if let Some(bits) = dict_get_in_place(_py, rhs_ptr, key_bits) {
+                dec_ref_bits(_py, key_bits);
+                return Some((bits, false));
+            }
+            if exception_pending(_py) {
+                dec_ref_bits(_py, key_bits);
+                return None;
+            }
+            raise_key_error_with_key::<()>(_py, key_bits);
+            dec_ref_bits(_py, key_bits);
+            return None;
+        }
+        if !percent_object_has_getitem(_py, rhs_ptr) {
+            dec_ref_bits(_py, key_bits);
+            return raise_exception::<Option<(u64, bool)>>(
+                _py,
+                "TypeError",
+                "format requires a mapping",
+            );
+        }
+        let bits = molt_index(rhs_bits, key_bits);
+        dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            return None;
+        }
+        Some((bits, true))
+    }
+}
+
+fn percent_consume_next_arg(
+    _py: &PyToken<'_>,
+    rhs_bits: u64,
+    tuple_ptr: Option<*mut u8>,
+    tuple_idx: &mut usize,
+    single_consumed: &mut bool,
+) -> Option<u64> {
+    if let Some(ptr) = tuple_ptr {
+        let elems = unsafe { seq_vec_ref(ptr) };
+        if *tuple_idx >= elems.len() {
+            return raise_exception::<Option<u64>>(
+                _py,
+                "TypeError",
+                "not enough arguments for format string",
+            );
+        }
+        let bits = elems[*tuple_idx];
+        *tuple_idx += 1;
+        return Some(bits);
+    }
+    if *single_consumed {
+        return raise_exception::<Option<u64>>(
+            _py,
+            "TypeError",
+            "not enough arguments for format string",
+        );
+    }
+    *single_consumed = true;
+    Some(rhs_bits)
+}
+
+fn string_percent_format_impl(_py: &PyToken<'_>, text: &str, rhs_bits: u64) -> Option<String> {
+    let rhs_obj = obj_from_bits(rhs_bits);
+    let tuple_ptr = rhs_obj
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE });
+    let mut tuple_idx = 0usize;
+    let mut single_consumed = false;
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut literal_start = 0usize;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'%' {
+            idx += 1;
+            continue;
+        }
+        out.push_str(&text[literal_start..idx]);
+        idx += 1;
+        if idx >= bytes.len() {
+            return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+        }
+        if bytes[idx] == b'%' {
+            out.push('%');
+            idx += 1;
+            literal_start = idx;
+            continue;
+        }
+        let mut key: Option<&str> = None;
+        if bytes[idx] == b'(' {
+            let key_start = idx + 1;
+            let mut key_end = key_start;
+            while key_end < bytes.len() && bytes[key_end] != b')' {
+                key_end += 1;
+            }
+            if key_end >= bytes.len() {
+                return raise_exception::<Option<String>>(
+                    _py,
+                    "ValueError",
+                    "incomplete format key",
+                );
+            }
+            key = Some(&text[key_start..key_end]);
+            idx = key_end + 1;
+        }
+        let mut flags = PercentFormatFlags::default();
+        loop {
+            if idx >= bytes.len() {
+                return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+            }
+            match bytes[idx] {
+                b'-' => flags.left_adjust = true,
+                b'+' => flags.sign_plus = true,
+                b' ' => flags.sign_space = true,
+                b'0' => flags.zero_pad = true,
+                b'#' => flags.alternate = true,
+                _ => break,
+            }
+            idx += 1;
+        }
+        let mut width = if idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            percent_parse_usize(_py, bytes, &mut idx, "width")
+        } else {
+            None
+        };
+        if idx < bytes.len() && bytes[idx] == b'*' {
+            idx += 1;
+            let width_bits = percent_consume_next_arg(
+                _py,
+                rhs_bits,
+                tuple_ptr,
+                &mut tuple_idx,
+                &mut single_consumed,
+            )?;
+            let width_val = index_i64_from_obj(_py, width_bits, "* wants int");
+            if exception_pending(_py) {
+                return None;
+            }
+            if width_val < 0 {
+                flags.left_adjust = true;
+                let abs = width_val.checked_abs().unwrap_or(i64::MAX);
+                let Ok(width_usize) = usize::try_from(abs) else {
+                    return raise_exception::<Option<String>>(
+                        _py,
+                        "OverflowError",
+                        "width too big",
+                    );
+                };
+                width = Some(width_usize);
+            } else {
+                let Ok(width_usize) = usize::try_from(width_val) else {
+                    return raise_exception::<Option<String>>(
+                        _py,
+                        "OverflowError",
+                        "width too big",
+                    );
+                };
+                width = Some(width_usize);
+            }
+        }
+        let mut precision: Option<usize> = None;
+        if idx < bytes.len() && bytes[idx] == b'.' {
+            idx += 1;
+            if idx < bytes.len() && bytes[idx] == b'*' {
+                idx += 1;
+                let prec_bits = percent_consume_next_arg(
+                    _py,
+                    rhs_bits,
+                    tuple_ptr,
+                    &mut tuple_idx,
+                    &mut single_consumed,
+                )?;
+                let prec_val = index_i64_from_obj(_py, prec_bits, "* wants int");
+                if exception_pending(_py) {
+                    return None;
+                }
+                if prec_val <= 0 {
+                    precision = Some(0);
+                } else {
+                    let Ok(prec_usize) = usize::try_from(prec_val) else {
+                        return raise_exception::<Option<String>>(
+                            _py,
+                            "OverflowError",
+                            "precision too big",
+                        );
+                    };
+                    precision = Some(prec_usize);
+                }
+            } else {
+                precision =
+                    Some(percent_parse_usize(_py, bytes, &mut idx, "precision").unwrap_or(0));
+            }
+        }
+        if idx < bytes.len() && (bytes[idx] == b'h' || bytes[idx] == b'l' || bytes[idx] == b'L') {
+            let first = bytes[idx];
+            idx += 1;
+            if idx < bytes.len() && (first == b'h' || first == b'l') && bytes[idx] == first {
+                idx += 1;
+            }
+        }
+        if idx >= bytes.len() {
+            return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+        }
+        let conv_idx = idx;
+        let conv = bytes[idx];
+        idx += 1;
+        let (value_bits, drop_value) = if let Some(key) = key {
+            percent_lookup_mapping_arg(_py, rhs_bits, key)?
+        } else {
+            (
+                percent_consume_next_arg(
+                    _py,
+                    rhs_bits,
+                    tuple_ptr,
+                    &mut tuple_idx,
+                    &mut single_consumed,
+                )?,
+                false,
+            )
+        };
+        let rendered = match conv {
+            b's' => Some(percent_format_text(
+                format_obj_str(_py, obj_from_bits(value_bits)),
+                width,
+                precision,
+                flags,
+            )),
+            b'r' => Some(percent_format_text(
+                format_obj(_py, obj_from_bits(value_bits)),
+                width,
+                precision,
+                flags,
+            )),
+            b'a' => percent_format_ascii(_py, value_bits, width, precision, flags),
+            b'c' => percent_format_char(_py, value_bits, width, flags),
+            b'd' | b'i' | b'u' => {
+                percent_format_decimal(_py, value_bits, width, precision, flags, conv)
+            }
+            b'o' | b'x' | b'X' => {
+                percent_format_radix(_py, value_bits, width, precision, flags, conv)
+            }
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
+                percent_format_float(_py, value_bits, width, precision, flags, conv)
+            }
+            _ => percent_unsupported_char(_py, conv, conv_idx),
+        };
+        if drop_value {
+            dec_ref_bits(_py, value_bits);
+        }
+        let Some(rendered) = rendered else {
+            return None;
+        };
+        out.push_str(&rendered);
+        literal_start = idx;
+    }
+    out.push_str(&text[literal_start..]);
+    if let Some(ptr) = tuple_ptr {
+        let elems = unsafe { seq_vec_ref(ptr) };
+        if tuple_idx < elems.len() {
+            return raise_exception::<Option<String>>(
+                _py,
+                "TypeError",
+                "not all arguments converted during string formatting",
+            );
+        }
+    } else if !single_consumed && !percent_rhs_allows_unused_non_tuple(_py, rhs_obj) {
+        return raise_exception::<Option<String>>(
+            _py,
+            "TypeError",
+            "not all arguments converted during string formatting",
+        );
+    }
+    Some(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_STRING {
+                    let text = string_obj_to_owned(lhs).unwrap_or_default();
+                    let Some(rendered) = string_percent_format_impl(_py, &text, b) else {
+                        return MoltObject::none().bits();
+                    };
+                    let out_ptr = alloc_string(_py, rendered.as_bytes());
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+            }
+        }
         if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(
@@ -4166,6 +5345,321 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
     })
 }
 
+fn parse_float_fromhex_text(text: &str) -> Result<f64, ()> {
+    let mut src = text.trim();
+    if src.is_empty() {
+        return Err(());
+    }
+    let mut sign = 1.0f64;
+    if let Some(rest) = src.strip_prefix('+') {
+        src = rest;
+    } else if let Some(rest) = src.strip_prefix('-') {
+        src = rest;
+        sign = -1.0;
+    }
+    if src.eq_ignore_ascii_case("inf") || src.eq_ignore_ascii_case("infinity") {
+        return Ok(sign * f64::INFINITY);
+    }
+    if src.eq_ignore_ascii_case("nan") {
+        return Ok(f64::NAN);
+    }
+    let Some(hex_src) = src.strip_prefix("0x").or_else(|| src.strip_prefix("0X")) else {
+        return Err(());
+    };
+    let mut split = hex_src.split(|c| c == 'p' || c == 'P');
+    let significand = split.next().ok_or(())?;
+    let exponent_text = split.next().ok_or(())?;
+    if split.next().is_some() {
+        return Err(());
+    }
+    let exponent = exponent_text.parse::<i32>().map_err(|_| ())?;
+    let (int_part, frac_part) = if let Some((left, right)) = significand.split_once('.') {
+        (left, right)
+    } else {
+        (significand, "")
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return Err(());
+    }
+    let mut mantissa = 0.0f64;
+    let mut digits = 0usize;
+    for ch in int_part.bytes() {
+        let Some(d) = (ch as char).to_digit(16) else {
+            return Err(());
+        };
+        mantissa = mantissa * 16.0 + d as f64;
+        digits += 1;
+    }
+    let mut frac_digits = 0usize;
+    for ch in frac_part.bytes() {
+        let Some(d) = (ch as char).to_digit(16) else {
+            return Err(());
+        };
+        mantissa = mantissa * 16.0 + d as f64;
+        digits += 1;
+        frac_digits += 1;
+    }
+    if digits == 0 {
+        return Err(());
+    }
+    let exp2 = exponent
+        .checked_sub((frac_digits.saturating_mul(4)) as i32)
+        .ok_or(())?;
+    let mut out = mantissa * 2f64.powi(exp2);
+    if sign.is_sign_negative() {
+        out = -out;
+    }
+    Ok(out)
+}
+
+fn float_hex_string(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
+    if value.is_infinite() {
+        if value.is_sign_negative() {
+            return "-inf".to_string();
+        }
+        return "inf".to_string();
+    }
+    if value == 0.0 {
+        if value.is_sign_negative() {
+            return "-0x0.0p+0".to_string();
+        }
+        return "0x0.0p+0".to_string();
+    }
+    let bits = value.to_bits();
+    let sign = if (bits >> 63) != 0 { "-" } else { "" };
+    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+    let frac_bits = bits & ((1u64 << 52) - 1);
+    let (lead, exponent) = if exp_bits == 0 {
+        (0u8, -1022)
+    } else {
+        (1u8, exp_bits - 1023)
+    };
+    format!("{sign}0x{lead:x}.{frac_bits:013x}p{exponent:+}")
+}
+
+fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
+    let obj = obj_from_bits(self_bits);
+    if let Some(value) = obj.as_float() {
+        return Some(value);
+    }
+    let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+    let msg = format!(
+        "descriptor '{method}' for 'float' objects doesn't apply to a '{type_label}' object"
+    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_conjugate(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "conjugate") else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_is_integer(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "is_integer") else {
+            return MoltObject::none().bits();
+        };
+        let out = value.is_finite() && value.fract() == 0.0;
+        MoltObject::from_bool(out).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_as_integer_ratio(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "as_integer_ratio")
+        else {
+            return MoltObject::none().bits();
+        };
+        if value.is_nan() {
+            return raise_exception::<_>(_py, "ValueError", "cannot convert NaN to integer ratio");
+        }
+        if value.is_infinite() {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "cannot convert Infinity to integer ratio",
+            );
+        }
+        if value == 0.0 {
+            let zero = MoltObject::from_int(0).bits();
+            let one = MoltObject::from_int(1).bits();
+            let tuple_ptr = alloc_tuple(_py, &[zero, one]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        let bits = value.to_bits();
+        let negative = (bits >> 63) != 0;
+        let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+        let mut mantissa = bits & ((1u64 << 52) - 1);
+        let exponent = if exp_bits == 0 {
+            -1022 - 52
+        } else {
+            mantissa |= 1u64 << 52;
+            exp_bits - 1023 - 52
+        };
+        let mut numerator = BigInt::from(mantissa);
+        if negative {
+            numerator = -numerator;
+        }
+        let mut denominator = BigInt::from(1u8);
+        if exponent >= 0 {
+            numerator <<= exponent as usize;
+        } else {
+            denominator <<= (-exponent) as usize;
+        }
+        let gcd = numerator.abs().gcd(&denominator);
+        if !gcd.is_zero() {
+            numerator /= &gcd;
+            denominator /= &gcd;
+        }
+        let num_bits = int_bits_from_bigint(_py, numerator);
+        let den_bits = int_bits_from_bigint(_py, denominator);
+        let tuple_ptr = alloc_tuple(_py, &[num_bits, den_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_hex(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "hex") else {
+            return MoltObject::none().bits();
+        };
+        let text = float_hex_string(value);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let text_obj = obj_from_bits(text_bits);
+        let Some(text_ptr) = text_obj.as_ptr() else {
+            let msg = format!(
+                "fromhex() argument must be str, not {}",
+                type_name(_py, text_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(text_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "fromhex() argument must be str, not {}",
+                    type_name(_py, text_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
+            let text = match std::str::from_utf8(bytes) {
+                Ok(val) => val,
+                Err(_) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid hexadecimal floating-point string",
+                    );
+                }
+            };
+            let value = match parse_float_fromhex_text(text) {
+                Ok(val) => val,
+                Err(()) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid hexadecimal floating-point string",
+                    );
+                }
+            };
+            let out_bits = MoltObject::from_float(value).bits();
+            let builtins = builtin_classes(_py);
+            if cls_bits == builtins.float {
+                return out_bits;
+            }
+            if !issubclass_bits(cls_bits, builtins.float) {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "fromhex() requires a float subclass",
+                );
+            }
+            let res_bits = call_callable1(_py, cls_bits, out_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let msg = format!(
+                        "must be real number, not {}",
+                        type_name(_py, obj_from_bits(val_bits))
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        if complex_ptr_from_bits(val_bits).is_some() {
+            let msg = format!(
+                "must be real number, not {}",
+                type_name(_py, obj_from_bits(val_bits))
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let out_bits = molt_float_from_obj(val_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits == builtins.float {
+            return out_bits;
+        }
+        if !issubclass_bits(cls_bits, builtins.float) {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from_number() requires a float subclass",
+            );
+        }
+        let res_bits = unsafe { call_callable1(_py, cls_bits, out_bits) };
+        dec_ref_bits(_py, out_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res_bits
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -4389,6 +5883,49 @@ pub extern "C" fn molt_complex_conjugate(val_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_from_number(cls_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let msg = format!(
+                        "must be real number, not {}",
+                        type_name(_py, obj_from_bits(val_bits))
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        let none_bits = MoltObject::none().bits();
+        let false_bits = MoltObject::from_bool(false).bits();
+        let out_bits = molt_complex_from_obj(val_bits, none_bits, false_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits == builtins.complex {
+            return out_bits;
+        }
+        if !issubclass_bits(cls_bits, builtins.complex) {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from_number() requires a complex subclass",
+            );
+        }
+        let res_bits = unsafe { call_callable1(_py, cls_bits, out_bits) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res_bits
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
@@ -4520,6 +6057,95 @@ pub extern "C" fn molt_int_bit_length(self_bits: u64) -> u64 {
         let lead_bits = 8usize.saturating_sub(lead.leading_zeros() as usize);
         let total_bits = (bytes.len().saturating_sub(1) * 8) + lead_bits;
         MoltObject::from_int(total_bits as i64).bits()
+    })
+}
+
+fn int_method_value_bits_or_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<u64> {
+    let obj = obj_from_bits(self_bits);
+    if obj.is_int() {
+        return Some(self_bits);
+    }
+    if obj.is_bool() {
+        return Some(
+            MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits(),
+        );
+    }
+    if bigint_ptr_from_bits(self_bits).is_some() {
+        return Some(self_bits);
+    }
+    if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
+        return Some(bits);
+    }
+    let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+    let msg = format!(
+        "descriptor '{method}' requires a 'int' object but received '{}'",
+        type_label
+    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_bit_count(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value_bits) = int_method_value_bits_or_error(_py, self_bits, "bit_count") else {
+            return MoltObject::none().bits();
+        };
+        let value_obj = obj_from_bits(value_bits);
+        if let Some(i) = to_i64(value_obj) {
+            let count = i.unsigned_abs().count_ones() as i64;
+            return MoltObject::from_int(count).bits();
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(value_bits) {
+            let abs = unsafe { bigint_ref(ptr) }.abs();
+            let (_sign, bytes) = abs.to_bytes_le();
+            let mut count = 0i64;
+            for byte in bytes {
+                count += byte.count_ones() as i64;
+            }
+            return MoltObject::from_int(count).bits();
+        }
+        // int subclasses should always lower to int/bigint storage.
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_as_integer_ratio(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(num_bits) = int_method_value_bits_or_error(_py, self_bits, "as_integer_ratio")
+        else {
+            return MoltObject::none().bits();
+        };
+        let one_bits = MoltObject::from_int(1).bits();
+        let tuple_ptr = alloc_tuple(_py, &[num_bits, one_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_conjugate(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(out_bits) = int_method_value_bits_or_error(_py, self_bits, "conjugate") else {
+            return MoltObject::none().bits();
+        };
+        if obj_from_bits(out_bits).as_ptr().is_some() {
+            inc_ref_bits(_py, out_bits);
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_is_integer(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if int_method_value_bits_or_error(_py, self_bits, "is_integer").is_none() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_bool(true).bits()
     })
 }
 
@@ -7080,6 +8706,196 @@ pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_copy(bytearray_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.copy expects bytearray");
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(_py, "TypeError", "bytearray.copy expects bytearray");
+            }
+            let data = bytes_like_slice(bytearray_ptr).unwrap_or(&[]);
+            let ptr = alloc_bytearray(_py, data);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_insert(
+    bytearray_bits: u64,
+    index_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.insert expects bytearray");
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray.insert expects bytearray",
+                );
+            }
+            let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
+                return MoltObject::none().bits();
+            };
+            let len = bytearray_vec_ref(bytearray_ptr).len() as i64;
+            let mut idx = index_i64_from_obj(
+                _py,
+                index_bits,
+                "bytearray indices must be integers or have an __index__ method",
+            );
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if idx < 0 {
+                idx += len;
+            }
+            if idx < 0 {
+                idx = 0;
+            }
+            if idx > len {
+                idx = len;
+            }
+            bytearray_vec(bytearray_ptr).insert(idx as usize, byte);
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let index_obj = obj_from_bits(index_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
+            }
+            let elems = bytearray_vec(bytearray_ptr);
+            let len = elems.len() as i64;
+            if len == 0 {
+                return raise_exception::<_>(_py, "IndexError", "pop from empty bytearray");
+            }
+            let mut idx = if index_obj.is_none() {
+                len - 1
+            } else {
+                index_i64_from_obj(
+                    _py,
+                    index_bits,
+                    "bytearray indices must be integers or have an __index__ method",
+                )
+            };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if idx < 0 {
+                idx += len;
+            }
+            if idx < 0 || idx >= len {
+                return raise_exception::<_>(_py, "IndexError", "pop index out of range");
+            }
+            let out = elems.remove(idx as usize);
+            MoltObject::from_int(i64::from(out)).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.remove expects bytearray");
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray.remove expects bytearray",
+                );
+            }
+            let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
+                return MoltObject::none().bits();
+            };
+            let elems = bytearray_vec(bytearray_ptr);
+            if let Some(pos) = elems.iter().position(|item| *item == byte) {
+                elems.remove(pos);
+                return MoltObject::none().bits();
+            }
+            raise_exception::<_>(_py, "ValueError", "value not found in bytearray")
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.reverse expects bytearray");
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray.reverse expects bytearray",
+                );
+            }
+            bytearray_vec(bytearray_ptr).reverse();
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "bytearray.resize expects bytearray");
+        };
+        let size = index_i64_from_obj(
+            _py,
+            size_bits,
+            "bytearray.resize() argument must be integer",
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if size < 0 {
+            let msg = format!("Can only resize to positive sizes, got {size}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray.resize expects bytearray",
+                );
+            }
+            bytearray_vec(bytearray_ptr).resize(size as usize, 0u8);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_len(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val);
@@ -7625,6 +9441,144 @@ fn format_sys_version(info: &PythonVersionInfo) -> String {
     }
 }
 
+const DEFAULT_SYS_API_VERSION: i64 = 1013;
+const SYS_HEX_RELEASELEVEL_ALPHA: i64 = 0xA;
+const SYS_HEX_RELEASELEVEL_BETA: i64 = 0xB;
+const SYS_HEX_RELEASELEVEL_CANDIDATE: i64 = 0xC;
+const SYS_HEX_RELEASELEVEL_FINAL: i64 = 0xF;
+
+fn releaselevel_hex_nibble(releaselevel: &str) -> i64 {
+    match releaselevel {
+        "alpha" => SYS_HEX_RELEASELEVEL_ALPHA,
+        "beta" => SYS_HEX_RELEASELEVEL_BETA,
+        "candidate" | "rc" => SYS_HEX_RELEASELEVEL_CANDIDATE,
+        "final" => SYS_HEX_RELEASELEVEL_FINAL,
+        _ => SYS_HEX_RELEASELEVEL_FINAL,
+    }
+}
+
+fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
+    let major = (info.major & 0xFF) << 24;
+    let minor = (info.minor & 0xFF) << 16;
+    let micro = (info.micro & 0xFF) << 8;
+    let releaselevel = releaselevel_hex_nibble(&info.releaselevel) << 4;
+    let serial = info.serial & 0xF;
+    major | minor | micro | releaselevel | serial
+}
+
+fn sys_api_version() -> i64 {
+    std::env::var("MOLT_SYS_API_VERSION")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|value| *value >= 0)
+        .unwrap_or(DEFAULT_SYS_API_VERSION)
+}
+
+fn sys_abiflags() -> String {
+    std::env::var("MOLT_SYS_ABIFLAGS").unwrap_or_default()
+}
+
+fn sys_implementation_name() -> String {
+    match std::env::var("MOLT_SYS_IMPLEMENTATION_NAME") {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => "molt".to_string(),
+    }
+}
+
+fn sys_cache_tag(name: &str, info: &PythonVersionInfo) -> String {
+    match std::env::var("MOLT_SYS_CACHE_TAG") {
+        Ok(raw) if !raw.is_empty() => raw,
+        _ => format!("{name}-{}{}", info.major, info.minor),
+    }
+}
+
+const DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS: i64 = 0;
+
+fn env_flag_level(var: &str) -> Option<i64> {
+    let raw = std::env::var(var).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Some(1);
+    }
+    match trimmed.parse::<i64>() {
+        Ok(value) if value > 0 => Some(value),
+        Ok(_) => Some(0),
+        Err(_) => Some(1),
+    }
+}
+
+fn env_flag_bool(var: &str) -> Option<i64> {
+    env_flag_level(var).map(|value| if value == 0 { 0 } else { 1 })
+}
+
+fn env_non_negative_i64(var: &str) -> Option<i64> {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|value| *value >= 0)
+}
+
+fn sys_flags_hash_randomization() -> i64 {
+    match std::env::var("PYTHONHASHSEED") {
+        Ok(value) => {
+            if value == "random" {
+                return 1;
+            }
+            let seed: u32 = value.parse().unwrap_or_else(|_| fatal_hash_seed(&value));
+            if seed == 0 { 0 } else { 1 }
+        }
+        Err(_) => 1,
+    }
+}
+
+fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
+    let mut guard = state.sys_version_info.lock().unwrap();
+    if let Some(existing) = guard.as_ref() {
+        (existing.clone(), false)
+    } else {
+        let init = default_sys_version_info();
+        *guard = Some(init.clone());
+        (init, true)
+    }
+}
+
+fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> Option<u64> {
+    let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
+    if release_ptr.is_null() {
+        return None;
+    }
+    let release_bits = MoltObject::from_ptr(release_ptr).bits();
+    let elems = [
+        MoltObject::from_int(info.major).bits(),
+        MoltObject::from_int(info.minor).bits(),
+        MoltObject::from_int(info.micro).bits(),
+        release_bits,
+        MoltObject::from_int(info.serial).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        dec_ref_bits(_py, release_bits);
+        return None;
+    }
+    for bits in elems {
+        dec_ref_bits(_py, bits);
+    }
+    Some(MoltObject::from_ptr(tuple_ptr).bits())
+}
+
+fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bits: u64) -> bool {
+    let key_ptr = alloc_string(_py, key);
+    if key_ptr.is_null() {
+        return false;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+    }
+    dec_ref_bits(_py, key_bits);
+    true
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_set_version_info(
     major_bits: u64,
@@ -7760,6 +9714,10 @@ pub extern "C" fn molt_sys_set_version_info(
                 if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                     let version_info_bits = molt_sys_version_info();
                     let version_bits = molt_sys_version();
+                    let hexversion_bits = molt_sys_hexversion();
+                    let api_version_bits = molt_sys_api_version();
+                    let abiflags_bits = molt_sys_abiflags();
+                    let implementation_bits = molt_sys_implementation_payload();
                     let version_info_key = intern_static_name(
                         _py,
                         &runtime_state(_py).interned.sys_version_info,
@@ -7772,10 +9730,29 @@ pub extern "C" fn molt_sys_set_version_info(
                     );
                     dict_set_in_place(_py, dict_ptr, version_info_key, version_info_bits);
                     dict_set_in_place(_py, dict_ptr, version_key, version_bits);
+                    let wrote_hexversion =
+                        dict_set_bytes_key(_py, dict_ptr, b"hexversion", hexversion_bits);
+                    let wrote_api_version =
+                        dict_set_bytes_key(_py, dict_ptr, b"api_version", api_version_bits);
+                    let wrote_abiflags =
+                        dict_set_bytes_key(_py, dict_ptr, b"abiflags", abiflags_bits);
+                    let wrote_implementation =
+                        dict_set_bytes_key(_py, dict_ptr, b"implementation", implementation_bits);
                     dec_ref_bits(_py, version_info_key);
                     dec_ref_bits(_py, version_key);
                     dec_ref_bits(_py, version_info_bits);
                     dec_ref_bits(_py, version_bits);
+                    dec_ref_bits(_py, hexversion_bits);
+                    dec_ref_bits(_py, api_version_bits);
+                    dec_ref_bits(_py, abiflags_bits);
+                    dec_ref_bits(_py, implementation_bits);
+                    if !(wrote_hexversion
+                        && wrote_api_version
+                        && wrote_abiflags
+                        && wrote_implementation)
+                    {
+                        return MoltObject::none().bits();
+                    }
                     if trace_sys_version() {
                         eprintln!("molt sys version: sys dict updated");
                     }
@@ -7790,43 +9767,14 @@ pub extern "C" fn molt_sys_set_version_info(
 pub extern "C" fn molt_sys_version_info() -> u64 {
     crate::with_gil_entry!(_py, {
         let state = runtime_state(_py);
-        let (info, initialized) = {
-            let mut guard = state.sys_version_info.lock().unwrap();
-            if let Some(existing) = guard.as_ref() {
-                (existing.clone(), false)
-            } else {
-                let init = default_sys_version_info();
-                *guard = Some(init.clone());
-                (init, true)
-            }
-        };
+        let (info, initialized) = current_sys_version_info(state);
         if trace_sys_version() {
             eprintln!(
                 "molt sys version: get info {}.{}.{} {} {} init={}",
                 info.major, info.minor, info.micro, info.releaselevel, info.serial, initialized
             );
         }
-        let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
-        if release_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let release_bits = MoltObject::from_ptr(release_ptr).bits();
-        let elems = [
-            MoltObject::from_int(info.major).bits(),
-            MoltObject::from_int(info.minor).bits(),
-            MoltObject::from_int(info.micro).bits(),
-            release_bits,
-            MoltObject::from_int(info.serial).bits(),
-        ];
-        let tuple_ptr = alloc_tuple(_py, &elems);
-        if tuple_ptr.is_null() {
-            dec_ref_bits(_py, release_bits);
-            return MoltObject::none().bits();
-        }
-        for bits in elems {
-            dec_ref_bits(_py, bits);
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        alloc_sys_version_info_tuple(_py, &info).unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 
@@ -7834,16 +9782,7 @@ pub extern "C" fn molt_sys_version_info() -> u64 {
 pub extern "C" fn molt_sys_version() -> u64 {
     crate::with_gil_entry!(_py, {
         let state = runtime_state(_py);
-        let info = {
-            let mut guard = state.sys_version_info.lock().unwrap();
-            if let Some(existing) = guard.as_ref() {
-                existing.clone()
-            } else {
-                let init = default_sys_version_info();
-                *guard = Some(init.clone());
-                init
-            }
-        };
+        let (info, _) = current_sys_version_info(state);
         let version = {
             let mut guard = state.sys_version.lock().unwrap();
             if let Some(existing) = guard.as_ref() {
@@ -7859,6 +9798,162 @@ pub extern "C" fn molt_sys_version() -> u64 {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_hexversion() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, _) = current_sys_version_info(state);
+        MoltObject::from_int(sys_hexversion_from_info(&info)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_api_version() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_int(sys_api_version()).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_abiflags() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let abiflags = sys_abiflags();
+        let ptr = alloc_string(_py, abiflags.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_implementation_payload() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, _) = current_sys_version_info(state);
+        let name = sys_implementation_name();
+        let cache_tag = sys_cache_tag(&name, &info);
+        let hexversion_bits = MoltObject::from_int(sys_hexversion_from_info(&info)).bits();
+
+        let name_ptr = alloc_string(_py, name.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let cache_tag_ptr = alloc_string(_py, cache_tag.as_bytes());
+        if cache_tag_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            return MoltObject::none().bits();
+        }
+
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let cache_tag_bits = MoltObject::from_ptr(cache_tag_ptr).bits();
+        let Some(version_bits) = alloc_sys_version_info_tuple(_py, &info) else {
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, cache_tag_bits);
+            return MoltObject::none().bits();
+        };
+
+        let keys_and_values: [(&[u8], u64); 4] = [
+            (b"name", name_bits),
+            (b"cache_tag", cache_tag_bits),
+            (b"version", version_bits),
+            (b"hexversion", hexversion_bits),
+        ];
+        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        let mut owned: Vec<u64> = vec![name_bits, cache_tag_bits, version_bits, hexversion_bits];
+
+        for (key, value_bits) in keys_and_values {
+            let key_ptr = alloc_string(_py, key);
+            if key_ptr.is_null() {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_flags_payload() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let keys_and_values: [(&[u8], i64); 19] = [
+            (b"debug", env_flag_bool("PYTHONDEBUG").unwrap_or(0)),
+            (b"inspect", env_flag_bool("PYTHONINSPECT").unwrap_or(0)),
+            (b"interactive", 0),
+            (b"optimize", env_flag_level("PYTHONOPTIMIZE").unwrap_or(0)),
+            (
+                b"dont_write_bytecode",
+                env_flag_bool("PYTHONDONTWRITEBYTECODE").unwrap_or(0),
+            ),
+            (
+                b"no_user_site",
+                env_flag_bool("PYTHONNOUSERSITE").unwrap_or(0),
+            ),
+            (b"no_site", 0),
+            (b"ignore_environment", 0),
+            (b"verbose", env_flag_level("PYTHONVERBOSE").unwrap_or(0)),
+            (b"bytes_warning", 0),
+            (b"quiet", 0),
+            (b"hash_randomization", sys_flags_hash_randomization()),
+            (b"isolated", 0),
+            (b"dev_mode", env_flag_bool("PYTHONDEVMODE").unwrap_or(0)),
+            (b"utf8_mode", env_flag_bool("PYTHONUTF8").unwrap_or(0)),
+            (
+                b"warn_default_encoding",
+                env_flag_bool("PYTHONWARNDEFAULTENCODING").unwrap_or(0),
+            ),
+            (b"safe_path", env_flag_bool("PYTHONSAFEPATH").unwrap_or(0)),
+            (
+                b"int_max_str_digits",
+                env_non_negative_i64("PYTHONINTMAXSTRDIGITS")
+                    .unwrap_or(DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS),
+            ),
+            (b"gil", 1),
+        ];
+        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+
+        for (key, value) in keys_and_values {
+            let key_ptr = alloc_string(_py, key);
+            if key_ptr.is_null() {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let value_bits = MoltObject::from_int(value).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+            owned.push(value_bits);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
+        }
     })
 }
 
@@ -12377,6 +14472,369 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
+fn dir_runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
+    let state = runtime_state(_py);
+    let guard = state.sys_version_info.lock().unwrap();
+    let (runtime_major, runtime_minor) = guard
+        .as_ref()
+        .map(|info| (info.major, info.minor))
+        .unwrap_or((3, 12));
+    runtime_major > major || (runtime_major == major && runtime_minor >= minor)
+}
+
+fn dir_add_builtin_method_surface(
+    _py: &PyToken<'_>,
+    target_class_bits: u64,
+    add_name: &mut dyn FnMut(&[u8]) -> bool,
+) -> bool {
+    let builtins = builtin_classes(_py);
+    if target_class_bits == builtins.str {
+        for name in [
+            &b"capitalize"[..],
+            &b"casefold"[..],
+            &b"center"[..],
+            &b"count"[..],
+            &b"encode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"find"[..],
+            &b"format"[..],
+            &b"format_map"[..],
+            &b"index"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdecimal"[..],
+            &b"isdigit"[..],
+            &b"isidentifier"[..],
+            &b"islower"[..],
+            &b"isnumeric"[..],
+            &b"isprintable"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.bytes {
+        for name in [
+            &b"capitalize"[..],
+            &b"center"[..],
+            &b"count"[..],
+            &b"decode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"find"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"index"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdigit"[..],
+            &b"islower"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.bytearray {
+        for name in [
+            &b"append"[..],
+            &b"capitalize"[..],
+            &b"center"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"count"[..],
+            &b"decode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"extend"[..],
+            &b"find"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"index"[..],
+            &b"insert"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdigit"[..],
+            &b"islower"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"reverse"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"resize"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+        for name in [
+            &b"as_integer_ratio"[..],
+            &b"bit_count"[..],
+            &b"bit_length"[..],
+            &b"conjugate"[..],
+            &b"from_bytes"[..],
+            &b"is_integer"[..],
+            &b"to_bytes"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.float {
+        for name in [
+            &b"as_integer_ratio"[..],
+            &b"conjugate"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"is_integer"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.complex {
+        if !add_name(&b"conjugate"[..]) {
+            return false;
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.list {
+        for name in [
+            &b"append"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"count"[..],
+            &b"extend"[..],
+            &b"index"[..],
+            &b"insert"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"reverse"[..],
+            &b"sort"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.tuple {
+        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
+    }
+    if target_class_bits == builtins.range {
+        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
+    }
+    if target_class_bits == builtins.dict {
+        for name in [
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"fromkeys"[..],
+            &b"get"[..],
+            &b"items"[..],
+            &b"keys"[..],
+            &b"pop"[..],
+            &b"popitem"[..],
+            &b"setdefault"[..],
+            &b"update"[..],
+            &b"values"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.set {
+        for name in [
+            &b"add"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"difference"[..],
+            &b"difference_update"[..],
+            &b"discard"[..],
+            &b"intersection"[..],
+            &b"intersection_update"[..],
+            &b"isdisjoint"[..],
+            &b"issubset"[..],
+            &b"issuperset"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"symmetric_difference"[..],
+            &b"symmetric_difference_update"[..],
+            &b"union"[..],
+            &b"update"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.frozenset {
+        for name in [
+            &b"copy"[..],
+            &b"difference"[..],
+            &b"intersection"[..],
+            &b"isdisjoint"[..],
+            &b"issubset"[..],
+            &b"issuperset"[..],
+            &b"symmetric_difference"[..],
+            &b"union"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.memoryview {
+        for name in [
+            &b"_from_flags"[..],
+            &b"cast"[..],
+            &b"hex"[..],
+            &b"release"[..],
+            &b"tobytes"[..],
+            &b"tolist"[..],
+            &b"toreadonly"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) {
+            if !add_name(&b"count"[..]) || !add_name(&b"index"[..]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.property {
+        return add_name(&b"getter"[..]) && add_name(&b"setter"[..]) && add_name(&b"deleter"[..]);
+    }
+    if target_class_bits == builtins.base_exception_group
+        || issubclass_bits(target_class_bits, builtins.base_exception_group)
+    {
+        return add_name(&b"add_note"[..])
+            && add_name(&b"with_traceback"[..])
+            && add_name(&b"derive"[..])
+            && add_name(&b"split"[..])
+            && add_name(&b"subgroup"[..]);
+    }
+    if target_class_bits == builtins.base_exception
+        || issubclass_bits(target_class_bits, builtins.base_exception)
+    {
+        return add_name(&b"add_note"[..]) && add_name(&b"with_traceback"[..]);
+    }
+    if target_class_bits == builtins.slice {
+        return add_name(&b"indices"[..]);
+    }
+    if target_class_bits == builtins.type_obj {
+        return add_name(&b"mro"[..]);
+    }
+    true
+}
+
 unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
     unsafe {
         crate::gil_assert();
@@ -12508,6 +14966,12 @@ unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
                 }
             }
         } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+        if !dir_add_builtin_method_surface(_py, target_class_bits, &mut add_name) {
             for owned in extra_owned {
                 dec_ref_bits(_py, owned);
             }
@@ -12880,6 +15344,12 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 }
             }
         } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+        if !dir_add_builtin_method_surface(_py, target_class_bits, &mut add_name) {
             for owned in extra_owned {
                 dec_ref_bits(_py, owned);
             }
@@ -15235,6 +17705,47 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_join(sep_bits: u64, items_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sep_obj = obj_from_bits(sep_bits);
+        let Some(sep_ptr) = sep_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "join expects a bytearray separator");
+        };
+        unsafe {
+            if object_type_id(sep_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "join expects a bytearray separator",
+                );
+            }
+            let sep_bytes = bytes_like_slice(sep_ptr).unwrap_or(&[]);
+            let tmp_sep_ptr = alloc_bytes(_py, sep_bytes);
+            if tmp_sep_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let tmp_sep_bits = MoltObject::from_ptr(tmp_sep_ptr).bits();
+            let joined_bits = molt_bytes_join(tmp_sep_bits, items_bits);
+            dec_ref_bits(_py, tmp_sep_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let joined_obj = obj_from_bits(joined_bits);
+            let Some(joined_ptr) = joined_obj.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let joined_bytes = bytes_like_slice(joined_ptr).unwrap_or(&[]);
+            let out_ptr = alloc_bytearray(_py, joined_bytes);
+            dec_ref_bits(_py, joined_bits);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
 #[derive(Copy, Clone)]
 enum FormatContext {
     FormatString,
@@ -15245,6 +17756,8 @@ struct FormatState {
     next_auto: usize,
     used_auto: bool,
     used_manual: bool,
+    allow_positional: bool,
+    mapping_mode: bool,
 }
 
 struct FormatField<'a> {
@@ -15421,6 +17934,9 @@ fn resolve_format_field(
     }
     let base = &field_name[..idx];
     let base_bits = if base.is_empty() {
+        if !state.allow_positional {
+            return format_raise_value_error_bits(_py, "Format string contains positional fields");
+        }
         if state.used_manual {
             return format_raise_value_error_bits(
                 _py,
@@ -15436,6 +17952,9 @@ fn resolve_format_field(
         }
         args[index]
     } else if base.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+        if !state.allow_positional {
+            return format_raise_value_error_bits(_py, "Format string contains positional fields");
+        }
         if state.used_auto {
             return format_raise_value_error_bits(
                 _py,
@@ -15470,20 +17989,30 @@ fn resolve_format_field(
             return None;
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let kwargs_obj = obj_from_bits(kwargs_bits);
-        let mut val_bits = None;
-        if let Some(dict_ptr) = kwargs_obj.as_ptr() {
-            unsafe {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    val_bits = dict_get_in_place(_py, dict_ptr, key_bits);
+        let val_bits = if state.mapping_mode {
+            let looked_up = molt_index(kwargs_bits, key_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, key_bits);
+                return None;
+            }
+            Some(looked_up)
+        } else {
+            let kwargs_obj = obj_from_bits(kwargs_bits);
+            let mut looked_up = None;
+            if let Some(dict_ptr) = kwargs_obj.as_ptr() {
+                unsafe {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        looked_up = dict_get_in_place(_py, dict_ptr, key_bits);
+                    }
                 }
             }
-        }
-        if val_bits.is_none() {
-            raise_key_error_with_key::<()>(_py, key_bits);
-            dec_ref_bits(_py, key_bits);
-            return None;
-        }
+            if looked_up.is_none() {
+                raise_key_error_with_key::<()>(_py, key_bits);
+                dec_ref_bits(_py, key_bits);
+                return None;
+            }
+            looked_up
+        };
         dec_ref_bits(_py, key_bits);
         val_bits.unwrap()
     };
@@ -15661,12 +18190,53 @@ pub extern "C" fn molt_string_format_method(
                 next_auto: 0,
                 used_auto: false,
                 used_manual: false,
+                allow_positional: true,
+                mapping_mode: false,
             };
             let Some(rendered) = format_string_impl(
                 _py,
                 &text,
                 args_vec.as_slice(),
                 kwargs_bits,
+                &mut state,
+                FormatContext::FormatString,
+            ) else {
+                return MoltObject::none().bits();
+            };
+            let out_ptr = alloc_string(_py, rendered.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let self_obj = obj_from_bits(self_bits);
+        let Some(self_ptr) = self_obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(self_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "format_map requires a string");
+            }
+            let text = string_obj_to_owned(self_obj).unwrap_or_default();
+            let args_vec: [u64; 0] = [];
+            let mut state = FormatState {
+                next_auto: 0,
+                used_auto: false,
+                used_manual: false,
+                allow_positional: false,
+                mapping_mode: true,
+            };
+            let Some(rendered) = format_string_impl(
+                _py,
+                &text,
+                args_vec.as_slice(),
+                mapping_bits,
                 &mut state,
                 FormatContext::FormatString,
             ) else {
@@ -17646,6 +20216,337 @@ pub extern "C" fn molt_string_isdigit(hay_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isdecimal(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if unicode_decimal_table::is_decimal(ch as u32) {
+                    seen = true;
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isnumeric(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if unicode_numeric_table::is_numeric(ch as u32) {
+                    seen = true;
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isspace(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if unicode_space_table::is_space(ch as u32) {
+                    seen = true;
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[inline]
+fn string_char_is_cased(ch: char) -> bool {
+    let lower: String = ch.to_lowercase().collect();
+    let upper: String = ch.to_uppercase().collect();
+    lower != upper
+}
+
+#[inline]
+fn string_push_titlecase(out: &mut String, ch: char) {
+    if let Some(mapped) = unicode_titlecase_table::titlecase(ch as u32) {
+        out.push_str(mapped);
+    } else {
+        out.extend(ch.to_uppercase());
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isalpha(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if ch.is_alphabetic() {
+                    seen = true;
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isalnum(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if ch.is_alphanumeric() {
+                    seen = true;
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_islower(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if ch.is_lowercase() {
+                    seen = true;
+                    continue;
+                }
+                if ch.is_uppercase() || string_char_is_cased(ch) {
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isupper(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen = false;
+            for ch in hay_str.chars() {
+                if ch.is_uppercase() {
+                    seen = true;
+                    continue;
+                }
+                if ch.is_lowercase() || string_char_is_cased(ch) {
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            MoltObject::from_bool(seen).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isascii(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            MoltObject::from_bool(hay_bytes.is_ascii()).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_istitle(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut seen_cased = false;
+            let mut prev_cased = false;
+            for ch in hay_str.chars() {
+                if !string_char_is_cased(ch) {
+                    prev_cased = false;
+                    continue;
+                }
+                if !prev_cased {
+                    if ch.is_lowercase() {
+                        return MoltObject::from_bool(false).bits();
+                    }
+                    seen_cased = true;
+                    prev_cased = true;
+                    continue;
+                }
+                if !ch.is_lowercase() {
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            MoltObject::from_bool(seen_cased).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            for ch in hay_str.chars() {
+                if !unicode_printable_table::is_printable(ch as u32) {
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            MoltObject::from_bool(true).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let mut out = String::with_capacity(hay_str.len());
+            for ch in hay_str.chars() {
+                if ch.is_lowercase() {
+                    out.extend(ch.to_uppercase());
+                } else if ch.is_uppercase() {
+                    out.extend(ch.to_lowercase());
+                } else {
+                    out.push(ch);
+                }
+            }
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
@@ -17663,9 +20564,48 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
             let mut out = String::with_capacity(hay_str.len());
             let mut chars = hay_str.chars();
             if let Some(first) = chars.next() {
-                out.extend(first.to_uppercase());
+                string_push_titlecase(&mut out, first);
                 for ch in chars {
                     out.extend(ch.to_lowercase());
+                }
+            }
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let mut out = String::with_capacity(hay_str.len());
+            let mut prev_cased = false;
+            for ch in hay_str.chars() {
+                if string_char_is_cased(ch) {
+                    if prev_cased {
+                        out.extend(ch.to_lowercase());
+                    } else {
+                        string_push_titlecase(&mut out, ch);
+                    }
+                    prev_cased = true;
+                } else {
+                    out.push(ch);
+                    prev_cased = false;
                 }
             }
             let ptr = alloc_string(_py, out.as_bytes());
@@ -17697,18 +20637,10 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
                 hay_str.trim()
             } else {
                 let Some(chars_ptr) = chars.as_ptr() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "lstrip arg must be None or str",
-                    );
+                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
                 };
                 if object_type_id(chars_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "lstrip arg must be None or str",
-                    );
+                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
                 }
                 let chars_bytes =
                     std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
@@ -17810,14 +20742,14 @@ pub extern "C" fn molt_string_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
-                        "rstrip arg must be None or str",
+                        "lstrip arg must be None or str",
                     );
                 };
                 if object_type_id(chars_ptr) != TYPE_ID_STRING {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
-                        "rstrip arg must be None or str",
+                        "lstrip arg must be None or str",
                     );
                 }
                 let chars_bytes =
@@ -17856,10 +20788,18 @@ pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
                 hay_str.trim_end()
             } else {
                 let Some(chars_ptr) = chars.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "rstrip arg must be None or str",
+                    );
                 };
                 if object_type_id(chars_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "rstrip arg must be None or str",
+                    );
                 }
                 let chars_bytes =
                     std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
@@ -17873,6 +20813,791 @@ pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+fn parse_string_fillchar_arg(_py: &PyToken<'_>, fill_bits: u64) -> Result<char, u64> {
+    if fill_bits == missing_bits(_py) {
+        return Ok(' ');
+    }
+    let fill_obj = obj_from_bits(fill_bits);
+    let Some(fill_ptr) = fill_obj.as_ptr() else {
+        let msg = format!(
+            "The fill character must be a unicode character, not {}",
+            type_name(_py, fill_obj)
+        );
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    };
+    unsafe {
+        if object_type_id(fill_ptr) != TYPE_ID_STRING {
+            let msg = format!(
+                "The fill character must be a unicode character, not {}",
+                type_name(_py, fill_obj)
+            );
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        }
+        let fill_bytes = std::slice::from_raw_parts(string_bytes(fill_ptr), string_len(fill_ptr));
+        let Ok(fill_str) = std::str::from_utf8(fill_bytes) else {
+            return Err(MoltObject::none().bits());
+        };
+        let mut chars = fill_str.chars();
+        let Some(fill_char) = chars.next() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "The fill character must be exactly one character long",
+            ));
+        };
+        if chars.next().is_some() {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "The fill character must be exactly one character long",
+            ));
+        }
+        Ok(fill_char)
+    }
+}
+
+fn align_string_with_fill(
+    hay_str: &str,
+    fill_char: char,
+    left_pad: usize,
+    right_pad: usize,
+) -> String {
+    let extra = (left_pad.saturating_add(right_pad)).saturating_mul(fill_char.len_utf8());
+    let mut out = String::with_capacity(hay_str.len().saturating_add(extra));
+    for _ in 0..left_pad {
+        out.push(fill_char);
+    }
+    out.push_str(hay_str);
+    for _ in 0..right_pad {
+        out.push(fill_char);
+    }
+    out
+}
+
+fn string_char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn exception_is_lookup_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(exc_ptr) = exc_obj.as_ptr() else {
+        return false;
+    };
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return false;
+        }
+        let class_bits = exception_class_bits(exc_ptr);
+        if class_bits != 0 {
+            let lookup_error_bits = exception_type_bits_from_name(_py, "LookupError");
+            if lookup_error_bits != 0 && issubclass_bits(class_bits, lookup_error_bits) {
+                return true;
+            }
+        }
+        let kind_bits = exception_kind_bits(exc_ptr);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+        matches!(
+            kind.as_deref(),
+            Some("LookupError") | Some("IndexError") | Some("KeyError")
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let prefix = obj_from_bits(prefix_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let prefix_ptr = match prefix.as_ptr() {
+                Some(ptr) => ptr,
+                None => {
+                    let msg = format!(
+                        "removeprefix() argument must be str, not {}",
+                        type_name(_py, prefix)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            };
+            if object_type_id(prefix_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "removeprefix() argument must be str, not {}",
+                    type_name(_py, prefix)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let prefix_bytes =
+                std::slice::from_raw_parts(string_bytes(prefix_ptr), string_len(prefix_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let Ok(prefix_str) = std::str::from_utf8(prefix_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let out = if hay_str.starts_with(prefix_str) {
+                &hay_str[prefix_str.len()..]
+            } else {
+                hay_str
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let suffix = obj_from_bits(suffix_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let suffix_ptr = match suffix.as_ptr() {
+                Some(ptr) => ptr,
+                None => {
+                    let msg = format!(
+                        "removesuffix() argument must be str, not {}",
+                        type_name(_py, suffix)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            };
+            if object_type_id(suffix_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "removesuffix() argument must be str, not {}",
+                    type_name(_py, suffix)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let suffix_bytes =
+                std::slice::from_raw_parts(string_bytes(suffix_ptr), string_len(suffix_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let Ok(suffix_str) = std::str::from_utf8(suffix_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let out = hay_str.strip_suffix(suffix_str).unwrap_or(hay_str);
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_zfill(hay_bits: u64, width_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let width_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(width_bits))
+        );
+        let width = index_i64_from_obj(_py, width_bits, &width_err);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let hay_len = string_char_count(hay_str) as i64;
+            let out = if width <= hay_len {
+                hay_str.to_string()
+            } else {
+                let width_usize = match usize::try_from(width) {
+                    Ok(val) => val,
+                    Err(_) => usize::MAX,
+                };
+                let pad = width_usize.saturating_sub(string_char_count(hay_str));
+                let (sign, rest) = match hay_str.chars().next() {
+                    Some('+') | Some('-') => (&hay_str[..1], &hay_str[1..]),
+                    _ => ("", hay_str),
+                };
+                let mut out = String::with_capacity(hay_str.len().saturating_add(pad));
+                out.push_str(sign);
+                for _ in 0..pad {
+                    out.push('0');
+                }
+                out.push_str(rest);
+                out
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let width_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(width_bits))
+        );
+        let width = index_i64_from_obj(_py, width_bits, &width_err);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let fill_char = match parse_string_fillchar_arg(_py, fill_bits) {
+            Ok(ch) => ch,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let hay_len = string_char_count(hay_str) as i64;
+            let out = if width <= hay_len {
+                hay_str.to_string()
+            } else {
+                let width_usize = match usize::try_from(width) {
+                    Ok(val) => val,
+                    Err(_) => usize::MAX,
+                };
+                let pad = width_usize.saturating_sub(string_char_count(hay_str));
+                let left = (pad + 1) / 2;
+                let right = pad - left;
+                align_string_with_fill(hay_str, fill_char, left, right)
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let width_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(width_bits))
+        );
+        let width = index_i64_from_obj(_py, width_bits, &width_err);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let fill_char = match parse_string_fillchar_arg(_py, fill_bits) {
+            Ok(ch) => ch,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let hay_len = string_char_count(hay_str) as i64;
+            let out = if width <= hay_len {
+                hay_str.to_string()
+            } else {
+                let width_usize = match usize::try_from(width) {
+                    Ok(val) => val,
+                    Err(_) => usize::MAX,
+                };
+                let pad = width_usize.saturating_sub(string_char_count(hay_str));
+                align_string_with_fill(hay_str, fill_char, 0, pad)
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let width_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(width_bits))
+        );
+        let width = index_i64_from_obj(_py, width_bits, &width_err);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let fill_char = match parse_string_fillchar_arg(_py, fill_bits) {
+            Ok(ch) => ch,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let hay_len = string_char_count(hay_str) as i64;
+            let out = if width <= hay_len {
+                hay_str.to_string()
+            } else {
+                let width_usize = match usize::try_from(width) {
+                    Ok(val) => val,
+                    Err(_) => usize::MAX,
+                };
+                let pad = width_usize.saturating_sub(string_char_count(hay_str));
+                align_string_with_fill(hay_str, fill_char, pad, 0)
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let tabsize = if tabsize_bits == missing_bits(_py) {
+            8
+        } else {
+            let tab_err = format!(
+                "'{}' object cannot be interpreted as an integer",
+                type_name(_py, obj_from_bits(tabsize_bits))
+            );
+            index_i64_from_obj(_py, tabsize_bits, &tab_err)
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let tabsize = tabsize.max(0) as usize;
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let mut out = String::with_capacity(hay_str.len());
+            let mut col = 0usize;
+            for ch in hay_str.chars() {
+                match ch {
+                    '\t' => {
+                        if tabsize == 0 {
+                            continue;
+                        }
+                        let spaces = tabsize - (col % tabsize);
+                        for _ in 0..spaces {
+                            out.push(' ');
+                        }
+                        col = col.saturating_add(spaces);
+                    }
+                    '\n' | '\r' => {
+                        out.push(ch);
+                        col = 0;
+                    }
+                    _ => {
+                        out.push(ch);
+                        col = col.saturating_add(1);
+                    }
+                }
+            }
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let table = obj_from_bits(table_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let dict_ptr_opt = table
+                .as_ptr()
+                .and_then(|ptr| dict_like_bits_from_ptr(_py, ptr))
+                .and_then(|bits| obj_from_bits(bits).as_ptr())
+                .filter(|ptr| object_type_id(*ptr) == TYPE_ID_DICT);
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let mut out = String::with_capacity(hay_str.len());
+            for ch in hay_str.chars() {
+                let key_bits = MoltObject::from_int(ch as i64).bits();
+                let (mapped, mapped_owned) = if let Some(dict_ptr) = dict_ptr_opt {
+                    (dict_get_in_place(_py, dict_ptr, key_bits), false)
+                } else {
+                    let mapped_bits = molt_getitem_method(table_bits, key_bits);
+                    if exception_pending(_py) {
+                        let exc_bits = molt_exception_last();
+                        let is_lookup = exception_is_lookup_error(_py, exc_bits);
+                        dec_ref_bits(_py, exc_bits);
+                        if is_lookup {
+                            clear_exception(_py);
+                            out.push(ch);
+                            continue;
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    (Some(mapped_bits), true)
+                };
+                let Some(mapped_bits) = mapped else {
+                    out.push(ch);
+                    continue;
+                };
+                let mapped_obj = obj_from_bits(mapped_bits);
+                if mapped_obj.is_none() {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    continue;
+                }
+                let Some(mapped_ptr) = mapped_obj.as_ptr() else {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "character mapping must return integer, None or str",
+                    );
+                };
+                if object_type_id(mapped_ptr) == TYPE_ID_STRING {
+                    let mapped_bytes = std::slice::from_raw_parts(
+                        string_bytes(mapped_ptr),
+                        string_len(mapped_ptr),
+                    );
+                    let Ok(mapped_str) = std::str::from_utf8(mapped_bytes) else {
+                        if mapped_owned {
+                            dec_ref_bits(_py, mapped_bits);
+                        }
+                        return MoltObject::none().bits();
+                    };
+                    out.push_str(mapped_str);
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    continue;
+                }
+                let Some(mapped_int) = to_bigint(mapped_obj) else {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "character mapping must return integer, None or str",
+                    );
+                };
+                let max_code = BigInt::from(0x110000u32);
+                if mapped_int.sign() == Sign::Minus || mapped_int >= max_code {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "character mapping must be in range(0x110000)",
+                    );
+                }
+                let Some(code) = mapped_int.to_u32() else {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "character mapping must be in range(0x110000)",
+                    );
+                };
+                let Some(mapped_ch) = char::from_u32(code) else {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "character mapping must be in range(0x110000)",
+                    );
+                };
+                out.push(mapped_ch);
+                if mapped_owned {
+                    dec_ref_bits(_py, mapped_bits);
+                }
+            }
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let x_obj = obj_from_bits(x_bits);
+        let y_obj = obj_from_bits(y_bits);
+        let z_obj = obj_from_bits(z_bits);
+
+        if y_obj.is_none() && z_obj.is_none() {
+            let Some(x_ptr) = x_obj.as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "if you give only one argument to maketrans it must be a dict",
+                );
+            };
+            unsafe {
+                if object_type_id(x_ptr) != TYPE_ID_DICT {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "if you give only one argument to maketrans it must be a dict",
+                    );
+                }
+                let out_ptr = alloc_dict_with_pairs(_py, &[]);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                let out_bits = MoltObject::from_ptr(out_ptr).bits();
+                let pairs = dict_order(x_ptr);
+                for pair in pairs.chunks_exact(2) {
+                    let key_bits = pair[0];
+                    let value_bits = pair[1];
+                    let key_obj = obj_from_bits(key_bits);
+                    let mapped_key_bits = if let Some(key_ptr) = key_obj.as_ptr() {
+                        if object_type_id(key_ptr) == TYPE_ID_STRING {
+                            let key_bytes = std::slice::from_raw_parts(
+                                string_bytes(key_ptr),
+                                string_len(key_ptr),
+                            );
+                            let Ok(key_str) = std::str::from_utf8(key_bytes) else {
+                                dec_ref_bits(_py, out_bits);
+                                return MoltObject::none().bits();
+                            };
+                            let mut chars = key_str.chars();
+                            let Some(ch) = chars.next() else {
+                                dec_ref_bits(_py, out_bits);
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "string keys in translate table must be of length 1",
+                                );
+                            };
+                            if chars.next().is_some() {
+                                dec_ref_bits(_py, out_bits);
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "string keys in translate table must be of length 1",
+                                );
+                            }
+                            MoltObject::from_int(ch as i64).bits()
+                        } else if to_bigint(key_obj).is_some() {
+                            key_bits
+                        } else {
+                            dec_ref_bits(_py, out_bits);
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "keys in translate table must be strings or integers",
+                            );
+                        }
+                    } else if to_bigint(key_obj).is_some() {
+                        key_bits
+                    } else {
+                        dec_ref_bits(_py, out_bits);
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "keys in translate table must be strings or integers",
+                        );
+                    };
+                    dict_set_in_place(_py, out_ptr, mapped_key_bits, value_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, out_bits);
+                        return MoltObject::none().bits();
+                    }
+                }
+                return out_bits;
+            }
+        }
+
+        let x_ptr = match x_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "maketrans() argument 1 must be str, not {}",
+                    type_name(_py, x_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let y_ptr = match y_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "maketrans() argument 2 must be str, not {}",
+                    type_name(_py, y_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let z_ptr_opt = z_obj.as_ptr();
+        unsafe {
+            if object_type_id(x_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "maketrans() argument 1 must be str, not {}",
+                    type_name(_py, x_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            if object_type_id(y_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "maketrans() argument 2 must be str, not {}",
+                    type_name(_py, y_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            if !z_obj.is_none() {
+                let Some(z_ptr) = z_ptr_opt else {
+                    let msg = format!(
+                        "maketrans() argument 3 must be str, not {}",
+                        type_name(_py, z_obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                };
+                if object_type_id(z_ptr) != TYPE_ID_STRING {
+                    let msg = format!(
+                        "maketrans() argument 3 must be str, not {}",
+                        type_name(_py, z_obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+            let x_bytes = std::slice::from_raw_parts(string_bytes(x_ptr), string_len(x_ptr));
+            let y_bytes = std::slice::from_raw_parts(string_bytes(y_ptr), string_len(y_ptr));
+            let Ok(x_str) = std::str::from_utf8(x_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let Ok(y_str) = std::str::from_utf8(y_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let x_len = string_char_count(x_str);
+            let y_len = string_char_count(y_str);
+            if x_len != y_len {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "the first two maketrans arguments must have equal length",
+                );
+            }
+            let out_ptr = alloc_dict_with_pairs(_py, &[]);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let out_bits = MoltObject::from_ptr(out_ptr).bits();
+            for (from_ch, to_ch) in x_str.chars().zip(y_str.chars()) {
+                let key_bits = MoltObject::from_int(from_ch as i64).bits();
+                let value_bits = MoltObject::from_int(to_ch as i64).bits();
+                dict_set_in_place(_py, out_ptr, key_bits, value_bits);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, out_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+            if !z_obj.is_none() {
+                let z_ptr = z_ptr_opt.unwrap_or(std::ptr::null_mut());
+                if z_ptr.is_null() {
+                    dec_ref_bits(_py, out_bits);
+                    let msg = format!(
+                        "maketrans() argument 3 must be str, not {}",
+                        type_name(_py, z_obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                let z_bytes = std::slice::from_raw_parts(string_bytes(z_ptr), string_len(z_ptr));
+                let Ok(z_str) = std::str::from_utf8(z_bytes) else {
+                    dec_ref_bits(_py, out_bits);
+                    return MoltObject::none().bits();
+                };
+                let none_bits = MoltObject::none().bits();
+                for ch in z_str.chars() {
+                    let key_bits = MoltObject::from_int(ch as i64).bits();
+                    dict_set_in_place(_py, out_ptr, key_bits, none_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, out_bits);
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+            out_bits
         }
     })
 }
@@ -18942,6 +22667,845 @@ pub extern "C" fn molt_bytes_lower(hay_bits: u64) -> u64 {
             }
             MoltObject::from_ptr(ptr).bits()
         }
+    })
+}
+
+#[inline]
+fn bytes_ascii_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+#[inline]
+fn bytes_ascii_alpha(b: u8) -> bool {
+    b.is_ascii_alphabetic()
+}
+
+#[inline]
+fn bytes_ascii_alnum(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+}
+
+#[inline]
+fn alloc_bytes_like_for_type(_py: &PyToken<'_>, type_id: u32, bytes: &[u8]) -> *mut u8 {
+    if type_id == TYPE_ID_BYTEARRAY {
+        alloc_bytearray(_py, bytes)
+    } else {
+        alloc_bytes(_py, bytes)
+    }
+}
+
+fn bytes_like_ascii_transform<F>(_py: &PyToken<'_>, hay_bits: u64, type_id: u32, f: F) -> u64
+where
+    F: FnOnce(&[u8]) -> Vec<u8>,
+{
+    let hay = obj_from_bits(hay_bits);
+    let Some(hay_ptr) = hay.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(hay_ptr) != type_id {
+            return MoltObject::none().bits();
+        }
+        let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+        let out = f(hay_bytes);
+        let ptr = alloc_bytes_like_for_type(_py, type_id, &out);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn bytes_like_ascii_predicate<F>(_py: &PyToken<'_>, hay_bits: u64, type_id: u32, f: F) -> u64
+where
+    F: FnOnce(&[u8]) -> bool,
+{
+    let hay = obj_from_bits(hay_bits);
+    let Some(hay_ptr) = hay.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(hay_ptr) != type_id {
+            return MoltObject::none().bits();
+        }
+        let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+        MoltObject::from_bool(f(hay_bytes)).bits()
+    }
+}
+
+fn bytes_ascii_capitalize(bytes: &[u8]) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let first = bytes[0];
+    out.push(if first.is_ascii_lowercase() {
+        first.to_ascii_uppercase()
+    } else {
+        first
+    });
+    for &b in &bytes[1..] {
+        out.push(if b.is_ascii_uppercase() {
+            b.to_ascii_lowercase()
+        } else {
+            b
+        });
+    }
+    out
+}
+
+fn bytes_ascii_swapcase(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        if b.is_ascii_lowercase() {
+            out.push(b.to_ascii_uppercase());
+        } else if b.is_ascii_uppercase() {
+            out.push(b.to_ascii_lowercase());
+        } else {
+            out.push(b);
+        }
+    }
+    out
+}
+
+fn bytes_ascii_title(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at_word_start = true;
+    for &b in bytes {
+        if b.is_ascii_alphabetic() {
+            if at_word_start {
+                out.push(b.to_ascii_uppercase());
+                at_word_start = false;
+            } else {
+                out.push(b.to_ascii_lowercase());
+            }
+        } else {
+            out.push(b);
+            at_word_start = true;
+        }
+    }
+    out
+}
+
+fn bytes_ascii_islower(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut has_lower = false;
+    for &b in bytes {
+        if b.is_ascii_uppercase() {
+            return false;
+        }
+        if b.is_ascii_lowercase() {
+            has_lower = true;
+        }
+    }
+    has_lower
+}
+
+fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut has_upper = false;
+    for &b in bytes {
+        if b.is_ascii_lowercase() {
+            return false;
+        }
+        if b.is_ascii_uppercase() {
+            has_upper = true;
+        }
+    }
+    has_upper
+}
+
+fn bytes_ascii_istitle(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut cased = false;
+    let mut prev_cased = false;
+    for &b in bytes {
+        if b.is_ascii_uppercase() {
+            if prev_cased {
+                return false;
+            }
+            cased = true;
+            prev_cased = true;
+        } else if b.is_ascii_lowercase() {
+            if !prev_cased {
+                return false;
+            }
+            cased = true;
+            prev_cased = true;
+        } else {
+            prev_cased = false;
+        }
+    }
+    cased
+}
+
+fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) -> Option<u8> {
+    if fill_bits == missing_bits(_py) {
+        return Some(b' ');
+    }
+    let fill_obj = obj_from_bits(fill_bits);
+    let Some(fill_ptr) = fill_obj.as_ptr() else {
+        let msg = format!(
+            "{method}() argument 2 must be a byte string of length 1, not {}",
+            type_name(_py, fill_obj)
+        );
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    unsafe {
+        let Some(fill_slice) = bytes_like_slice(fill_ptr) else {
+            let msg = format!(
+                "{method}() argument 2 must be a byte string of length 1, not {}",
+                type_name(_py, fill_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fill_slice.len() != 1 {
+            let msg = format!(
+                "{method}(): argument 2 must be a byte string of length 1, not a bytes object of length {}",
+                fill_slice.len()
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        Some(fill_slice[0])
+    }
+}
+
+enum BytesAlignKind {
+    Center,
+    Left,
+    Right,
+}
+
+fn bytes_align_impl(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+    type_id: u32,
+    kind: BytesAlignKind,
+    method_name: &str,
+) -> u64 {
+    let width = index_i64_from_obj(_py, width_bits, "an integer is required");
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let Some(fill_byte) = bytes_fill_byte_from_bits(_py, fill_bits, method_name) else {
+        return MoltObject::none().bits();
+    };
+    let hay = obj_from_bits(hay_bits);
+    let Some(hay_ptr) = hay.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(hay_ptr) != type_id {
+            return MoltObject::none().bits();
+        }
+        let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+        let len = hay_bytes.len() as i64;
+        if width <= len {
+            let ptr = alloc_bytes_like_for_type(_py, type_id, hay_bytes);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let total = width as usize;
+        let pad = total.saturating_sub(hay_bytes.len());
+        let (left_pad, right_pad) = match kind {
+            BytesAlignKind::Center => (pad / 2, pad - (pad / 2)),
+            BytesAlignKind::Left => (0, pad),
+            BytesAlignKind::Right => (pad, 0),
+        };
+        let mut out = Vec::with_capacity(total);
+        out.extend(std::iter::repeat(fill_byte).take(left_pad));
+        out.extend_from_slice(hay_bytes);
+        out.extend(std::iter::repeat(fill_byte).take(right_pad));
+        let ptr = alloc_bytes_like_for_type(_py, type_id, &out);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn bytes_zfill_impl(_py: &PyToken<'_>, hay_bits: u64, width_bits: u64, type_id: u32) -> u64 {
+    let width = index_i64_from_obj(_py, width_bits, "an integer is required");
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let hay = obj_from_bits(hay_bits);
+    let Some(hay_ptr) = hay.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(hay_ptr) != type_id {
+            return MoltObject::none().bits();
+        }
+        let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+        let len = hay_bytes.len() as i64;
+        if width <= len {
+            let ptr = alloc_bytes_like_for_type(_py, type_id, hay_bytes);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let pad = (width - len) as usize;
+        let mut out = Vec::with_capacity(width as usize);
+        if let Some(first) = hay_bytes.first().copied() {
+            if first == b'+' || first == b'-' {
+                out.push(first);
+                out.extend(std::iter::repeat(b'0').take(pad));
+                out.extend_from_slice(&hay_bytes[1..]);
+            } else {
+                out.extend(std::iter::repeat(b'0').take(pad));
+                out.extend_from_slice(hay_bytes);
+            }
+        } else {
+            out.extend(std::iter::repeat(b'0').take(pad));
+        }
+        let ptr = alloc_bytes_like_for_type(_py, type_id, &out);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn bytes_expandtabs_ascii(bytes: &[u8], tabsize: i64) -> Vec<u8> {
+    let tab = tabsize.max(0) as usize;
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut column = 0usize;
+    for &b in bytes {
+        if b == b'\t' {
+            let spaces = if tab == 0 { 0 } else { tab - (column % tab) };
+            out.extend(std::iter::repeat(b' ').take(spaces));
+            column = column.saturating_add(spaces);
+        } else {
+            out.push(b);
+            if b == b'\n' || b == b'\r' {
+                column = 0;
+            } else {
+                column = column.saturating_add(1);
+            }
+        }
+    }
+    out
+}
+
+fn bytes_expandtabs_impl(_py: &PyToken<'_>, hay_bits: u64, tabsize_bits: u64, type_id: u32) -> u64 {
+    let tabsize = if tabsize_bits == missing_bits(_py) {
+        8
+    } else {
+        index_i64_from_obj(_py, tabsize_bits, "an integer is required")
+    };
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    bytes_like_ascii_transform(_py, hay_bits, type_id, |bytes| {
+        bytes_expandtabs_ascii(bytes, tabsize)
+    })
+}
+
+fn bytes_remove_affix_impl(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    affix_bits: u64,
+    type_id: u32,
+    suffix: bool,
+) -> u64 {
+    let hay = obj_from_bits(hay_bits);
+    let affix = obj_from_bits(affix_bits);
+    let Some(hay_ptr) = hay.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let Some(affix_ptr) = affix.as_ptr() else {
+        let msg = format!(
+            "a bytes-like object is required, not '{}'",
+            type_name(_py, affix)
+        );
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    unsafe {
+        if object_type_id(hay_ptr) != type_id {
+            return MoltObject::none().bits();
+        }
+        let Some(affix_bytes) = bytes_like_slice(affix_ptr) else {
+            let msg = format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(_py, affix)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+        let out = if suffix {
+            if hay_bytes.ends_with(affix_bytes) {
+                &hay_bytes[..hay_bytes.len().saturating_sub(affix_bytes.len())]
+            } else {
+                hay_bytes
+            }
+        } else if hay_bytes.starts_with(affix_bytes) {
+            &hay_bytes[affix_bytes.len()..]
+        } else {
+            hay_bytes
+        };
+        let ptr = alloc_bytes_like_for_type(_py, type_id, out);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_capitalize(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_capitalize)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_capitalize(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_capitalize)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_swapcase(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_swapcase)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_swapcase(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_swapcase)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_title(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_title)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_title(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_title)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isalpha(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alpha(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isalpha(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alpha(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isalnum(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alnum(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isalnum(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alnum(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isdigit(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_digit())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isdigit(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_digit())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_space(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
+            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_space(*b))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_islower(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_islower)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_islower(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_islower)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isupper(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_isupper)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isupper(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_isupper)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_istitle(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_istitle)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_istitle(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_istitle)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_isascii(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
+            bytes.iter().all(|b| b.is_ascii())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_isascii(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
+            bytes.iter().all(|b| b.is_ascii())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_upper(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_upper)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_lower(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_lower)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTES,
+            BytesAlignKind::Center,
+            "center",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTEARRAY,
+            BytesAlignKind::Center,
+            "center",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTES,
+            BytesAlignKind::Left,
+            "ljust",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTEARRAY,
+            BytesAlignKind::Left,
+            "ljust",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTES,
+            BytesAlignKind::Right,
+            "rjust",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_align_impl(
+            _py,
+            hay_bits,
+            width_bits,
+            fill_bits,
+            TYPE_ID_BYTEARRAY,
+            BytesAlignKind::Right,
+            "rjust",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_zfill(hay_bits: u64, width_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTES)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_zfill(hay_bits: u64, width_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTEARRAY)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTES)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTEARRAY)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTES, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTEARRAY, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTES, true)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTEARRAY, true)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_index_slice(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = molt_bytes_find_slice(
+            hay_bits,
+            needle_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
+            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+        }
+        idx_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_rindex_slice(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = molt_bytes_rfind_slice(
+            hay_bits,
+            needle_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
+            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+        }
+        idx_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_index_slice(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = molt_bytearray_find_slice(
+            hay_bits,
+            needle_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
+            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+        }
+        idx_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_rindex_slice(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    has_start_bits: u64,
+    has_end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = molt_bytearray_rfind_slice(
+            hay_bits,
+            needle_bits,
+            start_bits,
+            end_bits,
+            has_start_bits,
+            has_end_bits,
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
+            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+        }
+        idx_bits
     })
 }
 
@@ -25655,6 +30219,29 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let flag_type = class_name_for_error(type_of_bits(_py, flags_bits));
+        let err = format!("'{flag_type}' object cannot be interpreted as an integer");
+        let Some(flags) = index_bigint_from_obj(_py, flags_bits, &err) else {
+            return MoltObject::none().bits();
+        };
+        if flags.is_odd()
+            && let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits)
+        {
+            unsafe {
+                let type_id = object_type_id(obj_ptr);
+                // CPython ignores writable-flag checks when the input is already a memoryview.
+                if type_id == TYPE_ID_BYTES {
+                    return raise_exception::<_>(_py, "BufferError", "Object is not writable.");
+                }
+            }
+        }
+        molt_memoryview_new(obj_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_cast(
     view_bits: u64,
     format_bits: u64,
@@ -25929,6 +30516,247 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
                 Some(bits) => bits,
                 None => MoltObject::none().bits(),
             }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return raise_exception::<_>(_py, "TypeError", "count expects a memoryview"),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "count expects a memoryview");
+            }
+            let ndim = memoryview_ndim(ptr);
+            if ndim == 0 {
+                return raise_exception::<_>(_py, "TypeError", "invalid indexing of 0-dim memory");
+            }
+            if ndim > 1 {
+                return raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    "multi-dimensional sub-views are not implemented",
+                );
+            }
+            let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
+                Some(fmt) => fmt,
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: unsupported format for count()",
+                    );
+                }
+            };
+            let owner_bits = memoryview_owner_bits(ptr);
+            let owner = obj_from_bits(owner_bits);
+            let Some(owner_ptr) = owner.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let Some(base) = bytes_like_slice_raw(owner_ptr) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "memoryview: count() requires a bytes-like exporter",
+                );
+            };
+            let len = memoryview_len(ptr);
+            let offset = memoryview_offset(ptr);
+            let stride = memoryview_stride(ptr);
+            let mut count = 0i64;
+            for idx in 0..len {
+                let item_offset = offset.saturating_add((idx as isize).saturating_mul(stride));
+                let Some(item_bits) = memoryview_read_scalar(_py, base, item_offset, fmt) else {
+                    return MoltObject::none().bits();
+                };
+                let eq = match eq_bool_from_bits(_py, item_bits, val_bits) {
+                    Some(val) => val,
+                    None => {
+                        if obj_from_bits(item_bits).as_ptr().is_some() {
+                            dec_ref_bits(_py, item_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                };
+                if obj_from_bits(item_bits).as_ptr().is_some() {
+                    dec_ref_bits(_py, item_bits);
+                }
+                if eq {
+                    count += 1;
+                }
+            }
+            MoltObject::from_int(count).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return raise_exception::<_>(_py, "TypeError", "index expects a memoryview"),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "index expects a memoryview");
+            }
+            let ndim = memoryview_ndim(ptr);
+            if ndim == 0 {
+                return raise_exception::<_>(_py, "TypeError", "invalid lookup on 0-dim memory");
+            }
+            if ndim > 1 {
+                return raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    "multi-dimensional lookup is not implemented",
+                );
+            }
+            let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
+                Some(fmt) => fmt,
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: unsupported format for index()",
+                    );
+                }
+            };
+            let owner_bits = memoryview_owner_bits(ptr);
+            let owner = obj_from_bits(owner_bits);
+            let Some(owner_ptr) = owner.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let Some(base) = bytes_like_slice_raw(owner_ptr) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "memoryview: index() requires a bytes-like exporter",
+                );
+            };
+            let len = memoryview_len(ptr);
+            let offset = memoryview_offset(ptr);
+            let stride = memoryview_stride(ptr);
+            for idx in 0..len {
+                let item_offset = offset.saturating_add((idx as isize).saturating_mul(stride));
+                let Some(item_bits) = memoryview_read_scalar(_py, base, item_offset, fmt) else {
+                    return MoltObject::none().bits();
+                };
+                let eq = match eq_bool_from_bits(_py, item_bits, val_bits) {
+                    Some(val) => val,
+                    None => {
+                        if obj_from_bits(item_bits).as_ptr().is_some() {
+                            dec_ref_bits(_py, item_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                };
+                if obj_from_bits(item_bits).as_ptr().is_some() {
+                    dec_ref_bits(_py, item_bits);
+                }
+                if eq {
+                    return MoltObject::from_int(idx as i64).bits();
+                }
+            }
+            raise_exception::<_>(_py, "ValueError", "memoryview.index(x): x not found")
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return raise_exception::<_>(_py, "TypeError", "hex expects a memoryview"),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "hex expects a memoryview");
+            }
+            let out = match memoryview_collect_bytes(ptr) {
+                Some(out) => out,
+                None => return MoltObject::none().bits(),
+            };
+            bytes_hex_from_bits(_py, out.as_slice(), sep_bits, bytes_per_sep_bits)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return raise_exception::<_>(_py, "TypeError", "release expects a memoryview"),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "release expects a memoryview");
+            }
+        }
+        // release() currently behaves as a no-op until released-view state is modeled.
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        let ptr = match obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
+            }
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+                return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
+            }
+            let owner_bits = memoryview_owner_bits(ptr);
+            let offset = memoryview_offset(ptr);
+            let len = memoryview_len(ptr);
+            let itemsize = memoryview_itemsize(ptr);
+            let stride = memoryview_stride(ptr);
+            let format_bits = memoryview_format_bits(ptr);
+            let shape = memoryview_shape(ptr).unwrap_or(&[]).to_vec();
+            let strides = memoryview_strides(ptr).unwrap_or(&[]).to_vec();
+            let out_ptr = if shape.len() > 1 || memoryview_ndim(ptr) == 0 {
+                alloc_memoryview_shaped(
+                    _py,
+                    owner_bits,
+                    offset,
+                    itemsize,
+                    true,
+                    format_bits,
+                    shape,
+                    strides,
+                )
+            } else {
+                alloc_memoryview(
+                    _py,
+                    owner_bits,
+                    offset,
+                    len,
+                    itemsize,
+                    stride,
+                    true,
+                    format_bits,
+                )
+            };
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }
@@ -33125,21 +37953,84 @@ pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_index(tuple_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        molt_tuple_index_range(tuple_bits, val_bits, missing, missing)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_index_range(
+    tuple_bits: u64,
+    val_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
         let tuple_obj = obj_from_bits(tuple_bits);
         if let Some(ptr) = tuple_obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_TUPLE {
                     let elems = seq_vec_ref(ptr);
-                    for (idx, elem) in elems.iter().enumerate() {
-                        let eq = match eq_bool_from_bits(_py, *elem, val_bits) {
+                    let len = elems.len() as i64;
+                    let mut start = if start_bits != missing {
+                        index_i64_from_obj(
+                            _py,
+                            start_bits,
+                            "slice indices must be integers or have an __index__ method",
+                        )
+                    } else {
+                        0
+                    };
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let mut stop = if stop_bits != missing {
+                        index_i64_from_obj(
+                            _py,
+                            stop_bits,
+                            "slice indices must be integers or have an __index__ method",
+                        )
+                    } else {
+                        len
+                    };
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if start < 0 {
+                        start += len;
+                    }
+                    if stop < 0 {
+                        stop += len;
+                    }
+                    if start < 0 {
+                        start = 0;
+                    }
+                    if stop < 0 {
+                        stop = 0;
+                    }
+                    if start > len {
+                        start = len;
+                    }
+                    if stop > len {
+                        stop = len;
+                    }
+                    let mut idx = start;
+                    while idx < stop {
+                        let eq = match eq_bool_from_bits(_py, elems[idx as usize], val_bits) {
                             Some(val) => val,
                             None => return MoltObject::none().bits(),
                         };
                         if eq {
-                            return MoltObject::from_int(idx as i64).bits();
+                            return MoltObject::from_int(idx).bits();
                         }
+                        idx += 1;
                     }
-                    return MoltObject::none().bits();
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "tuple.index(x): x not in tuple",
+                    );
                 }
             }
         }

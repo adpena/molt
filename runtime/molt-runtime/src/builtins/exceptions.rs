@@ -212,6 +212,15 @@ pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_exception_add_note),
             2,
         )),
+        "with_traceback" => {
+            static EXCEPTION_WITH_TRACEBACK: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &EXCEPTION_WITH_TRACEBACK,
+                fn_addr!(molt_exception_with_traceback),
+                2,
+            ))
+        }
         _ => None,
     }
 }
@@ -4439,6 +4448,58 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
         }
         dec_ref_bits(_py, list_bits);
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_with_traceback(self_bits: u64, traceback_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let self_obj = obj_from_bits(self_bits);
+        let Some(self_ptr) = self_obj.as_ptr() else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "with_traceback expects exception instance",
+            );
+        };
+        unsafe {
+            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "with_traceback expects exception instance",
+                );
+            }
+        }
+        let traceback_obj = obj_from_bits(traceback_bits);
+        if !traceback_obj.is_none() {
+            let Some(_traceback_ptr) = traceback_obj.as_ptr() else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__traceback__ must be a traceback or None",
+                );
+            };
+            let traceback_type = builtin_classes(_py).traceback;
+            if traceback_type == 0 || !isinstance_bits(_py, traceback_bits, traceback_type) {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__traceback__ must be a traceback or None",
+                );
+            }
+        }
+        unsafe {
+            let slot = self_ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64;
+            let old_bits = *slot;
+            if old_bits != traceback_bits {
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, traceback_bits);
+                *slot = traceback_bits;
+            }
+        }
+        inc_ref_bits(_py, self_bits);
+        self_bits
     })
 }
 

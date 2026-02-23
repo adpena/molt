@@ -182,6 +182,7 @@ struct QueueState {
     items: VecDeque<u64>,
     maxsize: i64,
     unfinished_tasks: u64,
+    is_shutdown: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -525,6 +526,7 @@ impl MoltQueue {
                 items: VecDeque::new(),
                 maxsize,
                 unfinished_tasks: 0,
+                is_shutdown: false,
             }),
             not_empty: Condvar::new(),
             not_full: Condvar::new(),
@@ -543,6 +545,10 @@ impl MoltQueue {
     fn full(&self) -> bool {
         let guard = self.state.lock().unwrap();
         guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
+    }
+
+    fn is_shutdown(&self) -> bool {
+        self.state.lock().unwrap().is_shutdown
     }
 
     fn kind(&self) -> QueueKind {
@@ -581,6 +587,9 @@ impl MoltQueue {
         if guard.kind == QueueKind::Priority {
             return false;
         }
+        if guard.is_shutdown {
+            return false;
+        }
         if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
             guard.items.push_back(item_bits);
             guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
@@ -598,6 +607,9 @@ impl MoltQueue {
                 loop {
                     let (next, timed) = self.not_full.wait_timeout(guard, remaining).unwrap();
                     guard = next;
+                    if guard.is_shutdown {
+                        return false;
+                    }
                     if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                         guard.items.push_back(item_bits);
                         guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
@@ -616,6 +628,9 @@ impl MoltQueue {
             }
             None => loop {
                 guard = self.not_full.wait(guard).unwrap();
+                if guard.is_shutdown {
+                    return false;
+                }
                 if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                     guard.items.push_back(item_bits);
                     guard.unfinished_tasks = guard.unfinished_tasks.saturating_add(1);
@@ -628,6 +643,9 @@ impl MoltQueue {
 
     fn try_put_priority(&self, _py: &PyToken<'_>, item_bits: u64) -> Result<bool, u64> {
         let mut guard = self.state.lock().unwrap();
+        if guard.is_shutdown {
+            return Ok(false);
+        }
         if guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize {
             return Ok(false);
         }
@@ -639,6 +657,9 @@ impl MoltQueue {
 
     fn wait_not_full(&self, timeout: Option<Duration>) -> bool {
         let mut guard = self.state.lock().unwrap();
+        if guard.is_shutdown {
+            return false;
+        }
         if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
             return true;
         }
@@ -650,6 +671,9 @@ impl MoltQueue {
                 loop {
                     let (next, timed) = self.not_full.wait_timeout(guard, remaining).unwrap();
                     guard = next;
+                    if guard.is_shutdown {
+                        return false;
+                    }
                     if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                         return true;
                     }
@@ -665,6 +689,9 @@ impl MoltQueue {
             }
             None => loop {
                 guard = self.not_full.wait(guard).unwrap();
+                if guard.is_shutdown {
+                    return false;
+                }
                 if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                     return true;
                 }
@@ -715,6 +742,9 @@ impl MoltQueue {
             }
             return Some(item_bits);
         }
+        if guard.is_shutdown {
+            return None;
+        }
         if !blocking {
             return None;
         }
@@ -731,6 +761,9 @@ impl MoltQueue {
                             self.not_full.notify_one();
                         }
                         return Some(item_bits);
+                    }
+                    if guard.is_shutdown {
+                        return None;
                     }
                     if timed.timed_out() {
                         return None;
@@ -750,8 +783,27 @@ impl MoltQueue {
                     }
                     return Some(item_bits);
                 }
+                if guard.is_shutdown {
+                    return None;
+                }
             },
         }
+    }
+
+    fn shutdown(&self, _py: &PyToken<'_>, immediate: bool) {
+        let mut guard = self.state.lock().unwrap();
+        guard.is_shutdown = true;
+        if immediate {
+            let mut drained = 0u64;
+            while let Some(bits) = Self::pop_item_locked(&mut guard) {
+                dec_ref_bits(_py, bits);
+                drained = drained.saturating_add(1);
+            }
+            guard.unfinished_tasks = guard.unfinished_tasks.saturating_sub(drained);
+            self.all_tasks_done.notify_all();
+        }
+        self.not_empty.notify_all();
+        self.not_full.notify_all();
     }
 
     fn task_done(&self) -> bool {
@@ -1947,6 +1999,30 @@ pub unsafe extern "C" fn molt_queue_get(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
+        queue.shutdown(_py, immediate);
+        MoltObject::none().bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.is_shutdown()).bits()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
@@ -2126,6 +2202,7 @@ impl MoltQueue {
                 items: VecDeque::new(),
                 maxsize,
                 unfinished_tasks: 0,
+                is_shutdown: false,
             }),
         }
     }
@@ -2141,6 +2218,10 @@ impl MoltQueue {
     fn full(&self) -> bool {
         let guard = self.state.borrow();
         guard.maxsize > 0 && (guard.items.len() as i64) >= guard.maxsize
+    }
+
+    fn is_shutdown(&self) -> bool {
+        self.state.borrow().is_shutdown
     }
 
     fn pop_item_locked(guard: &mut QueueStateWasm) -> Option<u64> {
@@ -2179,6 +2260,9 @@ impl MoltQueue {
     ) -> Result<bool, u64> {
         {
             let mut guard = self.state.borrow_mut();
+            if guard.is_shutdown {
+                return Ok(false);
+            }
             if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                 if guard.kind == QueueKindWasm::Priority {
                     Self::priority_insert_locked(_py, &mut guard, item_bits)?;
@@ -2196,6 +2280,9 @@ impl MoltQueue {
         loop {
             {
                 let mut guard = self.state.borrow_mut();
+                if guard.is_shutdown {
+                    return Ok(false);
+                }
                 if guard.maxsize <= 0 || (guard.items.len() as i64) < guard.maxsize {
                     if guard.kind == QueueKindWasm::Priority {
                         Self::priority_insert_locked(_py, &mut guard, item_bits)?;
@@ -2221,6 +2308,9 @@ impl MoltQueue {
             if let Some(bits) = Self::pop_item_locked(&mut guard) {
                 return Some(bits);
             }
+            if guard.is_shutdown {
+                return None;
+            }
         }
         if !blocking {
             return None;
@@ -2231,6 +2321,9 @@ impl MoltQueue {
                 let mut guard = self.state.borrow_mut();
                 if let Some(bits) = Self::pop_item_locked(&mut guard) {
                     return Some(bits);
+                }
+                if guard.is_shutdown {
+                    return None;
                 }
             }
             if let Some(limit) = timeout {
@@ -2257,6 +2350,19 @@ impl MoltQueue {
                 return;
             }
             std::hint::spin_loop();
+        }
+    }
+
+    fn shutdown(&self, _py: &PyToken<'_>, immediate: bool) {
+        let mut guard = self.state.borrow_mut();
+        guard.is_shutdown = true;
+        if immediate {
+            let mut drained = 0u64;
+            while let Some(bits) = Self::pop_item_locked(&mut guard) {
+                dec_ref_bits(_py, bits);
+                drained = drained.saturating_add(1);
+            }
+            guard.unfinished_tasks = guard.unfinished_tasks.saturating_sub(drained);
         }
     }
 
@@ -2318,6 +2424,7 @@ struct QueueStateWasm {
     items: VecDeque<u64>,
     maxsize: i64,
     unfinished_tasks: u64,
+    is_shutdown: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3512,6 +3619,30 @@ pub unsafe extern "C" fn molt_queue_get(
                 sentinel_bits
             }
         }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
+        queue.shutdown(_py, immediate);
+        MoltObject::none().bits()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(queue) = queue_from_bits(handle_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+        };
+        MoltObject::from_bool(queue.is_shutdown()).bits()
     })
 }
 

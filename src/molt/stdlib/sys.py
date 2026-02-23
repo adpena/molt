@@ -53,6 +53,11 @@ __all__ = [
     "platform",
     "version",
     "version_info",
+    "hexversion",
+    "api_version",
+    "abiflags",
+    "flags",
+    "implementation",
     "breakpointhook",
     "__breakpointhook__",
     "path",
@@ -66,6 +71,7 @@ __all__ = [
     "__stdin__",
     "__stdout__",
     "__stderr__",
+    "UnraisableHookArgs",
     "getrecursionlimit",
     "setrecursionlimit",
     "exc_info",
@@ -105,6 +111,19 @@ _MOLT_SYS_VERSION_INFO = _as_callable(
     _require_intrinsic("molt_sys_version_info", globals())
 )
 _MOLT_SYS_VERSION = _as_callable(_require_intrinsic("molt_sys_version", globals()))
+_MOLT_SYS_HEXVERSION = _as_callable(
+    _require_intrinsic("molt_sys_hexversion", globals())
+)
+_MOLT_SYS_API_VERSION = _as_callable(
+    _require_intrinsic("molt_sys_api_version", globals())
+)
+_MOLT_SYS_ABIFLAGS = _as_callable(_require_intrinsic("molt_sys_abiflags", globals()))
+_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _as_callable(
+    _require_intrinsic("molt_sys_implementation_payload", globals())
+)
+_MOLT_SYS_FLAGS_PAYLOAD = _as_callable(
+    _require_intrinsic("molt_sys_flags_payload", globals())
+)
 _MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform", globals()))
 _MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
 _MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
@@ -159,9 +178,186 @@ def __breakpointhook__(*args: object, **kwargs: object) -> object:
 breakpointhook = __breakpointhook__
 
 
+class UnraisableHookArgs:
+    __slots__ = ("exc_type", "exc_value", "exc_traceback", "err_msg", "object")
+
+    def __init__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        exc_traceback: object,
+        err_msg: object,
+        object: object,  # noqa: A002
+    ) -> None:
+        self.exc_type = exc_type
+        self.exc_value = exc_value
+        self.exc_traceback = exc_traceback
+        self.err_msg = err_msg
+        self.object = object
+
+
+def _expect_int(value: object, intrinsic_name: str, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}")
+    return value
+
+
+def _expect_version_info_tuple(
+    value: object, intrinsic_name: str, field: str
+) -> tuple[int, int, int, str, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 5:
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}")
+    major = _expect_int(value[0], intrinsic_name, f"{field}[0]")
+    minor = _expect_int(value[1], intrinsic_name, f"{field}[1]")
+    micro = _expect_int(value[2], intrinsic_name, f"{field}[2]")
+    releaselevel_obj = value[3]
+    if not _MOLT_IS_STRING_OBJ(releaselevel_obj):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}[3]")
+    serial = _expect_int(value[4], intrinsic_name, f"{field}[4]")
+    return major, minor, micro, cast(str, releaselevel_obj), serial
+
+
+class _ImplementationNamespace:
+    __slots__ = ("name", "cache_tag", "version", "hexversion")
+
+    def __init__(
+        self,
+        name: str,
+        cache_tag: str,
+        version: tuple[int, int, int, str, int],
+        hexversion: int,
+    ) -> None:
+        self.name = name
+        self.cache_tag = cache_tag
+        self.version = version
+        self.hexversion = hexversion
+
+    def __repr__(self) -> str:
+        return (
+            "namespace("
+            f"name={self.name!r}, "
+            f"cache_tag={self.cache_tag!r}, "
+            f"version={self.version!r}, "
+            f"hexversion={self.hexversion!r})"
+        )
+
+
+def _resolve_implementation(payload: object) -> _ImplementationNamespace:
+    intrinsic_name = "molt_sys_implementation_payload"
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
+    name_obj = payload.get("name")
+    cache_tag_obj = payload.get("cache_tag")
+    version_obj = payload.get("version")
+    hexversion_obj = payload.get("hexversion")
+    if not _MOLT_IS_STRING_OBJ(name_obj):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
+    if not _MOLT_IS_STRING_OBJ(cache_tag_obj):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
+    name = cast(str, name_obj)
+    cache_tag = cast(str, cache_tag_obj)
+    if not name:
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
+    if not cache_tag:
+        raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
+    version = _expect_version_info_tuple(version_obj, intrinsic_name, "version")
+    hexversion = _expect_int(hexversion_obj, intrinsic_name, "hexversion")
+    return _ImplementationNamespace(name, cache_tag, version, hexversion)
+
+
+_SYS_FLAGS_SEQUENCE_FIELDS = (
+    "debug",
+    "inspect",
+    "interactive",
+    "optimize",
+    "dont_write_bytecode",
+    "no_user_site",
+    "no_site",
+    "ignore_environment",
+    "verbose",
+    "bytes_warning",
+    "quiet",
+    "hash_randomization",
+    "isolated",
+    "dev_mode",
+    "utf8_mode",
+    "warn_default_encoding",
+    "safe_path",
+    "int_max_str_digits",
+)
+_SYS_FLAGS_SEQUENCE_INDEX = {
+    name: index for index, name in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
+}
+_SYS_FLAGS_GIL = 1
+
+
+def _resolve_flags_payload(payload: object) -> tuple[tuple[int, ...], int]:
+    intrinsic_name = "molt_sys_flags_payload"
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
+    values: list[int] = []
+    for field in _SYS_FLAGS_SEQUENCE_FIELDS:
+        values.append(_expect_int(payload.get(field), intrinsic_name, field))
+    gil = _expect_int(payload.get("gil"), intrinsic_name, "gil")
+    return tuple(values), gil
+
+
+class flags(tuple):
+    __slots__ = ()
+    n_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS)
+    n_sequence_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: tuple[int, ...]) -> "flags":
+        if len(values) != len(_SYS_FLAGS_SEQUENCE_FIELDS):
+            raise RuntimeError("molt_sys_flags_payload returned invalid value")
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _SYS_FLAGS_SEQUENCE_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        if name == "gil":
+            return _SYS_FLAGS_GIL
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(
+            f"{field}={self[index]!r}"
+            for index, field in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
+        )
+        return f"sys.flags({items})"
+
+
 platform = _resolve_platform()
-version = _MOLT_SYS_VERSION()
-version_info = cast(tuple[object, ...], _MOLT_SYS_VERSION_INFO())
+version_obj = _MOLT_SYS_VERSION()
+if not _MOLT_IS_STRING_OBJ(version_obj):
+    raise RuntimeError("molt_sys_version returned invalid value")
+version = cast(str, version_obj)
+version_info = _expect_version_info_tuple(
+    _MOLT_SYS_VERSION_INFO(), "molt_sys_version_info", "version_info"
+)
+hexversion = _expect_int(_MOLT_SYS_HEXVERSION(), "molt_sys_hexversion", "hexversion")
+api_version = _expect_int(
+    _MOLT_SYS_API_VERSION(), "molt_sys_api_version", "api_version"
+)
+abiflags_obj = _MOLT_SYS_ABIFLAGS()
+if not _MOLT_IS_STRING_OBJ(abiflags_obj):
+    raise RuntimeError("molt_sys_abiflags returned invalid value")
+abiflags = cast(str, abiflags_obj)
+implementation = _resolve_implementation(_MOLT_SYS_IMPLEMENTATION_PAYLOAD())
+if implementation.hexversion != hexversion:
+    raise RuntimeError(
+        "molt_sys_implementation_payload returned invalid value for hexversion"
+    )
+if implementation.version != version_info:
+    raise RuntimeError(
+        "molt_sys_implementation_payload returned invalid value for version"
+    )
+_flags_sequence, _SYS_FLAGS_GIL = _resolve_flags_payload(_MOLT_SYS_FLAGS_PAYLOAD())
+_flags_type = flags
+flags = _flags_type(_flags_sequence)
+del _flags_type
 path: list[str] = []
 meta_path: list[object] = []
 path_hooks: list[object] = []

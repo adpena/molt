@@ -3,16 +3,23 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic(
+    "molt_importlib_import_required", globals()
+)
 
 import functools
-import importlib
 import inspect
 import itertools
+import contextlib  # noqa: F401
+import os  # noqa: F401
+import pathlib  # noqa: F401
+import tempfile  # noqa: F401
 import types
 import warnings
 from typing import Optional, Union, cast
 
 from .abc import ResourceReader, Traversable
+from ._adapters import wrap_spec  # noqa: F401
 from . import as_file as _resources_as_file
 from . import files as _resources_files
 
@@ -56,7 +63,7 @@ def get_resource_reader(package: types.ModuleType) -> Optional[ResourceReader]:
 
 def resolve(cand: Optional[Anchor]) -> types.ModuleType:
     if isinstance(cand, str):
-        return importlib.import_module(cand)
+        return cast(types.ModuleType, _MOLT_IMPORTLIB_IMPORT_REQUIRED(cand))
     if cand is None:
         return resolve(_infer_caller().f_globals["__name__"])
     return cast(types.ModuleType, cand)

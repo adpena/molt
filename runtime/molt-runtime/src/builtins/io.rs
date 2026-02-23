@@ -13,9 +13,11 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(not(unix))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BUFFER_SIZE: i64 = 8192;
 static HANDLE_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
@@ -4646,7 +4648,7 @@ pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_path_mkdir(path_bits: u64) -> u64 {
+pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
@@ -4655,7 +4657,21 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64) -> u64 {
             Ok(path) => path,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
-        match std::fs::create_dir(&path) {
+        let mode = index_i64_from_obj(_py, mode_bits, "mkdir() mode must be int");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let mode = mode as u32;
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            builder.mode(mode);
+        }
+        #[cfg(windows)]
+        {
+            let _ = mode;
+        }
+        match builder.create(&path) {
             Ok(()) => MoltObject::none().bits(),
             Err(err) => {
                 let msg = err.to_string();
@@ -5032,7 +5048,41 @@ pub extern "C" fn molt_path_expandvars_env(path_bits: u64, env_bits: u64) -> u64
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_path_makedirs(path_bits: u64, exist_ok_bits: u64) -> u64 {
+pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
+    fn create_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    return Ok(());
+                }
+                return Err(std::io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    format!("File exists: {}", path.to_string_lossy()),
+                ));
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && parent != path
+        {
+            create_parent_dir(parent)?;
+        }
+        let builder = std::fs::DirBuilder::new();
+        match builder.create(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                let meta = std::fs::metadata(path)?;
+                if meta.is_dir() { Ok(()) } else { Err(err) }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
@@ -5044,6 +5094,11 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, exist_ok_bits: u64) -> u64 
             Ok(path) => path,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
+        let mode = index_i64_from_obj(_py, mode_bits, "makedirs() mode must be int");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let mode = mode as u32;
         if path.as_os_str().is_empty() {
             return MoltObject::none().bits();
         }
@@ -5071,14 +5126,42 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, exist_ok_bits: u64) -> u64 
                 };
             }
         }
-        match std::fs::create_dir_all(&path) {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && parent != path
+        {
+            if let Err(err) = create_parent_dir(parent) {
+                let msg = err.to_string();
+                return match err.kind() {
+                    ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
+                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                };
+            }
+        }
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            builder.mode(mode);
+        }
+        #[cfg(windows)]
+        {
+            let _ = mode;
+        }
+        match builder.create(&path) {
             Ok(()) => MoltObject::none().bits(),
             Err(err) => {
                 let msg = err.to_string();
                 match err.kind() {
                     ErrorKind::AlreadyExists => {
                         if exist_ok {
-                            MoltObject::none().bits()
+                            match std::fs::metadata(&path) {
+                                Ok(meta) if meta.is_dir() => MoltObject::none().bits(),
+                                _ => raise_exception::<_>(_py, "FileExistsError", &msg),
+                            }
                         } else {
                             raise_exception::<_>(_py, "FileExistsError", &msg)
                         }
@@ -5938,6 +6021,207 @@ pub extern "C" fn molt_getcwd() -> u64 {
                     _ => raise_exception::<_>(_py, "OSError", &msg),
                 }
             }
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn unix_seconds_from_system_time(value: SystemTime) -> i128 {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i128::from(duration.as_secs()),
+        Err(err) => -i128::from(err.duration().as_secs()),
+    }
+}
+
+#[cfg(not(unix))]
+fn metadata_time_seconds(value: Result<SystemTime, std::io::Error>) -> i128 {
+    match value {
+        Ok(time) => unix_seconds_from_system_time(time),
+        Err(_) => 0,
+    }
+}
+
+fn stat_tuple_from_values(
+    _py: &PyToken<'_>,
+    st_mode: i128,
+    st_ino: i128,
+    st_dev: i128,
+    st_nlink: i128,
+    st_uid: i128,
+    st_gid: i128,
+    st_size: i128,
+    st_atime: i128,
+    st_mtime: i128,
+    st_ctime: i128,
+) -> u64 {
+    let tuple_ptr = alloc_tuple(
+        _py,
+        &[
+            int_bits_from_i128(_py, st_mode),
+            int_bits_from_i128(_py, st_ino),
+            int_bits_from_i128(_py, st_dev),
+            int_bits_from_i128(_py, st_nlink),
+            int_bits_from_i128(_py, st_uid),
+            int_bits_from_i128(_py, st_gid),
+            int_bits_from_i128(_py, st_size),
+            int_bits_from_i128(_py, st_atime),
+            int_bits_from_i128(_py, st_mtime),
+            int_bits_from_i128(_py, st_ctime),
+        ],
+    );
+    if tuple_ptr.is_null() {
+        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+#[cfg(unix)]
+fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    stat_tuple_from_values(
+        _py,
+        i128::from(metadata.mode()),
+        metadata.ino() as i128,
+        metadata.dev() as i128,
+        metadata.nlink() as i128,
+        i128::from(metadata.uid()),
+        i128::from(metadata.gid()),
+        metadata.size() as i128,
+        i128::from(metadata.atime()),
+        i128::from(metadata.mtime()),
+        i128::from(metadata.ctime()),
+    )
+}
+
+#[cfg(not(unix))]
+fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> u64 {
+    let is_dir = metadata.is_dir();
+    #[cfg(windows)]
+    let kind = if is_dir {
+        i128::from(libc::S_IFDIR as i64)
+    } else {
+        i128::from(libc::S_IFREG as i64)
+    };
+    #[cfg(not(windows))]
+    let kind = 0i128;
+    let mode_bits = if metadata.permissions().readonly() {
+        if is_dir { 0o555 } else { 0o444 }
+    } else if is_dir {
+        0o777
+    } else {
+        0o666
+    };
+    stat_tuple_from_values(
+        _py,
+        kind | i128::from(mode_bits),
+        0,
+        0,
+        0,
+        0,
+        0,
+        i128::from(metadata.len()),
+        metadata_time_seconds(metadata.accessed()),
+        metadata_time_seconds(metadata.modified()),
+        metadata_time_seconds(metadata.created()),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_stat(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::metadata(&path) {
+            Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
+            Err(err) => raise_os_error::<u64>(_py, err, "stat"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_lstat(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
+            Err(err) => raise_os_error::<u64>(_py, err, "lstat"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_fstat(fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
+            let msg = format!("an integer is required (got {type_name})");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "fstat");
+        }
+        #[cfg(unix)]
+        {
+            use std::mem::ManuallyDrop;
+            use std::os::fd::FromRawFd;
+
+            let raw_fd: libc::c_int = match libc::c_int::try_from(fd) {
+                Ok(raw_fd) => raw_fd,
+                Err(_) => return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "fstat"),
+            };
+            // SAFETY: we only borrow the descriptor for metadata lookup and prevent close via
+            // ManuallyDrop so ownership of `raw_fd` stays with the caller.
+            let file = unsafe { ManuallyDrop::new(std::fs::File::from_raw_fd(raw_fd)) };
+            match file.metadata() {
+                Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
+                Err(err) => raise_os_error::<u64>(_py, err, "fstat"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fd;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "fstat")
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_rename(src_bits: u64, dst_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let src = match path_from_bits(_py, src_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let dst = match path_from_bits(_py, dst_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::rename(&src, &dst) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => raise_os_error::<u64>(_py, err, "rename"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_replace(src_bits: u64, dst_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let src = match path_from_bits(_py, src_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let dst = match path_from_bits(_py, dst_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::rename(&src, &dst) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => raise_os_error::<u64>(_py, err, "replace"),
         }
     })
 }

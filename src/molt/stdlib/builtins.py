@@ -261,7 +261,7 @@ if False:  # TYPE_CHECKING
     _molt_errno_constants: Callable[[], tuple[dict[str, int], dict[int, str]]]
     _molt_path_exists: Callable[[object], bool]
     _molt_path_listdir: Callable[[object], object]
-    _molt_path_mkdir: Callable[[object], object]
+    _molt_path_mkdir: Callable[[object, object], object]
     _molt_path_unlink: Callable[[object], None]
     _molt_path_rmdir: Callable[[object], None]
     _molt_path_chmod: Callable[[object, object], None]

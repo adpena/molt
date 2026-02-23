@@ -248,8 +248,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - `statistics_mean_slice`/`statistics_stdev_slice` now use int/float element fast coercion lanes inside the slice loops (fallback preserved for generic numeric objects).
 - `abs(...)` builtin now lowers directly to a dedicated runtime op (`abs`) instead of dynamic call dispatch in hot loops.
 - `dict.setdefault(key, [])` now has a dedicated lowering/runtime lane (`dict_setdefault_empty_list`) that avoids eager empty-list allocation while preserving `dict.setdefault` behavior.
-- `str.lower`/`str.upper`/`str.capitalize`, list methods (`append`/`extend`/`insert`/`remove`/`pop`/`count`/`index` with start/stop + parity errors, `clear`/`copy`/`reverse`/`sort`),
+- `str.lower`/`str.upper`/`str.capitalize`/`str.title`/`str.swapcase`, `str.format_map`, `str.removeprefix`/`str.removesuffix`, `str.zfill`, `str.center`/`str.ljust`/`str.rjust`, `str.expandtabs`, and `%` string formatting (`%s`/`%r`/`%a`/`%c`/`%d`/`%i`/`%u`/`%o`/`%x`/`%X`/`%e`/`%E`/`%f`/`%F`/`%g`/`%G` + `%%`, including `*` width/precision),
+  list methods (`append`/`extend`/`insert`/`remove`/`pop`/`count`/`index` with start/stop + parity errors, `clear`/`copy`/`reverse`/`sort`),
   and `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`/`dict.fromkeys`.
+- Differential coverage for this `str` tranche: `tests/differential/basic/str_case_methods_extended.py` (case transform lane),
+  `tests/differential/basic/str_predicates_surface.py` (predicate surface across empty, cased, and Unicode-heavy inputs),
+  and `tests/differential/basic/str_lowered_methods.py` + `tests/differential/basic/str_lowered_methods_edges.py` (newly lowered string method/error/% lanes).
 - List dunder arithmetic methods (`__add__`/`__mul__`/`__rmul__`/`__iadd__`/`__imul__`) are available for dynamic access and follow CPython error behavior.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): advance native `re` engine to full syntax/flags/groups; native engine supports literals, `.`, char classes/ranges (`\\d`/`\\w`/`\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL` flags. Matcher hot paths for literal/any/char-class advancement, char/range/category checks, anchors, backreference/group-presence resolution, scoped-flag math, group capture/value materialization, and replacement expansion are intrinsic-backed; remaining advanced features/flags still raise `NotImplementedError` (no host fallback).
 - Builtin containers expose `__iter__`/`__len__`/`__contains__`/`__reversed__` (where defined) for list/dict/str/bytes/bytearray, including class-level access to builtin methods. Item dunder access via getattr is available for dict/list/bytearray/memoryview (`__getitem__`/`__setitem__`/`__delitem__`).
@@ -296,9 +300,11 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: `urllib.parse.urlencode` now lowers through runtime intrinsic `molt_urllib_urlencode`; the shim keeps only query-item normalization and output validation.
 - Implemented: `urllib.error` now lowers exception construction/formatting through dedicated runtime intrinsics (`molt_urllib_error_urlerror_init`, `molt_urllib_error_urlerror_str`, `molt_urllib_error_httperror_init`, `molt_urllib_error_httperror_str`, `molt_urllib_error_content_too_short_init`) for `URLError`, `HTTPError`, and `ContentTooShortError`; the module shim is reduced to class shell wiring and raises immediately when intrinsics are unavailable.
 - Implemented: `urllib.request` opener core now lowers through dedicated runtime intrinsics (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) covering request/bootstrap wiring, handler ordering/dispatch, and `data:` URL fallback behind default-opener wiring; Python shim is limited to class shells and response adaptation, with `data:` metadata parity (`getcode()`/`status` -> `None`).
+- Implemented: `urllib.response` now provides CPython-style `addbase`/`addclosehook`/`addinfo`/`addinfourl` classes, and intrinsic-backed response handles lower through `molt_urllib_request_response_*` accessors (including `read`/`read1`/`readinto`/`readinto1`/`readline`/`readlines`, `readable`/`writable`/`seekable`/`tell`/`seek`, plus `molt_urllib_request_response_message` for `HTTPMessage` header materialization) instead of Python-side response shims; closed-read behavior now matches CPython split semantics (`data:` raises `ValueError`, HTTP returns EOF/zero where applicable).
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/serialization paths (`molt_enum_init_member`, `molt_pickle_dumps_core`, `molt_pickle_loads_core`) with `pickle.py` reduced to thin intrinsic-forwarding wrappers (`dump`/`dumps`/`load`/`loads`, `Pickler`, `Unpickler`, `PickleBuffer`) for protocols `0..5`; protocol-5 out-of-band `PickleBuffer` lanes now decode/encode through intrinsic `NEXT_BUFFER`/`READONLY_BUFFER` handling with `loads(..., buffers=...)`; broader CPython 3.12+ reducer/error-text/API-surface parity remains queued.
 - Implemented: `queue` now has intrinsic-backed `LifoQueue` and `PriorityQueue` constructors/ordering (`molt_queue_lifo_new`, `molt_queue_priority_new`) on top of existing intrinsic-backed FIFO queue operations.
+- Differential coverage now includes queue-family targeted probes for `Queue.shutdown`/`ShutDown` surface/behavior across interpreter versions, `SimpleQueue.get(block=False, timeout=...)` empty-path behavior, and `_queue` import/surface sanity (`Empty`, `SimpleQueue`).
 - Implemented: `statistics` function surface now lowers through Rust intrinsics (`molt_statistics_mean`, `molt_statistics_fmean`, `molt_statistics_stdev`, `molt_statistics_variance`, `molt_statistics_pvariance`, `molt_statistics_pstdev`, `molt_statistics_median`, `molt_statistics_median_low`, `molt_statistics_median_high`, `molt_statistics_median_grouped`, `molt_statistics_mode`, `molt_statistics_multimode`, `molt_statistics_quantiles`, `molt_statistics_harmonic_mean`, `molt_statistics_geometric_mean`, `molt_statistics_covariance`, `molt_statistics_correlation`, `molt_statistics_linear_regression`) with shim-level `StatisticsError` mapping.
 - Implemented: runtime-backed slice statistics intrinsics (`molt_statistics_mean_slice`, `molt_statistics_stdev_slice`) are wired for native+wasm lowering paths and preserve generic fallback behavior via runtime-owned slicing/iteration.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete full `statistics` 3.12+ API/PEP parity beyond intrinsic-lowered function surface (for example `NormalDist` and remaining edge-case semantics).
@@ -372,6 +378,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Class instantiation bypasses user-defined `__new__` for non-exception classes (allocates instances directly before `__init__`).
   (TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): honor `__new__` overrides for non-exception classes.)
 - Strings: `str.isdigit` now follows Unicode digit properties (ASCII + superscripts + non-ASCII digit sets).
+- Strings: predicate surface now includes intrinsic-backed `str.isalpha`, `str.isalnum`, `str.isdecimal`, `str.isdigit`, `str.isnumeric`, `str.islower`, `str.isupper`, `str.isspace`, `str.istitle`, `str.isprintable`, and `str.isascii`; `str.title`/`str.capitalize` now use runtime Unicode titlecase tables (generated in `build.rs`) for CPython-aligned digraph/ligature behavior.
 - Dataclasses: compile-time lowering covers init/repr/eq/order/unsafe_hash/frozen/slots/match_args/kw_only,
   field flags, InitVar/ClassVar/KW_ONLY, __match_args__, stdlib helpers, and `make_dataclass`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance
@@ -460,17 +467,34 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   also handles `from x import *` semantics (including `__all__` validation/fallback underscore filtering)
   in runtime-owned paths.
   `importlib.resources` package root/namespace resolution and traversable stat/listdir payloads are runtime-lowered via
-  `molt_importlib_resources_package_payload` and `molt_importlib_resources_path_payload` (including zip/whl/egg namespace/resource roots); loader reader bootstrap
+  `molt_importlib_resources_package_payload` and `molt_importlib_resources_path_payload` (including zip/whl/egg namespace/resource roots); files()-path arbitration
+  now lowers through `molt_importlib_resources_files_payload`, and loader reader bootstrap
   lowers through `molt_importlib_resources_module_name`/`molt_importlib_resources_loader_reader` (including
   explicit fallback from `module.__spec__.loader` to `module.__loader__`), and custom
   reader contract surfaces lower through `molt_importlib_resources_reader_roots`/`molt_importlib_resources_reader_contents`/
   `molt_importlib_resources_reader_resource_path`/`molt_importlib_resources_reader_is_resource`/
   `molt_importlib_resources_reader_open_resource_bytes`/`molt_importlib_resources_reader_child_names`; direct resources text/binary reads lower through
-  `molt_importlib_read_file`. `importlib.metadata` dist-info scan + metadata parsing lower through
+  `molt_importlib_read_file`. `importlib.resources._functional` string-anchor path-name APIs now lower through dedicated
+  runtime intrinsics (`molt_importlib_resources_open_resource_bytes_from_package_parts`,
+  `molt_importlib_resources_read_text_from_package_parts`,
+  `molt_importlib_resources_contents_from_package_parts`,
+  `molt_importlib_resources_is_resource_from_package_parts`,
+  `molt_importlib_resources_resource_path_from_package_parts`) with a thin wrapper for CPython-compatible warnings/encoding
+  argument behavior. `importlib.metadata` dist-info scan + metadata parsing lower through
   `molt_importlib_bootstrap_payload`, `molt_importlib_metadata_dist_paths`,
   `molt_importlib_metadata_entry_points_payload`/`molt_importlib_metadata_entry_points_select_payload`,
   `molt_importlib_metadata_normalize_name`, and `molt_importlib_metadata_payload`
-  (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields).
+  (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields); bulk distribution cache payloads,
+  `importlib.metadata.files()`, and `importlib.metadata.packages_distributions()` now lower through runtime payload
+  intrinsics `molt_importlib_metadata_distributions_payload`, `molt_importlib_metadata_record_payload`, and
+  `molt_importlib_metadata_packages_distributions_payload`.
+  Importlib helper-module lowering also now routes through runtime intrinsics: `importlib._abc`/`importlib.readers`/`importlib.simple`
+  use intrinsic-backed import loading (`molt_importlib_import_optional`/`molt_importlib_import_required`), `importlib.resources` helper
+  modules use intrinsic-backed joinpath/import/mode/leaf-name helpers (`molt_importlib_resources_joinpath`,
+  `molt_importlib_resources_open_mode_is_text`, `molt_importlib_resources_package_leaf_name`), and `importlib.metadata`
+  helper modules use runtime-owned functools/itertools/operator helpers (`molt_functools_lru_cache`,
+  `molt_functools_update_wrapper`, `molt_itertools_filterfalse`, `molt_operator_truth`, `molt_operator_eq`, `molt_operator_lt`)
+  without host-Python fallback lanes.
   Build-time module-graph import collection now resolves constant module-name flows through helper wrappers (for example
   `importlib.import_module(module_name)` inside a helper invoked as `_probe(MODULE_NAME)`), so generated `_molt_importer`
   dispatchers include the required stdlib modules/submodules and avoid brittle runtime fallback paths for those imports.
@@ -640,12 +664,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
-- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `urllib.parse`, `urllib.error`, `urllib.request`, `fnmatch` (`*`/`?`
+- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `atexit`, `ctypes`, `urllib.parse`, `urllib.error`, `urllib.request`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `string`, `struct`, `typing`, `sys`, `os`, `pathlib`,
   `tempfile`, `gc`, `weakref`, `random` (Random API + MT parity: `seed`/`getstate`/`setstate`, `randrange`/`randint`/`shuffle`, `choice`/`choices`/`sample`, `randbytes`, `SystemRandom` via `os.urandom`, plus distributions: `uniform`, `triangular`, `normalvariate`, `gauss`, `lognormvariate`, `expovariate`, `vonmisesvariate`, `gammavariate`, `betavariate`, `paretovariate`, `weibullvariate`, `binomialvariate`), `time` (`monotonic`, `perf_counter`, `process_time`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`, plus `localtime`/`gmtime`/`strftime` + `struct_time` + `asctime`/`ctime` + `timezone`/`daylight`/`altzone`/`tzname` + `mktime` + `timegm`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan, `JSONEncoder`/`JSONDecoder`, `JSONDecodeError` details), `base64` (b16/b32/b32hex/b64/b85/a85/z85 encode/decode + urlsafe + legacy helpers), `hashlib`/`hmac` (Rust intrinsics for guaranteed algorithms + `pbkdf2_hmac`/`scrypt`; unsupported algorithms raise), `pickle` (protocols `0..5` on intrinsic core path, including protocol-`2+` memo/reducer/extension and persistent-hook lanes; still intrinsic-partial for full CPython 3.12+ edge semantics),
   `socket` (runtime-backed, capability-gated; fd duplication/fromfd/inheritable plus socket-file reader read/readline paths route via Rust intrinsics, `dup` now clones via runtime socket-handle intrinsic, default-timeout validation is CPython-shaped, and `gethostbyaddr`/`getfqdn` now lower through dedicated Rust intrinsics; advanced options + wasm parity pending), `select` (`select.select` + `poll`/`epoll`/`kqueue`/`devpoll` objects now intrinsic-backed via runtime selector registries),
-  `selectors` (CPython-shaped backend classes now route through intrinsic-backed `select` objects rather than Python async fan-out), `asyncio`, `contextvars`, `contextlib`, `threading`, `zipfile`, `zipimport`,
+  `selectors` (CPython-shaped backend classes now route through intrinsic-backed `select` objects rather than Python async fan-out; focused differential coverage now locks register/modify/unregister semantics, timeout normalization (`timeout <= 0` uses non-blocking polls), event-mask filtering, and `DefaultSelector` backend readiness behavior), `asyncio`, `contextvars`, `contextlib`, `threading`, `zipfile`, `zipimport`,
   `functools`, `itertools`, `operator`, `heapq`, `collections`.
   Supported shims: `keyword` (`kwlist`/`softkwlist`, `iskeyword`, `issoftkeyword`), `pprint` (PrettyPrinter/pformat/pprint parity).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
@@ -674,12 +698,19 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: threading basic differential lane (`tests/differential/basic/threading_*.py`) is green (`24/24`) under intrinsic-only compiled runs with RSS profiling enabled.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
 - Implemented: `os.environ` mapping methods are runtime-intrinsic-backed (`molt_env_snapshot`/`molt_env_set`/`molt_env_unset`) with str-only key/value checks; `os.putenv`/`os.unsetenv` are lowered to dedicated runtime intrinsics (`molt_env_putenv`/`molt_env_unsetenv`) and keep CPython-style separation from `os.environ`/`os.getenv`.
+- Implemented: `os.mkdir`/`os.makedirs` now pass `mode` through Rust intrinsics (`molt_path_mkdir(path, mode)` / `molt_path_makedirs(path, mode, exist_ok)`), including `__index__` exception-propagation parity for non-int mode adapters; focused diff coverage is green in `os_mkdir_makedirs_mode_intrinsic.py`.
+- Implemented: `sys` metadata attrs `hexversion`, `api_version`, `abiflags`, and `implementation` are now intrinsic-backed (`molt_sys_hexversion`, `molt_sys_api_version`, `molt_sys_abiflags`, `molt_sys_implementation_payload`) with validated payload shaping in the shim; focused diff coverage is green in `sys_metadata_intrinsics.py`.
+- Implemented: `weakref.ReferenceType.__callback__` now lowers through Rust intrinsic `molt_weakref_callback` with CPython-style alive/dead behavior (`None` after referent collection); focused diff coverage is green in `weakref_callback_property_intrinsic.py`.
+- Implemented: `os.stat`/`os.lstat`/`os.fstat`/`os.rename`/`os.replace` are now Rust-intrinsic-backed (`molt_os_stat`, `molt_os_lstat`, `molt_os_fstat`, `molt_os_rename`, `molt_os_replace`) with thin shim-side `os.stat_result` shaping and focused coverage in `os_stat_rename_replace_intrinsic.py`.
+- Implemented: `sys.flags` now lowers through Rust payload intrinsic `molt_sys_flags_payload` with shim-side payload validation and CPython-ordered sequence-field shaping; focused coverage is in `sys_flags_intrinsic.py`.
+- Implemented: `token` now boots through intrinsic readiness (`molt_import_smoke_runtime_ready`) and loads CPython 3.12 token payload objects from Rust via `molt_token_payload_312` (backed by runtime payload data), covering constants, `tok_name`, `EXACT_TOKEN_TYPES`, helper predicates (`ISTERMINAL`/`ISNONTERMINAL`/`ISEOF`), and `__all__`; focused differential coverage is in `tests/differential/stdlib/token_core_api.py`.
+- Implemented: weakref finalize edge transitions (`detach`/`peek`/`alive` and idempotent invocation semantics) now have focused differential coverage in `weakref_finalize_detach_peek_edges.py` alongside existing atexit-ordering parity coverage.
 - Implemented: uuid module parity (UUID accessors, `uuid1`/`uuid3`/`uuid4`/`uuid5`, namespaces, SafeUUID).
 - Implemented: collections.abc parity (ABC registration, structural checks, mixins).
+- Implemented: `atexit` core callback registry/shutdown-drain execution is intrinsic-backed (no import-only stub lane on compiled runs), including callback continuation after failures, version-gated stderr callback+traceback reporting parity (3.12 vs 3.13+ punctuation shape), custom `sys.unraisablehook` payload parity (`UnraisableHookArgs` shape/version semantics), and weakref-finalizer runner ordering parity with user callbacks.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (runtime fast-path parser + performance tuning).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand advanced hashlib/hmac digestmod parity tests.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten `weakref.finalize` shutdown-order parity (including `atexit` edge cases) against CPython.
 - Implemented: `abc.update_abstractmethods` now lowers through Rust intrinsic `molt_abc_update_abstractmethods` (no Python-side abstract-method scanning loop in `abc.py`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close `_abc` edge-case cache/version parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): replace placeholder iterator/view types (`object`/`type`) so ABC registration doesn't need guards.
@@ -706,7 +737,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: relative import resolution now honors `__package__`/`__spec__` metadata (including `__main__`) and namespace packages, with CPython-matching errors for missing or over-deep parents.
 - Implemented: `importlib.resources` custom loader reader contract parity is now wired through reader-backed traversables (`contents`/`is_resource`/`open_resource`/`resource_path`) on top of intrinsic namespace + archive resource payloads, with archive-member path tagging in runtime payloads so `resource_path()` stays filesystem-only across direct + traversable + roots fallback lanes, while archive reads remain intrinsic-backed via `open_resource()`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata dependency/advanced metadata semantics beyond intrinsic payload parsing.
-- Planned import-only stubs: `html`, `html.parser`, `http.cookies`,
+- Implemented: `http.cookies` now has an intrinsic-backed SimpleCookie/Morsel subset (`__setitem__`/`__getitem__`, `load("a=1; b=2")`, `output`, items iteration, and focused morsel attrs: `path`/`secure`/`httponly`/`max-age`/`expires`), with remaining parity tracked in the compatibility matrix.
+- Planned import-only stubs: `html`, `html.parser`,
   `ipaddress`, `mimetypes`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`,
   `email.utils`, `email.header`, `urllib.robotparser`,
   `logging.config`, `logging.handlers`, `cgi`, `zlib`.

@@ -480,6 +480,7 @@ stdlib:
       - tests/differential/stdlib/sys_encoding_basic.py
       - tests/differential/stdlib/sys_getframe_fields.py
       - tests/differential/stdlib/sys_exc_info_nested.py
+      - tests/differential/stdlib/sys_flags_intrinsic.py
   textwrap:
     tests:
       - tests/differential/stdlib/textwrap_basic.py
@@ -512,6 +513,7 @@ stdlib:
       - tests/differential/stdlib/weakref_basic_gc_collect.py
       - tests/differential/stdlib/weakref_weakkeydict_basic.py
       - tests/differential/stdlib/weakref_extended.py
+      - tests/differential/stdlib/weakref_finalize_detach_peek_edges.py
 
   annotationlib:
     tests:
@@ -805,6 +807,7 @@ stdlib:
   token:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_c.py
+      - tests/differential/stdlib/token_core_api.py
   tokenize:
     tests:
       - tests/differential/stdlib/stdlib_import_smoke_core_c.py
@@ -912,6 +915,7 @@ stdlib:
       - tests/differential/stdlib/os_path_isabs_intrinsic.py
       - tests/differential/stdlib/os_urandom_basic.py
       - tests/differential/stdlib/os_path_more.py
+      - tests/differential/stdlib/os_stat_rename_replace_intrinsic.py
   pathlib:
     tests:
       - tests/differential/stdlib/pathlib_basic_ops.py

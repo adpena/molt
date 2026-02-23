@@ -7,7 +7,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._functools import method_cache
 import re as re
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_OPERATOR_EQ = _require_intrinsic("molt_operator_eq", globals())
+_MOLT_OPERATOR_LT = _require_intrinsic("molt_operator_lt", globals())
 
 
 class FoldedCase(str):
@@ -28,10 +29,10 @@ class FoldedCase(str):
         other_text = self._coerce(other)
         if other_text is NotImplemented:
             return NotImplemented
-        return self.lower() == str(other_text).lower()
+        return _MOLT_OPERATOR_EQ(self.lower(), str(other_text).lower())
 
     def __lt__(self, other):
         other_text = self._coerce(other)
         if other_text is NotImplemented:
             return NotImplemented
-        return self.lower() < str(other_text).lower()
+        return _MOLT_OPERATOR_LT(self.lower(), str(other_text).lower())
