@@ -830,3 +830,399 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// JSON detect_encoding / loads / dumps
+// ---------------------------------------------------------------------------
+
+/// Detect the encoding of a JSON byte string by inspecting the BOM or the
+/// first few bytes.  Returns a MoltObject string: one of "utf-8", "utf-16-le",
+/// "utf-16-be", "utf-32-le", "utf-32-be".
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_detect_encoding(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(data_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<u64>(_py, "TypeError", "detect_encoding expects bytes");
+        };
+        let (data, len) = unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+                let msg = format!("detect_encoding expects bytes, got {}", type_name(_py, obj));
+                return raise_exception::<u64>(_py, "TypeError", &msg);
+            }
+            let len = bytes_len(ptr);
+            let data_ptr = bytes_data(ptr);
+            (std::slice::from_raw_parts(data_ptr, len), len)
+        };
+
+        let encoding = detect_json_encoding(data, len);
+        let enc_ptr = alloc_string(_py, encoding.as_bytes());
+        if enc_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+        }
+        MoltObject::from_ptr(enc_ptr).bits()
+    })
+}
+
+fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
+    // Check BOM first
+    if len >= 4 {
+        match (data[0], data[1], data[2], data[3]) {
+            (0x00, 0x00, 0xFE, 0xFF) => return "utf-32-be",
+            (0xFF, 0xFE, 0x00, 0x00) => return "utf-32-le",
+            _ => {}
+        }
+    }
+    if len >= 2 {
+        match (data[0], data[1]) {
+            (0xFE, 0xFF) => return "utf-16-be",
+            (0xFF, 0xFE) => return "utf-16-le",
+            _ => {}
+        }
+    }
+    if len >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+        return "utf-8";
+    }
+
+    // No BOM — use the null-byte pattern of the first 2–4 bytes (RFC 4627 §3)
+    if len >= 4 {
+        match (data[0], data[1], data[2], data[3]) {
+            (0x00, 0x00, 0x00, _) => return "utf-32-be",
+            (_, 0x00, 0x00, 0x00) => return "utf-32-le",
+            (0x00, _, 0x00, _) => return "utf-16-be",
+            (_, 0x00, _, 0x00) => return "utf-16-le",
+            _ => {}
+        }
+    } else if len >= 2 {
+        match (data[0], data[1]) {
+            (0x00, _) => return "utf-16-be",
+            (_, 0x00) => return "utf-16-le",
+            _ => {}
+        }
+    }
+    "utf-8"
+}
+
+/// Full JSON loads: parse a JSON string and return the MoltObject tree.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_loads(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(text_bits);
+
+        // Accept str
+        if let Some(text) = string_obj_to_owned(obj) {
+            return json_loads_str(_py, &text);
+        }
+
+        // Accept bytes / bytearray — decode as UTF-8
+        if let Some(ptr) = obj.as_ptr() {
+            let type_id = unsafe { object_type_id(ptr) };
+            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                let slice = unsafe {
+                    let len = bytes_len(ptr);
+                    let data_ptr = bytes_data(ptr);
+                    std::slice::from_raw_parts(data_ptr, len)
+                };
+                let text = match std::str::from_utf8(slice) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return raise_exception::<u64>(
+                            _py,
+                            "UnicodeDecodeError",
+                            "bytes is not valid UTF-8",
+                        );
+                    }
+                };
+                return json_loads_str(_py, text);
+            }
+        }
+
+        let tn = type_name(_py, obj);
+        let msg = format!("the JSON object must be str, bytes or bytearray, not {tn}");
+        raise_exception::<u64>(_py, "TypeError", &msg)
+    })
+}
+
+fn json_loads_str(_py: &PyToken<'_>, text: &str) -> u64 {
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(val) => val,
+        Err(e) => {
+            let msg = format!("{e}");
+            return raise_exception::<u64>(_py, "ValueError", &msg);
+        }
+    };
+    PARSE_ARENA.with(|arena| {
+        let mut arena = arena.borrow_mut();
+        let result = value_to_object(_py, v, &mut arena);
+        arena.reset();
+        match result {
+            Ok(val) => val.bits(),
+            Err(_) => raise_exception::<u64>(_py, "ValueError", "failed to convert JSON value"),
+        }
+    })
+}
+
+/// Full JSON dumps: serialize a MoltObject to a JSON string.
+///
+/// Arguments (all as NaN-boxed u64 bits):
+///   obj_bits          — the value to serialize
+///   indent_bits       — None for compact, int for number of spaces
+///   sort_keys_bits    — boolean
+///   ensure_ascii_bits — boolean
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_dumps(
+    obj_bits: u64,
+    indent_bits: u64,
+    sort_keys_bits: u64,
+    ensure_ascii_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let indent_obj = obj_from_bits(indent_bits);
+        let indent: Option<usize> = if indent_obj.is_none() {
+            None
+        } else if let Some(i) = crate::builtins::numbers::to_i64(indent_obj) {
+            Some(if i < 0 { 0 } else { i as usize })
+        } else {
+            return raise_exception::<u64>(_py, "TypeError", "indent must be None or an integer");
+        };
+        let sort_keys = is_truthy(_py, obj_from_bits(sort_keys_bits));
+        let ensure_ascii = is_truthy(_py, obj_from_bits(ensure_ascii_bits));
+
+        let mut out = String::with_capacity(128);
+        if let Err(msg) = object_to_json(
+            _py,
+            obj_from_bits(obj_bits),
+            &mut out,
+            indent,
+            sort_keys,
+            ensure_ascii,
+            0,
+        ) {
+            return raise_exception::<u64>(_py, "TypeError", &msg);
+        }
+
+        let enc_ptr = alloc_string(_py, out.as_bytes());
+        if enc_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+        }
+        MoltObject::from_ptr(enc_ptr).bits()
+    })
+}
+
+fn json_write_indent(out: &mut String, indent: Option<usize>, depth: usize) {
+    if let Some(n) = indent {
+        out.push('\n');
+        for _ in 0..(n * depth) {
+            out.push(' ');
+        }
+    }
+}
+
+fn object_to_json(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    out: &mut String,
+    indent: Option<usize>,
+    sort_keys: bool,
+    ensure_ascii: bool,
+    depth: usize,
+) -> Result<(), String> {
+    // None → null
+    if obj.is_none() {
+        out.push_str("null");
+        return Ok(());
+    }
+    // Bool (must check before int since bools can overlap with int tag)
+    if let Some(b) = obj.as_bool() {
+        out.push_str(if b { "true" } else { "false" });
+        return Ok(());
+    }
+    // Int
+    if obj.is_int()
+        && let Some(i) = obj.as_int()
+    {
+        let _ = std::fmt::Write::write_fmt(out, format_args!("{i}"));
+        return Ok(());
+    }
+    // Float
+    if let Some(f) = obj.as_float() {
+        if f.is_nan() || f.is_infinite() {
+            return Err(format!(
+                "ValueError: Out of range float values are not JSON compliant: {f}"
+            ));
+        }
+        // Match Python repr: 0.0 not "0", 1.5 not "1.5000..."
+        let s = format!("{f}");
+        // serde_json-style: ensure there is a decimal point
+        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+            out.push_str(&s);
+            out.push_str(".0");
+        } else {
+            out.push_str(&s);
+        }
+        return Ok(());
+    }
+
+    // Pointer-based types
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(format!(
+            "Object of type {} is not JSON serializable",
+            type_name(_py, obj)
+        ));
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    match type_id {
+        TYPE_ID_STRING => {
+            let s = string_obj_to_owned(obj).unwrap_or_default();
+            let encoded = json_encode_basestring_impl(&s, ensure_ascii);
+            out.push_str(&encoded);
+            Ok(())
+        }
+        TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+            Err("Object of type bytes is not JSON serializable".to_string())
+        }
+        TYPE_ID_LIST | TYPE_ID_TUPLE => {
+            let elems = unsafe { seq_vec_ref(ptr) };
+            out.push('[');
+            if elems.is_empty() {
+                out.push(']');
+                return Ok(());
+            }
+            for (i, &elem_bits) in elems.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                    if indent.is_none() {
+                        out.push(' ');
+                    }
+                }
+                json_write_indent(out, indent, depth + 1);
+                object_to_json(
+                    _py,
+                    obj_from_bits(elem_bits),
+                    out,
+                    indent,
+                    sort_keys,
+                    ensure_ascii,
+                    depth + 1,
+                )?;
+            }
+            json_write_indent(out, indent, depth);
+            out.push(']');
+            Ok(())
+        }
+        TYPE_ID_DICT => {
+            let order = unsafe { crate::builtins::containers::dict_order(ptr) };
+            let len = order.len() / 2;
+            out.push('{');
+            if len == 0 {
+                out.push('}');
+                return Ok(());
+            }
+
+            // Collect key-value pairs; optionally sort by key
+            let mut pairs: Vec<(usize, u64, u64)> = Vec::with_capacity(len);
+            for i in 0..len {
+                let key_bits = order[i * 2];
+                let val_bits = order[i * 2 + 1];
+                pairs.push((i, key_bits, val_bits));
+            }
+            if sort_keys {
+                pairs.sort_by(|a, b| {
+                    let a_str = string_obj_to_owned(obj_from_bits(a.1));
+                    let b_str = string_obj_to_owned(obj_from_bits(b.1));
+                    match (a_str, b_str) {
+                        (Some(a_s), Some(b_s)) => a_s.cmp(&b_s),
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                });
+            }
+
+            for (idx, &(_, key_bits, val_bits)) in pairs.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                    if indent.is_none() {
+                        out.push(' ');
+                    }
+                }
+                json_write_indent(out, indent, depth + 1);
+
+                // Keys must be strings (Python json.dumps raises TypeError otherwise)
+                let key_obj = obj_from_bits(key_bits);
+                let Some(key_str) = string_obj_to_owned(key_obj) else {
+                    // Attempt int/float/bool/None key coercion like Python json encoder
+                    let coerced = coerce_dict_key_to_string(_py, key_obj)?;
+                    let encoded = json_encode_basestring_impl(&coerced, ensure_ascii);
+                    out.push_str(&encoded);
+                    out.push(':');
+                    if indent.is_some() {
+                        out.push(' ');
+                    }
+                    object_to_json(
+                        _py,
+                        obj_from_bits(val_bits),
+                        out,
+                        indent,
+                        sort_keys,
+                        ensure_ascii,
+                        depth + 1,
+                    )?;
+                    continue;
+                };
+                let encoded = json_encode_basestring_impl(&key_str, ensure_ascii);
+                out.push_str(&encoded);
+                out.push(':');
+                if indent.is_some() {
+                    out.push(' ');
+                }
+                object_to_json(
+                    _py,
+                    obj_from_bits(val_bits),
+                    out,
+                    indent,
+                    sort_keys,
+                    ensure_ascii,
+                    depth + 1,
+                )?;
+            }
+            json_write_indent(out, indent, depth);
+            out.push('}');
+            Ok(())
+        }
+        TYPE_ID_BIGINT => {
+            // BigInts that didn't fit inline
+            let tn = type_name(_py, obj);
+            Err(format!("Object of type {tn} is not JSON serializable"))
+        }
+        _ => {
+            let tn = type_name(_py, obj);
+            Err(format!("Object of type {tn} is not JSON serializable"))
+        }
+    }
+}
+
+/// Coerce a non-string dict key to a JSON-legal string, mirroring Python's
+/// `json.encoder.JSONEncoder` key coercion for int, float, bool, None.
+fn coerce_dict_key_to_string(_py: &PyToken<'_>, key: MoltObject) -> Result<String, String> {
+    if key.is_none() {
+        return Ok("null".to_string());
+    }
+    if let Some(b) = key.as_bool() {
+        return Ok(if b { "true" } else { "false" }.to_string());
+    }
+    if let Some(i) = key.as_int() {
+        return Ok(format!("{i}"));
+    }
+    if let Some(f) = key.as_float() {
+        if f.is_nan() || f.is_infinite() {
+            return Err(format!(
+                "ValueError: Out of range float values are not JSON compliant: {f}"
+            ));
+        }
+        return Ok(format!("{f}"));
+    }
+    let tn = type_name(_py, key);
+    Err(format!(
+        "keys must be str, int, float, bool or None, not {tn}"
+    ))
+}

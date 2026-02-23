@@ -9,6 +9,15 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _require_intrinsic("molt_socket_constants", globals())
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
 _MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
+_MOLT_SOCKET_GETPROTOBYNAME = _require_intrinsic(
+    "molt_socket_getprotobyname", globals()
+)
+_MOLT_GETHOSTBYNAME_EX = _require_intrinsic("molt_socket_gethostbyname_ex", globals())
+_MOLT_IF_NAMEINDEX = _require_intrinsic("molt_socket_if_nameindex", globals())
+_MOLT_IF_NAMETOINDEX = _require_intrinsic("molt_socket_if_nametoindex", globals())
+_MOLT_IF_INDEXTONAME = _require_intrinsic("molt_socket_if_indextoname", globals())
+_MOLT_CMSG_LEN = _require_intrinsic("molt_socket_cmsg_len", globals())
+_MOLT_CMSG_SPACE = _require_intrinsic("molt_socket_cmsg_space", globals())
 
 
 def _unsupported(name: str):
@@ -70,46 +79,38 @@ for _name, _val in list(_socket_mod.__dict__.items()):
 
 
 def _gethostbyname_ex(hostname: str):
-    primary = _socket_mod.gethostbyname(hostname)
-    return hostname, [], [primary]
+    return _MOLT_GETHOSTBYNAME_EX(hostname)
 
 
 def _getprotobyname(name: str):
-    table = {"icmp": 1, "tcp": 6, "udp": 17}
-    key = str(name).lower()
-    if key in table:
-        return table[key]
-    raise OSError(f"protocol not found: {name}")
+    return _MOLT_SOCKET_GETPROTOBYNAME(name)
 
 
 def _if_nameindex():
-    return []
+    return _MOLT_IF_NAMEINDEX()
 
 
 def _if_nametoindex(name: str):
-    raise OSError(f"interface name not supported: {name}")
+    return _MOLT_IF_NAMETOINDEX(name)
 
 
 def _if_indextoname(index: int):
-    raise OSError(f"interface index not supported: {index}")
+    return _MOLT_IF_INDEXTONAME(index)
+
+
+_MOLT_SOCKET_SETHOSTNAME = _require_intrinsic("molt_socket_sethostname", globals())
 
 
 def _sethostname(name: str):
-    raise RuntimeError("sethostname is not implemented in Molt runtime yet")
+    _MOLT_SOCKET_SETHOSTNAME(name)
 
 
 def _cmsg_len(length: int):
-    n = int(length)
-    if n < 0:
-        raise ValueError("length must be non-negative")
-    return 12 + n
+    return _MOLT_CMSG_LEN(length)
 
 
 def _cmsg_space(length: int):
-    n = int(length)
-    if n < 0:
-        raise ValueError("length must be non-negative")
-    return 12 + ((n + 3) & ~3)
+    return _MOLT_CMSG_SPACE(length)
 
 
 _CALLABLES = {
