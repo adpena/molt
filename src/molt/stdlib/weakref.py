@@ -26,6 +26,7 @@ def _require_callable_intrinsic(name: str):
 
 _molt_weakref_register = _require_callable_intrinsic("molt_weakref_register")
 _molt_weakref_get = _require_callable_intrinsic("molt_weakref_get")
+_molt_weakref_callback = _require_callable_intrinsic("molt_weakref_callback")
 _molt_weakref_peek = _require_callable_intrinsic("molt_weakref_peek")
 _molt_weakref_drop = _require_callable_intrinsic("molt_weakref_drop")
 _molt_weakref_collect = _require_callable_intrinsic("molt_weakref_collect")
@@ -102,6 +103,15 @@ class ReferenceType:
         if self._registered:
             return _molt_weakref_get(self)  # type: ignore[misc]
         return self._obj
+
+    @property
+    def __callback__(self) -> object | None:
+        if self._registered:
+            callback = _molt_weakref_callback(self)  # type: ignore[misc]
+            if callback is None or callable(callback):
+                return callback
+            raise RuntimeError("weakref callback intrinsic returned invalid value")
+        return self._callback
 
     def _peek_obj(self) -> object | None:
         if self._registered:

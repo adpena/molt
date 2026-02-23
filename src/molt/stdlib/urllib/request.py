@@ -5,6 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 from urllib.error import URLError
+from urllib.response import addinfourl
 
 __all__ = [
     "BaseHandler",
@@ -32,21 +33,6 @@ _MOLT_OPENER_ADD_HANDLER = _require_intrinsic(
 _MOLT_OPENER_OPEN = _require_intrinsic("molt_urllib_request_open", globals())
 _MOLT_PROCESS_HTTP_ERROR = _require_intrinsic(
     "molt_urllib_request_process_http_error",
-    globals(),
-)
-_MOLT_RESP_READ = _require_intrinsic("molt_urllib_request_response_read", globals())
-_MOLT_RESP_CLOSE = _require_intrinsic("molt_urllib_request_response_close", globals())
-_MOLT_RESP_DROP = _require_intrinsic("molt_urllib_request_response_drop", globals())
-_MOLT_RESP_GETURL = _require_intrinsic("molt_urllib_request_response_geturl", globals())
-_MOLT_RESP_GETCODE = _require_intrinsic(
-    "molt_urllib_request_response_getcode", globals()
-)
-_MOLT_RESP_GETREASON = _require_intrinsic(
-    "molt_urllib_request_response_getreason",
-    globals(),
-)
-_MOLT_RESP_GETHEADERS = _require_intrinsic(
-    "molt_urllib_request_response_getheaders",
     globals(),
 )
 
@@ -114,76 +100,11 @@ class _DataResponse:
         return False
 
 
-class addinfourl:
-    def __init__(self, handle):
-        self._handle = handle
-        self.closed = False
-        self.url = self.geturl()
-        self.headers = self.info()
-
-    def read(self, size=-1):
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return _MOLT_RESP_READ(self._handle, int(size))
-
-    def close(self):
-        if not self.closed:
-            _MOLT_RESP_CLOSE(self._handle)
-            self.closed = True
-
-    def __del__(self):
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        try:
-            _MOLT_RESP_DROP(handle)
-        except Exception:
-            pass
-        self._handle = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        del exc_type, exc, tb
-        self.close()
-        return False
-
-    def geturl(self):
-        return _MOLT_RESP_GETURL(self._handle)
-
-    def getcode(self):
-        return _MOLT_RESP_GETCODE(self._handle)
-
-    @property
-    def status(self):
-        return self.getcode()
-
-    @property
-    def reason(self):
-        return _MOLT_RESP_GETREASON(self._handle)
-
-    @property
-    def code(self):
-        return self.getcode()
-
-    @property
-    def msg(self):
-        return self.info()
-
-    def info(self):
-        out = _MOLT_RESP_GETHEADERS(self._handle)
-        if not isinstance(out, dict):
-            raise RuntimeError(
-                "urllib.request response headers intrinsic returned invalid value"
-            )
-        return out
-
-    def getheader(self, name, default=None):
-        return self.info().get(str(name), default)
-
-    def getheaders(self):
-        return list(self.info().items())
+def _addinfourl_from_handle(handle):
+    ctor = getattr(addinfourl, "_from_handle", None)
+    if callable(ctor):
+        return ctor(int(handle))
+    raise RuntimeError("urllib.response.addinfourl is missing intrinsic handle bridge")
 
 
 class BaseHandler:
@@ -317,15 +238,15 @@ class OpenerDirector:
                 marker == "__molt_urllib_response__"
                 or marker == b"__molt_urllib_response__"
             ):
-                return addinfourl(handle)
+                return _addinfourl_from_handle(handle)
             if isinstance(handle, int):
-                return addinfourl(handle)
+                return _addinfourl_from_handle(handle)
             if isinstance(handle, float) and handle.is_integer():
-                return addinfourl(int(handle))
+                return _addinfourl_from_handle(int(handle))
         if isinstance(out, int):
-            return addinfourl(out)
+            return _addinfourl_from_handle(out)
         if isinstance(out, float) and out.is_integer():
-            return addinfourl(int(out))
+            return _addinfourl_from_handle(int(out))
         if isinstance(out, (bytes, bytearray)):
             return _DataResponse(bytes(out), req.full_url)
         return out

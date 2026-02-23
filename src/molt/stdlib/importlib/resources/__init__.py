@@ -48,6 +48,9 @@ _MOLT_IMPORTLIB_RESOURCES_MODULE_NAME = _require_intrinsic(
 _MOLT_IMPORTLIB_RESOURCES_LOADER_READER = _require_intrinsic(
     "molt_importlib_resources_loader_reader", globals()
 )
+_MOLT_IMPORTLIB_RESOURCES_FILES_PAYLOAD = _require_intrinsic(
+    "molt_importlib_resources_files_payload", globals()
+)
 _MOLT_IMPORTLIB_RESOURCES_READER_FILES_TRAVERSABLE = _require_intrinsic(
     "molt_importlib_resources_reader_files_traversable", globals()
 )
@@ -84,6 +87,7 @@ Anchor = Package
 Resource = str
 
 __all__ = [
+    "abc",
     "Package",
     "Anchor",
     "Resource",
@@ -456,6 +460,34 @@ def _resources_package_payload(package: str) -> dict[str, object]:
     }
 
 
+def _resources_files_payload(module: object, fallback: str | None) -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_RESOURCES_FILES_PAYLOAD(
+        module, fallback, tuple(_sys.path), _resources_module_file()
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib resources files payload: dict expected")
+    package_name = payload.get("package_name")
+    roots = payload.get("roots")
+    is_namespace = payload.get("is_namespace")
+    reader = payload.get("reader")
+    files_traversable = payload.get("files_traversable")
+    if not isinstance(package_name, str) or not package_name:
+        raise RuntimeError("invalid importlib resources files payload: package_name")
+    if not isinstance(roots, (list, tuple)) or not all(
+        isinstance(entry, str) for entry in roots
+    ):
+        raise RuntimeError("invalid importlib resources files payload: roots")
+    if not isinstance(is_namespace, bool):
+        raise RuntimeError("invalid importlib resources files payload: is_namespace")
+    return {
+        "package_name": package_name,
+        "roots": list(roots),
+        "is_namespace": is_namespace,
+        "reader": reader,
+        "files_traversable": files_traversable,
+    }
+
+
 def _open_resource_bytes_from_package(package: str, resource: str) -> bytes:
     value = _MOLT_IMPORTLIB_RESOURCES_OPEN_RESOURCE_BYTES_FROM_PACKAGE(
         package, tuple(_sys.path), _resources_module_file(), resource
@@ -706,42 +738,34 @@ def _reader_is_dir(reader: object, parts: tuple[str, ...]) -> bool:
 def _package_roots(
     module: object, fallback: str | None = None
 ) -> tuple[list[str], bool]:
-    module_name = _package_name(module, fallback)
-    loader_roots = _loader_resource_roots(module, module_name)
-    if loader_roots:
-        payload = _resources_package_payload(module_name)
-        is_namespace = bool(payload["is_namespace"]) and len(loader_roots) > 1
-        return loader_roots, is_namespace
-    payload = _resources_package_payload(module_name)
+    payload = _resources_files_payload(module, fallback)
     roots = payload["roots"]
     if not isinstance(roots, list):
-        raise RuntimeError("invalid importlib resources package payload: roots")
+        raise RuntimeError("invalid importlib resources files payload: roots")
     is_namespace = payload["is_namespace"]
     if not isinstance(is_namespace, bool):
-        raise RuntimeError("invalid importlib resources package payload: is_namespace")
+        raise RuntimeError("invalid importlib resources files payload: is_namespace")
     return roots, is_namespace
 
 
 def files(package: str | object) -> _Traversable | _NamespaceTraversable:
     module, module_name = _get_package(package)
-    package_name = _package_name(module, module_name)
-    reader = _loader_resource_reader(module, package_name)
-    files_traversable = (
-        _reader_files_traversable(reader) if reader is not None else None
-    )
-    roots = _reader_roots(reader) if reader is not None else []
-    is_namespace = False
-    if roots:
-        payload = _resources_package_payload(package_name)
-        is_namespace = bool(payload["is_namespace"]) and len(roots) > 1
-    else:
-        roots, is_namespace = _package_roots(module, module_name)
-        if not roots and reader is not None:
-            if files_traversable is not None and _is_traversable_like(
-                files_traversable
-            ):
-                return files_traversable
-            return _LoaderReaderTraversable(reader, package_name)
+    payload = _resources_files_payload(module, module_name)
+    package_name = payload["package_name"]
+    if not isinstance(package_name, str):
+        raise RuntimeError("invalid importlib resources files payload: package_name")
+    roots = payload["roots"]
+    if not isinstance(roots, list):
+        raise RuntimeError("invalid importlib resources files payload: roots")
+    is_namespace = payload["is_namespace"]
+    if not isinstance(is_namespace, bool):
+        raise RuntimeError("invalid importlib resources files payload: is_namespace")
+    reader = payload["reader"]
+    files_traversable = payload["files_traversable"]
+    if not roots and reader is not None:
+        if files_traversable is not None and _is_traversable_like(files_traversable):
+            return files_traversable
+        return _LoaderReaderTraversable(reader, package_name)
     if not roots:
         raise ModuleNotFoundError(package_name)
     if is_namespace and len(roots) > 1:
@@ -848,7 +872,3 @@ def path(package: str | object, resource: str) -> _AsFileContext:
         if resource_path is not None:
             return as_file(_Traversable(resource_path))
     return as_file(files(package).joinpath(resource))
-
-
-# Mirror CPython runtime shape when importlib.readers preload paths are active.
-readers = _importlib.import_module("importlib.resources.readers")

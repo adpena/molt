@@ -3,6 +3,9 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_RESOURCES_OPEN_MODE_IS_TEXT = _require_intrinsic(
+    "molt_importlib_resources_open_mode_is_text", globals()
+)
 
 from contextlib import suppress
 from io import TextIOWrapper
@@ -28,11 +31,13 @@ class TraversableResourcesLoader:
 
 
 def _io_wrapper(file, mode="r", *args, **kwargs):
-    if mode == "r":
+    if not isinstance(mode, str):
+        raise ValueError(
+            f"Invalid mode value {mode!r}, only 'r' and 'rb' are supported"
+        )
+    if _MOLT_IMPORTLIB_RESOURCES_OPEN_MODE_IS_TEXT(mode):
         return TextIOWrapper(file, *args, **kwargs)
-    if mode == "rb":
-        return file
-    raise ValueError(f"Invalid mode value {mode!r}, only 'r' and 'rb' are supported")
+    return file
 
 
 class CompatibilityFiles:

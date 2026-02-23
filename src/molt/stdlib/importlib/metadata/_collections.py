@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import collections as collections
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_OPERATOR_TRUTH = _require_intrinsic("molt_operator_truth", globals())
 
 
 class FreezableDefaultDict(collections.defaultdict):
@@ -19,7 +19,7 @@ class FreezableDefaultDict(collections.defaultdict):
         return self
 
     def __missing__(self, key):
-        if self._frozen:
+        if _MOLT_OPERATOR_TRUTH(self._frozen):
             raise KeyError(key)
         return super().__missing__(key)
 

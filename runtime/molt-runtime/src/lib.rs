@@ -56,12 +56,12 @@ pub(crate) use crate::concurrency::locks::{
     molt_condition_wait_for, molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new,
     molt_event_set, molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new,
     molt_lock_acquire, molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release,
-    molt_queue_drop, molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_join,
-    molt_queue_lifo_new, molt_queue_new, molt_queue_priority_new, molt_queue_put, molt_queue_qsize,
-    molt_queue_task_done, molt_rlock_acquire, molt_rlock_acquire_restore, molt_rlock_drop,
-    molt_rlock_is_owned, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
-    molt_rlock_release_save, molt_semaphore_acquire, molt_semaphore_drop, molt_semaphore_new,
-    molt_semaphore_release,
+    molt_queue_drop, molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_is_shutdown,
+    molt_queue_join, molt_queue_lifo_new, molt_queue_new, molt_queue_priority_new, molt_queue_put,
+    molt_queue_qsize, molt_queue_shutdown, molt_queue_task_done, molt_rlock_acquire,
+    molt_rlock_acquire_restore, molt_rlock_drop, molt_rlock_is_owned, molt_rlock_locked,
+    molt_rlock_new, molt_rlock_release, molt_rlock_release_save, molt_semaphore_acquire,
+    molt_semaphore_drop, molt_semaphore_new, molt_semaphore_release,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::concurrency::{
@@ -113,6 +113,7 @@ pub(crate) use crate::async_rt::{
 };
 pub use crate::builtins::abc::*;
 pub use crate::builtins::ast::*;
+pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
     apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
     attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
@@ -303,15 +304,15 @@ pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
     molt_weakkeydict_clear, molt_weakkeydict_contains, molt_weakkeydict_del, molt_weakkeydict_get,
     molt_weakkeydict_items, molt_weakkeydict_keyrefs, molt_weakkeydict_len,
-    molt_weakkeydict_popitem, molt_weakkeydict_set, molt_weakref_collect, molt_weakref_count,
-    molt_weakref_drop, molt_weakref_finalize_track, molt_weakref_finalize_untrack,
-    molt_weakref_find_nocallback, molt_weakref_get, molt_weakref_peek, molt_weakref_refs,
-    molt_weakref_register, molt_weakset_add, molt_weakset_clear, molt_weakset_contains,
-    molt_weakset_discard, molt_weakset_items, molt_weakset_len, molt_weakset_pop,
-    molt_weakset_remove, molt_weakvaluedict_clear, molt_weakvaluedict_contains,
-    molt_weakvaluedict_del, molt_weakvaluedict_get, molt_weakvaluedict_items,
-    molt_weakvaluedict_len, molt_weakvaluedict_popitem, molt_weakvaluedict_set,
-    molt_weakvaluedict_valuerefs,
+    molt_weakkeydict_popitem, molt_weakkeydict_set, molt_weakref_callback, molt_weakref_collect,
+    molt_weakref_count, molt_weakref_drop, molt_weakref_finalize_track,
+    molt_weakref_finalize_untrack, molt_weakref_find_nocallback, molt_weakref_get,
+    molt_weakref_peek, molt_weakref_refs, molt_weakref_register, molt_weakset_add,
+    molt_weakset_clear, molt_weakset_contains, molt_weakset_discard, molt_weakset_items,
+    molt_weakset_len, molt_weakset_pop, molt_weakset_remove, molt_weakvaluedict_clear,
+    molt_weakvaluedict_contains, molt_weakvaluedict_del, molt_weakvaluedict_get,
+    molt_weakvaluedict_items, molt_weakvaluedict_len, molt_weakvaluedict_popitem,
+    molt_weakvaluedict_set, molt_weakvaluedict_valuerefs,
 };
 pub(crate) use crate::object::{
     Buffer2D, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,

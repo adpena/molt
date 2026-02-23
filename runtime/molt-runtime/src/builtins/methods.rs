@@ -23,6 +23,16 @@ static INT_DIVMOD: AtomicU64 = AtomicU64::new(0);
 static STR_ADD: AtomicU64 = AtomicU64::new(0);
 static STR_GETITEM: AtomicU64 = AtomicU64::new(0);
 
+fn runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
+    let state = runtime_state(_py);
+    let guard = state.sys_version_info.lock().unwrap();
+    let (runtime_major, runtime_minor) = guard
+        .as_ref()
+        .map(|info| (info.major, info.minor))
+        .unwrap_or((3, 12));
+    runtime_major > major || (runtime_major == major && runtime_minor >= minor)
+}
+
 pub(crate) fn builtin_func_bits(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
@@ -328,6 +338,12 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_format_method),
             3,
         )),
+        "format_map" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_format_map,
+            fn_addr!(molt_string_format_map),
+            2,
+        )),
         "isidentifier" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_isidentifier,
@@ -338,6 +354,66 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             _py,
             &runtime_state(_py).method_cache.str_isdigit,
             fn_addr!(molt_string_isdigit),
+            1,
+        )),
+        "isdecimal" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isdecimal,
+            fn_addr!(molt_string_isdecimal),
+            1,
+        )),
+        "isnumeric" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isnumeric,
+            fn_addr!(molt_string_isnumeric),
+            1,
+        )),
+        "isspace" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isspace,
+            fn_addr!(molt_string_isspace),
+            1,
+        )),
+        "isalpha" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isalpha,
+            fn_addr!(molt_string_isalpha),
+            1,
+        )),
+        "isalnum" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isalnum,
+            fn_addr!(molt_string_isalnum),
+            1,
+        )),
+        "islower" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_islower,
+            fn_addr!(molt_string_islower),
+            1,
+        )),
+        "isupper" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isupper,
+            fn_addr!(molt_string_isupper),
+            1,
+        )),
+        "isascii" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isascii,
+            fn_addr!(molt_string_isascii),
+            1,
+        )),
+        "istitle" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_istitle,
+            fn_addr!(molt_string_istitle),
+            1,
+        )),
+        "isprintable" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isprintable,
+            fn_addr!(molt_string_isprintable),
             1,
         )),
         "upper" => Some(builtin_func_bits(
@@ -362,6 +438,18 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             _py,
             &runtime_state(_py).method_cache.str_capitalize,
             fn_addr!(molt_string_capitalize),
+            1,
+        )),
+        "title" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_title,
+            fn_addr!(molt_string_title),
+            1,
+        )),
+        "swapcase" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_swapcase,
+            fn_addr!(molt_string_swapcase),
             1,
         )),
         "strip" => Some(builtin_func_bits_with_default(
@@ -423,11 +511,70 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             4,
             FUNC_DEFAULT_REPLACE_COUNT,
         )),
+        "removeprefix" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_removeprefix,
+            fn_addr!(molt_string_removeprefix),
+            2,
+        )),
+        "removesuffix" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_removesuffix,
+            fn_addr!(molt_string_removesuffix),
+            2,
+        )),
+        "zfill" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_zfill,
+            fn_addr!(molt_string_zfill),
+            2,
+        )),
+        "center" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.str_center,
+            fn_addr!(molt_string_center),
+            3,
+            FUNC_DEFAULT_MISSING,
+        )),
+        "ljust" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.str_ljust,
+            fn_addr!(molt_string_ljust),
+            3,
+            FUNC_DEFAULT_MISSING,
+        )),
+        "rjust" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.str_rjust,
+            fn_addr!(molt_string_rjust),
+            3,
+            FUNC_DEFAULT_MISSING,
+        )),
+        "expandtabs" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.str_expandtabs,
+            fn_addr!(molt_string_expandtabs),
+            2,
+            FUNC_DEFAULT_MISSING,
+        )),
         "join" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_join,
             fn_addr!(molt_string_join),
             2,
+        )),
+        "translate" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_translate,
+            fn_addr!(molt_string_translate),
+            2,
+        )),
+        "maketrans" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.str_maketrans,
+            fn_addr!(molt_string_maketrans),
+            3,
+            FUNC_DEFAULT_NONE2,
         )),
         "encode" => Some(builtin_func_bits(
             _py,
@@ -471,12 +618,30 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_find_slice),
             6,
         )),
+        "index" => {
+            static BYTES_INDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_INDEX,
+                fn_addr!(molt_bytes_index_slice),
+                6,
+            ))
+        }
         "rfind" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_rfind,
             fn_addr!(molt_bytes_rfind_slice),
             6,
         )),
+        "rindex" => {
+            static BYTES_RINDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_RINDEX,
+                fn_addr!(molt_bytes_rindex_slice),
+                6,
+            ))
+        }
         "split" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_split,
@@ -554,12 +719,39 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             4,
             FUNC_DEFAULT_REPLACE_COUNT,
         )),
+        "removeprefix" => {
+            static BYTES_REMOVEPREFIX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_REMOVEPREFIX,
+                fn_addr!(molt_bytes_removeprefix),
+                2,
+            ))
+        }
+        "removesuffix" => {
+            static BYTES_REMOVESUFFIX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_REMOVESUFFIX,
+                fn_addr!(molt_bytes_removesuffix),
+                2,
+            ))
+        }
         "join" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_join,
             fn_addr!(molt_bytes_join),
             2,
         )),
+        "capitalize" => {
+            static BYTES_CAPITALIZE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_CAPITALIZE,
+                fn_addr!(molt_bytes_capitalize),
+                1,
+            ))
+        }
         "upper" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_upper,
@@ -572,12 +764,151 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_lower),
             1,
         )),
+        "swapcase" => {
+            static BYTES_SWAPCASE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_SWAPCASE,
+                fn_addr!(molt_bytes_swapcase),
+                1,
+            ))
+        }
+        "title" => {
+            static BYTES_TITLE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_TITLE,
+                fn_addr!(molt_bytes_title),
+                1,
+            ))
+        }
+        "isalpha" => {
+            static BYTES_ISALPHA: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISALPHA,
+                fn_addr!(molt_bytes_isalpha),
+                1,
+            ))
+        }
+        "isalnum" => {
+            static BYTES_ISALNUM: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISALNUM,
+                fn_addr!(molt_bytes_isalnum),
+                1,
+            ))
+        }
+        "isdigit" => {
+            static BYTES_ISDIGIT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISDIGIT,
+                fn_addr!(molt_bytes_isdigit),
+                1,
+            ))
+        }
+        "isspace" => {
+            static BYTES_ISSPACE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISSPACE,
+                fn_addr!(molt_bytes_isspace),
+                1,
+            ))
+        }
+        "islower" => {
+            static BYTES_ISLOWER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISLOWER,
+                fn_addr!(molt_bytes_islower),
+                1,
+            ))
+        }
+        "isupper" => {
+            static BYTES_ISUPPER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISUPPER,
+                fn_addr!(molt_bytes_isupper),
+                1,
+            ))
+        }
+        "istitle" => {
+            static BYTES_ISTITLE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISTITLE,
+                fn_addr!(molt_bytes_istitle),
+                1,
+            ))
+        }
+        "isascii" => {
+            static BYTES_ISASCII: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ISASCII,
+                fn_addr!(molt_bytes_isascii),
+                1,
+            ))
+        }
         "hex" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_hex,
             fn_addr!(molt_bytes_hex),
             3,
         )),
+        "zfill" => {
+            static BYTES_ZFILL: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTES_ZFILL,
+                fn_addr!(molt_bytes_zfill),
+                2,
+            ))
+        }
+        "center" => {
+            static BYTES_CENTER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTES_CENTER,
+                fn_addr!(molt_bytes_center),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "ljust" => {
+            static BYTES_LJUST: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTES_LJUST,
+                fn_addr!(molt_bytes_ljust),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "rjust" => {
+            static BYTES_RJUST: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTES_RJUST,
+                fn_addr!(molt_bytes_rjust),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "expandtabs" => {
+            static BYTES_EXPANDTABS: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTES_EXPANDTABS,
+                fn_addr!(molt_bytes_expandtabs),
+                2,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
         "translate" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_translate,
@@ -633,6 +964,61 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_append),
             2,
         )),
+        "insert" => {
+            static BYTEARRAY_INSERT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_INSERT,
+                fn_addr!(molt_bytearray_insert),
+                3,
+            ))
+        }
+        "pop" => {
+            static BYTEARRAY_POP: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTEARRAY_POP,
+                fn_addr!(molt_bytearray_pop),
+                2,
+                FUNC_DEFAULT_NONE,
+            ))
+        }
+        "remove" => {
+            static BYTEARRAY_REMOVE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_REMOVE,
+                fn_addr!(molt_bytearray_remove),
+                2,
+            ))
+        }
+        "reverse" => {
+            static BYTEARRAY_REVERSE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_REVERSE,
+                fn_addr!(molt_bytearray_reverse),
+                1,
+            ))
+        }
+        "resize" if runtime_python_at_least(_py, 3, 14) => {
+            static BYTEARRAY_RESIZE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_RESIZE,
+                fn_addr!(molt_bytearray_resize),
+                2,
+            ))
+        }
+        "copy" => {
+            static BYTEARRAY_COPY: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_COPY,
+                fn_addr!(molt_bytearray_copy),
+                1,
+            ))
+        }
         "hex" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_hex,
@@ -670,12 +1056,30 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_find_slice),
             6,
         )),
+        "index" => {
+            static BYTEARRAY_INDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_INDEX,
+                fn_addr!(molt_bytearray_index_slice),
+                6,
+            ))
+        }
         "rfind" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_rfind,
             fn_addr!(molt_bytearray_rfind_slice),
             6,
         )),
+        "rindex" => {
+            static BYTEARRAY_RINDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_RINDEX,
+                fn_addr!(molt_bytearray_rindex_slice),
+                6,
+            ))
+        }
         "split" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_split,
@@ -765,6 +1169,199 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             4,
             FUNC_DEFAULT_REPLACE_COUNT,
         )),
+        "removeprefix" => {
+            static BYTEARRAY_REMOVEPREFIX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_REMOVEPREFIX,
+                fn_addr!(molt_bytearray_removeprefix),
+                2,
+            ))
+        }
+        "removesuffix" => {
+            static BYTEARRAY_REMOVESUFFIX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_REMOVESUFFIX,
+                fn_addr!(molt_bytearray_removesuffix),
+                2,
+            ))
+        }
+        "join" => {
+            static BYTEARRAY_JOIN: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_JOIN,
+                fn_addr!(molt_bytearray_join),
+                2,
+            ))
+        }
+        "capitalize" => {
+            static BYTEARRAY_CAPITALIZE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_CAPITALIZE,
+                fn_addr!(molt_bytearray_capitalize),
+                1,
+            ))
+        }
+        "upper" => {
+            static BYTEARRAY_UPPER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_UPPER,
+                fn_addr!(molt_bytearray_upper),
+                1,
+            ))
+        }
+        "lower" => {
+            static BYTEARRAY_LOWER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_LOWER,
+                fn_addr!(molt_bytearray_lower),
+                1,
+            ))
+        }
+        "swapcase" => {
+            static BYTEARRAY_SWAPCASE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_SWAPCASE,
+                fn_addr!(molt_bytearray_swapcase),
+                1,
+            ))
+        }
+        "title" => {
+            static BYTEARRAY_TITLE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_TITLE,
+                fn_addr!(molt_bytearray_title),
+                1,
+            ))
+        }
+        "isalpha" => {
+            static BYTEARRAY_ISALPHA: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISALPHA,
+                fn_addr!(molt_bytearray_isalpha),
+                1,
+            ))
+        }
+        "isalnum" => {
+            static BYTEARRAY_ISALNUM: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISALNUM,
+                fn_addr!(molt_bytearray_isalnum),
+                1,
+            ))
+        }
+        "isdigit" => {
+            static BYTEARRAY_ISDIGIT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISDIGIT,
+                fn_addr!(molt_bytearray_isdigit),
+                1,
+            ))
+        }
+        "isspace" => {
+            static BYTEARRAY_ISSPACE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISSPACE,
+                fn_addr!(molt_bytearray_isspace),
+                1,
+            ))
+        }
+        "islower" => {
+            static BYTEARRAY_ISLOWER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISLOWER,
+                fn_addr!(molt_bytearray_islower),
+                1,
+            ))
+        }
+        "isupper" => {
+            static BYTEARRAY_ISUPPER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISUPPER,
+                fn_addr!(molt_bytearray_isupper),
+                1,
+            ))
+        }
+        "istitle" => {
+            static BYTEARRAY_ISTITLE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISTITLE,
+                fn_addr!(molt_bytearray_istitle),
+                1,
+            ))
+        }
+        "isascii" => {
+            static BYTEARRAY_ISASCII: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ISASCII,
+                fn_addr!(molt_bytearray_isascii),
+                1,
+            ))
+        }
+        "zfill" => {
+            static BYTEARRAY_ZFILL: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &BYTEARRAY_ZFILL,
+                fn_addr!(molt_bytearray_zfill),
+                2,
+            ))
+        }
+        "center" => {
+            static BYTEARRAY_CENTER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTEARRAY_CENTER,
+                fn_addr!(molt_bytearray_center),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "ljust" => {
+            static BYTEARRAY_LJUST: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTEARRAY_LJUST,
+                fn_addr!(molt_bytearray_ljust),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "rjust" => {
+            static BYTEARRAY_RJUST: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTEARRAY_RJUST,
+                fn_addr!(molt_bytearray_rjust),
+                3,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
+        "expandtabs" => {
+            static BYTEARRAY_EXPANDTABS: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits_with_default(
+                _py,
+                &BYTEARRAY_EXPANDTABS,
+                fn_addr!(molt_bytearray_expandtabs),
+                2,
+                FUNC_DEFAULT_MISSING,
+            ))
+        }
         "decode" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_decode,
@@ -837,6 +1434,42 @@ pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_int_bit_length),
             1,
         )),
+        "bit_count" => {
+            static INT_BIT_COUNT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &INT_BIT_COUNT,
+                fn_addr!(molt_int_bit_count),
+                1,
+            ))
+        }
+        "as_integer_ratio" => {
+            static INT_AS_INTEGER_RATIO: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &INT_AS_INTEGER_RATIO,
+                fn_addr!(molt_int_as_integer_ratio),
+                1,
+            ))
+        }
+        "conjugate" => {
+            static INT_CONJUGATE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &INT_CONJUGATE,
+                fn_addr!(molt_int_conjugate),
+                1,
+            ))
+        }
+        "is_integer" => {
+            static INT_IS_INTEGER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &INT_IS_INTEGER,
+                fn_addr!(molt_int_is_integer),
+                1,
+            ))
+        }
         "to_bytes" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.int_to_bytes,
@@ -857,6 +1490,87 @@ pub(crate) fn int_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             4,
             FUNC_DEFAULT_ZERO,
         )),
+        _ => None,
+    }
+}
+
+pub(crate) fn float_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    match name {
+        "as_integer_ratio" => {
+            static FLOAT_AS_INTEGER_RATIO: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &FLOAT_AS_INTEGER_RATIO,
+                fn_addr!(molt_float_as_integer_ratio),
+                1,
+            ))
+        }
+        "conjugate" => {
+            static FLOAT_CONJUGATE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &FLOAT_CONJUGATE,
+                fn_addr!(molt_float_conjugate),
+                1,
+            ))
+        }
+        "hex" => {
+            static FLOAT_HEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &FLOAT_HEX,
+                fn_addr!(molt_float_hex),
+                1,
+            ))
+        }
+        "is_integer" => {
+            static FLOAT_IS_INTEGER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &FLOAT_IS_INTEGER,
+                fn_addr!(molt_float_is_integer),
+                1,
+            ))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn float_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    match name {
+        "fromhex" => {
+            static FLOAT_FROMHEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_classmethod_bits(
+                _py,
+                &FLOAT_FROMHEX,
+                fn_addr!(molt_float_fromhex),
+                2,
+            ))
+        }
+        "from_number" if runtime_python_at_least(_py, 3, 14) => {
+            static FLOAT_FROM_NUMBER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_classmethod_bits(
+                _py,
+                &FLOAT_FROM_NUMBER,
+                fn_addr!(molt_float_from_number),
+                2,
+            ))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn complex_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    match name {
+        "from_number" if runtime_python_at_least(_py, 3, 14) => {
+            static COMPLEX_FROM_NUMBER: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_classmethod_bits(
+                _py,
+                &COMPLEX_FROM_NUMBER,
+                fn_addr!(molt_complex_from_number),
+                2,
+            ))
+        }
         _ => None,
     }
 }
@@ -904,6 +1618,22 @@ pub(crate) fn builtin_class_method_bits(
             return Some(bits);
         }
     }
+    if class_bits == builtins.float {
+        if let Some(bits) = float_method_bits(_py, name) {
+            return Some(bits);
+        }
+        if let Some(bits) = float_class_method_bits(_py, name) {
+            return Some(bits);
+        }
+    }
+    if class_bits == builtins.complex {
+        if let Some(bits) = complex_method_bits(_py, name) {
+            return Some(bits);
+        }
+        if let Some(bits) = complex_class_method_bits(_py, name) {
+            return Some(bits);
+        }
+    }
     if class_bits == builtins.base_exception || class_bits == builtins.exception {
         return exception_method_bits(_py, name);
     }
@@ -934,14 +1664,17 @@ pub(crate) fn builtin_class_method_bits(
     if class_bits == builtins.bytearray {
         return bytearray_method_bits(_py, name);
     }
-    if class_bits == builtins.complex {
-        return complex_method_bits(_py, name);
-    }
     if class_bits == builtins.slice {
         return slice_method_bits(_py, name);
     }
     if class_bits == builtins.memoryview {
         return memoryview_method_bits(_py, name);
+    }
+    if class_bits == builtins.range {
+        return range_method_bits(_py, name);
+    }
+    if class_bits == builtins.property {
+        return property_method_bits(_py, name);
     }
     if class_bits == builtins.file_io {
         match name {
@@ -1302,6 +2035,60 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "_from_flags" => {
+            static MEMORYVIEW_FROM_FLAGS: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_FROM_FLAGS,
+                fn_addr!(molt_memoryview_from_flags),
+                2,
+            ))
+        }
+        "count" if runtime_python_at_least(_py, 3, 14) => {
+            static MEMORYVIEW_COUNT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_COUNT,
+                fn_addr!(molt_memoryview_count),
+                2,
+            ))
+        }
+        "index" if runtime_python_at_least(_py, 3, 14) => {
+            static MEMORYVIEW_INDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_INDEX,
+                fn_addr!(molt_memoryview_index),
+                2,
+            ))
+        }
+        "hex" => {
+            static MEMORYVIEW_HEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_HEX,
+                fn_addr!(molt_memoryview_hex),
+                3,
+            ))
+        }
+        "release" => {
+            static MEMORYVIEW_RELEASE: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_RELEASE,
+                fn_addr!(molt_memoryview_release),
+                1,
+            ))
+        }
+        "toreadonly" => {
+            static MEMORYVIEW_TOREADONLY: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &MEMORYVIEW_TOREADONLY,
+                fn_addr!(molt_memoryview_toreadonly),
+                1,
+            ))
+        }
         "tobytes" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.memoryview_tobytes,
@@ -1332,6 +2119,30 @@ pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u6
             fn_addr!(molt_delitem_method),
             2,
         )),
+        _ => None,
+    }
+}
+
+pub(crate) fn range_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    match name {
+        "count" => {
+            static RANGE_COUNT: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &RANGE_COUNT,
+                fn_addr!(molt_range_count),
+                2,
+            ))
+        }
+        "index" => {
+            static RANGE_INDEX: AtomicU64 = AtomicU64::new(0);
+            Some(builtin_func_bits(
+                _py,
+                &RANGE_INDEX,
+                fn_addr!(molt_range_index),
+                2,
+            ))
+        }
         _ => None,
     }
 }

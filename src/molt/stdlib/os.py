@@ -110,6 +110,12 @@ __all__ = [
     "dup",
     "get_inheritable",
     "set_inheritable",
+    "stat_result",
+    "stat",
+    "lstat",
+    "fstat",
+    "rename",
+    "replace",
     "unlink",
     "remove",
     "readlink",
@@ -229,6 +235,10 @@ def _require_callable_intrinsic(value: Any, name: str):
     return value
 
 
+def _require_os_intrinsic(name: str):
+    return _require_callable_intrinsic(_require_intrinsic(name, globals()), name)
+
+
 def _expect_str(value: Any, intrinsic: str) -> str:
     if not isinstance(value, str):
         raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
@@ -244,6 +254,108 @@ def _expect_splitext(value: Any) -> tuple[str, str]:
     ):
         return value[0], value[1]
     raise RuntimeError("os splitext intrinsic returned invalid value")
+
+
+def _expect_stat_result(value: Any, intrinsic: str) -> "stat_result":
+    if not isinstance(value, (tuple, list)) or len(value) != 10:
+        raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
+    head: list[int] = []
+    tail: list[float] = []
+    for index, field in enumerate(value):
+        if isinstance(field, bool):
+            raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
+        if index < 7:
+            if not isinstance(field, int):
+                raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
+            head.append(int(field))
+        else:
+            if not isinstance(field, (int, float)):
+                raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
+            tail.append(float(field))
+    return stat_result(tuple(head) + tuple(tail))
+
+
+class stat_result(tuple):
+    __slots__ = ()
+    _SEQUENCE_FIELDS = (
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_nlink",
+        "st_uid",
+        "st_gid",
+        "st_size",
+        "st_atime",
+        "st_mtime",
+        "st_ctime",
+    )
+    n_fields = len(_SEQUENCE_FIELDS)
+    n_sequence_fields = len(_SEQUENCE_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: tuple[int | float, ...]) -> "stat_result":
+        if len(values) != len(cls._SEQUENCE_FIELDS):
+            raise TypeError("os.stat_result() takes a 10-sequence")
+        return tuple.__new__(cls, values)
+
+    def __repr__(self) -> str:
+        fields = ", ".join(
+            f"{name}={self[index]!r}"
+            for index, name in enumerate(self._SEQUENCE_FIELDS)
+        )
+        return f"os.stat_result({fields})"
+
+    @property
+    def st_mode(self) -> int:
+        return int(self[0])
+
+    @property
+    def st_ino(self) -> int:
+        return int(self[1])
+
+    @property
+    def st_dev(self) -> int:
+        return int(self[2])
+
+    @property
+    def st_nlink(self) -> int:
+        return int(self[3])
+
+    @property
+    def st_uid(self) -> int:
+        return int(self[4])
+
+    @property
+    def st_gid(self) -> int:
+        return int(self[5])
+
+    @property
+    def st_size(self) -> int:
+        return int(self[6])
+
+    @property
+    def st_atime(self) -> float:
+        return float(self[7])
+
+    @property
+    def st_mtime(self) -> float:
+        return float(self[8])
+
+    @property
+    def st_ctime(self) -> float:
+        return float(self[9])
+
+    @property
+    def st_atime_ns(self) -> int:
+        return int(self.st_atime * 1_000_000_000)
+
+    @property
+    def st_mtime_ns(self) -> int:
+        return int(self.st_mtime * 1_000_000_000)
+
+    @property
+    def st_ctime_ns(self) -> int:
+        return int(self.st_ctime * 1_000_000_000)
 
 
 class _Environ:
@@ -594,7 +706,7 @@ def rmdir(path: Any) -> None:
 def mkdir(path: Any, mode: int = 0o777) -> None:
     _require_cap("fs.write")
     intrinsic = _require_callable_intrinsic(_MOLT_PATH_MKDIR, "molt_path_mkdir")
-    intrinsic(path)
+    intrinsic(path, mode)
 
 
 def chmod(path: Any, mode: int) -> None:
@@ -604,10 +716,9 @@ def chmod(path: Any, mode: int) -> None:
 
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
-    del mode
     path = fspath(name)
     intrinsic = _require_callable_intrinsic(_MOLT_PATH_MAKEDIRS, "molt_path_makedirs")
-    intrinsic(path, bool(exist_ok))
+    intrinsic(path, mode, bool(exist_ok))
 
 
 def close(fd: int) -> None:
@@ -654,3 +765,62 @@ def set_inheritable(fd: int, inheritable: bool) -> None:
         _MOLT_OS_SET_INHERITABLE, "molt_os_set_inheritable"
     )
     intrinsic(fd, bool(inheritable))
+
+
+def stat(
+    path: Any, *, dir_fd: int | None = None, follow_symlinks: bool = True
+) -> stat_result:
+    _require_cap("fs.read")
+    if dir_fd is not None:
+        raise NotImplementedError("os.stat(dir_fd=...) is not supported")
+    if bool(follow_symlinks):
+        intrinsic = _require_os_intrinsic("molt_os_stat")
+        return _expect_stat_result(intrinsic(path), "stat")
+    intrinsic = _require_os_intrinsic("molt_os_lstat")
+    return _expect_stat_result(intrinsic(path), "lstat")
+
+
+def lstat(path: Any, *, dir_fd: int | None = None) -> stat_result:
+    _require_cap("fs.read")
+    if dir_fd is not None:
+        raise NotImplementedError("os.lstat(dir_fd=...) is not supported")
+    intrinsic = _require_os_intrinsic("molt_os_lstat")
+    return _expect_stat_result(intrinsic(path), "lstat")
+
+
+def fstat(fd: int) -> stat_result:
+    _require_cap("fs.read")
+    intrinsic = _require_os_intrinsic("molt_os_fstat")
+    return _expect_stat_result(intrinsic(fd), "fstat")
+
+
+def rename(
+    src: Any,
+    dst: Any,
+    *,
+    src_dir_fd: int | None = None,
+    dst_dir_fd: int | None = None,
+) -> None:
+    _require_cap("fs.write")
+    if src_dir_fd is not None:
+        raise NotImplementedError("os.rename(src_dir_fd=...) is not supported")
+    if dst_dir_fd is not None:
+        raise NotImplementedError("os.rename(dst_dir_fd=...) is not supported")
+    intrinsic = _require_os_intrinsic("molt_os_rename")
+    intrinsic(src, dst)
+
+
+def replace(
+    src: Any,
+    dst: Any,
+    *,
+    src_dir_fd: int | None = None,
+    dst_dir_fd: int | None = None,
+) -> None:
+    _require_cap("fs.write")
+    if src_dir_fd is not None:
+        raise NotImplementedError("os.replace(src_dir_fd=...) is not supported")
+    if dst_dir_fd is not None:
+        raise NotImplementedError("os.replace(dst_dir_fd=...) is not supported")
+    intrinsic = _require_os_intrinsic("molt_os_replace")
+    intrinsic(src, dst)

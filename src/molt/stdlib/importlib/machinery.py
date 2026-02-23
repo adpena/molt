@@ -563,6 +563,12 @@ class FileFinder:
         )
 
     def invalidate_caches(self) -> None:
+        _ensure_intrinsics()
+        result = _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE(self.path)
+        if result is not None:
+            raise RuntimeError(
+                "invalid importlib filefinder invalidate intrinsic result: expected None"
+            )
         return None
 
 
@@ -721,6 +727,7 @@ _MOLT_IMPORTLIB_READ_FILE = None
 _MOLT_IMPORTLIB_COERCE_MODULE_NAME = None
 _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
+_MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = None
 _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = None
 _MOLT_IMPORTLIB_EXEC_EXTENSION = None
 _MOLT_IMPORTLIB_EXEC_SOURCELESS = None
@@ -747,6 +754,7 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_COERCE_MODULE_NAME
     global _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC
+    global _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE
     global _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE
     global _MOLT_IMPORTLIB_EXEC_EXTENSION
     global _MOLT_IMPORTLIB_EXEC_SOURCELESS
@@ -784,6 +792,9 @@ def _ensure_intrinsics() -> None:
     )
     _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
         "molt_importlib_filefinder_find_spec", globals()
+    )
+    _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = _require_intrinsic(
+        "molt_importlib_filefinder_invalidate", globals()
     )
     _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
         "molt_importlib_exec_restricted_source", globals()
@@ -842,6 +853,7 @@ __all__ = [
     "DEBUG_BYTECODE_SUFFIXES",
     "EXTENSION_SUFFIXES",
     "ExtensionFileLoader",
+    "FileLoader",
     "FileFinder",
     "FrozenImporter",
     "ModuleSpec",
@@ -849,6 +861,7 @@ __all__ = [
     "OPTIMIZED_BYTECODE_SUFFIXES",
     "PathFinder",
     "SOURCE_SUFFIXES",
+    "SourceLoader",
     "SourceFileLoader",
     "SourcelessFileLoader",
     "WindowsRegistryFinder",

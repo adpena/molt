@@ -12,9 +12,11 @@ use crate::builtins::attr::{
     awaitable_await_func_bits, class_slots_info, exception_is_attribute_error,
     object_attr_lookup_raw,
 };
+use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::methods::{
-    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
-    int_method_bits, object_method_bits, property_method_bits, type_method_bits,
+    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, float_method_bits,
+    generator_method_bits, int_method_bits, object_method_bits, property_method_bits,
+    range_method_bits, type_method_bits,
 };
 use crate::*;
 
@@ -461,9 +463,17 @@ unsafe fn type_attr_lookup_ptr_inner(
             // Builtin-type class surfaces that are implemented as Rust intrinsics rather than
             // being materialized in the class dict.
             //
-            // CPython: bytes/bytearray expose `fromhex` as a classmethod and `maketrans` as a
+            // CPython: str/bytes/bytearray expose `maketrans` as a staticmethod, bytes/bytearray
+            // expose `fromhex` as a classmethod, and memoryview exposes `_from_flags` as a
             // staticmethod on the type object.
             let builtins = builtin_classes(_py);
+            if (class_bits == builtins.str || issubclass_bits(class_bits, builtins.str))
+                && name == "maketrans"
+                && let Some(func_bits) = string_method_bits(_py, "maketrans")
+            {
+                inc_ref_bits(_py, func_bits);
+                return Some(func_bits);
+            }
             if class_bits == builtins.bytes {
                 if name == "fromhex" {
                     static BYTES_FROMHEX: AtomicU64 = AtomicU64::new(0);
@@ -497,6 +507,17 @@ unsafe fn type_attr_lookup_ptr_inner(
                     inc_ref_bits(_py, func_bits);
                     return Some(func_bits);
                 }
+            }
+            if class_bits == builtins.memoryview && name == "_from_flags" {
+                static MEMORYVIEW_FROM_FLAGS: AtomicU64 = AtomicU64::new(0);
+                let func_bits = builtin_func_bits(
+                    _py,
+                    &MEMORYVIEW_FROM_FLAGS,
+                    fn_addr!(molt_memoryview_from_flags),
+                    2,
+                );
+                inc_ref_bits(_py, func_bits);
+                return Some(func_bits);
             }
 
             if name == "__name__" {
@@ -1197,6 +1218,17 @@ pub(crate) unsafe fn attr_lookup_ptr(
         if type_id == TYPE_ID_MEMORYVIEW {
             let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
             match name.as_str() {
+                "_from_flags" => {
+                    static MEMORYVIEW_FROM_FLAGS: AtomicU64 = AtomicU64::new(0);
+                    let func_bits = builtin_func_bits(
+                        _py,
+                        &MEMORYVIEW_FROM_FLAGS,
+                        fn_addr!(molt_memoryview_from_flags),
+                        2,
+                    );
+                    inc_ref_bits(_py, func_bits);
+                    return Some(func_bits);
+                }
                 "format" => {
                     let bits = memoryview_format_bits(obj_ptr);
                     inc_ref_bits(_py, bits);
@@ -1225,6 +1257,33 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 _ => {}
             }
             if let Some(func_bits) = memoryview_method_bits(_py, name.as_str()) {
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                let bound_bits = molt_bound_method_new(func_bits, self_bits);
+                return Some(bound_bits);
+            }
+        }
+        if type_id == TYPE_ID_RANGE
+            && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+        {
+            match name.as_str() {
+                "start" => {
+                    let bits = range_start_bits(obj_ptr);
+                    inc_ref_bits(_py, bits);
+                    return Some(bits);
+                }
+                "stop" => {
+                    let bits = range_stop_bits(obj_ptr);
+                    inc_ref_bits(_py, bits);
+                    return Some(bits);
+                }
+                "step" => {
+                    let bits = range_step_bits(obj_ptr);
+                    inc_ref_bits(_py, bits);
+                    return Some(bits);
+                }
+                _ => {}
+            }
+            if let Some(func_bits) = range_method_bits(_py, name.as_str()) {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                 let bound_bits = molt_bound_method_new(func_bits, self_bits);
                 return Some(bound_bits);
@@ -1548,13 +1607,28 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let bound_bits = molt_bound_method_new(func_bits, self_bits);
             return Some(bound_bits);
         }
-        if type_id == TYPE_ID_STRING
+        if type_id == TYPE_ID_TUPLE
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
-            && let Some(func_bits) = string_method_bits(_py, name.as_str())
+            && let Some(func_bits) = tuple_method_bits(_py, name.as_str())
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
             let bound_bits = molt_bound_method_new(func_bits, self_bits);
             return Some(bound_bits);
+        }
+        if type_id == TYPE_ID_STRING
+            && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+        {
+            if name == "maketrans"
+                && let Some(func_bits) = string_method_bits(_py, name.as_str())
+            {
+                inc_ref_bits(_py, func_bits);
+                return Some(func_bits);
+            }
+            if let Some(func_bits) = string_method_bits(_py, name.as_str()) {
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                let bound_bits = molt_bound_method_new(func_bits, self_bits);
+                return Some(bound_bits);
+            }
         }
         if type_id == TYPE_ID_BYTES
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -4547,6 +4621,12 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 let bound_bits = molt_bound_method_new(func_bits, obj_bits);
                 return bound_bits as i64;
             }
+            if obj.is_float()
+                && let Some(func_bits) = float_method_bits(_py, attr_name)
+            {
+                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                return bound_bits as i64;
+            }
             attr_error(_py, type_name(_py, obj), attr_name)
         })
     }
@@ -4736,6 +4816,11 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             {
                 return molt_bound_method_new(func_bits, obj_bits);
             }
+            if obj.is_float()
+                && let Some(func_bits) = float_method_bits(_py, &attr_name)
+            {
+                return molt_bound_method_new(func_bits, obj_bits);
+            }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
     })
@@ -4829,6 +4914,11 @@ pub extern "C" fn molt_get_attr_name_default(
             let obj = obj_from_bits(obj_bits);
             if (obj.is_int() || obj.is_bool())
                 && let Some(func_bits) = int_method_bits(_py, &attr_name)
+            {
+                return molt_bound_method_new(func_bits, obj_bits);
+            }
+            if obj.is_float()
+                && let Some(func_bits) = float_method_bits(_py, &attr_name)
             {
                 return molt_bound_method_new(func_bits, obj_bits);
             }

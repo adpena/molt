@@ -8,14 +8,27 @@ import socket
 sel = selectors.DefaultSelector()
 
 try:
-    a, b = socket.socketpair()
+    left, right = socket.socketpair()
 except AttributeError:
     print("no_socketpair")
 else:
-    key = sel.register(a, selectors.EVENT_READ)
-    print(key.fileobj is a)
-    sel.unregister(a)
-    events = sel.select(timeout=0.01)
-    print(events == [])
-    a.close()
-    b.close()
+    left.setblocking(False)
+    right.setblocking(False)
+    try:
+        key = sel.register(left, selectors.EVENT_READ, data="left")
+        print(key.fileobj is left, bool(key.events & selectors.EVENT_READ), key.data)
+
+        try:
+            sel.register(left, selectors.EVENT_READ)
+        except Exception as exc:
+            print(type(exc).__name__)
+
+        removed = sel.unregister(left)
+        print(removed.fileobj is left, removed.data)
+
+        right.sendall(b"x")
+        print(sel.select(timeout=0.0) == [])
+    finally:
+        sel.close()
+        left.close()
+        right.close()

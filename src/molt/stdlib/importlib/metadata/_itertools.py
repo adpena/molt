@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from itertools import filterfalse as filterfalse
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_FILTERFALSE = _require_intrinsic("molt_itertools_filterfalse", globals())
 
 
 def always_iterable(obj, base_type=(str, bytes)):
@@ -23,14 +23,16 @@ def always_iterable(obj, base_type=(str, bytes)):
 def unique_everseen(iterable, key=None):
     if key is None:
         seen = set()
-        for element in filterfalse(seen.__contains__, iterable):
-            seen.add(element)
+        seen_add = seen.add
+        for element in _MOLT_FILTERFALSE(seen.__contains__, iterable):
+            seen_add(element)
             yield element
         return
     seen_keys = set()
+    seen_keys_add = seen_keys.add
     for element in iterable:
         marker = key(element)
         if marker in seen_keys:
             continue
-        seen_keys.add(marker)
+        seen_keys_add(marker)
         yield element

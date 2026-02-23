@@ -7,6 +7,11 @@ from typing import Any
 import sys as _sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _queue import Empty, SimpleQueue
+
+_PY_MAJOR = int(_sys.version_info[0])
+_PY_MINOR = int(_sys.version_info[1])
+_PY_GE_313 = _PY_MAJOR > 3 or (_PY_MAJOR == 3 and _PY_MINOR >= 13)
 
 _MOLT_QUEUE_NEW = _require_intrinsic("molt_queue_new", globals())
 _MOLT_QUEUE_LIFO_NEW = _require_intrinsic("molt_queue_lifo_new", globals())
@@ -20,6 +25,9 @@ _MOLT_QUEUE_TASK_DONE = _require_intrinsic("molt_queue_task_done", globals())
 _MOLT_QUEUE_JOIN = _require_intrinsic("molt_queue_join", globals())
 _MOLT_QUEUE_DROP = _require_intrinsic("molt_queue_drop", globals())
 _MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set", globals())
+if _PY_GE_313:
+    _MOLT_QUEUE_SHUTDOWN = _require_intrinsic("molt_queue_shutdown", globals())
+    _MOLT_QUEUE_IS_SHUTDOWN = _require_intrinsic("molt_queue_is_shutdown", globals())
 
 _GET_TIMEOUT = object()
 
@@ -28,18 +36,32 @@ __all__ = [
     "Empty",
     "Full",
     "Queue",
-    "SimpleQueue",
-    "LifoQueue",
     "PriorityQueue",
+    "LifoQueue",
+    "SimpleQueue",
 ]
-
-
-class Empty(Exception):
-    pass
+if _PY_GE_313:
+    __all__.insert(2, "ShutDown")
 
 
 class Full(Exception):
     pass
+
+
+def _queue_shutdown(handle: object, immediate: object) -> None:
+    _MOLT_QUEUE_SHUTDOWN(handle, bool(immediate))
+
+
+def _queue_is_shutdown(handle: object) -> bool:
+    if not _PY_GE_313:
+        return False
+    return bool(_MOLT_QUEUE_IS_SHUTDOWN(handle))
+
+
+if _PY_GE_313:
+
+    class ShutDown(Exception):
+        pass
 
 
 def _normalize_timeout(
@@ -77,6 +99,8 @@ class Queue:
         wait = _normalize_timeout(bool(block), timeout, op_name="put")
         ok = bool(_MOLT_QUEUE_PUT(self._handle, item, bool(block), wait))
         if not ok:
+            if _queue_is_shutdown(self._handle):
+                raise ShutDown
             raise Full
 
     def put_nowait(self, item: Any) -> None:
@@ -86,6 +110,8 @@ class Queue:
         wait = _normalize_timeout(bool(block), timeout, op_name="get")
         item = _MOLT_QUEUE_GET(self._handle, bool(block), wait, _GET_TIMEOUT)
         if item is _GET_TIMEOUT:
+            if _queue_is_shutdown(self._handle):
+                raise ShutDown
             raise Empty
         return item
 
@@ -99,47 +125,8 @@ class Queue:
     def join(self) -> None:
         _MOLT_QUEUE_JOIN(self._handle)
 
-    def __del__(self) -> None:
-        try:
-            _MOLT_QUEUE_DROP(self._handle)
-        except Exception:
-            return
-
-
-class SimpleQueue:
-    def __init__(self) -> None:
-        self._handle = _MOLT_QUEUE_NEW(0)
-
-    @classmethod
-    def __class_getitem__(cls, _item: Any) -> type["SimpleQueue"]:
-        return cls
-
-    def qsize(self) -> int:
-        return int(_MOLT_QUEUE_QSIZE(self._handle))
-
-    def empty(self) -> bool:
-        return bool(_MOLT_QUEUE_EMPTY(self._handle))
-
-    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        # CPython SimpleQueue ignores block/timeout; keep the signature compatible.
-        _ = block
-        _ = timeout
-        ok = bool(_MOLT_QUEUE_PUT(self._handle, item, True, None))
-        if not ok:
-            raise Full
-
-    def put_nowait(self, item: Any) -> None:
-        self.put(item)
-
-    def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        wait = _normalize_timeout(bool(block), timeout, op_name="get")
-        item = _MOLT_QUEUE_GET(self._handle, bool(block), wait, _GET_TIMEOUT)
-        if item is _GET_TIMEOUT:
-            raise Empty
-        return item
-
-    def get_nowait(self) -> Any:
-        return self.get(block=False)
+    def shutdown(self, immediate: bool = False) -> None:
+        _queue_shutdown(self._handle, immediate)
 
     def __del__(self) -> None:
         try:
@@ -158,6 +145,10 @@ class PriorityQueue(Queue):
     def __init__(self, maxsize: int = 0) -> None:
         self.maxsize = int(maxsize)
         self._handle = _MOLT_QUEUE_PRIORITY_NEW(self.maxsize)
+
+
+if not _PY_GE_313:
+    del Queue.shutdown
 
 
 _module = _sys.modules.get(__name__)

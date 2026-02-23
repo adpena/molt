@@ -42,8 +42,20 @@ _MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD = _require_intrinsic(
 _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_SELECT_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_entry_points_select_payload", globals()
 )
+_MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_FILTER_PAYLOAD = _require_intrinsic(
+    "molt_importlib_metadata_entry_points_filter_payload", globals()
+)
 _MOLT_IMPORTLIB_METADATA_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_payload", globals()
+)
+_MOLT_IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD = _require_intrinsic(
+    "molt_importlib_metadata_distributions_payload", globals()
+)
+_MOLT_IMPORTLIB_METADATA_RECORD_PAYLOAD = _require_intrinsic(
+    "molt_importlib_metadata_record_payload", globals()
+)
+_MOLT_IMPORTLIB_METADATA_PACKAGES_DISTRIBUTIONS_PAYLOAD = _require_intrinsic(
+    "molt_importlib_metadata_packages_distributions_payload", globals()
 )
 _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME = _require_intrinsic(
     "molt_importlib_metadata_normalize_name", globals()
@@ -105,6 +117,9 @@ class FileHash:
         self.mode = mode
         self.value = value
 
+    def __repr__(self) -> str:
+        return f"<FileHash mode={self.mode!r} value={self.value!r}>"
+
 
 class Lookup(dict):
     pass
@@ -127,7 +142,49 @@ class Sectioned:
 
 
 class PackagePath(str):
-    pass
+    def __new__(
+        cls,
+        path: str,
+        dist: "Distribution" | None = None,
+        hash_value: str | None = None,
+        size_text: str | None = None,
+    ):
+        obj = str.__new__(cls, path)
+        obj._path = path
+        obj.dist = dist
+        obj.hash = _parse_file_hash(hash_value)
+        obj.size = _parse_file_size(size_text)
+        base_dir = os.path.dirname(dist._path) if dist is not None else ""
+        obj._base_dir = base_dir
+        return obj
+
+    def __str__(self) -> str:
+        return self._path
+
+    def __repr__(self) -> str:
+        return repr(self._path)
+
+    def __fspath__(self) -> str:
+        return self._path
+
+    def locate(self) -> pathlib.Path:
+        return pathlib.Path(self._base_dir).joinpath(self._path)
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        _ensure_fs_read()
+        target = str(self.locate())
+        text = _read_text_file(target)
+        if text is None:
+            raise FileNotFoundError(target)
+        return text
+
+    def read_binary(self) -> bytes:
+        _ensure_fs_read()
+        target = str(self.locate())
+        raw = _MOLT_IMPORTLIB_READ_FILE(target)
+        if not isinstance(raw, bytes):
+            raise RuntimeError("invalid importlib read payload: bytes expected")
+        return raw
 
 
 starmap = itertools.starmap
@@ -381,10 +438,13 @@ def _iter_dist_paths(search_paths: tuple[str, ...]) -> _Iterable[str]:
 
 
 def _entry_points_payload(
-    search_paths: tuple[str, ...], group: str | None = None, name: str | None = None
+    search_paths: tuple[str, ...],
+    group: str | None = None,
+    name: str | None = None,
+    value: str | None = None,
 ) -> list[tuple[str, str, str]]:
-    payload = _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_SELECT_PAYLOAD(
-        search_paths, _metadata_module_file(), group, name
+    payload = _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_FILTER_PAYLOAD(
+        search_paths, _metadata_module_file(), group, name, value
     )
     if not isinstance(payload, (list, tuple)):
         raise RuntimeError(
@@ -406,8 +466,7 @@ def _entry_points_payload(
     return out
 
 
-def _metadata_payload(path: str) -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_METADATA_PAYLOAD(path)
+def _coerce_metadata_payload(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib metadata payload: dict expected")
     path_value = payload.get("path")
@@ -464,6 +523,25 @@ def _metadata_payload(path: str) -> dict[str, object]:
     }
 
 
+def _metadata_payload(path: str) -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_METADATA_PAYLOAD(path)
+    return _coerce_metadata_payload(payload)
+
+
+def _distributions_payload(search_paths: tuple[str, ...]) -> list[dict[str, object]]:
+    payload = _MOLT_IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD(
+        search_paths, _metadata_module_file()
+    )
+    if not isinstance(payload, (list, tuple)):
+        raise RuntimeError(
+            "invalid importlib metadata distributions payload: sequence expected"
+        )
+    out: list[dict[str, object]] = []
+    for entry in payload:
+        out.append(_coerce_metadata_payload(entry))
+    return out
+
+
 def _read_text_file(path: str) -> str | None:
     try:
         raw = _MOLT_IMPORTLIB_READ_FILE(path)
@@ -474,11 +552,81 @@ def _read_text_file(path: str) -> str | None:
     return raw.decode("utf-8", errors="surrogateescape")
 
 
+def _parse_file_hash(value: str | None) -> FileHash | None:
+    if not value:
+        return None
+    if "=" in value:
+        mode, digest = value.split("=", 1)
+    else:
+        mode, digest = "", value
+    return FileHash(mode, digest)
+
+
+def _parse_file_size(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_payload(path: str) -> list[tuple[str, str | None, str | None]]:
+    payload = _MOLT_IMPORTLIB_METADATA_RECORD_PAYLOAD(path)
+    if not isinstance(payload, (list, tuple)):
+        raise RuntimeError(
+            "invalid importlib metadata record payload: sequence expected"
+        )
+    out: list[tuple[str, str | None, str | None]] = []
+    for entry in payload:
+        if (
+            not isinstance(entry, (list, tuple))
+            or len(entry) != 3
+            or not isinstance(entry[0], str)
+            or (entry[1] is not None and not isinstance(entry[1], str))
+            or (entry[2] is not None and not isinstance(entry[2], str))
+        ):
+            raise RuntimeError(
+                "invalid importlib metadata record payload: triplets expected"
+            )
+        out.append((entry[0], entry[1], entry[2]))
+    return out
+
+
+def _packages_distributions_payload(
+    search_paths: tuple[str, ...],
+) -> dict[str, list[str]]:
+    payload = _MOLT_IMPORTLIB_METADATA_PACKAGES_DISTRIBUTIONS_PAYLOAD(
+        search_paths, _metadata_module_file()
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "invalid importlib metadata packages_distributions payload: dict expected"
+        )
+    out: dict[str, list[str]] = {}
+    for package, providers in payload.items():
+        if not isinstance(package, str):
+            raise RuntimeError(
+                "invalid importlib metadata packages_distributions payload: package key"
+            )
+        if not isinstance(providers, (list, tuple)) or not all(
+            isinstance(entry, str) for entry in providers
+        ):
+            raise RuntimeError(
+                "invalid importlib metadata packages_distributions payload: providers"
+            )
+        deduped: list[str] = []
+        for entry in providers:
+            if entry not in deduped:
+                deduped.append(entry)
+        out[package] = deduped
+    return out
+
+
 def _build_cache(search_paths: tuple[str, ...]) -> dict[str, Distribution]:
     _ensure_fs_read()
     cache: dict[str, Distribution] = {}
-    for path in _iter_dist_paths(search_paths):
-        payload = _metadata_payload(path)
+    for payload in _distributions_payload(search_paths):
         name = str(payload["name"])
         version_val = str(payload["version"])
         metadata_map = payload["metadata"]
@@ -573,45 +721,44 @@ def requires(name: str) -> list[str] | None:
 
 
 def files(name: str):
-    _ = name
-    return None
+    dist = distribution(name)
+    payload = _record_payload(dist._path)
+    if not payload:
+        return None
+    return [
+        PackagePath(path, dist, hash_value, size_text)
+        for path, hash_value, size_text in payload
+    ]
 
 
 def packages_distributions() -> dict[str, list[str]]:
-    mapping: dict[str, list[str]] = {}
-    for dist in distributions():
-        top_level = dist.read_text("top_level.txt")
-        if not top_level:
-            continue
-        for line in top_level.splitlines():
-            pkg = line.strip()
-            if not pkg:
-                continue
-            providers = mapping.setdefault(pkg, [])
-            if dist._name not in providers:
-                providers.append(dist._name)
-    return mapping
+    _ensure_fs_read()
+    snapshot = _resolved_search_paths(_path_snapshot())
+    return _packages_distributions_payload(snapshot)
 
 
 def entry_points(**params) -> EntryPoints:
     _ensure_fs_read()
     group = params.get("group")
     name = params.get("name")
+    value = params.get("value")
     use_runtime_filter = (
-        set(params).issubset({"group", "name"})
+        set(params).issubset({"group", "name", "value"})
         and (group is None or isinstance(group, str))
         and (name is None or isinstance(name, str))
+        and (value is None or isinstance(value, str))
     )
     snapshot = _resolved_search_paths(_path_snapshot())
     payload_group = group if use_runtime_filter else None
     payload_name = name if use_runtime_filter else None
+    payload_value = value if use_runtime_filter else None
     items = [
         EntryPoint(name, value, group)
         for name, value, group in _entry_points_payload(
-            snapshot, payload_group, payload_name
+            snapshot, payload_group, payload_name, payload_value
         )
     ]
     entry_points_obj = EntryPoints(items)
-    if params:
+    if params and not use_runtime_filter:
         return cast(EntryPoints, entry_points_obj.select(**params))
     return entry_points_obj

@@ -606,7 +606,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "molt_weakref_drop": BuiltinFuncSpec("molt_weakref_drop", ("weakref",)),
     "_molt_path_exists": BuiltinFuncSpec("molt_path_exists", ("path",)),
     "_molt_path_listdir": BuiltinFuncSpec("molt_path_listdir", ("path",)),
-    "_molt_path_mkdir": BuiltinFuncSpec("molt_path_mkdir", ("path",)),
+    "_molt_path_mkdir": BuiltinFuncSpec(
+        "molt_path_mkdir", ("path", "mode"), (ast.Constant(0o777),)
+    ),
     "_molt_path_unlink": BuiltinFuncSpec("molt_path_unlink", ("path",)),
     "_molt_path_rmdir": BuiltinFuncSpec("molt_path_rmdir", ("path",)),
     # CPython parity: vars() is equivalent to locals() with no arguments.
@@ -14565,12 +14567,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="TUPLE_COUNT", args=[receiver, val], result=res))
                 return res
             if method == "index" and receiver.type_hint == "tuple":
-                if len(node.args) != 1:
-                    raise NotImplementedError("tuple.index expects 1 argument")
-                val = self.visit(node.args[0])
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="TUPLE_INDEX", args=[receiver, val], result=res))
-                return res
+                if len(node.args) == 1 and not node.keywords:
+                    val = self.visit(node.args[0])
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(kind="TUPLE_INDEX", args=[receiver, val], result=res)
+                    )
+                    return res
             if method == "tobytes":
                 if node.args:
                     raise NotImplementedError("tobytes expects 0 arguments")

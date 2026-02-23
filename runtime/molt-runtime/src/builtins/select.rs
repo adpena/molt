@@ -3,14 +3,15 @@ use molt_obj_model::MoltObject;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{GilReleaseGuard, raise_os_error};
 use crate::{
-    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_TUPLE, alloc_dict_with_pairs,
-    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, bits_from_ptr,
-    call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, molt_iter,
-    molt_iter_next, monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
-    seq_vec_ref, to_f64, to_i64,
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    bits_from_ptr, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, missing_bits, molt_getattr_builtin,
+    molt_is_callable, molt_iter, molt_iter_next, monotonic_now_secs, obj_from_bits, ptr_from_bits,
+    raise_exception, release_ptr, seq_vec_ref, to_f64, to_i64,
 };
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
@@ -47,6 +48,7 @@ struct SelectorRegistryEntry {
 
 struct SelectorRegistry {
     entries: HashMap<i64, SelectorRegistryEntry>,
+    obj_to_fd: HashMap<u64, i64>,
     closed: bool,
     fileno: i64,
     #[allow(dead_code)]
@@ -71,6 +73,19 @@ unsafe fn selector_release_ptr(ptr: *mut u8) {
 }
 
 fn collect_iterable(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<Vec<u64>, u64> {
+    if let Some(iterable_ptr) = obj_from_bits(iterable_bits).as_ptr() {
+        let type_id = unsafe { crate::object_type_id(iterable_ptr) };
+        if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE) {
+            let seq = unsafe { seq_vec_ref(iterable_ptr) };
+            let mut out: Vec<u64> = Vec::with_capacity(seq.len());
+            for &obj_bits in seq {
+                inc_ref_bits(_py, obj_bits);
+                out.push(obj_bits);
+            }
+            return Ok(out);
+        }
+    }
+
     let iter_bits = molt_iter(iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -346,6 +361,25 @@ fn selector_parse_fd(_py: &crate::PyToken<'_>, fd_bits: u64) -> Result<i64, u64>
     Ok(fd)
 }
 
+fn selector_resolve_fd_from_obj(
+    _py: &crate::PyToken<'_>,
+    selector: &mut SelectorRegistry,
+    fileobj_bits: u64,
+) -> Result<i64, u64> {
+    if let Some(fd) = selector.obj_to_fd.get(&fileobj_bits).copied() {
+        return Ok(fd);
+    }
+    let fd = object_to_handle(_py, fileobj_bits)?;
+    if selector
+        .entries
+        .get(&fd)
+        .is_some_and(|entry| entry.obj_bits == fileobj_bits)
+    {
+        selector.obj_to_fd.insert(fileobj_bits, fd);
+    }
+    Ok(fd)
+}
+
 fn add_watchers(
     _py: &crate::PyToken<'_>,
     watches: &mut Vec<SelectWatch>,
@@ -427,28 +461,71 @@ fn poll_masks_batch(
     }
 
     let mut pollfds: Vec<libc::pollfd> = Vec::with_capacity(watches.len());
-    let mut watch_indexes: Vec<usize> = Vec::with_capacity(watches.len());
-    for (index, watch) in watches.iter().enumerate() {
-        let fd = match i32::try_from(watch.handle) {
-            Ok(fd) if fd >= 0 => fd,
-            _ => {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "invalid file descriptor",
-                ));
+    let mut watch_poll_index: Vec<usize> = vec![usize::MAX; watches.len()];
+    if watches.len() <= 16 {
+        for (index, watch) in watches.iter().enumerate() {
+            let fd = match i32::try_from(watch.handle) {
+                Ok(fd) if fd >= 0 => fd,
+                _ => {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "invalid file descriptor",
+                    ));
+                }
+            };
+            let interest = poll_interest_from_events(watch.events);
+            if interest == 0 {
+                continue;
             }
-        };
-        let interest = poll_interest_from_events(watch.events);
-        if interest == 0 {
-            continue;
+            if let Some(poll_index) = pollfds.iter().position(|pollfd| pollfd.fd == fd) {
+                pollfds[poll_index].events |= interest;
+                watch_poll_index[index] = poll_index;
+                continue;
+            }
+            let poll_index = pollfds.len();
+            pollfds.push(libc::pollfd {
+                fd,
+                events: interest,
+                revents: 0,
+            });
+            watch_poll_index[index] = poll_index;
         }
-        pollfds.push(libc::pollfd {
-            fd,
-            events: interest,
-            revents: 0,
-        });
-        watch_indexes.push(index);
+    } else {
+        let mut fd_to_poll_index: HashMap<i32, usize> = HashMap::with_capacity(watches.len());
+        for (index, watch) in watches.iter().enumerate() {
+            let fd = match i32::try_from(watch.handle) {
+                Ok(fd) if fd >= 0 => fd,
+                _ => {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "invalid file descriptor",
+                    ));
+                }
+            };
+            let interest = poll_interest_from_events(watch.events);
+            if interest == 0 {
+                continue;
+            }
+            match fd_to_poll_index.entry(fd) {
+                HashMapEntry::Occupied(entry) => {
+                    let poll_index = *entry.get();
+                    pollfds[poll_index].events |= interest;
+                    watch_poll_index[index] = poll_index;
+                }
+                HashMapEntry::Vacant(entry) => {
+                    let poll_index = pollfds.len();
+                    pollfds.push(libc::pollfd {
+                        fd,
+                        events: interest,
+                        revents: 0,
+                    });
+                    entry.insert(poll_index);
+                    watch_poll_index[index] = poll_index;
+                }
+            }
+        }
     }
     if pollfds.is_empty() {
         return Ok(masks);
@@ -475,11 +552,12 @@ fn poll_masks_batch(
         return Ok(masks);
     }
 
-    for (poll_index, pollfd) in pollfds.iter().enumerate() {
-        let mask = poll_mask_from_revents(pollfd.revents);
-        if mask != 0 {
-            let watch_index = watch_indexes[poll_index];
-            masks[watch_index] = mask;
+    for (watch_index, poll_index) in watch_poll_index.into_iter().enumerate() {
+        if poll_index != usize::MAX {
+            let mask = poll_mask_from_revents(pollfds[poll_index].revents);
+            if mask != 0 {
+                masks[watch_index] = mask;
+            }
         }
     }
     Ok(masks)
@@ -771,6 +849,7 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
         let fileno = SELECTOR_FILENO_NEXT.fetch_add(1, AtomicOrdering::Relaxed);
         let selector = Box::new(SelectorRegistry {
             entries: HashMap::new(),
+            obj_to_fd: HashMap::new(),
             closed: false,
             fileno,
             kind,
@@ -838,22 +917,29 @@ pub extern "C" fn molt_select_selector_register(
             Ok(events) => events,
             Err(err) => return err,
         };
+        if let Some(existing_fd) = selector.obj_to_fd.get(&fileobj_bits).copied()
+            && selector.entries.contains_key(&existing_fd)
+        {
+            return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
+        }
         let fd = match object_to_handle(_py, fileobj_bits) {
             Ok(fd) => fd,
             Err(err) => return err,
         };
-        if selector.entries.contains_key(&fd) {
-            return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
+        match selector.entries.entry(fd) {
+            HashMapEntry::Occupied(_) => {
+                raise_exception::<u64>(_py, "KeyError", "fd is already registered")
+            }
+            HashMapEntry::Vacant(entry) => {
+                inc_ref_bits(_py, fileobj_bits);
+                entry.insert(SelectorRegistryEntry {
+                    obj_bits: fileobj_bits,
+                    events,
+                });
+                selector.obj_to_fd.insert(fileobj_bits, fd);
+                int_bits_from_i64(_py, fd)
+            }
         }
-        inc_ref_bits(_py, fileobj_bits);
-        selector.entries.insert(
-            fd,
-            SelectorRegistryEntry {
-                obj_bits: fileobj_bits,
-                events,
-            },
-        );
-        int_bits_from_i64(_py, fd)
     })
 }
 
@@ -877,17 +963,18 @@ pub extern "C" fn molt_select_selector_register_fd(
             Ok(fd) => fd,
             Err(err) => return err,
         };
-        if selector.entries.contains_key(&fd) {
-            return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
+        match selector.entries.entry(fd) {
+            HashMapEntry::Occupied(_) => {
+                raise_exception::<u64>(_py, "KeyError", "fd is already registered")
+            }
+            HashMapEntry::Vacant(entry) => {
+                entry.insert(SelectorRegistryEntry {
+                    obj_bits: MoltObject::none().bits(),
+                    events,
+                });
+                int_bits_from_i64(_py, fd)
+            }
         }
-        selector.entries.insert(
-            fd,
-            SelectorRegistryEntry {
-                obj_bits: MoltObject::none().bits(),
-                events,
-            },
-        );
-        int_bits_from_i64(_py, fd)
     })
 }
 
@@ -906,6 +993,9 @@ pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64
         let Some(entry) = selector.entries.remove(&fd) else {
             return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
         };
+        if !obj_from_bits(entry.obj_bits).is_none() {
+            selector.obj_to_fd.remove(&entry.obj_bits);
+        }
         selector_release_obj_bits(_py, entry.obj_bits);
         MoltObject::none().bits()
     })
@@ -919,13 +1009,16 @@ pub extern "C" fn molt_select_selector_unregister_obj(handle_bits: u64, fileobj_
             Err(err) => return err,
         };
         let selector = unsafe { &mut *selector_ptr };
-        let fd = match object_to_handle(_py, fileobj_bits) {
+        let fd = match selector_resolve_fd_from_obj(_py, selector, fileobj_bits) {
             Ok(fd) => fd,
             Err(err) => return err,
         };
         let Some(entry) = selector.entries.remove(&fd) else {
             return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
         };
+        if !obj_from_bits(entry.obj_bits).is_none() {
+            selector.obj_to_fd.remove(&entry.obj_bits);
+        }
         selector_release_obj_bits(_py, entry.obj_bits);
         MoltObject::none().bits()
     })
@@ -971,7 +1064,7 @@ pub extern "C" fn molt_select_selector_modify_obj(
             Err(err) => return err,
         };
         let selector = unsafe { &mut *selector_ptr };
-        let fd = match object_to_handle(_py, fileobj_bits) {
+        let fd = match selector_resolve_fd_from_obj(_py, selector, fileobj_bits) {
             Ok(fd) => fd,
             Err(err) => return err,
         };
@@ -1020,17 +1113,16 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
         }
 
         let deadline = timeout.map(|value| monotonic_now_secs(_py) + value);
-        let mut ready_pairs: Vec<(i64, u32)> = Vec::new();
-        let watches: Vec<SelectWatch> = selector
-            .entries
-            .iter()
-            .map(|(fd, entry)| SelectWatch {
+        let mut ready_masks: Vec<u32> = Vec::new();
+        let mut watches: Vec<SelectWatch> = Vec::with_capacity(selector.entries.len());
+        for (fd, entry) in &selector.entries {
+            watches.push(SelectWatch {
                 obj_bits: entry.obj_bits,
                 handle: *fd,
                 events: entry.events,
                 kind: WatchKind::Read,
-            })
-            .collect();
+            });
+        }
 
         loop {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1040,25 +1132,23 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
                     Ok(masks) => masks,
                     Err(err) => return err,
                 };
-                for (watch, mask) in watches.iter().zip(masks.into_iter()) {
-                    if mask != 0 {
-                        ready_pairs.push((watch.handle, mask));
-                    }
+                if masks.iter().any(|mask| *mask != 0) {
+                    ready_masks = masks;
                 }
             }
             #[cfg(target_arch = "wasm32")]
             {
+                ready_masks.clear();
+                ready_masks.reserve(watches.len());
                 for watch in &watches {
                     let mask = match poll_once(_py, watch) {
                         Ok(mask) => mask,
                         Err(err) => return err,
                     };
-                    if mask != 0 {
-                        ready_pairs.push((watch.handle, mask));
-                    }
+                    ready_masks.push(mask);
                 }
             }
-            if !ready_pairs.is_empty() {
+            if ready_masks.iter().any(|mask| *mask != 0) {
                 break;
             }
             if timeout == Some(0.0) {
@@ -1075,8 +1165,13 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             }
         }
 
-        let mut tuple_bits: Vec<u64> = Vec::with_capacity(ready_pairs.len());
-        for (fd, mask) in ready_pairs {
+        let ready_count = ready_masks.iter().filter(|mask| **mask != 0).count();
+        let mut tuple_bits: Vec<u64> = Vec::with_capacity(ready_count);
+        for (watch, mask) in watches.iter().zip(ready_masks.into_iter()) {
+            if mask == 0 {
+                continue;
+            }
+            let fd = watch.handle;
             let fd_bits = int_bits_from_i64(_py, fd);
             if obj_from_bits(fd_bits).is_none() {
                 release_bits(_py, &tuple_bits);
@@ -1120,6 +1215,7 @@ pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
         for (_, entry) in selector.entries.drain() {
             selector_release_obj_bits(_py, entry.obj_bits);
         }
+        selector.obj_to_fd.clear();
         selector.closed = true;
         MoltObject::none().bits()
     })
@@ -1137,6 +1233,7 @@ pub extern "C" fn molt_select_selector_drop(handle_bits: u64) -> u64 {
             for (_, entry) in selector.entries.drain() {
                 selector_release_obj_bits(_py, entry.obj_bits);
             }
+            selector.obj_to_fd.clear();
             selector.closed = true;
         }
         unsafe { selector_release_ptr(ptr) };
@@ -1230,9 +1327,9 @@ pub extern "C" fn molt_select_select(
             Some(value)
         };
 
-        let mut ready_r: Vec<u64> = Vec::new();
-        let mut ready_w: Vec<u64> = Vec::new();
-        let mut ready_x: Vec<u64> = Vec::new();
+        let mut ready_r: Vec<u64> = Vec::with_capacity(r_objects.len());
+        let mut ready_w: Vec<u64> = Vec::with_capacity(w_objects.len());
+        let mut ready_x: Vec<u64> = Vec::with_capacity(x_objects.len());
         let deadline = timeout.map(|value| monotonic_now_secs(_py) + value);
 
         loop {

@@ -38,8 +38,6 @@ finally:
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = previous
-    if isinstance(spec_cache, dict):
-        spec_cache.clear()
 
 print(mod_spec is not None and mod_spec.loader is not None)
 print(pkg_spec is not None and pkg_spec.loader is not None)
@@ -55,3 +53,6 @@ print(
 )
 print(mod is not None and getattr(mod, "value", None) == 11)
 print(pkg is not None and getattr(pkg, "flag", None) == 7)
+
+if isinstance(spec_cache, dict):
+    spec_cache.clear()

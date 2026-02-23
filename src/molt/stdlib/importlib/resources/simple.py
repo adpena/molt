@@ -3,6 +3,12 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_IMPORTLIB_RESOURCES_OPEN_MODE_IS_TEXT = _require_intrinsic(
+    "molt_importlib_resources_open_mode_is_text", globals()
+)
+_MOLT_IMPORTLIB_RESOURCES_PACKAGE_LEAF_NAME = _require_intrinsic(
+    "molt_importlib_resources_package_leaf_name", globals()
+)
 
 import abc
 import io
@@ -10,6 +16,14 @@ import itertools
 from typing import BinaryIO, List
 
 from .abc import Traversable, TraversableResources
+
+
+def _open_mode_is_text(mode):
+    if not isinstance(mode, str):
+        raise ValueError(
+            f"Invalid mode value {mode!r}, only 'r' and 'rb' are supported"
+        )
+    return _MOLT_IMPORTLIB_RESOURCES_OPEN_MODE_IS_TEXT(mode)
 
 
 class SimpleReader(abc.ABC):
@@ -32,7 +46,10 @@ class SimpleReader(abc.ABC):
 
     @property
     def name(self):
-        return self.package.split(".")[-1]
+        package = self.package
+        if isinstance(package, str):
+            return _MOLT_IMPORTLIB_RESOURCES_PACKAGE_LEAF_NAME(package)
+        return package.split(".")[-1]
 
 
 class ResourceContainer(Traversable):
@@ -67,7 +84,7 @@ class ResourceHandle(Traversable):
 
     def open(self, mode="r", *args, **kwargs):
         stream = self.parent.reader.open_binary(self.name)
-        if "b" not in mode:
+        if _open_mode_is_text(mode):
             stream = io.TextIOWrapper(stream, *args, **kwargs)
         return stream
 

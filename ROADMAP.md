@@ -322,12 +322,12 @@ Planned milestones:
 - Implemented: PEP 584 dict union (`|`, `|=`), PEP 604 union types (`X | Y`), and zip(strict) (PEP 618).
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): derive `types.GenericAlias.__parameters__` from `TypeVar`/`ParamSpec`/`TypeVarTuple` once typing metadata lands.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): implement full PEP 695 type params (bounds/constraints/defaults, ParamSpec/TypeVarTuple, alias metadata).
-- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): implement `str.isdigit`.
+- Implemented: Unicode-backed `str` predicate tranche (`str.isdigit`/`str.isdecimal`/`str.isnumeric`/`str.isalpha`/`str.isalnum`/`str.islower`/`str.isupper`/`str.isspace`/`str.istitle`/`str.isprintable`/`str.isascii`) with coverage in `tests/differential/basic/str_predicates_surface.py`.
 - Implemented: lambda lowering with closures, defaults, and kw-only/varargs support.
 - Implemented: `sorted()` builtin with stable ordering + key/reverse (core ordering types).
 - Implemented: `sorted()` enforces keyword-only `key`/`reverse` arguments (CPython parity).
 - Implemented: `list.sort` with key/reverse and rich-compare fallback for user-defined types.
-- Implemented: `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
+- Implemented: `str.lower`/`str.upper`/`str.capitalize`/`str.swapcase`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
 - Implemented: container dunder/membership fallbacks (`__contains__`/`__iter__`/`__getitem__`) and builtin class method access for list/dict/str/bytes/bytearray.
 - Implemented: dynamic call binding for bound methods/descriptors with builtin defaults + expanded class decorator parity coverage.
 - Implemented: print keyword-argument parity tests (`sep`, `end`, `file`, `flush`) for native + wasm.

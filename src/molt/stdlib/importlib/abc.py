@@ -7,22 +7,32 @@ _require_intrinsic("molt_stdlib_probe", globals())
 import abc
 import warnings
 
+from . import _bootstrap
 from . import _bootstrap_external
 from . import machinery
 from ._abc import Loader
-from .resources import abc as _resources_abc
 
-try:
-    import _frozen_importlib
-except ImportError as exc:
-    if exc.name != "_frozen_importlib":
-        raise
-    _frozen_importlib = None
+_MOLT_IMPORTLIB_IMPORT_OPTIONAL = _require_intrinsic(
+    "molt_importlib_import_optional", globals()
+)
+_MOLT_IMPORTLIB_IMPORT_OR_FALLBACK = _require_intrinsic(
+    "molt_importlib_import_or_fallback", globals()
+)
 
-try:
-    import _frozen_importlib_external
-except ImportError:
-    _frozen_importlib_external = _bootstrap_external
+_RESOURCE_ABC_EXPORTS = frozenset(
+    (
+        "ResourceReader",
+        "Traversable",
+        "TraversableResources",
+    )
+)
+_resources_abc = None
+
+_frozen_importlib = _bootstrap
+_frozen_importlib_external = _MOLT_IMPORTLIB_IMPORT_OR_FALLBACK(
+    "_frozen_importlib_external",
+    _bootstrap_external,
+)
 
 __all__ = [
     "Loader",
@@ -37,7 +47,12 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name in _resources_abc.__all__:
+    global _resources_abc
+    if name in _RESOURCE_ABC_EXPORTS:
+        if _resources_abc is None:
+            _resources_abc = _MOLT_IMPORTLIB_IMPORT_OPTIONAL("importlib.resources.abc")
+            if _resources_abc is None:
+                raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         obj = getattr(_resources_abc, name)
         warnings._deprecated(f"{__name__}.{name}", remove=(3, 14))
         globals()[name] = obj

@@ -99,10 +99,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_task_state(_py, state);
     trace_shutdown("clear_exception_state");
     clear_exception_state(_py);
+    trace_shutdown("run_atexit_callbacks");
+    crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
-    trace_shutdown("run_weakref_finalizers");
-    crate::object::weakref::weakref_run_atexit_finalizers(_py);
     trace_shutdown("clear_weakref_containers");
     crate::object::weakref::weakref_clear_container_state(_py);
     trace_shutdown("flush_stdio_post_finalizers");
@@ -113,8 +113,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
-    trace_shutdown("builtin_classes_shutdown");
-    builtin_classes_shutdown(_py, state);
     trace_shutdown("clear_interned_names");
     clear_interned_names(_py, state);
     trace_shutdown("clear_method_cache");
@@ -139,6 +137,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_asyncgen_locals(_py, state);
     trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
+    // Keep builtin classes alive until after cache + TLS teardown: releasing
+    // them too early can trigger lock re-entry when later dec_ref paths perform
+    // class attribute lookups during shutdown.
+    trace_shutdown("builtin_classes_shutdown");
+    builtin_classes_shutdown(_py, state);
     if reset_ptrs {
         trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();

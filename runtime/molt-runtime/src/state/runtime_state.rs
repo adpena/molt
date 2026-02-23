@@ -120,6 +120,20 @@ pub(crate) struct WeakSetEntry {
     pub(crate) item_ref_bits: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct AtexitCallbackEntry {
+    pub(crate) kind: AtexitCallbackKind,
+    pub(crate) func_bits: u64,
+    pub(crate) args_bits: u64,
+    pub(crate) kwargs_bits: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtexitCallbackKind {
+    Python,
+    WeakrefFinalizerRunner,
+}
+
 pub(crate) struct WeakRefRegistry {
     pub(crate) by_ref: HashMap<PtrSlot, WeakRefEntry>,
     pub(crate) by_target: HashMap<PtrSlot, Vec<PtrSlot>>,
@@ -216,6 +230,8 @@ pub(crate) struct RuntimeState {
     pub(crate) weakkeydicts: Mutex<HashMap<PtrSlot, Vec<WeakKeyDictEntry>>>,
     pub(crate) weakvaluedicts: Mutex<HashMap<PtrSlot, Vec<WeakValueDictEntry>>>,
     pub(crate) weaksets: Mutex<HashMap<PtrSlot, Vec<WeakSetEntry>>>,
+    pub(crate) atexit_callbacks: Mutex<Vec<AtexitCallbackEntry>>,
+    pub(crate) atexit_weakref_runner_registered: AtomicBool,
     pub(crate) abc_invalidation_counter: AtomicU64,
     pub(crate) asyncgen_registry: Mutex<HashSet<PtrSlot>>,
     pub(crate) fn_ptr_code: Mutex<HashMap<u64, u64>>,
@@ -290,6 +306,8 @@ impl RuntimeState {
             weakkeydicts: Mutex::new(HashMap::new()),
             weakvaluedicts: Mutex::new(HashMap::new()),
             weaksets: Mutex::new(HashMap::new()),
+            atexit_callbacks: Mutex::new(Vec::new()),
+            atexit_weakref_runner_registered: AtomicBool::new(false),
             abc_invalidation_counter: AtomicU64::new(0),
             asyncgen_registry: Mutex::new(HashSet::new()),
             fn_ptr_code: Mutex::new(HashMap::new()),

@@ -407,12 +407,11 @@ class Path:
         exist_ok: bool = False,
     ) -> None:
         capabilities.require("fs.write")
-        del mode
         if parents:
-            _MOLT_PATH_MAKEDIRS(self._path, bool(exist_ok))
+            _MOLT_PATH_MAKEDIRS(self._path, mode, bool(exist_ok))
             return
         try:
-            _MOLT_PATH_MKDIR(self._path)
+            _MOLT_PATH_MKDIR(self._path, mode)
         except FileExistsError:
             if exist_ok and bool(_MOLT_PATH_ISDIR(self._path)):
                 return

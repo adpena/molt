@@ -89,11 +89,11 @@ class HTTPStatus(IntEnum):
 
 
 def __getattr__(name: str):
-    if name in {"client", "cookiejar", "server"}:
+    if name in {"client", "cookiejar", "cookies", "server"}:
         module = importlib.import_module(f"{__name__}.{name}")
         globals()[name] = module
         return module
     raise AttributeError(name)
 
 
-__all__ = ["HTTPStatus", "client", "cookiejar", "server"]
+__all__ = ["HTTPStatus", "client", "cookiejar", "cookies", "server"]
