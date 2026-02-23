@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ptr;
@@ -8,8 +9,8 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::object::ops::{is_truthy, string_obj_to_owned};
 use crate::{
-    PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, int_bits_from_i64,
-    obj_from_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
+    PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, int_bits_from_bigint,
+    int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
 };
 
 const MPD_CLAMPED: u32 = 0x00000001;
@@ -1250,5 +1251,1186 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
             return bits;
         }
         decimal_bits(dec)
+    })
+}
+
+// ── Binary arithmetic ────────────────────────────────────────────────────
+
+fn binary_arith_setup<'a>(
+    _py: &PyToken<'a>,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> Result<
+    (
+        *mut DecimalContextHandle,
+        &'static mut DecimalHandle,
+        &'static mut DecimalHandle,
+    ),
+    u64,
+> {
+    let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+        Some(ptr) => ptr,
+        None => ensure_current_context(),
+    };
+    let Some(a) = decimal_handle_from_bits(a_bits) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "invalid decimal handle",
+        ));
+    };
+    let Some(b) = decimal_handle_from_bits(b_bits) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "invalid decimal handle",
+        ));
+    };
+    Ok((ctx_ptr, a, b))
+}
+
+fn align_add_sub(a: &DecimalHandle, b: &DecimalHandle) -> (BigInt, BigInt, i64) {
+    let common_exp = a.exp.min(b.exp);
+    let shift_a = u32::try_from(a.exp - common_exp).unwrap_or(0);
+    let shift_b = u32::try_from(b.exp - common_exp).unwrap_or(0);
+    let ca = &a.coeff * pow10_u32(shift_a);
+    let cb = &b.coeff * pow10_u32(shift_b);
+    (ca, cb, common_exp)
+}
+
+fn finalize_binary(
+    _py: &PyToken<'_>,
+    ctx: &mut DecimalContextHandle,
+    sign: bool,
+    coeff: BigInt,
+    exp: i64,
+) -> u64 {
+    let mut dec = DecimalHandle {
+        sign: sign && !coeff.is_zero(),
+        coeff,
+        exp,
+        special: DecimalSpecial::Finite,
+    };
+    let mut status = 0u32;
+    if let Err(flag) = apply_precision(ctx, &mut dec, &mut status) {
+        if let Err(bits) = apply_status(_py, ctx, flag) {
+            return bits;
+        }
+        return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+    }
+    if let Err(bits) = apply_status(_py, ctx, status) {
+        return bits;
+    }
+    decimal_bits(dec)
+}
+
+fn transcendental_via_f64(
+    _py: &PyToken<'_>,
+    ctx: &mut DecimalContextHandle,
+    a: &DecimalHandle,
+    f: impl FnOnce(f64) -> f64,
+) -> u64 {
+    if a.special != DecimalSpecial::Finite {
+        return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+    }
+    let text = decimal_to_string(a, 1);
+    let base = text.parse::<f64>().unwrap_or(f64::NAN);
+    let val = f(base);
+    if !val.is_finite() {
+        if let Err(bits) = apply_status(_py, ctx, MPD_OVERFLOW) {
+            return bits;
+        }
+        return decimal_bits(DecimalHandle {
+            sign: val.is_sign_negative(),
+            coeff: BigInt::zero(),
+            exp: 0,
+            special: DecimalSpecial::Infinity,
+        });
+    }
+    let prec = usize::try_from(ctx.prec.max(1)).unwrap_or(28);
+    let sci = format!("{:.*e}", prec + 4, val);
+    let mut dec = match parse_decimal_text(&sci) {
+        Ok(v) => v,
+        Err(flag) => {
+            if let Err(bits) = apply_status(_py, ctx, flag) {
+                return bits;
+            }
+            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        }
+    };
+    let mut status = MPD_INEXACT | MPD_ROUNDED;
+    if let Err(flag) = apply_precision(ctx, &mut dec, &mut status) {
+        if let Err(bits) = apply_status(_py, ctx, flag) {
+            return bits;
+        }
+        return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+    }
+    if let Err(bits) = apply_status(_py, ctx, status) {
+        return bits;
+    }
+    decimal_bits(dec)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            if a.special == DecimalSpecial::Infinity && b.special == DecimalSpecial::Infinity {
+                if a.sign != b.sign {
+                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                }
+                return decimal_bits(DecimalHandle {
+                    sign: a.sign,
+                    coeff: BigInt::zero(),
+                    exp: 0,
+                    special: DecimalSpecial::Infinity,
+                });
+            }
+            if a.special == DecimalSpecial::Infinity {
+                return decimal_bits(a.clone());
+            }
+            if b.special == DecimalSpecial::Infinity {
+                return decimal_bits(b.clone());
+            }
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let sa = if a.sign { -ca } else { ca };
+        let sb = if b.sign { -cb } else { cb };
+        let sum = sa + sb;
+        let sign = sum.is_negative();
+        let coeff = sum.abs();
+        finalize_binary(_py, ctx, sign, coeff, common_exp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            if a.special == DecimalSpecial::Infinity && b.special == DecimalSpecial::Infinity {
+                if a.sign == b.sign {
+                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                }
+                return decimal_bits(DecimalHandle {
+                    sign: a.sign,
+                    coeff: BigInt::zero(),
+                    exp: 0,
+                    special: DecimalSpecial::Infinity,
+                });
+            }
+            if a.special == DecimalSpecial::Infinity {
+                return decimal_bits(a.clone());
+            }
+            if b.special == DecimalSpecial::Infinity {
+                return decimal_bits(DecimalHandle {
+                    sign: !b.sign,
+                    coeff: BigInt::zero(),
+                    exp: 0,
+                    special: DecimalSpecial::Infinity,
+                });
+            }
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let sa = if a.sign { -ca } else { ca };
+        let sb = if b.sign { -cb } else { cb };
+        let diff = sa - sb;
+        let sign = diff.is_negative();
+        let coeff = diff.abs();
+        finalize_binary(_py, ctx, sign, coeff, common_exp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            if a.special == DecimalSpecial::Infinity || b.special == DecimalSpecial::Infinity {
+                if (a.special == DecimalSpecial::Finite && a.coeff.is_zero())
+                    || (b.special == DecimalSpecial::Finite && b.coeff.is_zero())
+                {
+                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                }
+                return decimal_bits(DecimalHandle {
+                    sign: a.sign ^ b.sign,
+                    coeff: BigInt::zero(),
+                    exp: 0,
+                    special: DecimalSpecial::Infinity,
+                });
+            }
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let coeff = &a.coeff * &b.coeff;
+        let exp = a.exp + b.exp;
+        let sign = a.sign ^ b.sign;
+        finalize_binary(_py, ctx, sign, coeff, exp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if b.coeff.is_zero() {
+            if a.coeff.is_zero() {
+                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            }
+            if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
+                return bits;
+            }
+            return decimal_bits(DecimalHandle {
+                sign: a.sign ^ b.sign,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Infinity,
+            });
+        }
+
+        let (ca, cb, _common_exp) = align_add_sub(a, b);
+        let q = &ca / &cb;
+        let sign = (a.sign ^ b.sign) && !q.is_zero();
+        decimal_bits(DecimalHandle {
+            sign,
+            coeff: q,
+            exp: 0,
+            special: DecimalSpecial::Finite,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if b.coeff.is_zero() {
+            if a.coeff.is_zero() {
+                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            }
+            if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
+                return bits;
+            }
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let rem = &ca % &cb;
+        let sign = a.sign && !rem.is_zero();
+        finalize_binary(_py, ctx, sign, rem, common_exp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        // Integer exponent fast path
+        if b.exp >= 0 {
+            let Some(scale) = pow10_i64(b.exp) else {
+                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+            };
+            let full_exp = &b.coeff * scale;
+            if let Some(exp_i64) = full_exp.to_i64().filter(|e| (0..=999_999_999).contains(e)) {
+                let exp_u32 = exp_i64 as u32;
+                let coeff = num_traits::pow::Pow::pow(&a.coeff, &exp_u32);
+                let new_exp = a.exp * exp_i64;
+                let sign = a.sign && (exp_u32 % 2 == 1);
+                return finalize_binary(_py, ctx, sign, coeff, new_exp);
+            }
+        }
+
+        // Fall back to f64 for non-integer or large exponents
+        transcendental_via_f64(_py, ctx, a, |base| {
+            let exp_text = decimal_to_string(b, 1);
+            let exp_f64 = exp_text.parse::<f64>().unwrap_or(f64::NAN);
+            libm::pow(base, exp_f64)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let _ctx = unsafe { &mut *ctx_ptr };
+        decimal_bits(DecimalHandle {
+            sign: false,
+            coeff: a.coeff.clone(),
+            exp: a.exp,
+            special: a.special,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let _ctx = unsafe { &mut *ctx_ptr };
+        decimal_bits(DecimalHandle {
+            sign: !a.sign,
+            coeff: a.coeff.clone(),
+            exp: a.exp,
+            special: a.special,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite {
+            return decimal_bits(a.clone());
+        }
+        let mut out = a.clone();
+        let mut status = 0u32;
+        if let Err(flag) = apply_precision(ctx, &mut out, &mut status)
+            && let Err(bits) = apply_status(_py, ctx, flag)
+        {
+            return bits;
+        }
+        let _ = apply_status(_py, ctx, status);
+        decimal_bits(out)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special == DecimalSpecial::Infinity {
+            if a.sign {
+                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            }
+            return decimal_bits(a.clone());
+        }
+        if a.sign && !a.coeff.is_zero() {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        transcendental_via_f64(_py, ctx, a, libm::sqrt)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.sign && !a.coeff.is_zero() {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if a.coeff.is_zero() {
+            if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
+                return bits;
+            }
+            return decimal_bits(DecimalHandle {
+                sign: true,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Infinity,
+            });
+        }
+        transcendental_via_f64(_py, ctx, a, libm::log)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.sign && !a.coeff.is_zero() {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if a.coeff.is_zero() {
+            if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
+                return bits;
+            }
+            return decimal_bits(DecimalHandle {
+                sign: true,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Infinity,
+            });
+        }
+        transcendental_via_f64(_py, ctx, a, libm::log10)
+    })
+}
+
+// ── Predicates ────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_finite(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        MoltObject::from_bool(a.special == DecimalSpecial::Finite).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_infinite(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        MoltObject::from_bool(a.special == DecimalSpecial::Infinity).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_nan(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        MoltObject::from_bool(a.special == DecimalSpecial::Nan || a.special == DecimalSpecial::SNan)
+            .bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_zero(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        MoltObject::from_bool(a.special == DecimalSpecial::Finite && a.coeff.is_zero()).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        MoltObject::from_bool(a.sign).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        if a.special != DecimalSpecial::Finite || a.coeff.is_zero() {
+            return MoltObject::from_bool(false).bits();
+        }
+        let ctx = unsafe { &*ctx_ptr };
+        let adjusted = a.exp + digits_len(&a.coeff) - 1;
+        let emin = 1 - ctx.prec;
+        MoltObject::from_bool(adjusted >= emin).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        if a.special != DecimalSpecial::Finite || a.coeff.is_zero() {
+            return MoltObject::from_bool(false).bits();
+        }
+        let ctx = unsafe { &*ctx_ptr };
+        let adjusted = a.exp + digits_len(&a.coeff) - 1;
+        let emin = 1 - ctx.prec;
+        MoltObject::from_bool(adjusted < emin).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let class = match a.special {
+            DecimalSpecial::Nan => "NaN",
+            DecimalSpecial::SNan => "sNaN",
+            DecimalSpecial::Infinity => {
+                if a.sign {
+                    "-Infinity"
+                } else {
+                    "+Infinity"
+                }
+            }
+            DecimalSpecial::Finite => {
+                if a.coeff.is_zero() {
+                    if a.sign { "-Zero" } else { "+Zero" }
+                } else {
+                    let ctx = unsafe { &*ctx_ptr };
+                    let adjusted = a.exp + digits_len(&a.coeff) - 1;
+                    let emin = 1 - ctx.prec;
+                    if adjusted < emin {
+                        if a.sign { "-Subnormal" } else { "+Subnormal" }
+                    } else if a.sign {
+                        "-Normal"
+                    } else {
+                        "+Normal"
+                    }
+                }
+            }
+        };
+        let ptr = alloc_string(_py, class.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        let adjusted = a.exp + digits_len(&a.coeff) - 1;
+        int_bits_from_i64(_py, adjusted)
+    })
+}
+
+// ── Min/Max/SameQuantum ──────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_max(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let _ctx = unsafe { &mut *ctx_ptr };
+        if a.special == DecimalSpecial::Nan {
+            return decimal_bits(b.clone());
+        }
+        if b.special == DecimalSpecial::Nan {
+            return decimal_bits(a.clone());
+        }
+        if a.special == DecimalSpecial::Finite && b.special == DecimalSpecial::Finite {
+            match compare_finite(a, b) {
+                Ordering::Less => return decimal_bits(b.clone()),
+                _ => return decimal_bits(a.clone()),
+            }
+        }
+        if a.special == DecimalSpecial::Infinity && !a.sign {
+            return decimal_bits(a.clone());
+        }
+        if b.special == DecimalSpecial::Infinity && !b.sign {
+            return decimal_bits(b.clone());
+        }
+        decimal_bits(a.clone())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_min(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let _ctx = unsafe { &mut *ctx_ptr };
+        if a.special == DecimalSpecial::Nan {
+            return decimal_bits(b.clone());
+        }
+        if b.special == DecimalSpecial::Nan {
+            return decimal_bits(a.clone());
+        }
+        if a.special == DecimalSpecial::Finite && b.special == DecimalSpecial::Finite {
+            match compare_finite(a, b) {
+                Ordering::Greater => return decimal_bits(b.clone()),
+                _ => return decimal_bits(a.clone()),
+            }
+        }
+        if a.special == DecimalSpecial::Infinity && a.sign {
+            return decimal_bits(a.clone());
+        }
+        if b.special == DecimalSpecial::Infinity && b.sign {
+            return decimal_bits(b.clone());
+        }
+        decimal_bits(a.clone())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_same_quantum(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let Some(b) = decimal_handle_from_bits(b_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return MoltObject::from_bool(a.special == b.special).bits();
+        }
+        MoltObject::from_bool(a.exp == b.exp).bits()
+    })
+}
+
+// ── Integral conversion ─────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite {
+            return decimal_bits(a.clone());
+        }
+        if a.exp >= 0 {
+            return decimal_bits(a.clone());
+        }
+        let cut = -a.exp;
+        let Some(divisor) = pow10_i64(cut) else {
+            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+        };
+        let q = &a.coeff / &divisor;
+        let rem = &a.coeff % &divisor;
+        let mut rounded = q;
+        if round_increment(ctx.rounding, a.sign, &rounded, &rem, &divisor) {
+            rounded += 1u8;
+        }
+        let mut status = 0u32;
+        if !rem.is_zero() {
+            status |= MPD_INEXACT | MPD_ROUNDED;
+        }
+        if let Err(bits) = apply_status(_py, ctx, status) {
+            return bits;
+        }
+        decimal_bits(DecimalHandle {
+            sign: a.sign && !rounded.is_zero(),
+            coeff: rounded,
+            exp: 0,
+            special: DecimalSpecial::Finite,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> u64 {
+    molt_decimal_to_integral_value(ctx_bits, a_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        match a.special {
+            DecimalSpecial::Infinity | DecimalSpecial::Nan | DecimalSpecial::SNan => {
+                let text = decimal_to_string(a, 1);
+                let ptr = alloc_string(_py, text.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+            DecimalSpecial::Finite => {}
+        }
+        let digits = if a.coeff.is_zero() {
+            "0".to_string()
+        } else {
+            a.coeff.to_string()
+        };
+        let n = i64::try_from(digits.len()).unwrap_or(1);
+        let adjusted = a.exp + n - 1;
+        let eng_exp = adjusted - (((adjusted % 3) + 3) % 3);
+        let shift = adjusted - eng_exp;
+        let left_digits = usize::try_from(shift + 1).unwrap_or(1);
+        let text = if left_digits >= digits.len() {
+            let zeros = left_digits - digits.len();
+            let padded = format!("{}{}", digits, "0".repeat(zeros));
+            if eng_exp == 0 {
+                padded
+            } else {
+                format!("{}E{:+}", padded, eng_exp)
+            }
+        } else {
+            let (left, right) = digits.split_at(left_digits);
+            if eng_exp == 0 {
+                format!("{}.{}", left, right)
+            } else {
+                format!("{}.{}E{:+}", left, right, eng_exp)
+            }
+        };
+        let mut result = text;
+        if a.sign {
+            result.insert(0, '-');
+        }
+        let ptr = alloc_string(_py, result.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+// ── Unary operations ────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        if a.special == DecimalSpecial::Infinity && !a.sign {
+            return decimal_bits(a.clone());
+        }
+        if a.special == DecimalSpecial::Infinity && a.sign {
+            let emax = ctx.prec - 1;
+            let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
+            return decimal_bits(DecimalHandle {
+                sign: true,
+                coeff,
+                exp: emax - ctx.prec + 1,
+                special: DecimalSpecial::Finite,
+            });
+        }
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        let etiny = (1 - ctx.prec) - ctx.prec + 1;
+        let epsilon = DecimalHandle {
+            sign: false,
+            coeff: BigInt::one(),
+            exp: etiny,
+            special: DecimalSpecial::Finite,
+        };
+        let (ca, ce, common_exp) = align_add_sub(a, &epsilon);
+        let sa = if a.sign { -ca } else { ca };
+        let sum = sa + ce;
+        let sign = sum.is_negative();
+        let coeff = sum.abs();
+        decimal_bits(DecimalHandle {
+            sign: sign && !coeff.is_zero(),
+            coeff,
+            exp: common_exp,
+            special: DecimalSpecial::Finite,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        if a.special == DecimalSpecial::Infinity && a.sign {
+            return decimal_bits(a.clone());
+        }
+        if a.special == DecimalSpecial::Infinity && !a.sign {
+            let emax = ctx.prec - 1;
+            let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
+            return decimal_bits(DecimalHandle {
+                sign: false,
+                coeff,
+                exp: emax - ctx.prec + 1,
+                special: DecimalSpecial::Finite,
+            });
+        }
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        let etiny = (1 - ctx.prec) - ctx.prec + 1;
+        let epsilon = DecimalHandle {
+            sign: false,
+            coeff: BigInt::one(),
+            exp: etiny,
+            special: DecimalSpecial::Finite,
+        };
+        let (ca, ce, common_exp) = align_add_sub(a, &epsilon);
+        let sa = if a.sign { -ca } else { ca };
+        let diff = sa - ce;
+        let sign = diff.is_negative();
+        let coeff = diff.abs();
+        decimal_bits(DecimalHandle {
+            sign: sign && !coeff.is_zero(),
+            coeff,
+            exp: common_exp,
+            special: DecimalSpecial::Finite,
+        })
+    })
+}
+
+// ── Copy operations ─────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        decimal_bits(DecimalHandle {
+            sign: false,
+            coeff: a.coeff.clone(),
+            exp: a.exp,
+            special: a.special,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        decimal_bits(DecimalHandle {
+            sign: !a.sign,
+            coeff: a.coeff.clone(),
+            exp: a.exp,
+            special: a.special,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let Some(b) = decimal_handle_from_bits(b_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        decimal_bits(DecimalHandle {
+            sign: b.sign,
+            coeff: a.coeff.clone(),
+            exp: a.exp,
+            special: a.special,
+        })
+    })
+}
+
+// ── Conversion ──────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "cannot convert non-finite Decimal to integer ratio",
+            );
+        }
+        let (num, den) = if a.exp >= 0 {
+            let scale = pow10_i64(a.exp).unwrap_or_else(BigInt::zero);
+            let n = &a.coeff * scale;
+            (if a.sign { -n } else { n }, BigInt::one())
+        } else {
+            let scale = pow10_i64(-a.exp).unwrap_or_else(BigInt::zero);
+            let n = if a.sign {
+                -a.coeff.clone()
+            } else {
+                a.coeff.clone()
+            };
+            (n, scale)
+        };
+        let num_bits = int_bits_from_bigint(_py, num);
+        let den_bits = int_bits_from_bigint(_py, den);
+        let tuple_ptr = alloc_tuple(_py, &[num_bits, den_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let obj = obj_from_bits(value_bits);
+        let Some(f) = obj.as_float() else {
+            return raise_exception::<u64>(_py, "TypeError", "argument must be float");
+        };
+        let _ctx = unsafe { &*ctx_ptr };
+        if f.is_nan() {
+            return decimal_bits(DecimalHandle {
+                sign: f.is_sign_negative(),
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Nan,
+            });
+        }
+        if f.is_infinite() {
+            return decimal_bits(DecimalHandle {
+                sign: f.is_sign_negative(),
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Infinity,
+            });
+        }
+        let text = format!("{}", f);
+        match parse_decimal_text(&text) {
+            Ok(dec) => decimal_bits(dec),
+            Err(_) => raise_exception::<u64>(_py, "ValueError", "cannot convert float to Decimal"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "cannot convert non-finite Decimal to int",
+            );
+        }
+        let value = if a.exp >= 0 {
+            let scale = pow10_i64(a.exp).unwrap_or_else(BigInt::zero);
+            &a.coeff * scale
+        } else {
+            let scale = pow10_i64(-a.exp).unwrap_or_else(BigInt::zero);
+            &a.coeff / &scale
+        };
+        let signed = if a.sign { -value } else { value };
+        int_bits_from_bigint(_py, signed)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if b.exp != 0 {
+            return raise_exception::<u64>(
+                _py,
+                "InvalidOperation",
+                "second argument must be integer",
+            );
+        }
+        let Some(shift) = b.coeff.to_i64() else {
+            return raise_exception::<u64>(_py, "InvalidOperation", "exponent too large");
+        };
+        let shift = if b.sign { -shift } else { shift };
+        let mut dec = DecimalHandle {
+            sign: a.sign,
+            coeff: a.coeff.clone(),
+            exp: a.exp + shift,
+            special: DecimalSpecial::Finite,
+        };
+        let mut status = 0u32;
+        if let Err(flag) = apply_precision(ctx, &mut dec, &mut status)
+            && let Err(bits) = apply_status(_py, ctx, flag)
+        {
+            return bits;
+        }
+        let _ = apply_status(_py, ctx, status);
+        decimal_bits(dec)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
+            Ok(t) => t,
+            Err(bits) => return bits,
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if b.coeff.is_zero() {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let rem = &ca % &cb;
+        let half_divisor_times_2 = &cb;
+        let rem_times_2 = &rem * 2u8;
+        let final_rem = if rem_times_2 > *half_divisor_times_2 {
+            rem - cb
+        } else {
+            rem
+        };
+        let sign = a.sign && !final_rem.is_zero();
+        let coeff = final_rem.abs();
+        finalize_binary(_py, ctx, sign, coeff, common_exp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let Some(b) = decimal_handle_from_bits(b_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let Some(c) = decimal_handle_from_bits(c_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite
+            || b.special != DecimalSpecial::Finite
+            || c.special != DecimalSpecial::Finite
+        {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        let product_coeff = &a.coeff * &b.coeff;
+        let product_exp = a.exp + b.exp;
+        let product_sign = a.sign ^ b.sign;
+        let product = DecimalHandle {
+            sign: product_sign,
+            coeff: product_coeff,
+            exp: product_exp,
+            special: DecimalSpecial::Finite,
+        };
+        let (ca, cc, common_exp) = align_add_sub(&product, c);
+        let sa = if product.sign { -ca } else { ca };
+        let sc = if c.sign { -cc } else { cc };
+        let sum = sa + sc;
+        let sign = sum.is_negative();
+        let coeff = sum.abs();
+        finalize_binary(_py, ctx, sign, coeff, common_exp)
     })
 }

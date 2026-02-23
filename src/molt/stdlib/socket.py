@@ -15,16 +15,20 @@ __all__ = [
     "socket",
     "socketpair",
     "fromfd",
+    "close",
     "create_connection",
     "create_server",
     "getaddrinfo",
     "getnameinfo",
     "gethostname",
     "gethostbyname",
+    "gethostbyname_ex",
     "gethostbyaddr",
     "getfqdn",
+    "getprotobyname",
     "getservbyname",
     "getservbyport",
+    "sethostname",
     "inet_aton",
     "inet_pton",
     "inet_ntoa",
@@ -33,12 +37,23 @@ __all__ = [
     "ntohs",
     "htonl",
     "ntohl",
+    "CMSG_LEN",
+    "CMSG_SPACE",
+    "if_nameindex",
+    "if_nametoindex",
+    "if_indextoname",
     "getdefaulttimeout",
     "setdefaulttimeout",
     "error",
     "gaierror",
     "herror",
     "timeout",
+    "has_dualstack_ipv6",
+    "send_fds",
+    "recv_fds",
+    "AddressFamily",
+    "SocketKind",
+    "MsgFlag",
 ]
 
 error = OSError
@@ -113,6 +128,29 @@ _molt_socket_htons = _require_intrinsic("molt_socket_htons", globals())
 _molt_socket_ntohs = _require_intrinsic("molt_socket_ntohs", globals())
 _molt_socket_htonl = _require_intrinsic("molt_socket_htonl", globals())
 _molt_socket_ntohl = _require_intrinsic("molt_socket_ntohl", globals())
+_molt_socket_getprotobyname = _require_intrinsic(
+    "molt_socket_getprotobyname", globals()
+)
+_molt_socket_gethostbyname_ex = _require_intrinsic(
+    "molt_socket_gethostbyname_ex", globals()
+)
+_molt_socket_cmsg_len = _require_intrinsic("molt_socket_cmsg_len", globals())
+_molt_socket_cmsg_space = _require_intrinsic("molt_socket_cmsg_space", globals())
+_molt_socket_if_nameindex = _require_intrinsic("molt_socket_if_nameindex", globals())
+_molt_socket_if_nametoindex = _require_intrinsic(
+    "molt_socket_if_nametoindex", globals()
+)
+_molt_socket_if_indextoname = _require_intrinsic(
+    "molt_socket_if_indextoname", globals()
+)
+_molt_socket_has_dualstack_ipv6 = _require_intrinsic(
+    "molt_socket_has_dualstack_ipv6", globals()
+)
+_molt_socket_send_fds = _require_intrinsic("molt_socket_send_fds", globals())
+_molt_socket_recv_fds = _require_intrinsic("molt_socket_recv_fds", globals())
+_molt_socket_sendfile = _require_intrinsic("molt_socket_sendfile", globals())
+_molt_socket_sethostname = _require_intrinsic("molt_socket_sethostname", globals())
+_molt_socket_sendmsg_afalg = _require_intrinsic("molt_socket_sendmsg_afalg", globals())
 
 
 def _init_constants() -> dict[str, int]:
@@ -138,6 +176,26 @@ else:
     # Fallback for early bootstrap/import edge paths.
     globals().update(_CONSTANTS)
 _EAI_CODES = {val for key, val in _CONSTANTS.items() if key.startswith("EAI_")}
+
+# --- IntEnum / IntFlag wrappers for CPython >= 3.12 parity ---
+from enum import IntEnum, IntFlag
+
+_EnumMeta = type(IntEnum)
+AddressFamily = _EnumMeta(
+    "AddressFamily",
+    (IntEnum,),
+    {k: v for k, v in _CONSTANTS.items() if k.startswith("AF_")},
+)
+SocketKind = _EnumMeta(
+    "SocketKind",
+    (IntEnum,),
+    {k: v for k, v in _CONSTANTS.items() if k.startswith("SOCK_")},
+)
+MsgFlag = type(IntFlag)(
+    "MsgFlag",
+    (IntFlag,),
+    {k: v for k, v in _CONSTANTS.items() if k.startswith("MSG_")},
+)
 
 if _molt_socket_has_ipv6 is None:
     raise RuntimeError("socket intrinsics unavailable")
@@ -531,6 +589,42 @@ class socket:
             )
         )
 
+    def sendmsg_afalg(
+        self,
+        msg: bytes = b"",
+        *,
+        op: int,
+        iv: bytes | None = None,
+        assoclen: int = -1,
+        flags: int = 0,
+    ) -> int:
+        return int(
+            _require_socket_intrinsic(_molt_socket_sendmsg_afalg, "sendmsg_afalg")(
+                self._require_handle(), msg, int(op), iv, int(assoclen), int(flags)
+            )
+        )
+
+    def sendfile(self, file: Any, offset: int = 0, count: int | None = None) -> int:
+        try:
+            fileno = file.fileno()
+        except (AttributeError, OSError) as exc:
+            raise OSError("file should have a valid fileno()") from exc
+        if not isinstance(fileno, int):
+            raise OSError("file.fileno() must return an integer")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if count is not None and count <= 0:
+            raise ValueError("count must be a positive integer (got {})".format(count))
+        effective_count = 0 if count is None else int(count)
+        return int(
+            _require_socket_intrinsic(_molt_socket_sendfile, "sendfile")(
+                self._require_handle(),
+                int(fileno),
+                int(offset),
+                effective_count,
+            )
+        )
+
     def recvmsg(
         self, bufsize: int, ancbufsize: int = 0, flags: int = 0
     ) -> tuple[bytes, list[tuple[int, int, bytes]], int, Any]:
@@ -762,6 +856,59 @@ def ntohl(x: int) -> int:
     return int(_require_socket_intrinsic(_molt_socket_ntohl, "ntohl")(x))
 
 
+def close(fd: int) -> None:
+    _require_socket_intrinsic(_molt_os_close, "molt_os_close")(int(fd))
+
+
+def getprotobyname(name: str) -> int:
+    return int(
+        _require_socket_intrinsic(_molt_socket_getprotobyname, "getprotobyname")(name)
+    )
+
+
+def gethostbyname_ex(hostname: str) -> tuple[str, list[str], list[str]]:
+    try:
+        return _require_socket_intrinsic(
+            _molt_socket_gethostbyname_ex, "gethostbyname_ex"
+        )(hostname)
+    except OSError as exc:
+        if _exc_errno(exc) in _EAI_CODES:
+            raise _map_gaierror(exc) from None
+        raise _map_herror(exc) from None
+
+
+def sethostname(name: str) -> None:
+    _require_socket_intrinsic(_molt_socket_sethostname, "sethostname")(name)
+
+
+def CMSG_LEN(datalen: int) -> int:
+    return int(
+        _require_socket_intrinsic(_molt_socket_cmsg_len, "CMSG_LEN")(int(datalen))
+    )
+
+
+def CMSG_SPACE(datalen: int) -> int:
+    return int(
+        _require_socket_intrinsic(_molt_socket_cmsg_space, "CMSG_SPACE")(int(datalen))
+    )
+
+
+def if_nameindex() -> list[tuple[int, str]]:
+    return _require_socket_intrinsic(_molt_socket_if_nameindex, "if_nameindex")()
+
+
+def if_nametoindex(name: str) -> int:
+    return int(
+        _require_socket_intrinsic(_molt_socket_if_nametoindex, "if_nametoindex")(name)
+    )
+
+
+def if_indextoname(index: int) -> str:
+    return _require_socket_intrinsic(_molt_socket_if_indextoname, "if_indextoname")(
+        int(index)
+    )
+
+
 def create_connection(
     address: tuple[str, int],
     timeout: float | None = None,
@@ -818,3 +965,19 @@ def create_server(
     except Exception:
         sock.close()
         raise
+
+
+def has_dualstack_ipv6():
+    """Return True if the platform supports creating a SOCK_STREAM socket
+    that can handle both IPv4 and IPv6 connections."""
+    return _molt_socket_has_dualstack_ipv6()
+
+
+def send_fds(sock, buffers, fds, flags=0, address=None):
+    """Send file descriptors over a Unix socket using SCM_RIGHTS."""
+    return _molt_socket_send_fds(sock._handle, buffers, list(fds), flags, address)
+
+
+def recv_fds(sock, bufsize, maxfds, flags=0):
+    """Receive file descriptors from a Unix socket using SCM_RIGHTS."""
+    return _molt_socket_recv_fds(sock._handle, bufsize, maxfds, flags)
