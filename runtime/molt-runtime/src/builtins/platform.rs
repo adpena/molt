@@ -14070,6 +14070,19 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
             out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
             out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
             out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
+            // AF_ALG constants (kernel crypto API, Linux only)
+            #[cfg(target_os = "linux")]
+            {
+                out.push(("AF_ALG", 38_i64));
+                out.push(("SOL_ALG", 279_i64));
+                out.push(("ALG_SET_KEY", 1_i64));
+                out.push(("ALG_SET_IV", 2_i64));
+                out.push(("ALG_SET_OP", 3_i64));
+                out.push(("ALG_SET_AEAD_ASSOCLEN", 4_i64));
+                out.push(("ALG_SET_AEAD_AUTHSIZE", 5_i64));
+                out.push(("ALG_OP_DECRYPT", 0_i64));
+                out.push(("ALG_OP_ENCRYPT", 1_i64));
+            }
             out
         }
     }
