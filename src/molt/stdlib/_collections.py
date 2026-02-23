@@ -6,11 +6,9 @@ The module mirrors CPython's public `_collections` surface:
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-__all__ = ["deque", "defaultdict", "OrderedDict"]
+__all__ = ["OrderedDict"]
 
 _MOLT_ORDEREDDICT_NEW = _require_intrinsic("molt_ordereddict_new", globals())
 _MOLT_ORDEREDDICT_FROM_PAIRS = _require_intrinsic(
