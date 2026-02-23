@@ -25,3 +25,11 @@ except Exception as exc:
 ro = memoryview(b"hi")
 print(ro[0])
 print(ro.tobytes())
+
+count_view = memoryview(bytearray(b"abca"))
+print(count_view.count(97))
+print(count_view.index(99))
+try:
+    print(count_view.index(120))
+except Exception as exc:
+    print(type(exc).__name__, str(exc))
