@@ -4353,6 +4353,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_multiprocessing_codec_dumps",
+        symbol: "molt_multiprocessing_codec_dumps",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_multiprocessing_codec_loads",
+        symbol: "molt_multiprocessing_codec_loads",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_stream_reader_new",
         symbol: "molt_stream_reader_new",
         arity: 1,
@@ -7348,8 +7358,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_csv_dict_project",
+        symbol: "molt_csv_dict_project",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_csv_field_size_limit",
         symbol: "molt_csv_field_size_limit",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_csv_has_header",
+        symbol: "molt_csv_has_header",
         arity: 1,
     },
     IntrinsicSpec {
@@ -8800,6 +8820,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_re_negative_lookbehind",
         symbol: "molt_re_negative_lookbehind",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_re_positive_lookahead",
+        symbol: "molt_re_positive_lookahead",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_re_positive_lookbehind",
+        symbol: "molt_re_positive_lookbehind",
         arity: 6,
     },
     IntrinsicSpec {
@@ -11609,6 +11639,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_stream_recv" => Some(crate::molt_stream_recv as *const () as usize as u64),
         "molt_stream_close" => Some(crate::molt_stream_close as *const () as usize as u64),
         "molt_stream_drop" => Some(crate::molt_stream_drop as *const () as usize as u64),
+        "molt_multiprocessing_codec_dumps" => {
+            Some(crate::molt_multiprocessing_codec_dumps as *const () as usize as u64)
+        }
+        "molt_multiprocessing_codec_loads" => {
+            Some(crate::molt_multiprocessing_codec_loads as *const () as usize as u64)
+        }
         "molt_stream_reader_new" => {
             Some(crate::molt_stream_reader_new as *const () as usize as u64)
         }
@@ -12920,9 +12956,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_dbm_dumb_keys" => Some(crate::molt_dbm_dumb_keys as *const () as usize as u64),
         "molt_dbm_dumb_sync" => Some(crate::molt_dbm_dumb_sync as *const () as usize as u64),
         "molt_dbm_dumb_close" => Some(crate::molt_dbm_dumb_close as *const () as usize as u64),
+        "molt_csv_dict_project" => Some(crate::molt_csv_dict_project as *const () as usize as u64),
         "molt_csv_field_size_limit" => {
             Some(crate::molt_csv_field_size_limit as *const () as usize as u64)
         }
+        "molt_csv_has_header" => Some(crate::molt_csv_has_header as *const () as usize as u64),
         "molt_csv_quote_all" => Some(crate::molt_csv_quote_all as *const () as usize as u64),
         "molt_csv_quote_minimal" => {
             Some(crate::molt_csv_quote_minimal as *const () as usize as u64)
@@ -13488,6 +13526,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_re_negative_lookbehind" => {
             Some(crate::molt_re_negative_lookbehind as *const () as usize as u64)
+        }
+        "molt_re_positive_lookahead" => {
+            Some(crate::molt_re_positive_lookahead as *const () as usize as u64)
+        }
+        "molt_re_positive_lookbehind" => {
+            Some(crate::molt_re_positive_lookbehind as *const () as usize as u64)
         }
         "molt_re_strip_verbose" => Some(crate::molt_re_strip_verbose as *const () as usize as u64),
         "molt_secrets_below" => Some(crate::molt_secrets_below as *const () as usize as u64),
