@@ -31,7 +31,7 @@ import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, MutableMapping, NamedTuple, cast
+from typing import Any, Iterable, Literal, Mapping, MutableMapping, NamedTuple, cast
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -68,6 +68,21 @@ _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_DAEMON_DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 _BACKEND_DAEMON_DEFAULT_MAX_JOBS = 8
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 1
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
+_NATIVE_CODEGEN_ENV_KNOBS = (
+    "MOLT_BACKEND_REGALLOC_ALGORITHM",
+    "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
+    "MOLT_BACKEND_LIBCALL_CALL_CONV",
+    "MOLT_BACKEND_ENABLE_VERIFIER",
+    "MOLT_DISABLE_STRUCT_ELIDE",
+)
+_WASM_CODEGEN_ENV_KNOBS = (
+    "MOLT_WASM_DATA_BASE",
+    "MOLT_WASM_MIN_PAGES",
+    "MOLT_WASM_LINK",
+    "MOLT_WASM_TABLE_BASE",
+)
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -356,6 +371,14 @@ class _TimedResult(NamedTuple):
     stdout: str
     stderr: str
     duration_s: float
+
+
+class _BackendDaemonCompileResult(NamedTuple):
+    ok: bool
+    error: str | None
+    health: dict[str, Any] | None
+    cached: bool | None
+    cache_tier: str | None
 
 
 def _run_command_timed(
@@ -3518,6 +3541,15 @@ def _is_valid_wasm_binary(path: Path) -> bool:
     return magic == b"\x00asm\x01\x00\x00\x00"
 
 
+def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
+    if is_wasm:
+        return _is_valid_wasm_binary(path)
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if env.get("RUSTC_WRAPPER"):
         return
@@ -4308,6 +4340,56 @@ def _enable_native_arch_rustflags() -> bool:
     return True
 
 
+def _backend_codegen_env_inputs(
+    *,
+    is_wasm: bool,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    source = env if env is not None else os.environ
+    keys = list(_NATIVE_CODEGEN_ENV_KNOBS)
+    if is_wasm:
+        keys.extend(_WASM_CODEGEN_ENV_KNOBS)
+    payload: dict[str, str] = {}
+    for key in keys:
+        raw = source.get(key)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if value:
+            payload[key] = value
+    return {name: payload[name] for name in sorted(payload)}
+
+
+def _backend_codegen_env_digest(
+    *,
+    is_wasm: bool,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    payload = {
+        "schema": _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION,
+        "target": "wasm" if is_wasm else "native",
+        "inputs": _backend_codegen_env_inputs(is_wasm=is_wasm, env=env),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _backend_daemon_config_digest(
+    project_root: Path,
+    cargo_profile: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    payload = {
+        "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
+        "project_root": str(project_root.resolve()),
+        "cargo_profile": cargo_profile,
+        "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _backend_daemon_enabled() -> bool:
     if os.name != "posix":
         return False
@@ -4361,7 +4443,12 @@ def _backend_daemon_socket_dir(project_root: Path) -> Path:
     return socket_dir
 
 
-def _backend_daemon_socket_path(project_root: Path, cargo_profile: str) -> Path:
+def _backend_daemon_socket_path(
+    project_root: Path,
+    cargo_profile: str,
+    *,
+    config_digest: str | None = None,
+) -> Path:
     explicit_socket = os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip()
     if explicit_socket:
         path = Path(explicit_socket).expanduser()
@@ -4369,7 +4456,13 @@ def _backend_daemon_socket_path(project_root: Path, cargo_profile: str) -> Path:
             path = (project_root / path).absolute()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-    key = f"{project_root.resolve()}|{_build_state_root(project_root)}|{cargo_profile}"
+    daemon_digest = config_digest or _backend_daemon_config_digest(
+        project_root, cargo_profile
+    )
+    key = (
+        f"{project_root.resolve()}|{_build_state_root(project_root)}"
+        f"|{cargo_profile}|{daemon_digest}"
+    )
     suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     return _backend_daemon_socket_dir(project_root) / f"moltbd.{suffix}.sock"
 
@@ -4700,8 +4793,9 @@ def _compile_with_backend_daemon(
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
+    config_digest: str | None,
     timeout: float | None,
-) -> tuple[bool, str | None, dict[str, Any] | None]:
+) -> _BackendDaemonCompileResult:
     jobs: list[dict[str, Any]] = [
         {
             "id": "job0",
@@ -4714,36 +4808,89 @@ def _compile_with_backend_daemon(
         }
     ]
     if len(jobs) > _backend_daemon_max_jobs():
-        return False, "backend daemon request exceeds max jobs limit", None
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon request exceeds max jobs limit",
+            None,
+            None,
+            None,
+        )
     payload: dict[str, Any] = {
         "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": jobs,
     }
+    if config_digest:
+        payload["config_digest"] = config_digest
     response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
     if err is not None:
-        return False, err, None
+        return _BackendDaemonCompileResult(False, err, None, None, None)
     if response is None:
-        return False, "backend daemon returned no response", None
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon returned no response",
+            None,
+            None,
+            None,
+        )
     health = _backend_daemon_health_from_response(response)
     if not bool(response.get("ok")):
         error = response.get("error")
         if isinstance(error, str) and error:
-            return False, error, health
-        return False, "backend daemon compile request failed", health
+            return _BackendDaemonCompileResult(False, error, health, None, None)
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon compile request failed",
+            health,
+            None,
+            None,
+        )
     response_jobs = response.get("jobs")
     if not isinstance(response_jobs, list) or not response_jobs:
-        return False, "backend daemon response missing job results", health
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon response missing job results",
+            health,
+            None,
+            None,
+        )
     first = response_jobs[0]
     if not isinstance(first, dict):
-        return False, "backend daemon response had malformed job payload", health
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon response had malformed job payload",
+            health,
+            None,
+            None,
+        )
+    cached: bool | None = (
+        first.get("cached") if isinstance(first.get("cached"), bool) else None
+    )
+    raw_tier = first.get("cache_tier")
+    cache_tier = (
+        raw_tier.strip() if isinstance(raw_tier, str) and raw_tier.strip() else None
+    )
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
-            return False, message, health
-        return False, "backend daemon failed to compile job", health
+            return _BackendDaemonCompileResult(
+                False, message, health, cached, cache_tier
+            )
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon failed to compile job",
+            health,
+            cached,
+            cache_tier,
+        )
     if not backend_output.exists():
-        return False, "backend daemon reported success but output is missing", health
-    return True, None, health
+        return _BackendDaemonCompileResult(
+            False,
+            "backend daemon reported success but output is missing",
+            health,
+            cached,
+            cache_tier,
+        )
+    return _BackendDaemonCompileResult(True, None, health, cached, cache_tier)
 
 
 def _backend_fingerprint_path(
@@ -5962,8 +6109,8 @@ def _resolve_output_path(
 
 _CACHE_FINGERPRINT: str | None = None
 _CACHE_TOOLING_FINGERPRINT: str | None = None
-_CACHE_KEY_SCHEMA_VERSION = "v2"
-_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v1"
+_CACHE_KEY_SCHEMA_VERSION = "v3"
+_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
 
 
 def _cache_fingerprint() -> str:
@@ -6070,10 +6217,24 @@ def _cache_key(
     return digest
 
 
+def _ir_top_level_extras_digest(ir: dict[str, Any]) -> str:
+    extras = {
+        key: value for key, value in ir.items() if key not in {"functions", "profile"}
+    }
+    encoded = json.dumps(
+        extras, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
     functions = ir.get("functions")
     profile = ir.get("profile")
-    normalized: dict[str, Any] = {"functions": [], "profile": None}
+    normalized: dict[str, Any] = {
+        "functions": [],
+        "profile": None,
+        "top_level_extras_digest": _ir_top_level_extras_digest(ir),
+    }
     if isinstance(functions, list):
 
         def _func_sort_key(entry: Any) -> str:
@@ -6423,6 +6584,9 @@ def build(
     diagnostics_start = time.perf_counter()
     phase_starts: dict[str, float] = {}
     backend_daemon_health: dict[str, Any] | None = None
+    backend_daemon_cached: bool | None = None
+    backend_daemon_cache_tier: str | None = None
+    backend_daemon_config_digest: str | None = None
     module_reasons: dict[str, set[str]] = {}
     if diagnostics_enabled:
         phase_starts["resolve_entry"] = diagnostics_start
@@ -6843,6 +7007,19 @@ def build(
             payload["midend"] = midend_payload
         if backend_daemon_health is not None:
             payload["backend_daemon"] = backend_daemon_health
+        if (
+            backend_daemon_cached is not None
+            or backend_daemon_cache_tier is not None
+            or backend_daemon_config_digest is not None
+        ):
+            daemon_compile_info: dict[str, Any] = {}
+            if backend_daemon_cached is not None:
+                daemon_compile_info["cached"] = backend_daemon_cached
+            if backend_daemon_cache_tier is not None:
+                daemon_compile_info["cache_tier"] = backend_daemon_cache_tier
+            if backend_daemon_config_digest is not None:
+                daemon_compile_info["config_digest"] = backend_daemon_config_digest
+            payload["backend_daemon_compile"] = daemon_compile_info
         out_path: Path | None = None
         if diagnostics_path_spec:
             out_path = _resolve_build_diagnostics_path(
@@ -8358,6 +8535,24 @@ def build(
     cache_path: Path | None = None
     function_cache_path: Path | None = None
     cache_candidates: list[tuple[str, Path]] = []
+
+    def _attach_daemon_cache_info(cache_info: dict[str, Any]) -> dict[str, Any]:
+        if (
+            backend_daemon_cached is None
+            and backend_daemon_cache_tier is None
+            and backend_daemon_config_digest is None
+        ):
+            return cache_info
+        daemon_info: dict[str, Any] = {}
+        if backend_daemon_cached is not None:
+            daemon_info["cached"] = backend_daemon_cached
+        if backend_daemon_cache_tier is not None:
+            daemon_info["cache_tier"] = backend_daemon_cache_tier
+        if backend_daemon_config_digest is not None:
+            daemon_info["config_digest"] = backend_daemon_config_digest
+        cache_info["daemon"] = daemon_info
+        return cache_info
+
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     if cache:
@@ -8366,6 +8561,7 @@ def build(
             f"runtime_cargo={runtime_cargo_profile}",
             f"backend_cargo={backend_cargo_profile}",
             f"emit={emit_mode}",
+            f"codegen_env={_backend_codegen_env_digest(is_wasm=is_wasm)}",
         ]
         if linked:
             cache_variant_parts.append("linked=1")
@@ -8396,6 +8592,13 @@ def build(
                 for tier, candidate in cache_candidates:
                     if not candidate.exists():
                         continue
+                    if not _is_valid_cached_backend_artifact(
+                        candidate, is_wasm=is_wasm
+                    ):
+                        warnings.append(f"Ignoring invalid cache artifact: {candidate}")
+                        with contextlib.suppress(OSError):
+                            candidate.unlink()
+                        continue
                     try:
                         shutil.copy2(candidate, output_artifact)
                         if (
@@ -8416,6 +8619,11 @@ def build(
     def _try_cache_candidates_locked() -> tuple[bool, str | None]:
         for tier, candidate in cache_candidates:
             if not candidate.exists():
+                continue
+            if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
+                warnings.append(f"Ignoring invalid cache artifact: {candidate}")
+                with contextlib.suppress(OSError):
+                    candidate.unlink()
                 continue
             try:
                 shutil.copy2(candidate, output_artifact)
@@ -8526,10 +8734,15 @@ def build(
             daemon_socket: Path | None = None
             daemon_ready = False
             if _backend_daemon_enabled() and not is_wasm:
+                backend_daemon_config_digest = _backend_daemon_config_digest(
+                    molt_root, backend_cargo_profile
+                )
                 if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
                     phase_starts["backend_daemon_setup"] = time.perf_counter()
                 daemon_socket = _backend_daemon_socket_path(
-                    molt_root, backend_cargo_profile
+                    molt_root,
+                    backend_cargo_profile,
+                    config_digest=backend_daemon_config_digest,
                 )
                 startup_timeout = _backend_daemon_start_timeout()
                 with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
@@ -8583,11 +8796,7 @@ def build(
                         and "backend_daemon_compile" not in phase_starts
                     ):
                         phase_starts["backend_daemon_compile"] = time.perf_counter()
-                    (
-                        backend_compiled,
-                        daemon_error,
-                        daemon_health,
-                    ) = _compile_with_backend_daemon(
+                    daemon_compile = _compile_with_backend_daemon(
                         daemon_socket,
                         ir=ir,
                         backend_output=backend_output,
@@ -8595,8 +8804,16 @@ def build(
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
+                        config_digest=backend_daemon_config_digest,
                         timeout=backend_timeout,
                     )
+                    backend_compiled = daemon_compile.ok
+                    daemon_error = daemon_compile.error
+                    if daemon_compile.cached is not None:
+                        backend_daemon_cached = daemon_compile.cached
+                    if daemon_compile.cache_tier is not None:
+                        backend_daemon_cache_tier = daemon_compile.cache_tier
+                    daemon_health = daemon_compile.health
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
                     if not backend_compiled and _backend_daemon_retryable_error(
@@ -8630,11 +8847,7 @@ def build(
                                     json_output=json_output,
                                 )
                         if daemon_ready:
-                            (
-                                backend_compiled,
-                                daemon_error,
-                                daemon_health,
-                            ) = _compile_with_backend_daemon(
+                            daemon_compile = _compile_with_backend_daemon(
                                 daemon_socket,
                                 ir=ir,
                                 backend_output=backend_output,
@@ -8642,8 +8855,16 @@ def build(
                                 target_triple=target_triple,
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
+                                config_digest=backend_daemon_config_digest,
                                 timeout=backend_timeout,
                             )
+                            backend_compiled = daemon_compile.ok
+                            daemon_error = daemon_compile.error
+                            if daemon_compile.cached is not None:
+                                backend_daemon_cached = daemon_compile.cached
+                            if daemon_compile.cache_tier is not None:
+                                backend_daemon_cache_tier = daemon_compile.cache_tier
+                            daemon_health = daemon_compile.health
                             if daemon_health is not None:
                                 backend_daemon_health = daemon_health
                     if (
@@ -8800,7 +9021,9 @@ def build(
             primary_output = linked_output_path
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
-            cache_info: dict[str, Any] = {"enabled": cache, "hit": cache_hit}
+            cache_info: dict[str, Any] = _attach_daemon_cache_info(
+                {"enabled": cache, "hit": cache_hit}
+            )
             if cache_key:
                 cache_info["key"] = cache_key
             if function_cache_key:
@@ -8862,7 +9085,7 @@ def build(
     if emit_mode == "obj":
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
-            cache_info = {"enabled": cache, "hit": cache_hit}
+            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
             if cache_key:
                 cache_info["key"] = cache_key
             if function_cache_key:
@@ -9243,7 +9466,7 @@ int main(int argc, char** argv) {
     diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
     if link_process.returncode == 0:
         if json_output:
-            cache_info = {"enabled": cache, "hit": cache_hit}
+            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
             if cache_key:
                 cache_info["key"] = cache_key
             if function_cache_key:
@@ -9317,6 +9540,7 @@ int main(int argc, char** argv) {
                 "hit": cache_hit,
                 "key": cache_key,
             }
+            _attach_daemon_cache_info(data["cache"])
             if diagnostics_payload is not None:
                 data["compile_diagnostics"] = diagnostics_payload
             if cache_path is not None:

@@ -258,6 +258,7 @@ def _probe_headless_stubbed_semantics(
         "_MOLT_TK_AFTER": tk_module._MOLT_TK_AFTER,
         "_MOLT_TK_CALL": tk_module._MOLT_TK_CALL,
         "_MOLT_TK_BIND_COMMAND": tk_module._MOLT_TK_BIND_COMMAND,
+        "_MOLT_TK_UNBIND_COMMAND": tk_module._MOLT_TK_UNBIND_COMMAND,
         "_MOLT_TK_DESTROY_WIDGET": tk_module._MOLT_TK_DESTROY_WIDGET,
         "_MOLT_TK_LAST_ERROR": tk_module._MOLT_TK_LAST_ERROR,
     }
@@ -316,6 +317,14 @@ def _probe_headless_stubbed_semantics(
         def _tk_bind_command(app, name, callback):
             app["commands"][str(name)] = callback
 
+        def _tk_unbind_command(app, name):
+            command_name = str(name)
+            if command_name not in app["commands"]:
+                raise RuntimeError(f'invalid command name "{command_name}"')
+            app["commands"].pop(command_name, None)
+            app["calls"].append(("rename", command_name, ""))
+            return None
+
         def _tk_after(_app, delay_ms, callback):
             callback()
             return f"after#{int(delay_ms)}"
@@ -328,6 +337,7 @@ def _probe_headless_stubbed_semantics(
         tk_module._MOLT_TK_AFTER = _tk_after
         tk_module._MOLT_TK_CALL = _tk_call
         tk_module._MOLT_TK_BIND_COMMAND = _tk_bind_command
+        tk_module._MOLT_TK_UNBIND_COMMAND = _tk_unbind_command
         tk_module._MOLT_TK_DESTROY_WIDGET = lambda _app=None, _widget=None: None
         tk_module._MOLT_TK_LAST_ERROR = (
             lambda app=None: None if app is None else app.get("last_error")
@@ -528,6 +538,7 @@ def _probe_ttk_treeview_headless_semantics(
         "_MOLT_TK_AFTER": tk_module._MOLT_TK_AFTER,
         "_MOLT_TK_CALL": tk_module._MOLT_TK_CALL,
         "_MOLT_TK_BIND_COMMAND": tk_module._MOLT_TK_BIND_COMMAND,
+        "_MOLT_TK_UNBIND_COMMAND": tk_module._MOLT_TK_UNBIND_COMMAND,
         "_MOLT_TK_DESTROY_WIDGET": tk_module._MOLT_TK_DESTROY_WIDGET,
         "_MOLT_TK_LAST_ERROR": tk_module._MOLT_TK_LAST_ERROR,
     }
@@ -613,6 +624,14 @@ def _probe_ttk_treeview_headless_semantics(
         def _tk_bind_command(app, name, callback):
             app["commands"][str(name)] = callback
 
+        def _tk_unbind_command(app, name):
+            command_name = str(name)
+            if command_name not in app["commands"]:
+                raise RuntimeError(f'invalid command name "{command_name}"')
+            app["commands"].pop(command_name, None)
+            app["calls"].append(("rename", command_name, ""))
+            return None
+
         def _tk_after(_app, delay_ms, callback):
             callback()
             return f"after#{int(delay_ms)}"
@@ -625,6 +644,7 @@ def _probe_ttk_treeview_headless_semantics(
         tk_module._MOLT_TK_AFTER = _tk_after
         tk_module._MOLT_TK_CALL = _tk_call
         tk_module._MOLT_TK_BIND_COMMAND = _tk_bind_command
+        tk_module._MOLT_TK_UNBIND_COMMAND = _tk_unbind_command
         tk_module._MOLT_TK_DESTROY_WIDGET = lambda _app=None, _widget=None: None
         tk_module._MOLT_TK_LAST_ERROR = (
             lambda app=None: None if app is None else app.get("last_error")

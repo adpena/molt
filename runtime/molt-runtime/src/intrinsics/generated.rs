@@ -63,6 +63,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_tk_unbind_command",
+        symbol: "molt_tk_unbind_command",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_tk_filehandler_create",
         symbol: "molt_tk_filehandler_create",
         arity: 5,
@@ -9876,6 +9881,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_after" => Some(crate::molt_tk_after as *const () as usize as u64),
         "molt_tk_call" => Some(crate::molt_tk_call as *const () as usize as u64),
         "molt_tk_bind_command" => Some(crate::molt_tk_bind_command as *const () as usize as u64),
+        "molt_tk_unbind_command" => {
+            Some(crate::molt_tk_unbind_command as *const () as usize as u64)
+        }
         "molt_tk_filehandler_create" => {
             Some(crate::molt_tk_filehandler_create as *const () as usize as u64)
         }

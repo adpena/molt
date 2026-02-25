@@ -4,9 +4,9 @@ import contextlib
 import io
 import json
 import os
+import queue
 import re
 import runpy
-import select
 import signal
 import socket
 import shutil
@@ -26,7 +26,8 @@ _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
 _BATCH_COMPILE_SERVER_CLIENT_PID = 0
-_BATCH_COMPILE_SERVER_DISABLED = False
+_BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
+_BATCH_COMPILE_SERVER_DISABLE_REASON = ""
 
 try:
     import fcntl  # type: ignore
@@ -850,6 +851,10 @@ def _list_process_rows() -> list[tuple[int, int, int, str]]:
 
 
 def _is_diff_build_helper_command(cmd: str) -> bool:
+    if "internal-batch-build-server" in cmd and (
+        "-m molt.cli" in cmd or "src/molt/cli.py" in cmd
+    ):
+        return True
     # Restrict to helper processes tied to diff temp dirs so we don't interfere
     # with unrelated local build activity.
     if "/molt_diff_" not in cmd:
@@ -1122,7 +1127,9 @@ def _diff_batch_compile_server_strict() -> bool:
     return False
 
 
-def _diff_batch_compile_server_request_timeout() -> float:
+def _diff_batch_compile_server_request_timeout(
+    build_timeout: float | None = None,
+) -> float:
     raw = os.environ.get("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", "").strip()
     if raw:
         try:
@@ -1131,7 +1138,50 @@ def _diff_batch_compile_server_request_timeout() -> float:
                 return parsed
         except ValueError:
             pass
+    if build_timeout is not None and build_timeout > 0:
+        return build_timeout
     return 60.0
+
+
+def _batch_compile_server_disable_cooldown_sec() -> float:
+    raw = _parse_float_env("MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC")
+    if raw is None:
+        return 30.0
+    return max(0.0, raw)
+
+
+def _batch_compile_server_mark_disabled(reason: str) -> None:
+    global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
+    global _BATCH_COMPILE_SERVER_DISABLE_REASON
+    cooldown = _batch_compile_server_disable_cooldown_sec()
+    _BATCH_COMPILE_SERVER_DISABLE_REASON = reason.strip()
+    if cooldown <= 0:
+        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
+    else:
+        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = time.monotonic() + cooldown
+
+
+def _batch_compile_server_reset_disabled() -> None:
+    global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
+    global _BATCH_COMPILE_SERVER_DISABLE_REASON
+    _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
+    _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
+
+
+def _batch_compile_server_disabled_message() -> str | None:
+    remaining = _BATCH_COMPILE_SERVER_DISABLED_UNTIL - time.monotonic()
+    if remaining <= 0:
+        _batch_compile_server_reset_disabled()
+        return None
+    if _BATCH_COMPILE_SERVER_DISABLE_REASON:
+        return (
+            "batch compile server temporarily disabled for this worker "
+            f"({remaining:.1f}s remaining): {_BATCH_COMPILE_SERVER_DISABLE_REASON}"
+        )
+    return (
+        "batch compile server temporarily disabled for this worker "
+        f"({remaining:.1f}s remaining)"
+    )
 
 
 def _diff_disable_daemon_on_dyld() -> bool:
@@ -1993,27 +2043,54 @@ class _BatchCompileServerClient:
             **_popen_group_kwargs(),
         )
         self._next_id = 1
+        self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
+        self._response_reader = threading.Thread(
+            target=self._stdout_reader_loop,
+            name="molt-diff-batch-server-reader",
+            daemon=True,
+        )
+        self._response_reader.start()
+
+    def _stdout_reader_loop(self) -> None:
+        if self._proc.stdout is None:
+            self._response_queue.put(
+                RuntimeError("batch compile server stdout pipe unavailable")
+            )
+            return
+        try:
+            while True:
+                line = self._proc.stdout.readline()
+                if not line:
+                    self._response_queue.put(None)
+                    return
+                self._response_queue.put(line)
+        except Exception as exc:
+            self._response_queue.put(exc)
 
     def _readline(self, timeout: float) -> str:
-        if self._proc.stdout is None:
-            raise RuntimeError("batch compile server stdout pipe unavailable")
-        if os.name == "posix":
-            ready, _write_ready, _err_ready = select.select(
-                [self._proc.stdout], [], [], max(0.01, timeout)
-            )
-            if not ready:
+        deadline = time.monotonic() + max(0.01, timeout)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError("batch compile server response timed out")
-        line = self._proc.stdout.readline()
-        if line:
-            return line
-        error_detail = ""
-        if self._proc.stderr is not None:
-            with contextlib.suppress(Exception):
-                error_detail = self._proc.stderr.read().strip()
-        raise RuntimeError(
-            "batch compile server closed response pipe"
-            + (f": {error_detail}" if error_detail else "")
-        )
+            try:
+                item = self._response_queue.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError("batch compile server response timed out") from exc
+            if isinstance(item, BaseException):
+                raise RuntimeError(
+                    "batch compile server response reader failed"
+                ) from item
+            if item is None:
+                error_detail = ""
+                if self._proc.stderr is not None:
+                    with contextlib.suppress(Exception):
+                        error_detail = self._proc.stderr.read().strip()
+                raise RuntimeError(
+                    "batch compile server closed response pipe"
+                    + (f": {error_detail}" if error_detail else "")
+                )
+            return item
 
     def request(
         self,
@@ -2048,49 +2125,59 @@ class _BatchCompileServerClient:
             raise RuntimeError("batch compile response id mismatch")
         return response
 
-    def close(self) -> None:
-        if self._proc.poll() is None:
-            with contextlib.suppress(Exception):
-                self.request(
-                    "shutdown",
-                    timeout=_diff_batch_compile_server_request_timeout(),
-                )
+    def force_close(self) -> None:
         _terminate_process_tree(self._proc, grace=0.35)
 
+    def close(self, *, force: bool = False, timeout: float | None = None) -> None:
+        request_timeout = timeout
+        if request_timeout is None:
+            request_timeout = _diff_batch_compile_server_request_timeout()
+        if not force and self._proc.poll() is None:
+            with contextlib.suppress(Exception):
+                self.request("shutdown", timeout=request_timeout)
+        self.force_close()
 
-def _shutdown_batch_compile_server() -> None:
+
+def _shutdown_batch_compile_server(*, force: bool = True) -> None:
     global _BATCH_COMPILE_SERVER_CLIENT
     global _BATCH_COMPILE_SERVER_CLIENT_PID
-    if _BATCH_COMPILE_SERVER_CLIENT is None:
+    client = _BATCH_COMPILE_SERVER_CLIENT
+    if client is None:
         return
-    _BATCH_COMPILE_SERVER_CLIENT.close()
     _BATCH_COMPILE_SERVER_CLIENT = None
     _BATCH_COMPILE_SERVER_CLIENT_PID = 0
+    client.close(force=force)
 
 
 def _batch_compile_server_client(
     env: dict[str, str],
+    *,
+    request_timeout: float,
 ) -> tuple[_BatchCompileServerClient | None, str | None]:
     global _BATCH_COMPILE_SERVER_CLIENT
     global _BATCH_COMPILE_SERVER_CLIENT_PID
-    global _BATCH_COMPILE_SERVER_DISABLED
-    if _BATCH_COMPILE_SERVER_DISABLED:
-        return None, "batch compile server disabled for this worker"
+    disabled_message = _batch_compile_server_disabled_message()
+    if disabled_message is not None:
+        return None, disabled_message
     pid = os.getpid()
     if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
-        _shutdown_batch_compile_server()
+        _shutdown_batch_compile_server(force=True)
     if _BATCH_COMPILE_SERVER_CLIENT is not None:
         return _BATCH_COMPILE_SERVER_CLIENT, None
+    client: _BatchCompileServerClient | None = None
     try:
         client = _BatchCompileServerClient(env)
         response = client.request(
             "ping",
-            timeout=_diff_batch_compile_server_request_timeout(),
+            timeout=request_timeout,
         )
         if not bool(response.get("ok")) or not bool(response.get("pong")):
             raise RuntimeError("batch compile server ping failed")
     except Exception as exc:
-        _BATCH_COMPILE_SERVER_DISABLED = True
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close(force=True)
+        _batch_compile_server_mark_disabled(str(exc))
         return None, str(exc)
     _BATCH_COMPILE_SERVER_CLIENT = client
     _BATCH_COMPILE_SERVER_CLIENT_PID = pid
@@ -2107,12 +2194,10 @@ def _run_batch_compile_build(
     build_profile: str,
     no_cache: bool,
     rebuild: bool,
+    request_timeout: float,
+    strict_mode: bool,
     extra_params: dict[str, object] | None = None,
 ) -> tuple[int, str, str, str | None]:
-    global _BATCH_COMPILE_SERVER_DISABLED
-    client, start_error = _batch_compile_server_client(env)
-    if client is None:
-        return 0, "", "", start_error
     params: dict[str, object] = {
         "file_path": file_path,
         "profile": build_profile,
@@ -2127,30 +2212,49 @@ def _run_batch_compile_build(
     }
     if extra_params:
         params.update(extra_params)
-    try:
-        response = client.request(
-            "build",
-            params=params,
-            timeout=_diff_batch_compile_server_request_timeout(),
+    attempts = 2 if strict_mode else 1
+    last_error = "batch compile server request failed"
+    for attempt in range(attempts):
+        if strict_mode and attempt > 0:
+            _batch_compile_server_reset_disabled()
+        client, start_error = _batch_compile_server_client(
+            env,
+            request_timeout=request_timeout,
         )
-    except Exception as exc:
-        _BATCH_COMPILE_SERVER_DISABLED = True
-        _shutdown_batch_compile_server()
-        return 0, "", "", str(exc)
-    stdout = response.get("stdout")
-    stderr = response.get("stderr")
-    error = response.get("error")
-    returncode = response.get("returncode")
-    if not isinstance(returncode, int):
-        returncode = 1 if not bool(response.get("ok")) else 0
-    out_text = stdout if isinstance(stdout, str) else ""
-    err_text = stderr if isinstance(stderr, str) else ""
-    if isinstance(error, str) and error:
-        if err_text:
-            err_text = f"{err_text}\n{error}"
-        else:
-            err_text = error
-    return returncode, out_text, err_text, None
+        if client is None:
+            if start_error:
+                last_error = start_error
+            if strict_mode and attempt + 1 < attempts:
+                continue
+            return 0, "", "", last_error
+        try:
+            response = client.request(
+                "build",
+                params=params,
+                timeout=request_timeout,
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            _batch_compile_server_mark_disabled(last_error)
+            _shutdown_batch_compile_server(force=True)
+            if strict_mode and attempt + 1 < attempts:
+                continue
+            return 0, "", "", last_error
+        stdout = response.get("stdout")
+        stderr = response.get("stderr")
+        error = response.get("error")
+        returncode = response.get("returncode")
+        if not isinstance(returncode, int):
+            returncode = 1 if not bool(response.get("ok")) else 0
+        out_text = stdout if isinstance(stdout, str) else ""
+        err_text = stderr if isinstance(stderr, str) else ""
+        if isinstance(error, str) and error:
+            if err_text:
+                err_text = f"{err_text}\n{error}"
+            else:
+                err_text = error
+        return returncode, out_text, err_text, None
+    return 0, "", "", last_error
 
 
 def run_cpython(file_path, python_exe=sys.executable):
@@ -2428,6 +2532,9 @@ def _run_molt(
         build_via_batch_server = False
         batch_requested = _diff_batch_compile_server_enabled()
         batch_strict = _diff_batch_compile_server_strict()
+        batch_request_timeout = _diff_batch_compile_server_request_timeout(
+            build_timeout
+        )
         if batch_requested:
             (
                 build_rc,
@@ -2442,6 +2549,8 @@ def _run_molt(
                 build_profile=build_profile,
                 no_cache=no_cache,
                 rebuild=rebuild,
+                request_timeout=batch_request_timeout,
+                strict_mode=batch_strict,
             )
             if batch_error is None:
                 build_via_batch_server = True
