@@ -86,9 +86,10 @@ The harness now also writes incremental snapshots (`compile_progress.json` and
 `compile_progress.md`) after every completed case, so interrupted runs still
 preserve completed-case results.
 
-When `/Volumes/APDataStore/Molt` exists, output defaults there
-(`compile_progress_<timestamp>`). Otherwise it writes under
-`bench/results/compile_progress/<timestamp>`.
+Default output root is `$MOLT_EXT_ROOT/compile_progress_<timestamp>` (with
+`MOLT_EXT_ROOT` defaulting to `/Volumes/APDataStore/Molt`). If the external
+root is unavailable, pass `--output-root` explicitly only for an approved
+emergency override.
 
 ### 3. Optional focused rerun
 
@@ -120,11 +121,11 @@ uv run --python 3.12 python3 -m molt.cli build \
 ### 5. Optional build diagnostics probe (phase timing + module reasons)
 
 ```bash
-MOLT_BUILD_DIAGNOSTICS=1 \
-MOLT_BUILD_DIAGNOSTICS_FILE=build_diag.json \
 uv run --python 3.12 python3 -m molt.cli build \
   --profile dev \
   --no-cache \
+  --diagnostics \
+  --diagnostics-file build_diag.json \
   examples/hello.py
 ```
 

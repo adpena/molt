@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
+
 DEFAULT_BUILD_SCRIPTS = [
     "examples/hello.py",
     "tests/differential/basic/ellipsis_basic.py",
@@ -35,12 +37,31 @@ class CommandResult:
     stderr_tail: str
 
 
-def _default_output_root(repo_root: Path) -> Path:
-    external_root = Path("/Volumes/APDataStore/Molt")
+def _resolved_external_root(*, fallback: Path | None = None) -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT")
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if root.is_dir():
+            return root
+        raise SystemExit(
+            f"MOLT_EXT_ROOT is not a mounted directory: {root}. "
+            "Mount the external volume or pass --output-root explicitly."
+        )
+    if DEFAULT_EXTERNAL_ROOT.is_dir():
+        return DEFAULT_EXTERNAL_ROOT
+    if fallback is not None:
+        return fallback
+    raise SystemExit(
+        "External volume is required for throughput matrix defaults: "
+        f"{DEFAULT_EXTERNAL_ROOT} is not mounted. "
+        "Mount it or pass --output-root explicitly for an approved override."
+    )
+
+
+def _default_output_root() -> Path:
+    external_root = _resolved_external_root()
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if external_root.is_dir():
-        return external_root / f"throughput_matrix_{ts}"
-    return repo_root / "logs" / f"throughput_matrix_{ts}"
+    return external_root / f"throughput_matrix_{ts}"
 
 
 def _tail(text: str, lines: int = 12) -> str:
@@ -101,14 +122,26 @@ def _run_command(
 
 
 def _base_env(
-    case_cache: Path, shared_target: Path, *, wrapper_enabled: bool
+    case_cache: Path,
+    shared_target: Path,
+    *,
+    wrapper_enabled: bool,
+    external_root: Path,
+    diff_root: Path,
+    diff_tmp: Path,
 ) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     env["UV_NO_SYNC"] = "1"
     env["PYTHONHASHSEED"] = "0"
+    env["MOLT_EXT_ROOT"] = str(external_root)
     env["MOLT_CACHE"] = str(case_cache)
     env["CARGO_TARGET_DIR"] = str(shared_target)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(shared_target)
+    env["MOLT_DIFF_ROOT"] = str(diff_root)
+    env["MOLT_DIFF_TMPDIR"] = str(diff_tmp)
+    env["TMPDIR"] = str(diff_tmp)
+    env.setdefault("UV_CACHE_DIR", str(external_root / "uv-cache"))
     if wrapper_enabled:
         env["MOLT_USE_SCCACHE"] = "1"
         env.pop("SCCACHE_DISABLE", None)
@@ -117,12 +150,16 @@ def _base_env(
         env["SCCACHE_DISABLE"] = "1"
         env.pop("RUSTC_WRAPPER", None)
         env.pop("CARGO_BUILD_RUSTC_WRAPPER", None)
+    env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] = "1" if wrapper_enabled else "0"
     return env
 
 
 def _run_build_matrix(
     args: argparse.Namespace, repo_root: Path, output_root: Path
 ) -> list[dict[str, Any]]:
+    external_root = _resolved_external_root(
+        fallback=output_root if args.output_root else None
+    )
     shared_target = (
         Path(args.shared_target_dir).expanduser().resolve()
         if args.shared_target_dir
@@ -137,9 +174,20 @@ def _run_build_matrix(
             case_root = output_root / case_name
             out_root = case_root / "out"
             cache_root = case_root / "cache"
+            diff_root = case_root / "diff_root"
+            tmp_root = case_root / "tmp"
             out_root.mkdir(parents=True, exist_ok=True)
             cache_root.mkdir(parents=True, exist_ok=True)
-            env = _base_env(cache_root, shared_target, wrapper_enabled=bool(wrapper))
+            diff_root.mkdir(parents=True, exist_ok=True)
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            env = _base_env(
+                cache_root,
+                shared_target,
+                wrapper_enabled=bool(wrapper),
+                external_root=external_root,
+                diff_root=diff_root,
+                diff_tmp=tmp_root,
+            )
 
             print(f"[build] {case_name}: single phase", flush=True)
             single_cmd = [
@@ -227,6 +275,9 @@ def _run_build_matrix(
 def _run_diff_matrix(
     args: argparse.Namespace, repo_root: Path, output_root: Path
 ) -> list[dict[str, Any]]:
+    external_root = _resolved_external_root(
+        fallback=output_root if args.output_root else None
+    )
     shared_target = (
         Path(args.shared_target_dir).expanduser().resolve()
         if args.shared_target_dir
@@ -245,12 +296,16 @@ def _run_diff_matrix(
             summary_path = case_root / "summary.json"
             for path in [cache_root, diff_root, tmp_root, log_dir]:
                 path.mkdir(parents=True, exist_ok=True)
-            env = _base_env(cache_root, shared_target, wrapper_enabled=bool(wrapper))
+            env = _base_env(
+                cache_root,
+                shared_target,
+                wrapper_enabled=bool(wrapper),
+                external_root=external_root,
+                diff_root=diff_root,
+                diff_tmp=tmp_root,
+            )
             env["MOLT_DIFF_MEASURE_RSS"] = "1"
             env["MOLT_DIFF_RLIMIT_GB"] = "10"
-            env["MOLT_DIFF_ROOT"] = str(diff_root)
-            env["MOLT_DIFF_TMPDIR"] = str(tmp_root)
-            env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] = "1" if wrapper else "0"
             cmd = [
                 "uv",
                 "run",
@@ -308,8 +363,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output root for artifacts/results. Defaults to "
-            "/Volumes/APDataStore/Molt/... when available, else logs/..."
+            "Output root for artifacts/results. Defaults under mounted "
+            "MOLT_EXT_ROOT (or /Volumes/APDataStore/Molt)."
         ),
     )
     parser.add_argument(
@@ -389,7 +444,7 @@ def main() -> int:
     output_root = (
         Path(args.output_root).expanduser().resolve()
         if args.output_root
-        else _default_output_root(repo_root)
+        else _default_output_root()
     )
     output_root.mkdir(parents=True, exist_ok=True)
     print(f"output_root={output_root}", flush=True)

@@ -64,6 +64,15 @@ class MetricDiff:
     trend: str
 
 
+@dataclass(frozen=True)
+class RegressionViolation:
+    benchmark: str
+    metric: str
+    pct_delta: float | None
+    delta: float
+    reason: str
+
+
 def _load_payload(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(f"missing benchmark JSON: {path}")
@@ -205,7 +214,7 @@ def _metric_summary_json(
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Diff two benchmark JSON artifacts.")
     parser.add_argument("old_json", type=Path, help="Older benchmark JSON artifact")
     parser.add_argument("new_json", type=Path, help="Newer benchmark JSON artifact")
@@ -233,6 +242,33 @@ def main() -> None:
         help=(
             "Include metrics where every shared row is 0 -> 0 "
             "(default: skip to reduce noise)."
+        ),
+    )
+    parser.add_argument(
+        "--fail-regression-count",
+        type=int,
+        default=None,
+        help=(
+            "Fail with exit code 2 when total regressed rows exceed this count "
+            "(across selected metrics)."
+        ),
+    )
+    parser.add_argument(
+        "--fail-regression-pct",
+        type=float,
+        default=None,
+        help=(
+            "Fail with exit code 2 when any regressed row has absolute percent "
+            "change >= this threshold."
+        ),
+    )
+    parser.add_argument(
+        "--fail-regression-abs",
+        type=float,
+        default=None,
+        help=(
+            "Absolute fallback threshold for regressions where percent delta is "
+            "undefined (for example old value is 0)."
         ),
     )
     args = parser.parse_args()
@@ -274,9 +310,17 @@ def main() -> None:
         print("Removed benchmarks: " + ", ".join(f"`{name}`" for name in removed))
     if not metrics:
         print("No shared numeric metrics to diff.")
-        return
+        return 0
 
     metric_summaries: list[dict[str, Any]] = []
+    all_regressions: list[MetricDiff] = []
+    threshold_violations: list[RegressionViolation] = []
+    fail_regression_pct = (
+        None if args.fail_regression_pct is None else abs(args.fail_regression_pct)
+    )
+    fail_regression_abs = (
+        None if args.fail_regression_abs is None else abs(args.fail_regression_abs)
+    )
     for metric in metrics:
         rows = _compute_metric_diffs(metric, old_bench, new_bench)
         if (
@@ -286,7 +330,73 @@ def main() -> None:
         ):
             continue
         _print_metric_table(metric, rows, args.top)
+        regressions = [row for row in rows if row.trend == "regressed"]
+        all_regressions.extend(regressions)
+        if fail_regression_pct is not None or fail_regression_abs is not None:
+            for row in regressions:
+                if (
+                    fail_regression_pct is not None
+                    and row.pct_delta is not None
+                    and abs(row.pct_delta) >= fail_regression_pct
+                ):
+                    threshold_violations.append(
+                        RegressionViolation(
+                            benchmark=row.benchmark,
+                            metric=row.metric,
+                            pct_delta=row.pct_delta,
+                            delta=row.delta,
+                            reason=f"abs(pct_delta) >= {fail_regression_pct:.4f}",
+                        )
+                    )
+                    continue
+                if (
+                    row.pct_delta is None
+                    and fail_regression_abs is not None
+                    and abs(row.delta) >= fail_regression_abs
+                ):
+                    threshold_violations.append(
+                        RegressionViolation(
+                            benchmark=row.benchmark,
+                            metric=row.metric,
+                            pct_delta=row.pct_delta,
+                            delta=row.delta,
+                            reason=f"abs(delta) >= {fail_regression_abs:.6f}",
+                        )
+                    )
         metric_summaries.append(_metric_summary_json(metric, rows, args.top))
+
+    failure_reasons: list[str] = []
+    if args.fail_regression_count is not None:
+        if args.fail_regression_count < 0:
+            raise SystemExit("--fail-regression-count must be >= 0")
+        if len(all_regressions) > args.fail_regression_count:
+            failure_reasons.append(
+                (
+                    "regressed-row count exceeded threshold: "
+                    f"{len(all_regressions)} > {args.fail_regression_count}"
+                )
+            )
+    if threshold_violations:
+        failure_reasons.append(
+            f"threshold regressions detected: {len(threshold_violations)}"
+        )
+        print("\n## Regression Threshold Violations")
+        print("| metric | benchmark | pct_delta | delta | reason |")
+        print("| --- | --- | ---: | ---: | --- |")
+        ordered_violations = sorted(
+            threshold_violations,
+            key=lambda item: abs(item.pct_delta)
+            if item.pct_delta is not None
+            else abs(item.delta),
+            reverse=True,
+        )
+        for item in ordered_violations[: args.top]:
+            print(
+                "| "
+                f"`{item.metric}` | `{item.benchmark}` | "
+                f"{_fmt_pct(item.pct_delta)} | {_fmt_float(item.delta)} | "
+                f"{item.reason} |"
+            )
 
     if args.json_out is not None:
         payload = {
@@ -301,11 +411,36 @@ def main() -> None:
                 "removed": removed,
             },
             "metrics": metric_summaries,
+            "gates": {
+                "fail_regression_count": args.fail_regression_count,
+                "fail_regression_pct": args.fail_regression_pct,
+                "fail_regression_abs": args.fail_regression_abs,
+                "regressed_rows": len(all_regressions),
+                "threshold_violations": [
+                    {
+                        "metric": item.metric,
+                        "benchmark": item.benchmark,
+                        "pct_delta": item.pct_delta,
+                        "delta": item.delta,
+                        "reason": item.reason,
+                    }
+                    for item in threshold_violations
+                ],
+                "failed": bool(failure_reasons),
+                "failure_reasons": failure_reasons,
+            },
         }
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         print(f"\nWrote diff JSON: {args.json_out}")
 
+    if failure_reasons:
+        print("\nBenchmark diff gate failed:")
+        for reason in failure_reasons:
+            print(f"- {reason}")
+        return 2
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

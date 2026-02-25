@@ -6533,6 +6533,8 @@ def build(
     require_linked: bool = False,
     respect_pythonpath: bool = False,
     module: str | None = None,
+    diagnostics: bool | None = None,
+    diagnostics_file: str | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -6545,8 +6547,24 @@ def build(
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
 
-    diagnostics_enabled = _build_diagnostics_enabled()
-    diagnostics_path_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+    diagnostics_path_spec = (
+        diagnostics_file.strip() if isinstance(diagnostics_file, str) else ""
+    )
+    diagnostics_enabled = (
+        _build_diagnostics_enabled() if diagnostics is None else diagnostics
+    )
+    if diagnostics is False and diagnostics_path_spec:
+        return _fail(
+            "--diagnostics-file requires diagnostics to be enabled.",
+            json_output,
+            command="build",
+        )
+    if diagnostics_path_spec:
+        diagnostics_enabled = True
+    elif diagnostics_enabled:
+        diagnostics_path_spec = os.environ.get(
+            "MOLT_BUILD_DIAGNOSTICS_FILE", ""
+        ).strip()
     frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
     frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
     frontend_timing_threshold = 0.0
@@ -12972,6 +12990,22 @@ def main() -> int:
         help="Capability profiles/tokens or path to manifest (toml/json).",
     )
     build_parser.add_argument(
+        "--diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable compile diagnostics payloads (phase timings, module reasons, "
+            "frontend/midend summaries)."
+        ),
+    )
+    build_parser.add_argument(
+        "--diagnostics-file",
+        help=(
+            "Optional path for compile diagnostics JSON (relative paths resolve "
+            "under the build artifacts root). Implies --diagnostics."
+        ),
+    )
+    build_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     build_parser.add_argument(
@@ -13741,6 +13775,29 @@ def main() -> int:
                 or build_cfg.get("respect-pythonpath"),
                 False,
             )
+        diagnostics = args.diagnostics
+        if diagnostics is None:
+            diagnostics_cfg = build_cfg.get("diagnostics")
+            if diagnostics_cfg is None:
+                diagnostics_cfg = build_cfg.get("build_diagnostics")
+            if diagnostics_cfg is None:
+                diagnostics_cfg = build_cfg.get("build-diagnostics")
+            if diagnostics_cfg is not None:
+                diagnostics = _coerce_bool(diagnostics_cfg, False)
+        diagnostics_file_raw = (
+            args.diagnostics_file
+            or build_cfg.get("diagnostics_file")
+            or build_cfg.get("diagnostics-file")
+            or build_cfg.get("build_diagnostics_file")
+            or build_cfg.get("build-diagnostics-file")
+        )
+        diagnostics_file = (
+            diagnostics_file_raw.strip()
+            if isinstance(diagnostics_file_raw, str)
+            else None
+        )
+        if diagnostics_file == "":
+            diagnostics_file = None
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
@@ -13778,6 +13835,8 @@ def main() -> int:
             require_linked,
             respect_pythonpath,
             args.module,
+            diagnostics,
+            diagnostics_file,
         )
     if args.command == "check":
         deterministic = args.deterministic
