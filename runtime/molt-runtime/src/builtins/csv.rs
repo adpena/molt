@@ -118,6 +118,11 @@ enum CsvError {
     NeedEscapechar,
 }
 
+struct ParsedField {
+    text: String,
+    was_quoted: bool,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core CSV line parser (RFC 4180 + CPython _csv.c extensions).
 //
@@ -128,7 +133,7 @@ fn csv_parse_line(
     line: &str,
     dialect: &Dialect,
     field_limit: i64,
-) -> Result<Vec<String>, CsvError> {
+) -> Result<Vec<ParsedField>, CsvError> {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
 
@@ -144,7 +149,7 @@ fn csv_parse_line(
         end
     };
 
-    let mut fields: Vec<String> = Vec::new();
+    let mut fields: Vec<ParsedField> = Vec::new();
     let mut field = String::new();
     let mut pos = 0usize;
     let mut in_quotes = false;
@@ -164,7 +169,10 @@ fn csv_parse_line(
 
     macro_rules! commit_field {
         () => {{
-            fields.push(std::mem::take(&mut field));
+            fields.push(ParsedField {
+                text: std::mem::take(&mut field),
+                was_quoted: field_was_quoted,
+            });
             in_quotes = false;
             after_quote = false;
             field_was_quoted = false;
@@ -290,25 +298,47 @@ fn csv_parse_line(
 
     // Commit the trailing field (always when we have seen any data).
     if after_quote || !field.is_empty() || field_was_quoted || !fields.is_empty() {
-        fields.push(std::mem::take(&mut field));
+        fields.push(ParsedField {
+            text: std::mem::take(&mut field),
+            was_quoted: field_was_quoted,
+        });
     }
 
     Ok(fields)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build a MoltObject list<str> from a Vec<String>.
-// Returns None on allocation failure.
+// Build a MoltObject list from parsed fields.
+// QUOTE_NONNUMERIC converts unquoted non-empty fields to float.
 // ─────────────────────────────────────────────────────────────────────────────
-fn fields_to_list(_py: &PyToken<'_>, fields: &[String]) -> Option<u64> {
+fn fields_to_list(
+    _py: &PyToken<'_>,
+    fields: &[ParsedField],
+    dialect: &Dialect,
+) -> Result<u64, u64> {
     let mut bits_vec: Vec<u64> = Vec::with_capacity(fields.len());
     for field in fields {
-        let str_ptr = alloc_string(_py, field.as_bytes());
+        if dialect.quoting == QUOTE_NONNUMERIC && !field.was_quoted && !field.text.is_empty() {
+            let parsed = match field.text.parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    for b in &bits_vec {
+                        dec_ref_bits(_py, *b);
+                    }
+                    let msg = format!("could not convert string to float: '{}'", field.text);
+                    return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+                }
+            };
+            bits_vec.push(MoltObject::from_float(parsed).bits());
+            continue;
+        }
+
+        let str_ptr = alloc_string(_py, field.text.as_bytes());
         if str_ptr.is_null() {
             for b in &bits_vec {
                 dec_ref_bits(_py, *b);
             }
-            return None;
+            return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
         }
         bits_vec.push(MoltObject::from_ptr(str_ptr).bits());
     }
@@ -318,9 +348,9 @@ fn fields_to_list(_py: &PyToken<'_>, fields: &[String]) -> Option<u64> {
         dec_ref_bits(_py, *b);
     }
     if list_ptr.is_null() {
-        return None;
+        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
     }
-    Some(MoltObject::from_ptr(list_ptr).bits())
+    Ok(MoltObject::from_ptr(list_ptr).bits())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -382,30 +412,30 @@ fn repr_float(f: f64) -> String {
 }
 
 /// Convert a MoltObject to its CSV text representation.
-fn render_field_text(_py: &PyToken<'_>, bits: u64) -> Option<String> {
+fn render_field_text(_py: &PyToken<'_>, bits: u64) -> String {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
-        return Some(String::new());
+        return String::new();
     }
     // Boolean before integer: bool is an int subtype in Python.
     if let Some(b) = obj.as_bool() {
-        return Some(if b {
+        return if b {
             "True".to_string()
         } else {
             "False".to_string()
-        });
+        };
     }
     if let Some(s) = string_obj_to_owned(obj) {
-        return Some(s);
+        return s;
     }
     if let Some(i) = to_i64(obj) {
-        return Some(i.to_string());
+        return i.to_string();
     }
     if let Some(f) = to_f64(obj) {
-        return Some(repr_float(f));
+        return repr_float(f);
     }
-    // Fallback for heap objects that have no direct string/int/float repr.
-    Some(format!("<object@{bits:016x}>"))
+    // Delegate to runtime `str()` semantics for all other objects.
+    format_obj_str(_py, obj)
 }
 
 /// Returns (is_none, is_number) for quoting-mode decisions.
@@ -531,10 +561,7 @@ fn write_row_to_string(_py: &PyToken<'_>, row_bits: u64, dialect: &Dialect) -> R
     let mut parts: Vec<String> = Vec::with_capacity(items_copy.len());
     for item_bits in items_copy {
         let (is_none, is_number) = obj_kind(item_bits);
-        let text = match render_field_text(_py, item_bits) {
-            Some(s) => s,
-            None => return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory")),
-        };
+        let text = render_field_text(_py, item_bits);
         let encoded = match encode_field(&text, dialect, is_none, is_number) {
             Ok(s) => s,
             Err(CsvError::NeedEscapechar) => {
@@ -557,6 +584,24 @@ fn write_row_to_string(_py: &PyToken<'_>, row_bits: u64, dialect: &Dialect) -> R
     let mut record = parts.join(&dialect.delimiter.to_string());
     record.push_str(&dialect.lineterminator);
     Ok(record)
+}
+
+fn sequence_items_from_bits(
+    _py: &PyToken<'_>,
+    bits: u64,
+    param_name: &str,
+) -> Result<Vec<u64>, u64> {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        let msg = format!("{param_name} must be a sequence");
+        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        let msg = format!("{param_name} must be a sequence");
+        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+    }
+    Ok(unsafe { seq_vec_ref(ptr).to_vec() })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -645,6 +690,135 @@ fn detect_quote_char(sample: &str, delimiter: char) -> (Option<char>, bool, bool
     }
 
     (best_quote, best_skipinitialspace, best_doublequote)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeaderColumnType {
+    Unknown,
+    Complex,
+    Length(usize),
+    Removed,
+}
+
+fn classify_header_cell_type(cell: &str) -> HeaderColumnType {
+    if is_complex_literal(cell) {
+        HeaderColumnType::Complex
+    } else {
+        HeaderColumnType::Length(cell.chars().count())
+    }
+}
+
+fn parse_signed_float(part: &str) -> Option<f64> {
+    if part == "+" {
+        return Some(1.0);
+    }
+    if part == "-" {
+        return Some(-1.0);
+    }
+    part.parse::<f64>().ok()
+}
+
+/// Return whether `complex(cell)` should succeed for header sniffing heuristics.
+fn is_complex_literal(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.parse::<f64>().is_ok() {
+        return true;
+    }
+
+    let body = if let Some(body) = trimmed.strip_suffix('j') {
+        body.trim()
+    } else if let Some(body) = trimmed.strip_suffix('J') {
+        body.trim()
+    } else {
+        return false;
+    };
+
+    if body.is_empty() || body == "+" || body == "-" {
+        return true;
+    }
+    if body.parse::<f64>().is_ok() {
+        return true;
+    }
+
+    let bytes = body.as_bytes();
+    let mut split_index: Option<usize> = None;
+    for idx in 1..bytes.len() {
+        let byte = bytes[idx];
+        if (byte == b'+' || byte == b'-') && bytes[idx - 1] != b'e' && bytes[idx - 1] != b'E' {
+            split_index = Some(idx);
+        }
+    }
+    let Some(split_index) = split_index else {
+        return false;
+    };
+    let (real_part, imag_part) = body.split_at(split_index);
+    if real_part.trim().is_empty() || real_part.trim().parse::<f64>().is_err() {
+        return false;
+    }
+    parse_signed_float(imag_part.trim()).is_some()
+}
+
+fn sniff_dialect(sample: &str, delimiters: Option<&str>) -> Dialect {
+    let delimiter = detect_delimiter(sample, delimiters);
+    let (detected_quotechar, skipinitialspace, detected_doublequote) =
+        detect_quote_char(sample, delimiter);
+    let (quotechar, doublequote) = match detected_quotechar {
+        Some(qc) => (Some(qc), detected_doublequote),
+        None => (Some('"'), false),
+    };
+    Dialect {
+        delimiter,
+        quotechar,
+        escapechar: None,
+        doublequote,
+        skipinitialspace,
+        quoting: QUOTE_MINIMAL,
+        strict: false,
+        lineterminator: "\r\n".to_string(),
+    }
+}
+
+fn parse_sample_rows(
+    sample: &str,
+    dialect: &Dialect,
+    field_limit: i64,
+) -> Result<Vec<Vec<String>>, CsvError> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut pending = String::new();
+    for physical in split_csv_lines(sample) {
+        pending.push_str(&physical);
+        match csv_parse_line(&pending, dialect, field_limit) {
+            Ok(fields) => {
+                rows.push(fields.into_iter().map(|field| field.text).collect());
+                pending.clear();
+            }
+            Err(CsvError::UnexpectedEnd) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    if !pending.is_empty() {
+        let fields = csv_parse_line(&pending, dialect, field_limit)?;
+        rows.push(fields.into_iter().map(|field| field.text).collect());
+    }
+    Ok(rows)
+}
+
+fn raise_csv_parse_error(_py: &PyToken<'_>, err: CsvError) -> u64 {
+    match err {
+        CsvError::FieldTooLarge => {
+            raise_exception::<u64>(_py, "ValueError", "field larger than field limit")
+        }
+        CsvError::UnexpectedEnd => {
+            raise_exception::<u64>(_py, "ValueError", "unexpected end of data")
+        }
+        CsvError::BadInput(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+        CsvError::NeedEscapechar => {
+            raise_exception::<u64>(_py, "ValueError", "need escapechar when quoting=QUOTE_NONE")
+        }
+    }
 }
 
 // =============================================================================
@@ -820,9 +994,9 @@ pub extern "C" fn molt_csv_reader_parse_line(handle_bits: u64, line_bits: u64) -
             }
         };
 
-        match fields_to_list(_py, &fields) {
-            Some(bits) => bits,
-            None => raise_exception::<u64>(_py, "MemoryError", "out of memory"),
+        match fields_to_list(_py, &fields, &dialect) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
         }
     })
 }
@@ -891,13 +1065,13 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
                     );
                 }
             };
-            match fields_to_list(_py, &fields) {
-                Some(b) => row_bits_vec.push(b),
-                None => {
+            match fields_to_list(_py, &fields, &dialect) {
+                Ok(bits) => row_bits_vec.push(bits),
+                Err(bits) => {
                     for b in &row_bits_vec {
                         dec_ref_bits(_py, *b);
                     }
-                    return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    return bits;
                 }
             }
         }
@@ -1102,6 +1276,63 @@ pub extern "C" fn molt_csv_writer_drop(handle_bits: u64) -> u64 {
     })
 }
 
+/// Project DictReader row semantics in Rust:
+/// dict(zip(fieldnames, row)) + restkey/restval handling.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_dict_project(
+    fieldnames_bits: u64,
+    row_bits: u64,
+    restkey_bits: u64,
+    restval_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let fieldnames = match sequence_items_from_bits(_py, fieldnames_bits, "fieldnames") {
+            Ok(items) => items,
+            Err(bits) => return bits,
+        };
+        let row = match sequence_items_from_bits(_py, row_bits, "row") {
+            Ok(items) => items,
+            Err(bits) => return bits,
+        };
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+        if dict_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+
+        let field_len = fieldnames.len();
+        let row_len = row.len();
+        let shared_len = field_len.min(row_len);
+        for idx in 0..shared_len {
+            unsafe {
+                dict_set_in_place(_py, dict_ptr, fieldnames[idx], row[idx]);
+            }
+        }
+
+        if field_len < row_len {
+            let extras_ptr = alloc_list(_py, &row[field_len..]);
+            if extras_ptr.is_null() {
+                let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+                dec_ref_bits(_py, dict_bits);
+                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
+            let extras_bits = MoltObject::from_ptr(extras_ptr).bits();
+            unsafe {
+                dict_set_in_place(_py, dict_ptr, restkey_bits, extras_bits);
+            }
+            dec_ref_bits(_py, extras_bits);
+        } else if field_len > row_len {
+            for key in fieldnames.iter().skip(row_len) {
+                unsafe {
+                    dict_set_in_place(_py, dict_ptr, *key, restval_bits);
+                }
+            }
+        }
+
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
 // ── Sniffer (arity 2) ─────────────────────────────────────────────────────────
 
 /// Analyse a CSV sample and return a 4-tuple:
@@ -1132,11 +1363,10 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
             }
         };
 
-        let delimiter = detect_delimiter(&sample, delimiters_owned.as_deref());
-        let (quotechar, skipinitialspace, doublequote) = detect_quote_char(&sample, delimiter);
+        let dialect = sniff_dialect(&sample, delimiters_owned.as_deref());
 
         // Allocate the delimiter string element.
-        let delim_str = delimiter.to_string();
+        let delim_str = dialect.delimiter.to_string();
         let delim_ptr = alloc_string(_py, delim_str.as_bytes());
         if delim_ptr.is_null() {
             return raise_exception::<u64>(_py, "MemoryError", "out of memory");
@@ -1144,7 +1374,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
         let delim_bits = MoltObject::from_ptr(delim_ptr).bits();
 
         // Allocate the quotechar string element (or use None).
-        let (qc_bits, qc_is_ptr) = if let Some(qc) = quotechar {
+        let (qc_bits, qc_is_ptr) = if let Some(qc) = dialect.quotechar {
             let qc_str = qc.to_string();
             let qc_ptr = alloc_string(_py, qc_str.as_bytes());
             if qc_ptr.is_null() {
@@ -1161,9 +1391,9 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
             _py,
             &[
                 delim_bits,
-                MoltObject::from_bool(doublequote).bits(),
+                MoltObject::from_bool(dialect.doublequote).bits(),
                 qc_bits,
-                MoltObject::from_bool(skipinitialspace).bits(),
+                MoltObject::from_bool(dialect.skipinitialspace).bits(),
             ],
         );
 
@@ -1177,5 +1407,77 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
             return raise_exception::<u64>(_py, "MemoryError", "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+/// Apply CPython-compatible `Sniffer.has_header` voting against intrinsic csv parsing.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(sample) = string_obj_to_owned(obj_from_bits(sample_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "sample must be str");
+        };
+
+        let dialect = sniff_dialect(&sample, None);
+        let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
+        let rows = match parse_sample_rows(&sample, &dialect, field_limit) {
+            Ok(rows) => rows,
+            Err(err) => return raise_csv_parse_error(_py, err),
+        };
+
+        let Some(header) = rows.first() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let columns = header.len();
+        let mut column_types = vec![HeaderColumnType::Unknown; columns];
+
+        let mut checked = 0usize;
+        for row in rows.iter().skip(1) {
+            if checked > 20 {
+                break;
+            }
+            checked += 1;
+            if row.len() != columns {
+                continue;
+            }
+            for col in 0..columns {
+                if column_types[col] == HeaderColumnType::Removed {
+                    continue;
+                }
+                let this_type = classify_header_cell_type(&row[col]);
+                let current_type = column_types[col];
+                if this_type != current_type {
+                    if current_type == HeaderColumnType::Unknown {
+                        column_types[col] = this_type;
+                    } else {
+                        column_types[col] = HeaderColumnType::Removed;
+                    }
+                }
+            }
+        }
+
+        let mut has_header_score = 0i64;
+        for (col, col_type) in column_types.iter().enumerate() {
+            match col_type {
+                HeaderColumnType::Removed => continue,
+                HeaderColumnType::Unknown => has_header_score += 1,
+                HeaderColumnType::Length(length) => {
+                    if header[col].chars().count() != *length {
+                        has_header_score += 1;
+                    } else {
+                        has_header_score -= 1;
+                    }
+                }
+                HeaderColumnType::Complex => {
+                    if is_complex_literal(&header[col]) {
+                        has_header_score -= 1;
+                    } else {
+                        has_header_score += 1;
+                    }
+                }
+            }
+        }
+
+        MoltObject::from_bool(has_header_score > 0).bits()
     })
 }
