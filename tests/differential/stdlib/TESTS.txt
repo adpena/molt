@@ -172,8 +172,10 @@ tests/differential/stdlib/asyncio__asyncio_running_loop_intrinsic.py
 tests/differential/stdlib/asyncio_api_surface_core.py
 tests/differential/stdlib/asyncio_api_surface_modules.py
 tests/differential/stdlib/asyncio_as_completed_order.py
+tests/differential/stdlib/asyncio_as_completed_timeout_results.py
 tests/differential/stdlib/asyncio_barrier_basic.py
 tests/differential/stdlib/asyncio_bounded_semaphore_overrelease.py
+tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py
 tests/differential/stdlib/asyncio_call_later_cancel.py
 tests/differential/stdlib/asyncio_call_soon_order.py
 tests/differential/stdlib/asyncio_cancel_sleep.py
@@ -281,6 +283,7 @@ tests/differential/stdlib/asyncio_wait_first_exception_timeout.py
 tests/differential/stdlib/asyncio_wait_for_basic.py
 tests/differential/stdlib/asyncio_wait_for_cancel_propagation.py
 tests/differential/stdlib/asyncio_wait_for_timeout_edge.py
+tests/differential/stdlib/asyncio_wait_rejects_coroutines.py
 tests/differential/stdlib/asyncio_wait_return_all.py
 tests/differential/stdlib/asyncio_wait_timeout_zero.py
 tests/differential/stdlib/atexit_core_behaviors.py
@@ -1046,6 +1049,7 @@ tests/differential/stdlib/cpython312plus_api_gap_top_level_zstd_a12952d1.py
 tests/differential/stdlib/csv_basic.py
 tests/differential/stdlib/csv_dialect_quote.py
 tests/differential/stdlib/csv_dict_reader_writer.py
+tests/differential/stdlib/csv_dictreader_line_num_blank_rows.py
 tests/differential/stdlib/csv_dictreader_rest.py
 tests/differential/stdlib/csv_dictwriter_restval.py
 tests/differential/stdlib/csv_doublequote_escape.py
@@ -1070,6 +1074,7 @@ tests/differential/stdlib/csv_restval_none.py
 tests/differential/stdlib/csv_skipinitialspace.py
 tests/differential/stdlib/csv_sniffer_basic.py
 tests/differential/stdlib/csv_sniffer_dialects_more.py
+tests/differential/stdlib/csv_sniffer_has_header.py
 tests/differential/stdlib/csv_streaming_iterable.py
 tests/differential/stdlib/csv_strict_error.py
 tests/differential/stdlib/csv_unicode_roundtrip.py
@@ -1252,6 +1257,7 @@ tests/differential/stdlib/importlib_import_module_basic.py
 tests/differential/stdlib/importlib_import_module_helper_constant.py
 tests/differential/stdlib/importlib_import_module_helper_dynamic.py
 tests/differential/stdlib/importlib_import_module_helper_submodule.py
+tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py
 tests/differential/stdlib/importlib_invalidate_caches.py
 tests/differential/stdlib/importlib_metadata_basic.py
 tests/differential/stdlib/importlib_metadata_bulk_payload_intrinsic.py
@@ -1489,6 +1495,7 @@ tests/differential/stdlib/math_remaining_intrinsics_basic.py
 tests/differential/stdlib/math_trig_hyperbolic_basic.py
 tests/differential/stdlib/math_trunc_frexp.py
 tests/differential/stdlib/multiprocessing_basic_spawn.py
+tests/differential/stdlib/multiprocessing_codec_fastpath_transport.py
 tests/differential/stdlib/multiprocessing_pipe_basic.py
 tests/differential/stdlib/multiprocessing_pool_apply_async.py
 tests/differential/stdlib/multiprocessing_pool_error_propagation.py
@@ -1606,6 +1613,7 @@ tests/differential/stdlib/re_internal_shims_importable.py
 tests/differential/stdlib/re_lookaround_backref.py
 tests/differential/stdlib/re_lookaround_inline_flags.py
 tests/differential/stdlib/re_lookbehind_length_error.py
+tests/differential/stdlib/re_named_backref_lookaround.py
 tests/differential/stdlib/re_posix_class.py
 tests/differential/stdlib/re_split_maxsplit.py
 tests/differential/stdlib/re_subn_count_flags.py
@@ -1793,6 +1801,7 @@ tests/differential/stdlib/struct_layout_mutation.py
 tests/differential/stdlib/struct_memoryview_nested.py
 tests/differential/stdlib/struct_offsets_basic.py
 tests/differential/stdlib/struct_pack_into_basic.py
+tests/differential/stdlib/subprocess_args_env_bytes_pathlike.py
 tests/differential/stdlib/subprocess_basic_run.py
 tests/differential/stdlib/subprocess_bytes_pipes.py
 tests/differential/stdlib/subprocess_check_call_kwargs.py
@@ -1801,6 +1810,7 @@ tests/differential/stdlib/subprocess_check_output.py
 tests/differential/stdlib/subprocess_check_output_errors.py
 tests/differential/stdlib/subprocess_check_output_kwargs.py
 tests/differential/stdlib/subprocess_communicate_pipes.py
+tests/differential/stdlib/subprocess_communicate_repeat_input_guard.py
 tests/differential/stdlib/subprocess_env_cwd.py
 tests/differential/stdlib/subprocess_env_mapping.py
 tests/differential/stdlib/subprocess_exception_aliases.py
@@ -1811,7 +1821,9 @@ tests/differential/stdlib/subprocess_popen_pipe_api.py
 tests/differential/stdlib/subprocess_run_basic.py
 tests/differential/stdlib/subprocess_shell_args.py
 tests/differential/stdlib/subprocess_stdio_fileno_redirection.py
+tests/differential/stdlib/subprocess_text_mode_stdin_typecheck.py
 tests/differential/stdlib/subprocess_timeout.py
+tests/differential/stdlib/subprocess_timeout_payload_stitching.py
 tests/differential/stdlib/subprocess_timeout_payload_types.py
 tests/differential/stdlib/symtable_basic.py
 tests/differential/stdlib/symtable_edge_cases.py

@@ -1,7 +1,6 @@
 """CSV reader/writer implementation for Molt."""
 
 from __future__ import annotations
-
 from typing import Iterable, Iterator, cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -31,33 +30,45 @@ __all__ = [
 ]
 
 _MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready", globals())
+_MOLT_CSV_QUOTE_MINIMAL = _require_intrinsic("molt_csv_quote_minimal", globals())
+_MOLT_CSV_QUOTE_ALL = _require_intrinsic("molt_csv_quote_all", globals())
+_MOLT_CSV_QUOTE_NONNUMERIC = _require_intrinsic("molt_csv_quote_nonnumeric", globals())
+_MOLT_CSV_QUOTE_NONE = _require_intrinsic("molt_csv_quote_none", globals())
+_MOLT_CSV_QUOTE_STRINGS = _require_intrinsic("molt_csv_quote_strings", globals())
+_MOLT_CSV_QUOTE_NOTNULL = _require_intrinsic("molt_csv_quote_notnull", globals())
+_MOLT_CSV_FIELD_SIZE_LIMIT = _require_intrinsic("molt_csv_field_size_limit", globals())
+_MOLT_CSV_READER_NEW = _require_intrinsic("molt_csv_reader_new", globals())
+_MOLT_CSV_READER_PARSE_LINE = _require_intrinsic(
+    "molt_csv_reader_parse_line", globals()
+)
+_MOLT_CSV_READER_DROP = _require_intrinsic("molt_csv_reader_drop", globals())
+_MOLT_CSV_DICT_PROJECT = _require_intrinsic("molt_csv_dict_project", globals())
+_MOLT_CSV_WRITER_NEW = _require_intrinsic("molt_csv_writer_new", globals())
+_MOLT_CSV_WRITER_WRITEROW = _require_intrinsic("molt_csv_writer_writerow", globals())
+_MOLT_CSV_WRITER_WRITEROWS = _require_intrinsic("molt_csv_writer_writerows", globals())
+_MOLT_CSV_WRITER_DROP = _require_intrinsic("molt_csv_writer_drop", globals())
+_MOLT_CSV_SNIFF = _require_intrinsic("molt_csv_sniff", globals())
+_MOLT_CSV_HAS_HEADER = _require_intrinsic("molt_csv_has_header", globals())
+
 _MOLT_CSV_RUNTIME_READY()
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity.
-
-
-QUOTE_MINIMAL = 0
-QUOTE_ALL = 1
-QUOTE_NONNUMERIC = 2
-QUOTE_NONE = 3
-QUOTE_STRINGS = 4
-QUOTE_NOTNULL = 5
+QUOTE_MINIMAL = int(_MOLT_CSV_QUOTE_MINIMAL())
+QUOTE_ALL = int(_MOLT_CSV_QUOTE_ALL())
+QUOTE_NONNUMERIC = int(_MOLT_CSV_QUOTE_NONNUMERIC())
+QUOTE_NONE = int(_MOLT_CSV_QUOTE_NONE())
+QUOTE_STRINGS = int(_MOLT_CSV_QUOTE_STRINGS())
+QUOTE_NOTNULL = int(_MOLT_CSV_QUOTE_NOTNULL())
 
 
 class Error(Exception):
     """CSV parsing error."""
 
 
-_FIELD_SIZE_LIMIT = 131072
-
-
 def field_size_limit(new_limit: int | None = None) -> int:
     """Get or set the maximum field size."""
-    global _FIELD_SIZE_LIMIT
-    old_limit = _FIELD_SIZE_LIMIT
-    if new_limit is not None:
-        _FIELD_SIZE_LIMIT = int(new_limit)
-    return old_limit
+    if new_limit is None:
+        return int(_MOLT_CSV_FIELD_SIZE_LIMIT(None))
+    return int(_MOLT_CSV_FIELD_SIZE_LIMIT(int(new_limit)))
 
 
 class Dialect:
@@ -134,6 +145,13 @@ _dialects: dict[str, Dialect] = {
     "excel-tab": excel_tab,
     "unix": unix_dialect,
 }
+_DIALECT_FMTPARAM_KEYS = frozenset(Dialect.__slots__)
+
+
+def _validate_fmtparams(fmtparams: dict[str, object]) -> None:
+    for key in fmtparams:
+        if key not in _DIALECT_FMTPARAM_KEYS:
+            raise TypeError(f"this function got an unexpected keyword argument {key!r}")
 
 
 def _dialect_from_obj(obj: object) -> Dialect:
@@ -152,14 +170,41 @@ def _dialect_from_obj(obj: object) -> Dialect:
 
 
 def _validate_dialect(dialect: Dialect) -> None:
-    if not isinstance(dialect.delimiter, str) or len(dialect.delimiter) != 1:
-        raise Error("delimiter must be a 1-character string")
+    if not isinstance(dialect.delimiter, str):
+        raise TypeError(
+            f'"delimiter" must be a unicode character, not {type(dialect.delimiter).__name__}'
+        )
+    if len(dialect.delimiter) != 1:
+        raise TypeError(
+            '"delimiter" must be a unicode character, '
+            f"not a string of length {len(dialect.delimiter)}"
+        )
     if dialect.quotechar is not None:
-        if not isinstance(dialect.quotechar, str) or len(dialect.quotechar) != 1:
-            raise Error("quotechar must be a 1-character string")
+        if not isinstance(dialect.quotechar, str):
+            raise TypeError(
+                '"quotechar" must be a unicode character or None, '
+                f"not {type(dialect.quotechar).__name__}"
+            )
+        if len(dialect.quotechar) != 1:
+            raise TypeError(
+                '"quotechar" must be a unicode character or None, '
+                f"not a string of length {len(dialect.quotechar)}"
+            )
     if dialect.escapechar is not None:
-        if not isinstance(dialect.escapechar, str) or len(dialect.escapechar) != 1:
-            raise Error("escapechar must be a 1-character string")
+        if not isinstance(dialect.escapechar, str):
+            raise TypeError(
+                '"escapechar" must be a unicode character or None, '
+                f"not {type(dialect.escapechar).__name__}"
+            )
+        if len(dialect.escapechar) != 1:
+            raise TypeError(
+                '"escapechar" must be a unicode character or None, '
+                f"not a string of length {len(dialect.escapechar)}"
+            )
+    if not isinstance(dialect.lineterminator, str):
+        raise TypeError(
+            f'"lineterminator" must be a string, not {type(dialect.lineterminator).__name__}'
+        )
     if dialect.quoting not in {
         QUOTE_MINIMAL,
         QUOTE_ALL,
@@ -168,15 +213,16 @@ def _validate_dialect(dialect: Dialect) -> None:
         QUOTE_STRINGS,
         QUOTE_NOTNULL,
     }:
-        raise Error("unknown quoting value")
+        raise TypeError('bad "quoting" value')
     if dialect.quotechar is None and dialect.quoting != QUOTE_NONE:
-        raise Error("quotechar must be set unless QUOTE_NONE")
+        raise TypeError("quotechar must be set if quoting enabled")
 
 
 def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
+    _validate_fmtparams(fmtparams)
     if isinstance(dialect, str):
         if dialect not in _dialects:
-            raise Error(f"unknown dialect {dialect!r}")
+            raise Error("unknown dialect")
         base = _dialects[dialect]
     else:
         base = dialect
@@ -188,25 +234,22 @@ def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
 def register_dialect(
     name: str, dialect: object | None = None, **fmtparams: object
 ) -> None:
-    if dialect is None:
-        resolved = _resolve_dialect(excel, fmtparams)
-    else:
-        if fmtparams:
-            raise TypeError("specify either a dialect or keyword arguments")
-        resolved = _dialect_from_obj(dialect)
-        _validate_dialect(resolved)
+    if not isinstance(name, str):
+        raise TypeError("dialect name must be a string")
+    base = excel if dialect is None else dialect
+    resolved = _resolve_dialect(base, fmtparams)
     _dialects[name] = resolved
 
 
 def unregister_dialect(name: str) -> None:
     if name not in _dialects:
-        raise Error(f"unknown dialect {name!r}")
+        raise Error("unknown dialect")
     del _dialects[name]
 
 
 def get_dialect(name: str) -> Dialect:
     if name not in _dialects:
-        raise Error(f"unknown dialect {name!r}")
+        raise Error("unknown dialect")
     return _dialects[name].clone()
 
 
@@ -214,19 +257,15 @@ def list_dialects() -> list[str]:
     return list(_dialects.keys())
 
 
-def _is_number(value: object) -> bool:
-    return isinstance(value, (int, float))
-
-
-def _iter_csvfile(csvfile) -> Iterator[str]:
+def _iter_csvfile(csvfile: object) -> Iterator[str]:
     try:
-        return iter(csvfile)
+        return iter(csvfile)  # type: ignore[arg-type]
     except TypeError:
         pass
 
     if hasattr(csvfile, "readline"):
 
-        def _readline_iter():
+        def _readline_iter() -> Iterator[str]:
             while True:
                 line = csvfile.readline()
                 if line == "":
@@ -244,13 +283,28 @@ def _iter_csvfile(csvfile) -> Iterator[str]:
     raise TypeError(f"{type(csvfile).__name__!r} object is not iterable")
 
 
+def _normalize_row(row: Iterable[object]) -> list[object] | tuple[object, ...]:
+    if isinstance(row, (list, tuple)):
+        return row
+    try:
+        return list(row)
+    except TypeError:
+        typename = type(row).__name__
+        raise Error(f"iterable expected, not {typename}") from None
+
+
 def reader(*args: object, **fmtparams: object):
     if not args:
         raise TypeError("reader() missing required argument 'csvfile'")
     if len(args) > 2:
         raise TypeError("reader() takes at most 2 positional arguments")
     csvfile = args[0]
-    dialect = args[1] if len(args) == 2 else "excel"
+    if "dialect" in fmtparams:
+        if len(args) == 2:
+            raise TypeError("dialect specified both positionally and as keyword")
+        dialect = fmtparams.pop("dialect")
+    else:
+        dialect = args[1] if len(args) == 2 else "excel"
     resolved = _resolve_dialect(dialect, fmtparams)
     return _Reader(_iter_csvfile(csvfile), resolved)
 
@@ -261,7 +315,12 @@ def writer(*args: object, **fmtparams: object):
     if len(args) > 2:
         raise TypeError("writer() takes at most 2 positional arguments")
     csvfile = args[0]
-    dialect = args[1] if len(args) == 2 else "excel"
+    if "dialect" in fmtparams:
+        if len(args) == 2:
+            raise TypeError("dialect specified both positionally and as keyword")
+        dialect = fmtparams.pop("dialect")
+    else:
+        dialect = args[1] if len(args) == 2 else "excel"
     resolved = _resolve_dialect(dialect, fmtparams)
     return _Writer(csvfile, resolved)
 
@@ -270,242 +329,108 @@ class _Reader:
     def __init__(self, csvfile: Iterable[str], dialect: Dialect) -> None:
         self.dialect = dialect
         self._iter = iter(csvfile)
-        self._buffer = ""
-        self._pos = 0
+        self._pending = ""
         self._eof = False
         self.line_num = 0
+        self._handle = _MOLT_CSV_READER_NEW(
+            dialect.delimiter,
+            dialect.quotechar,
+            dialect.escapechar,
+            dialect.doublequote,
+            dialect.skipinitialspace,
+            dialect.quoting,
+            dialect.strict,
+        )
 
     def __iter__(self) -> Iterator[list[object]]:
         return self
 
-    def _fill_buffer(self) -> bool:
-        if self._eof:
-            return False
+    def __del__(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
         try:
-            self._buffer = next(self._iter)
-            self._pos = 0
-            self.line_num += 1
-            return True
+            _MOLT_CSV_READER_DROP(handle)
+        except Exception:
+            pass
+
+    def _next_physical_line(self) -> str | None:
+        if self._eof:
+            return None
+        try:
+            line = next(self._iter)
         except StopIteration:
             self._eof = True
-            return False
-
-    def _next_char(self) -> str | None:
-        while self._pos >= len(self._buffer):
-            if not self._fill_buffer():
-                return None
-        ch = self._buffer[self._pos]
-        self._pos += 1
-        return ch
-
-    def _peek_char(self) -> str | None:
-        if self._pos < len(self._buffer):
-            return self._buffer[self._pos]
-        return None
+            return None
+        if not isinstance(line, str):
+            typename = type(line).__name__
+            raise Error(
+                f"iterator should return strings, not {typename} "
+                "(the file should be opened in text mode)"
+            )
+        self.line_num += 1
+        return line
 
     def __next__(self) -> list[object]:
-        row: list[object] = []
-        field_chars = []
-        field_was_quoted = False
-        in_quotes = False
-        after_quote = False
-
-        def finalize_field() -> None:
-            nonlocal field_chars, field_was_quoted
-            text = "".join(field_chars)
-            field_chars = []
-            was_quoted = field_was_quoted
-            field_was_quoted = False
-            if self.dialect.quoting == QUOTE_NONNUMERIC:
-                if not was_quoted and text:
-                    try:
-                        value: object = float(text)
-                    except ValueError as exc:
-                        raise ValueError(str(exc)) from None
-                    row.append(value)
-                else:
-                    row.append(text)
-            else:
-                row.append(text)
-
-        def append_char(ch: str) -> None:
-            field_chars.append(ch)
-            if len(field_chars) > _FIELD_SIZE_LIMIT:
-                raise Error("field larger than field limit")
-
         while True:
-            ch = self._next_char()
-            if ch is None:
-                if in_quotes:
-                    if self.dialect.strict:
-                        raise Error("unexpected end of data")
-                    in_quotes = False
-                if field_chars or field_was_quoted or row:
-                    finalize_field()
-                    return row
+            line = self._next_physical_line()
+            if line is not None:
+                self._pending += line
+
+            if not self._pending:
                 raise StopIteration
 
-            if after_quote:
-                if ch == self.dialect.delimiter:
-                    finalize_field()
-                    after_quote = False
+            try:
+                row = _MOLT_CSV_READER_PARSE_LINE(self._handle, self._pending)
+            except ValueError as exc:
+                msg = str(exc)
+                if msg == "unexpected end of data" and not self._eof:
                     continue
-                if ch in ("\n", "\r"):
-                    if ch == "\r" and self._peek_char() == "\n":
-                        self._pos += 1
-                    finalize_field()
-                    after_quote = False
-                    return row
-                if self.dialect.strict:
-                    raise Error(
-                        f"{self.dialect.delimiter!r} expected after {self.dialect.quotechar!r}"
-                    )
-                append_char(ch)
-                after_quote = False
-                continue
+                raise Error(msg) from None
 
-            if in_quotes:
-                if self.dialect.escapechar and ch == self.dialect.escapechar:
-                    next_ch = self._next_char()
-                    if next_ch is None:
-                        if self.dialect.strict:
-                            raise Error("unexpected end of data")
-                        append_char(self.dialect.escapechar)
-                    else:
-                        append_char(next_ch)
-                    continue
-                if ch == self.dialect.quotechar:
-                    if (
-                        self.dialect.doublequote
-                        and self._peek_char() == self.dialect.quotechar
-                    ):
-                        self._pos += 1
-                        append_char(self.dialect.quotechar)
-                    else:
-                        in_quotes = False
-                        after_quote = True
-                    continue
-                append_char(ch)
-                continue
-
-            if ch == self.dialect.delimiter:
-                finalize_field()
-                continue
-            if ch in ("\n", "\r"):
-                if ch == "\r" and self._peek_char() == "\n":
-                    self._pos += 1
-                if row or field_chars or field_was_quoted:
-                    finalize_field()
-                else:
-                    row = []
-                return row
-
-            if (
-                self.dialect.skipinitialspace
-                and not field_chars
-                and ch == " "
-                and not field_was_quoted
-            ):
-                continue
-
-            if self.dialect.quotechar and ch == self.dialect.quotechar:
-                in_quotes = True
-                field_was_quoted = True
-                continue
-
-            if self.dialect.escapechar and ch == self.dialect.escapechar:
-                next_ch = self._next_char()
-                if next_ch is None:
-                    if self.dialect.strict:
-                        raise Error("unexpected end of data")
-                    append_char(self.dialect.escapechar)
-                else:
-                    append_char(next_ch)
-                continue
-
-            append_char(ch)
+            self._pending = ""
+            return cast(list[object], row)
 
 
 class _Writer:
     def __init__(self, csvfile, dialect: Dialect) -> None:
         self.dialect = dialect
         self._csvfile = csvfile
+        self._handle = _MOLT_CSV_WRITER_NEW(
+            dialect.delimiter,
+            dialect.quotechar,
+            dialect.escapechar,
+            dialect.doublequote,
+            dialect.quoting,
+            dialect.lineterminator,
+        )
+
+    def __del__(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        try:
+            _MOLT_CSV_WRITER_DROP(handle)
+        except Exception:
+            pass
 
     def writerow(self, row: Iterable[object]) -> int:
-        parts = []
-        for field in row:
-            is_none = field is None
-            text = "" if is_none else str(field)
-            quote_field = False
-
-            if self.dialect.quoting == QUOTE_ALL:
-                quote_field = True
-            elif self.dialect.quoting == QUOTE_NONNUMERIC:
-                quote_field = not _is_number(field)
-            elif self.dialect.quoting == QUOTE_STRINGS:
-                quote_field = isinstance(field, str)
-            elif self.dialect.quoting == QUOTE_NOTNULL:
-                quote_field = not is_none
-            elif self.dialect.quoting == QUOTE_MINIMAL:
-                if (
-                    self.dialect.delimiter in text
-                    or "\n" in text
-                    or "\r" in text
-                    or (self.dialect.quotechar and self.dialect.quotechar in text)
-                    or (self.dialect.skipinitialspace and text.startswith(" "))
-                ):
-                    quote_field = True
-            elif self.dialect.quoting == QUOTE_NONE:
-                quote_field = False
-
-            if self.dialect.quoting == QUOTE_NONE:
-                if self.dialect.escapechar is None:
-                    if (
-                        self.dialect.delimiter in text
-                        or "\n" in text
-                        or "\r" in text
-                        or (self.dialect.quotechar and self.dialect.quotechar in text)
-                    ):
-                        raise Error("need escapechar when quoting=QUOTE_NONE")
-                if self.dialect.escapechar:
-                    escaped = []
-                    for ch in text:
-                        if ch in {
-                            self.dialect.delimiter,
-                            "\n",
-                            "\r",
-                            self.dialect.quotechar or "",
-                            self.dialect.escapechar,
-                        }:
-                            escaped.append(self.dialect.escapechar)
-                        escaped.append(ch)
-                    text = "".join(escaped)
-                parts.append(text)
-                continue
-
-            if quote_field:
-                if not self.dialect.quotechar:
-                    raise Error("quotechar must be set to quote fields")
-                escaped = []
-                for ch in text:
-                    if ch == self.dialect.quotechar:
-                        if self.dialect.doublequote:
-                            escaped.append(self.dialect.quotechar)
-                            escaped.append(self.dialect.quotechar)
-                        elif self.dialect.escapechar:
-                            escaped.append(self.dialect.escapechar)
-                            escaped.append(ch)
-                        else:
-                            raise Error("need escapechar when doublequote=False")
-                    else:
-                        escaped.append(ch)
-                text = f"{self.dialect.quotechar}{''.join(escaped)}{self.dialect.quotechar}"
-            parts.append(text)
-
-        record = self.dialect.delimiter.join(parts) + self.dialect.lineterminator
+        normalized = _normalize_row(row)
+        try:
+            record = _MOLT_CSV_WRITER_WRITEROW(self._handle, normalized)
+        except ValueError as exc:
+            raise Error(str(exc)) from None
         return self._csvfile.write(record)
 
     def writerows(self, rows: Iterable[Iterable[object]]) -> None:
+        if isinstance(rows, (list, tuple)):
+            normalized_rows = [_normalize_row(row) for row in rows]
+            try:
+                records = _MOLT_CSV_WRITER_WRITEROWS(self._handle, normalized_rows)
+            except ValueError as exc:
+                raise Error(str(exc)) from None
+            self._csvfile.write(records)
+            return
         for row in rows:
             self.writerow(row)
 
@@ -514,35 +439,54 @@ class DictReader:
     def __init__(
         self,
         csvfile: Iterable[str],
-        fieldnames: list[str] | None = None,
+        fieldnames: Iterable[object] | None = None,
         restkey: str | None = None,
-        restval: object = "",
+        restval: object | None = None,
         dialect: object = "excel",
         **fmtparams: object,
     ) -> None:
-        self._reader = reader(csvfile, dialect=dialect, **fmtparams)
-        self.fieldnames = fieldnames
+        if fieldnames is not None and iter(fieldnames) is fieldnames:
+            fieldnames = list(fieldnames)
+        self._fieldnames = fieldnames
         self.restkey = restkey
         self.restval = restval
+        self.reader = reader(csvfile, dialect=dialect, **fmtparams)
+        self.dialect = dialect
+        self.line_num = 0
 
     def __iter__(self):
         return self
 
-    def __next__(self) -> dict[str, object]:
-        if self.fieldnames is None:
-            header = next(self._reader)
-            self.fieldnames = [str(name) for name in header]
-        row = next(self._reader)
-        mapping: dict[str, object] = {}
-        assert self.fieldnames is not None
-        for idx, name in enumerate(self.fieldnames):
-            if idx < len(row):
-                mapping[name] = row[idx]
-            else:
-                mapping[name] = self.restval
-        if len(row) > len(self.fieldnames) and self.restkey is not None:
-            mapping[self.restkey] = row[len(self.fieldnames) :]
-        return mapping
+    @property
+    def fieldnames(self) -> Iterable[object] | None:
+        if self._fieldnames is None:
+            try:
+                self._fieldnames = next(self.reader)
+            except StopIteration:
+                pass
+        self.line_num = self.reader.line_num
+        return self._fieldnames
+
+    @fieldnames.setter
+    def fieldnames(self, value: Iterable[object] | None) -> None:
+        self._fieldnames = value
+
+    def __next__(self) -> dict[object, object]:
+        if self.line_num == 0:
+            # Side effect: prime header from first row when fieldnames omitted.
+            self.fieldnames
+        row = next(self.reader)
+        self.line_num = self.reader.line_num
+        while row == []:
+            row = next(self.reader)
+            self.line_num = self.reader.line_num
+        raw_fieldnames = self.fieldnames
+        assert raw_fieldnames is not None
+        fieldnames = list(raw_fieldnames)
+        return cast(
+            dict[object, object],
+            _MOLT_CSV_DICT_PROJECT(fieldnames, row, self.restkey, self.restval),
+        )
 
 
 class DictWriter:
@@ -557,7 +501,11 @@ class DictWriter:
     ) -> None:
         self.fieldnames = fieldnames
         self.restval = restval
-        self.extrasaction = extrasaction
+        self.extrasaction = extrasaction.lower()
+        if self.extrasaction not in {"raise", "ignore"}:
+            raise ValueError(
+                f"extrasaction ({extrasaction}) must be 'raise' or 'ignore'"
+            )
         self._writer = writer(csvfile, dialect=dialect, **fmtparams)
 
     def writeheader(self) -> int:
@@ -566,11 +514,8 @@ class DictWriter:
     def writerow(self, rowdict: dict[str, object]) -> int:
         extras = set(rowdict.keys()) - set(self.fieldnames)
         if extras:
-            action = self.extrasaction.lower()
-            if action == "raise":
+            if self.extrasaction == "raise":
                 raise ValueError("dict contains fields not in fieldnames")
-            if action != "ignore":
-                raise ValueError("extrasaction must be 'raise' or 'ignore'")
         row = [rowdict.get(name, self.restval) for name in self.fieldnames]
         return self._writer.writerow(row)
 
@@ -581,26 +526,18 @@ class DictWriter:
 
 class Sniffer:
     def sniff(self, sample: str, delimiters: str | None = None) -> Dialect:
-        if delimiters is None:
-            delimiters = ",\t;|:"
-        candidates = [delim for delim in delimiters if delim in sample]
-        if not candidates:
-            return excel.clone()
-        best = candidates[0]
-        best_count = sample.count(best)
-        for delim in candidates[1:]:
-            count = sample.count(delim)
-            if count > best_count:
-                best = delim
-                best_count = count
-        return excel.clone(delimiter=best)
+        delimiter, doublequote, quotechar, skipinitialspace = _MOLT_CSV_SNIFF(
+            sample, delimiters
+        )
+        return excel.clone(
+            delimiter=cast(str, delimiter),
+            quotechar=cast(str | None, quotechar),
+            doublequote=bool(doublequote),
+            skipinitialspace=bool(skipinitialspace),
+        )
 
     def has_header(self, sample: str) -> bool:
-        lines = [line for line in sample.splitlines() if line]
-        if len(lines) < 2:
-            return False
-        first = lines[0].split(",")
-        second = lines[1].split(",")
-        if len(first) != len(second):
-            return False
-        return all(not item.isdigit() for item in first)
+        try:
+            return bool(_MOLT_CSV_HAS_HEADER(sample))
+        except ValueError as exc:
+            raise Error(str(exc)) from None
