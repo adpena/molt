@@ -12,9 +12,7 @@ _MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
 )
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial):
-# lower SMTP client transport and protocol handling into Rust intrinsics and add
-# STARTTLS/auth/LMTP parity.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): lower SMTP client transport and protocol handling into Rust intrinsics and add STARTTLS/auth/LMTP parity.
 
 __all__ = [
     "SMTP",

@@ -1405,6 +1405,7 @@ stdlib:
   _tkinter:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_tkinter_28cefbd0.py
+      - tests/differential/stdlib/tkinter_phase0_core_semantics.py
   _tokenize:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_tokenize_4bfe3da8.py
@@ -2858,6 +2859,7 @@ stdlib:
   tkinter:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_tkinter_db08f340.py
+      - tests/differential/stdlib/tkinter_phase0_core_semantics.py
   tkinter.__main__:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_tkinter_main_4ee4c912.py
@@ -2897,6 +2899,7 @@ stdlib:
   tkinter.ttk:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_tkinter_ttk_29772565.py
+      - tests/differential/stdlib/tkinter_phase0_core_semantics.py
   tomllib:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_tomllib_9fc42983.py

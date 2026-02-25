@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-18
+Last updated: 2026-02-25
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -13,13 +13,52 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
-## Optimization Program Status (2026-02-12)
-- Program state: Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
-- Execution assumption: optimization execution is active; Week 2 specialization and wasm-stabilization clusters are unblocked.
+## Stdlib Intrinsics Sprint (2026-02-25)
+- Completed: major stdlib intrinsics sprint adding ~85 new Rust intrinsics across
+  6 modules (~1,250 LOC Rust, ~1,600 LOC Python shim rewrites).
+- Track A (os): wired ~25 existing intrinsics (`access`, `chdir`, `cpu_count`,
+  `link`, `truncate`, `umask`, `uname`, `getppid`, `getuid`, `getgid`, `geteuid`,
+  `getegid`, `getlogin`, `getloadavg`, `removedirs`, `devnull`,
+  `get_terminal_size`, `walk`, `scandir`, `path.commonpath`,
+  `path.commonprefix`, `path.getatime`/`getctime`/`getmtime`/`getsize`,
+  `path.samefile`, `F_OK`/`R_OK`/`W_OK`/`X_OK`) and added ~15 new Rust
+  intrinsics (`dup2`, `lseek`, `ftruncate`, `isatty`, `fdopen`, `sendfile`,
+  `kill`, `waitpid`, `getpgrp`, `setpgrp`, `setsid`, `sysconf`,
+  `sysconf_names`, `path.realpath`, `utime`).
+- Track B (sys): added ~20 new intrinsics (`maxsize`, `maxunicode`,
+  `byteorder`, `prefix`, `exec_prefix`, `base_prefix`, `base_exec_prefix`,
+  `platlibdir`, `float_info`, `int_info`, `hash_info`, `thread_info`, `intern`,
+  `getsizeof`, `stdlib_module_names`, `builtin_module_names`, `orig_argv`,
+  `copyright`, `displayhook`, `excepthook`).
+- Track C (_thread + signal): rewrote `_thread.py` with existing thread
+  intrinsics (`allocate_lock`, `LockType`, `start_new_thread`, `exit`,
+  `get_ident`, `get_native_id`, `_count`, `stack_size`, `interrupt_main`,
+  `TIMEOUT_MAX`, `error`); extended signal with 12 new constant intrinsics
+  (`SIGBUS` through `SIGSYS`) and 5 POSIX function intrinsics (`strsignal`,
+  `pthread_sigmask`, `pthread_kill`, `sigpending`, `sigwait`).
+- Track D (asyncio): expanded `_asyncio.py` with C-accelerated surface
+  functions (`current_task`, `_enter_task`, `_leave_task`, `_register_task`,
+  `_unregister_task`) backed by 4 new Rust intrinsics with runtime task-state
+  management.
+- Track E (subprocess): added `start_new_session`, `process_group` params,
+  `pid` property, `send_signal` method, `check_call`, `getstatusoutput`,
+  `getoutput` with a new `molt_process_spawn_ex` Rust intrinsic;
+  `concurrent.futures` verified complete with no additional changes needed.
+
+## Optimization Program Status (2026-02-24)
+- Program state: Week 1 observability is complete, compile-throughput recovery is partial, and optimization execution is now managed by a control-plane-first swarm protocol.
+- Execution assumption: optimization execution is active; Wave 0 baseline refresh + doc alignment is mandatory before broad Wave 2 rollout slices.
 - Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](../../OPTIMIZATIONS_PLAN.md).
 - Canonical optimization execution log: [docs/benchmarks/optimization_progress.md](docs/benchmarks/optimization_progress.md).
-- Current progress: runtime instrumentation + benchmark diff tooling are landed, and baseline lock summary is published at [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md).
-- Active risk signal (2026-02-12): frontend/mid-end compile throughput regressed on stdlib-heavy module graphs; deterministic wasm benchmark builds can timeout before runtime execution. The dedicated compile-time recovery tranche (profile gating + tiering + budgets + per-pass telemetry + deterministic parallel rollout) is now partially implemented in frontend/CLI, including diagnostics sink integration and opt-in process-level parallel lowering, and is tracked in [OPTIMIZATIONS_PLAN.md](../../OPTIMIZATIONS_PLAN.md).
+- Current progress: runtime instrumentation + benchmark diff tooling are landed, baseline lock summary remains published at [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md), and compile-time recovery policy/tiering/budgets/telemetry slices are partially implemented in frontend/CLI.
+- 2026-02-25 Wave 0 release-lane triage: fixed release-runtime compile regression in `_asyncio` scheduler task-entry/task-exit helpers (`runtime/molt-runtime/src/async_rt/scheduler.rs`) by restoring correct `raise_exception` API usage; targeted validation is green (`cargo check -p molt-runtime`, `tests/test_tkinter_phase0_wrappers.py`).
+- Active risk signal: frontend/mid-end compile throughput regressed on stdlib-heavy module graphs; deterministic wasm benchmark builds can timeout before runtime execution.
+- Active Wave 0 blocker signal: native benchmark harness runs remain sensitive to interpreter environment and long-tail release-runtime rebuild churn (`uv` lane missing `packaging.markers`, repeated release rebuild stalls under contention); treat this as a tooling/perf-gate blocker until the refresh workflow is stabilized.
+- Active governance policy for optimization merges:
+  - perf + correctness + lowering gates are all required in the same change.
+  - optimize-or-die behavior is prohibited: any red-line regression is a stop/rollback signal.
+  - optimization docs (`STATUS`, `ROADMAP`, `OPTIMIZATIONS_PLAN`, `optimization_progress`) must stay synchronized in the same change when status semantics shift.
+  - checker snapshot metric mode in this file is canonical for lowering scoreboards; historical plan snapshots must not override active gate semantics.
 
 ## Toolchain Port Tranche (2026-02-13)
 - Implemented: backend toolchain port to latest requested major lines (`cranelift 0.128.x`, `wasm-encoder 0.245.1`, `wasmparser 0.245.1`) with compile/test parity green in `runtime/molt-backend`.
@@ -33,6 +72,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: linked bench compile/run wiring fix in `tools/bench_wasm.py`; linked-mode builds now set `MOLT_WASM_TABLE_BASE` from reloc-runtime table imports, preventing linked `output_linked.wasm` call-indirect signature traps.
 - Implemented: linked wasm runtime bootstrap now calls optional `molt_table_init` export before `molt_main` in `run_wasm.js`, matching passive-element initialization requirements.
 - Implemented: regression coverage for linked table/signature path in `tests/test_wasm_linked_runner_node_flags.py::test_run_wasm_linked_bench_sum_has_no_table_signature_trap` and `tests/test_bench_wasm_node_resolver.py::test_prepare_wasm_binary_sets_linked_table_base`.
+- Implemented: linked-wasm builtin metadata import wiring fix in
+  `runtime/molt-backend/src/wasm.rs`; missing import ids for
+  `sys_hexversion`/`sys_api_version`/`sys_abiflags`/`sys_implementation_payload`
+  are now registered before wrapper/table emission, eliminating
+  `missing builtin import for sys_hexversion` panic failures in targeted linked
+  wasm bench runs.
 - Implemented: wasm runtime artifact hardening in `src/molt/cli.py` now validates runtime wasm magic, retries with an isolated target dir on corrupt/zero-filled artifacts, and (when `release` wasm artifacts are invalid) falls back to `release-fast` via `MOLT_WASM_RUNTIME_FALLBACK_PROFILE` for deterministic linked-build recovery.
 - Implemented: regression coverage for wasm artifact hardening in `tests/cli/test_cli_wasm_artifact_validation.py`, including corrupt-primary recovery and `release -> release-fast` fallback-profile behavior.
 - Implemented: Rust 2024 `unsafe_op_in_unsafe_fn` hardening in `runtime/molt-runtime/src/async_rt/channels.rs` (explicit unsafe blocks + safety rationale comments).
@@ -42,10 +87,14 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: capability-enabled runtime-heavy wasm blocker tranche is green in targeted regression lane (`tests/test_wasm_runtime_heavy_regressions.py`: `3/3` pass for asyncio task table-ref path, zipimport failure-shape parity, and deterministic smtplib wasm thread fail-fast).
 - Implemented: native runtime-heavy cluster differential sweep is green (`119/119` pass across `_asyncio`, `smtplib`, `zipfile`, and `zipimport`) with RSS profiling + memory caps enforced.
 - Implemented: native strict-closure differential slices for `re`/`pathlib`/`socket` are green (`102/102` pass) with RSS profiling + memory caps enforced.
+- Implemented: targeted compression differential smoke (`bz2_basic`,
+  `gzip_basic`, `lzma_basic`, `zlib_basic`) is green (`4/4`) with
+  `MOLT_DIFF_MEASURE_RSS=1`, external-volume artifact roots, and per-process
+  memory caps.
 - Implemented: critical strict-import gate now includes `re` (checker + generated audit docs + regression test coverage).
 - Implemented: postgres-boundary isolation for `fallible-iterator 0.2` via explicit alias dependency `fallible-iterator-02` in `runtime/molt-worker`; `0.3` remains on rusqlite paths.
 - Temporary upstream exception: `fallible-iterator` remains dual-version in the graph because `tokio-postgres`/`postgres-protocol` currently pin `0.2` while `rusqlite` pins `0.3`.
-- TODO(toolchain, owner:runtime, milestone:TL2, priority:P1, status:partial): collapse dual `fallible-iterator` versions once postgres stack releases support `fallible-iterator 0.3+`; keep the boundary isolated/documented until upstream unblocks.
+- TODO(tooling, owner:runtime, milestone:TL2, priority:P1, status:partial): collapse dual `fallible-iterator` versions once postgres stack releases support `fallible-iterator 0.3+`; keep the boundary isolated/documented until upstream unblocks.
 
 ## Roadmap 90-Day Execution Artifacts (2026-02-12)
 - Delivered Month 1 determinism/security enforcement checklist:
@@ -194,6 +243,28 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 ## Capabilities (Current)
 - Active stdlib lowering execution plan:
   [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+- Active Tkinter cross-platform lowering plan:
+  [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md).
+- Implemented: Tkinter runtime now has a dual-path intrinsic backend for
+  `molt_tk_*`: deterministic headless Phase-0 behavior by default, plus an
+  opt-in native Tcl/Tk backend (`cargo` feature `molt_tk_native`) that wires
+  app creation (`useTk` aware), Tcl command dispatch, callback registration,
+  `after` scheduling, event pumping (`dooneevent`/`mainloop`), and Tk destroy/quit
+  lifecycle through an embedded interpreter.
+- Capability-gated fallback behavior remains deterministic when native Tk is
+  unavailable (native: `RuntimeError`, wasm: `NotImplementedError`), with no
+  host-Python fallback lane.
+- Implemented: `_tkinter` Python shim now forwards an expanded Phase-0 API
+  surface (`TkappType`, call/event helpers, variable helpers, conversion
+  helpers, and config helpers) directly to `molt_tk_*` intrinsics with no
+  host-Python fallback path.
+- Differential regression coverage now includes
+  `tests/differential/stdlib/tkinter_phase0_core_semantics.py` to validate
+  `_tkinter`/`tkinter` import + missing-attribute error-shape contracts,
+  `_tkinter` Phase-0 core API presence (`create`, Tkapp helpers, conversion and
+  var helpers, and exported constants/types), and tkinter wrapper submodule
+  import/error-shape/capability-gate contracts (`tkinter.__main__`,
+  dialog/helper stubs, and `tkinter.ttk`) without requiring a real GUI backend.
 - Implemented: checker-level intrinsic-partial ratchet enforcement
   (`tools/check_stdlib_intrinsics.py`) with budget file
   `tools/stdlib_intrinsics_ratchet.json`.
@@ -304,10 +375,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: `http.client` now lowers request/response execution through dedicated runtime intrinsics (`molt_http_client_execute`, `molt_http_client_response_*`) and `http.server`/`socketserver` serve-loop lifecycle paths are intrinsic-backed (`molt_socketserver_serve_forever`, `molt_socketserver_shutdown`, queue dispatch intrinsics), with Python shims reduced to thin state wiring and handler shaping.
 - Implemented: `enum` and `pickle` are now intrinsic-backed on core construction/serialization paths (`molt_enum_init_member`, `molt_pickle_dumps_core`, `molt_pickle_loads_core`) with `pickle.py` reduced to thin intrinsic-forwarding wrappers (`dump`/`dumps`/`load`/`loads`, `Pickler`, `Unpickler`, `PickleBuffer`) for protocols `0..5`; protocol-5 out-of-band `PickleBuffer` lanes now decode/encode through intrinsic `NEXT_BUFFER`/`READONLY_BUFFER` handling with `loads(..., buffers=...)`; broader CPython 3.12+ reducer/error-text/API-surface parity remains queued.
 - Implemented: `queue` now has intrinsic-backed `LifoQueue` and `PriorityQueue` constructors/ordering (`molt_queue_lifo_new`, `molt_queue_priority_new`) on top of existing intrinsic-backed FIFO queue operations.
-- Differential coverage now includes queue-family targeted probes for `Queue.shutdown`/`ShutDown` surface/behavior across interpreter versions, `SimpleQueue.get(block=False, timeout=...)` empty-path behavior, and `_queue` import/surface sanity (`Empty`, `SimpleQueue`).
+- Differential coverage now includes queue-family targeted probes for `Queue.shutdown`/`ShutDown` surface/behavior across interpreter versions, `Queue.put/get(block=False, timeout=...)` timeout-ignore semantics with state-driven `Full`/`Empty`, invalid-timeout typing parity (`Queue.put(timeout='bad')` succeeds for unbounded queues while `Queue.get(timeout='bad')` and full `Queue.put(timeout='bad')` raise `TypeError`), `SimpleQueue.get(block=False, timeout=...)` empty-path behavior, `SimpleQueue.get(timeout='bad')` `TypeError` behavior, and `_queue` import/surface sanity (`Empty`, `SimpleQueue`).
 - Implemented: `statistics` function surface now lowers through Rust intrinsics (`molt_statistics_mean`, `molt_statistics_fmean`, `molt_statistics_stdev`, `molt_statistics_variance`, `molt_statistics_pvariance`, `molt_statistics_pstdev`, `molt_statistics_median`, `molt_statistics_median_low`, `molt_statistics_median_high`, `molt_statistics_median_grouped`, `molt_statistics_mode`, `molt_statistics_multimode`, `molt_statistics_quantiles`, `molt_statistics_harmonic_mean`, `molt_statistics_geometric_mean`, `molt_statistics_covariance`, `molt_statistics_correlation`, `molt_statistics_linear_regression`) with shim-level `StatisticsError` mapping.
 - Implemented: runtime-backed slice statistics intrinsics (`molt_statistics_mean_slice`, `molt_statistics_stdev_slice`) are wired for native+wasm lowering paths and preserve generic fallback behavior via runtime-owned slicing/iteration.
-- Implemented: `statistics.NormalDist.samples` now follows CPython version-gated semantics for Python 3.12+ (`gauss` route for 3.12/3.13 via intrinsic-backed `molt_statistics_normal_dist_samples`; inverse-CDF route for 3.14+ via `molt_statistics_normal_dist_inv_cdf`), with no host-Python fallback path.
+- Implemented: `statistics.NormalDist.samples` now follows CPython version-gated semantics for Python 3.12+ through intrinsic-backed `molt_statistics_normal_dist_samples` in both lanes (`gauss` route for 3.12/3.13 and runtime-owned inverse-CDF route for 3.14+ with seeded/unseeded uniform draws), with no host-Python fallback path.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete full `statistics` 3.12+ API/PEP parity beyond intrinsic-lowered function surface (for example `NormalDist` and remaining edge-case semantics).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
@@ -315,8 +386,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `hash`, `callable`, `repr`, `format`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
 - `sorted()` enforces keyword-only `key`/`reverse` arguments (CPython parity).
 - Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
-- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution builtins: `compile` now performs Rust parser-backed syntax/scope validation for `exec`/`eval`/`single` modes and returns a runtime code object, but `eval`/`exec` and full compile codegen/sandboxing remain missing; regrtest `test_future_stmt` still depends on full `compile`.
-- Differential parity probes for dynamic execution (`eval`/`exec`) are tracked in `tests/differential/basic/exec_*` and `tests/differential/basic/eval_*` and are **expected to fail** until sandboxed dynamic execution lands.
+- Policy-deferred: dynamic execution (`eval`/`exec`/`compile`) remains out of active burndown for compiled binaries; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- Differential parity probes for dynamic execution (`eval`/`exec`) are tracked in `tests/differential/basic/exec_*` and `tests/differential/basic/eval_*` and are intentionally expected-failure policy cases until that policy changes.
 - `print` supports keyword arguments (`sep`, `end`, `file`, `flush`) with CPython-style type errors; `file=None` uses `sys.stdout`.
 - Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
 - Ordering comparisons fall back to `__lt__`/`__le__`/`__gt__`/`__ge__` for user-defined objects
@@ -436,8 +507,23 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - `sys.path` bootstrap/environment policy is runtime-owned via intrinsic payload (`molt_sys_bootstrap_payload`) with deterministic fields for
   `PYTHONPATH`/`MOLT_MODULE_ROOTS`/`VIRTUAL_ENV` site-packages/`PWD`/stdlib-root/include-cwd policy (including pre-split path lists); stdlib wrappers consume that payload
   directly and do not read host env in Python shims.
-- `runpy.run_path` path coercion/abspath/is-file probing is runtime-lowered via `molt_runpy_resolve_path` (bootstrap-PWD aware), and
-  execution is intrinsic-backed via `molt_runpy_run_path` (restricted assignment/docstring evaluator; no host fallback).
+- `runpy.run_path` path coercion/abspath/is-file probing is runtime-lowered via `molt_runpy_resolve_path` (bootstrap-PWD aware).
+- `runpy.run_module` now preserves dotted-module/package `__main__` resolution semantics on the intrinsic path (builtins `__import__`
+  fromlist behavior is Rust-owned for parity, without widening dynamic execution scope).
+- `runpy.run_path` module-source execution now supports restricted reference-assignment RHS (for example `sys.argv[0]`) on the intrinsic lane
+  without widening dynamic execution policy.
+- `runpy` execution remains on a restricted intrinsic lane and does not widen dynamic execution policy for compiled binaries.
+- runpy dynamic-lane expected failures are currently empty because supported lanes moved to intrinsic support.
+- `runpy` negative-path parity (`runpy_path_resolution_errors`) remains an active supported lane; full `runpy` package/code-object
+  execution parity remains pending behind explicit policy gating.
+- Implemented: `signal` parity fixes for diff-critical constants now lower through Rust intrinsics (`molt_signal_nsig`,
+  `molt_signal_sig_block`, `molt_signal_sig_unblock`, `molt_signal_sig_setmask`), and default `SIGINT` handler parity now
+  routes through intrinsic-backed `default_int_handler` wiring in `signal`/`_signal` without host fallback.
+- Implemented: `subprocess` public sentinel constants (`PIPE`/`STDOUT`/`DEVNULL`) now expose CPython values via dedicated
+  intrinsics while preserving internal spawn-mode mapping in Python shim glue; `_asyncio.current_task()` now raises
+  `RuntimeError("no running event loop")` outside a running loop, and `_thread` lock type naming aligns with CPython-visible
+  `lock` type name.
+- Implemented: `shutil.rmtree` is now intrinsic-backed (`molt_shutil_rmtree`) for cleanup parity in os/scandir/walk lanes.
 - `globals()` can be referenced as a first-class callable (module-bound) and returns the defining module globals; `locals()`/`vars()`/`dir()` remain lowered as direct calls,
   and no-arg callable parity for these builtins is still limited.
   (TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.)
@@ -530,8 +616,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement the initial C API shim).
 - Intrinsics registry is runtime-owned and strict; CPython shims have been removed from tooling/tests. `molt_json` and `molt_msgpack` now require runtime intrinsics (no Python-library fallback).
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
-  `TypeError` (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider
-  `__matmul__`/`__rmatmul__` fallback for custom types).
+  `TypeError`; TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider `__matmul__`/`__rmatmul__` fallback for custom types.
 - Roadmap focus: async runtime core (Task/Future scheduler, contextvars, cancellation injection), capability-gated async I/O,
   DB semantics expansion, WASM DB parity, framework adapters, and production hardening (see ROADMAP).
 - Numeric tower: complex supported; decimal is Rust intrinsic-backed with context (prec/rounding/traps/flags),
@@ -671,6 +756,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
+- Stdlib intrinsics sprint (2026-02-25): ~85 new Rust intrinsics landed across
+  `os` (~40 APIs total), `sys` (~20 new), `signal` (12 constant + 5 function
+  intrinsics), `_thread` (full rewrite on existing thread intrinsics),
+  `_asyncio` (4 new runtime-state intrinsics for C-accelerated task surface),
+  and `subprocess` (`molt_process_spawn_ex` + expanded Popen surface).
+  `concurrent.futures` verified intrinsic-complete.
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `atexit`, `ctypes`, `urllib.parse`, `urllib.error`, `urllib.request`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `string`, `struct`, `typing`, `sys`, `os`, `pathlib`,
@@ -682,6 +773,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand zipfile/zipimport with bytecode caching + broader archive support.
 - Implemented: `zipfile` CRC32 hot path is now intrinsic-backed (`molt_zipfile_crc32`), removing Python-side table construction and fixing backend compile instability in `zipimport_basic` differential lanes.
+- Implemented: `zipfile` central-directory parsing and ZIP64-extra payload construction now lower through dedicated Rust intrinsics (`molt_zipfile_parse_central_directory`, `molt_zipfile_build_zip64_extra`), `zipfile._path` directory/implied-dir matching and glob translation route through dedicated Rust intrinsics (`molt_zipfile_path_implied_dirs`, `molt_zipfile_path_resolve_dir`, `molt_zipfile_path_is_child`, `molt_zipfile_path_translate_glob`), and `zipfile.main` extract-path sanitization lowers through `molt_zipfile_normalize_member_path`.
 - Implemented: `pathlib.PureWindowsPath` now matches CPython drive/anchor/parts/parent semantics in the intrinsic-first shim, including UNC and drive-root edge cases.
 - Implemented: `smtplib.SMTP.sendmail` parity slice is wired (`MAIL`/`RCPT`/`DATA` flow with refused-recipient payload) and covered by differential test `tests/differential/stdlib/smtplib_sendmail_basic.py`.
 - Implemented: `zipimport` API parity expanded with `zipimporter.get_filename` + `zipimporter.is_package`; `get_source` now raises `ZipImportError` for missing modules (CPython behavior).
@@ -703,7 +795,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: intrinsic-backed `pathlib.Path.glob`/`rglob` segment matching now covers `*`/`?`/`[]` classes plus recursive `**` traversal in the runtime matcher (no Python fallback path).
 - Implemented: `os.read`/`os.write` are now Rust-intrinsic-backed (`molt_os_read`/`molt_os_write`) and validated with differential coverage (`os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only compiled runs.
 - Implemented: threading basic differential lane (`tests/differential/basic/threading_*.py`) is green (`24/24`) under intrinsic-only compiled runs with RSS profiling enabled.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 - Implemented: `os.environ` mapping methods are runtime-intrinsic-backed (`molt_env_snapshot`/`molt_env_set`/`molt_env_unset`) with str-only key/value checks; `os.putenv`/`os.unsetenv` are lowered to dedicated runtime intrinsics (`molt_env_putenv`/`molt_env_unsetenv`) and keep CPython-style separation from `os.environ`/`os.getenv`.
 - Implemented: `os.mkdir`/`os.makedirs` now pass `mode` through Rust intrinsics (`molt_path_mkdir(path, mode)` / `molt_path_makedirs(path, mode, exist_ok)`), including `__index__` exception-propagation parity for non-int mode adapters; focused diff coverage is green in `os_mkdir_makedirs_mode_intrinsic.py`.
 - Implemented: `sys` metadata attrs `hexversion`, `api_version`, `abiflags`, and `implementation` are now intrinsic-backed (`molt_sys_hexversion`, `molt_sys_api_version`, `molt_sys_abiflags`, `molt_sys_implementation_payload`) with validated payload shaping in the shim; focused diff coverage is green in `sys_metadata_intrinsics.py`.
@@ -802,8 +894,9 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   require a system `python3.14` to avoid uv-managed hangs.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
 - Single-module wasm linking via `tools/wasm_link.py` (requires `wasm-ld`) is required for Node/wasmtime runs of runtime outputs; enable with `--linked`/`--require-linked` (or `MOLT_WASM_LINK=1`).
-- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane with multi-job compile API + richer health telemetry under high multi-agent contention.
-- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): add function-level object caching and batch diff compile server mode to reduce repeated backend compiles across unchanged functions/tests.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane (multi-job compile API, bounded request/job guardrails, richer health telemetry, and deterministic readiness/restart semantics are landed; remaining work is sustained high-contention soak evidence + restart/backoff tuning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add batch compile server mode for diff runs to amortize backend startup and reduce per-test compile overhead (in-process JSON-line batch server and fail-open/strict client modes are landed behind env gates; remaining work is default-on rollout criteria + perf guard thresholds).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add function-level object caching so unchanged functions can be relinked without recompiling whole scripts (function cache-key lane, module/function cache-tier fallback, and daemon function-cache plumbing are landed; remaining work is invalidation heuristics + import-graph-aware scheduling/perf tuning).
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add import-graph-aware diff scheduling and distributed cache playbooks for multi-host agent fleets.
 - TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend-owned suite adapters (Codon/PyPy/Nuitka/Pyodide), pin immutable suite refs/commands, and enable nightly friend scorecard publication.
 
@@ -821,3 +914,811 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: linked-wasm dynamic intrinsic dispatch no longer requires Python static-dispatch shims for channel intrinsics; runtime uses a canonical 64-bit channel handle ABI so dynamic intrinsic calls and direct calls share the same call_indirect signature.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:partial): OPT-0003 phase 1 landed (sharded pointer registry); benchmark and evaluate lock-free alternatives next (see [OPTIMIZATIONS_PLAN.md](../../OPTIMIZATIONS_PLAN.md)).
 - Single-module wasm linking remains experimental; wasm-ld links relocatable output when `MOLT_WASM_LINK=1`, but broader module coverage is still pending (direct-link runs are disabled for now).
+
+## TODO Mirror Ledger (Auto-Generated)
+<!-- BEGIN TODO MIRROR LEDGER -->
+- TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): async generator lowering and runtime parity (`async def` with `yield`).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:planned): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core.
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): cancellation injection on await).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm async iteration/scheduler parity.
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm scheduler semantics).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): executor integration).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): native-only tokio host adapter for compiled async tasks with determinism guard + capability gating (no WASM impact).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:missing): Implement the `libmolt` C-API v0 surface per `0214` and update this matrix with real coverage.
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:planned): define the minimal `libmolt` C-API subset (buffer, numerics, sequence/mapping, errors, GIL mapping) as the primary C-extension compatibility path.
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): Implement `PyArg_ParseTuple` for extension argument parsing.
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define `libmolt` C-extension ABI surface + bridge policy).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement `libmolt` C API shim + `Py_LIMITED_API` target (see [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): Define the `Py_LIMITED_API` version Molt targets (3.10?).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): define hollow-symbol policy + error surface).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend pass telemetry + hotspot rendering are landed; CLI/JSON sink wiring remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline classifier + env override knobs are landed; hotness-driven promotion logic remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; tuning heuristics and function-level diagnostics surfacing remain).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (profile plumbing into frontend policy is landed; CLI diagnostics sink expansion remains).
+- TODO(compiler, owner:compiler, milestone:RT2, priority:P2, status:planned): canonical loop lowering).
+- TODO(compiler, owner:compiler, milestone:RT2, priority:P2, status:planned): dict version tag guards).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (temporary hard safety gates keep dev-profile mid-end off by default unless `MOLT_MIDEND_DEV_ENABLE=1`, and keep stdlib modules out of canonicalization by default in all profiles).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned): root-cause and fix stdlib mid-end miscompiles that can route missing values into runtime lookups/call sites; keep this hard safety gate until canonicalized stdlib lowering is proven stable.
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned): root-cause/fix dev-profile mid-end miscompiles before re-enabling by default; `MOLT_MIDEND_DEV_ENABLE=1` is the explicit opt-in escape hatch.
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P1, status:partial): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
+- TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): missing-data promotion rules).
+- TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): nullable dtype missing-data semantics)
+- TODO(dataframe, owner:runtime, milestone:DF1, priority:P2, status:planned): dictionary encoding for strings).
+- TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): Molt-native kernel data model).
+- TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): Molt-native kernel library)
+- TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): decimal dtype semantics)
+- TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): pandas-style index semantics + oracle tests).
+- TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): timezone-aware datetime support)
+- TODO(db, owner:runtime, milestone:DB1, priority:P1, status:planned): SQLite demo path before Postgres).
+- TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): json/jsonb decode policy).
+- TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): option vs sentinel policy).
+- TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): unsupported type fallback policy).
+- TODO(db, owner:runtime, milestone:DB2, priority:P1, status:partial): native database drivers).
+- TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): expression expansion).
+- TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): real Postgres swap).
+- TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): window function support).
+- TODO(db, owner:runtime, milestone:DB3, priority:P3, status:planned): ORM-like facade).
+- TODO(docs, owner:docs, milestone:SL1, priority:P3, status:planned): add `TODO(stdlib-compat, ...)` markers for interim gaps.
+- TODO(docs, owner:docs, milestone:SL2, priority:P3, status:planned): document unsupported re features).
+- TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:missing): native HTTP package).
+- TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:missing): native WebSocket + streaming I/O).
+- TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:planned): WebSocket host connect hook + capability registry).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root build discovery (namespace packages + PYTHONPATH roots done; remaining: deterministic graph caching + `__init__` edge cases).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery hardening, `__init__` edge handling, deterministic dependency graph caching).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
+- TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.
+- TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame fields (f_back, f_globals, f_locals) and keep f_lasti/f_lineno updated.
+- TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame objects to CPython parity (`f_globals`, `f_locals`, `f_lasti`, `f_lineno` updates).
+- TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame/traceback objects to CPython parity (`f_back`, `f_globals`, `f_locals`, live `f_lasti`/`f_lineno`).
+- TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): complete code object parity for closure/generator/coroutine metadata (`co_freevars`/`co_cellvars` values and full `co_flags` bitmask semantics).
+- TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): full frame objects + `gi_code` parity.
+- TODO(observability, owner:tooling, milestone:TL2, priority:P3, status:planned): Prometheus integration).
+- TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): Django test-client coverage + retry policy). `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
+- TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): compile entrypoints into molt_worker.
+- TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): finalize accel retry/backoff + non-demo handler coverage.)
+- TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
+- TODO(offload, owner:runtime, milestone:SL1, priority:P2, status:planned): adapter/DB contract path).
+- TODO(opcode-matrix, owner:frontend, milestone:M2, priority:P3, status:planned): Optimize `SETUP_WITH` to inline `__enter__` (Milestone 2).
+- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): Complete `MATCH_*` lowering (Milestone 3).
+- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): `MATCH_*` opcode coverage for pattern matching (see [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)).
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:missing): awaitable `__aiter__` support). |
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): Add async generator op coverage (e.g., `ASYNC_GEN_WRAP`) and confirm lowering gaps.
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator coverage). |
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator op coverage). |
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator opcode coverage and lowering gaps (see [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)).
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:planned): expand KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
+- TODO(packaging, owner:tooling, milestone:SL2, priority:P2, status:partial): default wire codecs to MsgPack/CBOR).
+- TODO(perf, owner:compiler, milestone:RT2, priority:P1, status:planned): reduce startup/import-path dispatch overhead for stdlib-heavy scripts (bind intrinsic-backed imports at lower cost and trim module-init call traffic) so wins translate to short-lived CLI/data scripts as well as long-running services.
+- TODO(perf, owner:compiler, milestone:RT2, priority:P1, status:planned): wasm `simd128` kernels for string scans.
+- TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): simd128 short-needle kernels).
+- TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): vectorizable region detection).
+- TODO(perf, owner:compiler, milestone:TC2, priority:P1, status:planned): implement PEP 709-style comprehension inlining for list/set/dict comprehensions (beyond the simple range fast path), and gate rollout with pyperformance `comprehensions` + targeted differential comprehension tranche benchmarks.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:partial): SIMD kernels for reductions + scans).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): Unicode index caches + wider SIMD).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): float + int mix kernels).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): implement sharded/lock-free handle resolution and track lock-sensitive benchmark deltas (attr access, container ops).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): reduce handle-resolution overhead beyond the sharded registry and measure lock-sensitive benchmark deltas (attr access, container ops).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): reduce handle/registry lock scope and measure lock-sensitive benchmarks).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:partial): bytes/bytearray fast paths).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): 32-bit partials + overflow guards for `prod`).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): biased RC).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): cache type comparison dispatch on type objects).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): cached UTF-8 index tables for repeated non-ASCII `find`/`count`.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): implement a native Windows socketpair using WSAPROTOCOL_INFO or AF_UNIX to avoid loopback TCP overhead.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` using iterable length hints to reduce rehashing.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): profiling-driven vectorization).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): safe NEON multiply strategy).
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
+- TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 or 32-bit specialization for vectorized `prod` reductions.
+- TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 reductions).
+- TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend suite adapters/pinned command lanes and run nightly scorecards in CI.)
+- TODO(perf, owner:tooling, milestone:TL2, priority:P2, status:planned): benchmarking regression gates).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define the per-runtime GIL strategy, runtime instance ownership model, and allowed cross-thread object sharing rules (see [docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md](docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md)).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define the per-runtime GIL strategy, runtime instance ownership model, and the allowed cross-thread object sharing rules.
+- TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.
+- TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): fork/forkserver currently map to spawn semantics; implement true fork support.
+- TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): implement true fork support). |
+- TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors, explicit message passing, and capability-gated shared-memory primitives.
+- TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:partial): benchmark sharded registry
+- TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:planned): replace pointer-registry locks with sharded or lock-free lookups once registry load is characterized.
+- TODO(runtime-provenance, owner:runtime, milestone:RT2, priority:P2, status:planned): audit remaining pointer
+- TODO(runtime-provenance, owner:runtime, milestone:RT2, priority:P2, status:planned): bound or evict transient const-pointer registrations in the pointer registry.
+- TODO(security, owner:runtime, milestone:RT2, priority:P1, status:missing): memory/CPU quota enforcement for native binaries).
+- TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): honor `__new__` overrides for non-exception classes.
+- TODO(semantics, owner:runtime, milestone:LF1, priority:P1, status:partial): exception objects + last-exception plumbing. |
+- TODO(semantics, owner:runtime, milestone:LF1, priority:P1, status:partial): exception propagation + suppression semantics for context manager exit paths.
+- TODO(semantics, owner:runtime, milestone:TC1, priority:P0, status:planned): audit negative-indexing parity across indexable types + add differential coverage for error messages.
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (UnicodeError fields, ExceptionGroup tree).
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): tighten exception `__init__` + subclass attribute parity (ExceptionGroup tree).
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): Formalize "Lazy Task" divergence policy.
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): formalize lazy-task divergence policy (see [docs/spec/areas/compat/surfaces/language/semantic_behavior_matrix.md](docs/spec/areas/compat/surfaces/language/semantic_behavior_matrix.md)).
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): formalize lazy-task divergence). |
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): Implement cycle collector (currently pure RC).
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): cycle collector implementation (see [docs/spec/areas/compat/surfaces/language/semantic_behavior_matrix.md](docs/spec/areas/compat/surfaces/language/semantic_behavior_matrix.md)).
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): cycle collector). |
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): incremental mark-and-sweep GC).
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): finalizer guarantees). |
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): signal handling parity). |
+- TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned): decorator whitelist + compile-time lowering for `@lru_cache`.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish `open`/file object parity (broader codecs + full error handlers, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:missing): expose file handle `flush()` and wire wasm parity for file flushing.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): `array` + `struct` deterministic layouts and packing (struct intrinsics cover the CPython 3.12 format table with alignment + half-float support, and C-contiguous nested-memoryview buffer windows; remaining struct gap is exact CPython diagnostic-text parity on selected edge cases).
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): filesystem-encoding + surrogateescape decoding parity.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:planned): `array` deterministic layout + buffer protocol.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:planned): array runtime layout + buffer protocol).
+- TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:planned): `hashlib` deterministic hashing policy.
+- Policy lock (dynamic execution): compiled binaries intentionally stay on restricted-source import/runpy execution lanes; unrestricted code-object execution is deferred by policy, not an active burndown target (see `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`).
+- Future reconsideration requires explicit capability gating, documented utility analysis, reproducible perf/memory evidence, and explicit user approval before implementation.
+- Import statement parity update: `import os.path` now lowers through runtime `MODULE_IMPORT` when the dotted-name parent is allowlisted/known, so statement imports match intrinsic import paths and no longer raise `ImportError` on alias-backed `os.path` lanes.
+- Focused non-stdlib TODO burndown refresh (2026-02-25): 17 real items are tracked for next-wave execution.
+- Compiler mid-end gates: 10
+- Runtime/module exec parity: 4
+- Doctor/perf stragglers: 3
+- Canonical focused set (17):
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): complete `CALL_INDIRECT` hardening with broader deopt reason telemetry (dedicated runtime lane, noncallable differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.call_indirect_noncallable` are landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): complete `INVOKE_FFI` hardening with broader deopt reason telemetry (bridge-lane marker, runtime capability gate, negative capability differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.invoke_ffi_bridge_capability_denied` are landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): harden `GUARD_TAG` specialization/deopt semantics + coverage (runtime-feedback counter `deopt_reasons.guard_tag_type_mismatch` is landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): harden `GUARD_DICT_SHAPE` invalidation/deopt semantics + coverage (runtime-feedback aggregate counter `deopt_reasons.guard_dict_shape_layout_mismatch` and per-reason breakdown counters are landed).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (CLI->frontend profile plumbing is landed; diagnostics sink expansion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (temporary hard safety gates keep dev-profile mid-end off by default unless `MOLT_MIDEND_DEV_ENABLE=1`, and keep stdlib modules out of canonicalization by default in all profiles).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P1, status:partial): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): full extension/sourceless execution parity beyond capability-gated restricted-source shim hooks.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity (package/module shaping + file reads + restricted-source execution lanes are intrinsic-lowered; remaining loader/finder parity is namespace/extension/zip behavior).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (spawn-based partial; IPC + lifecycle parity pending).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane (multi-job compile API, bounded request/job guardrails, richer health telemetry, and deterministic readiness/restart semantics are landed; remaining work is sustained high-contention soak evidence + restart/backoff tuning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add batch compile server mode for diff runs to amortize backend startup and reduce per-test compile overhead (in-process JSON-line batch server and fail-open/strict client modes are landed behind env gates; remaining work is default-on rollout criteria + perf guard thresholds).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add function-level object caching so unchanged functions can be relinked without recompiling whole scripts (function cache-key lane, module/function cache-tier fallback, and daemon function-cache plumbing are landed; remaining work is invalidation heuristics + import-graph-aware scheduling/perf tuning).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:partial): finish `io` parity (codec coverage, Windows isatty).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:partial): io pending parity) |
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): Bridge phase 1 (worker-process bridge default when enabled; Arrow IPC/MsgPack/CBOR batching; profiling warnings).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): Bridge phase 2 (embedded CPython feature flag + deterministic denylist + effect contracts; never default).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract (IPC/ABI, capability gating, deterministic denylist for C extensions) as an explicit, opt-in compatibility layer only.
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract (IPC/ABI, capability gating, deterministic fallback for C extensions).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract and enforcement hooks.
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 1 (dev-only embedded CPython; no production).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 2 (capability-gated embedded bridge + effect contracts).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 3 (worker-process default + Arrow/MsgPack/CBOR batching).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (spawn-based partial; IPC + lifecycle parity pending).
+- TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): bootstrap `sys.stdout` so print(file=None) always honors the sys stream.
+- TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
+- TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): `str(bytes, encoding, errors)` decoding parity for bytes-like inputs.
+- TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend XML-RPC coverage to support full marshalling/fault handling and introspection APIs with Rust-backed parsing/serialization.
+- TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend `zipapp` coverage to full CPython semantics (interpreter shebangs, custom entry-points, and in-memory target handling) via Rust intrinsics.
+- TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend queue-backed logging handler parity for advanced listener lifecycle and queue edge cases after baseline stdlib queue support stabilizes.
+- TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): replace the minimal built-in timezone table with a full IANA tzdb-backed ZoneInfo implementation in Rust intrinsics.
+- TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): runtime backlog.\n",
+- TODO(stdlib-compat, owner:stdlib, milestone:LF1, priority:P1, status:missing): `contextlib.contextmanager` lowering and generator-based manager support.
+- TODO(stdlib-compat, owner:stdlib, milestone:LF3, priority:P2, status:planned): expand `io`/`pathlib` to buffered + streaming wrappers with capability gates.
+- TODO(stdlib-compat, owner:stdlib, milestone:LF3, priority:P2, status:planned): io/pathlib stubs + capability enforcement. |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.",
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:partial): test fixture partial marker.\n"
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:missing): full `open`/file object parity (modes/buffering/text/encoding/newline/fileno/seek/tell/iter/context manager) with differential + wasm coverage.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `math` intrinsics + float determinism policy (non-transcendentals covered; trig/log/exp parity pending).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `struct` alignment + full format table parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill out remaining `math` intrinsics (determinism policy).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): finish remaining `math` intrinsics (determinism policy); predicates, `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc` are now wired in Rust.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): implement full struct format/alignment parity.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `collections` (`deque`, `Counter`, `defaultdict`) parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `collections` runtime `deque` type + O(1) ops + view parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): `struct` intrinsics cover `pack`/`unpack`/`calcsize` + `pack_into`/`unpack_from`/`iter_unpack` across the CPython 3.12 format table (including half-float) with C-contiguous nested-memoryview windows; remaining gaps are exact CPython diagnostic-text parity on selected edge cases.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): align remaining struct edge-case error text with CPython.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:planned): `bisect` helpers + fast paths.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:planned): `heapq` randomized stress + perf tracking.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module API + runtime cycle collector hook.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): advance native `re` engine to full syntax/flags/groups; native engine covers core syntax (literals, `.`, classes/ranges, groups/alternation, greedy + non-greedy quantifiers) and `IGNORECASE`/`MULTILINE`/`DOTALL`; advanced features/flags raise `NotImplementedError` (no host fallback).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): close
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Python 3.12+ statistics API/PEP parity beyond function surface lowering (for example NormalDist and remaining edge-case text parity).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` ancillary-data parity (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`) while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty control messages.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete cross-platform ancillary parity for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue `re` parser/matcher lowering into Rust intrinsics; literal/any/char-class advancement, char/range/category matching, anchor/backref/scoped-flag matcher nodes, group capture/value materialization, and replacement expansion are intrinsic-backed, while remaining lookaround variants, verbose parser edge cases, and full Unicode class/casefold parity are pending.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue full json parity work (JSONDecodeError formatting nuances, cls hooks, and additional runtime fast paths).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): finish `json` parity plan (performance tuning + full cls/callback parity) and add a runtime fast-path parser for dynamic strings.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): finish asyncio transport feature coverage after intrinsic capability gates (remaining native/wasm TLS edge parity and complete child-watcher behavior on supported hosts).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): fixture partial marker.\n",
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full gc module API + runtime cycle collector hook.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): lower SMTP client transport and protocol handling into Rust intrinsics and add STARTTLS/auth/LMTP parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): lower shelve persistence + dbm backends into Rust intrinsics and match CPython backend selection semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): contextmanager lowering). |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement `make_dataclass` once dynamic class construction is allowed.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `enum` parity (aliases, functional API, Flag/IntFlag edge cases).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` distributions + extended test vectors.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining `pathlib` parity gaps (glob edge cases, hidden/root_dir semantics, symlink nuances, and broader PurePath/PurePosixPath API surface) after intrinsic splitroot-aware `isabs`/`parts`/`parents` parity work.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining pathlib glob edge parity (`root_dir`/hidden semantics, full Windows flavor/symlink nuances) and full Path parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining pickle CPython 3.12+ parity gaps before intrinsic-backed promotion.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete Decimal API parity (arithmetic ops, exp/log/pow/sqrt, context quantize/signals edge cases, NaN payloads, and formatting helpers).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete full statistics 3.12+ API/PEP parity beyond function surface lowering.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (`timegm`) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand advanced hashlib/hmac digestmod parity tests.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand random distribution test vectors) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): finish Enum/Flag/IntFlag parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance from non-dataclass bases without breaking layout guarantees.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance from non-dataclass bases without breaking layout guarantees.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `datetime` + `zoneinfo` time handling policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `json` parity plan (runtime fast-path + performance tuning + full cls/callback parity).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `re` engine + deterministic regex semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P0, status:planned): full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): extend intrinsic-backed `queue` support beyond `Queue`/`SimpleQueue` core semantics to full parity (`LifoQueue`, `PriorityQueue`, richer API/edge-case parity) and align dependent `logging.handlers` coverage.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): implement full PEP 695 type params (bounds/constraints/defaults, ParamSpec/TypeVarTuple, alias metadata).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (registry/lookup + encodings package + incremental/stream codecs + error-handler registration); base encode/decode intrinsics are present.
+- Implemented: `tempfile` now uses CPython-style candidate temp-dir ordering, including Windows defaults (`~\\AppData\\Local\\Temp`, `%SYSTEMROOT%\\Temp`, `c:\\temp`, `c:\\tmp`, `\\temp`, `\\tmp`) and cwd fallback.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): asyncio pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, `urllib.parse`, and `uuid` (see stdlib matrix).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close remaining socketserver class/lifecycle parity gaps.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete http.client connection/chunked/proxy parity on top of intrinsic execute/response core.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete http.cookies quoting/attribute/parser parity beyond intrinsic-backed subset.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete http.server parser/handler lifecycle parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete queue edge-case/API parity (task accounting corners, comparator/error-path fidelity, and broader CPython coverage).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete queue edge-case/API parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): complete socket/select/selectors parity after intrinsic-backed object lowering (`poll`/`epoll`/`kqueue`/`devpoll` + backend selector classes); remaining work is OS-flag/error fidelity, fd inheritance corners, and wasm/browser host parity.
+- Implemented: when `env.read` is denied, `tempfile` temp-dir selection no longer hard-fails and deterministically falls back to OS/cwd candidates.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand ctypes intrinsic coverage beyond the core scalar/structure/array/pointer subset.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `asyncio` shim to full loop/task APIs (task groups, wait, shields) and I/O adapters.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): extend Rust ast lowering to additional stmt/expr variants and full argument shape parity; unsupported nodes currently raise RuntimeError immediately.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): fill out `types` shims (TracebackType, FrameType, FunctionType, coroutine/asyncgen types, etc).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): finish urllib.request handler/response/network parity on top of intrinsic opener core.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): full importlib native extension and pyc execution parity beyond capability-gated restricted-source shim lanes.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full _asyncio C-accelerated surface on top of runtime intrinsics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement `_asyncio` parity or runtime hooks.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement `_bz2` compression/decompression parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full metadata version semantics and remaining entry point selection edge cases.
+- Implemented: `tempfile` temp-dir selection now probes candidate usability with secure create/write/unlink checks and raises `FileNotFoundError` when no candidate is writable.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib extension/sourceless execution parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery full native extension/pyc execution parity beyond restricted source shim lanes) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.util non-source loader execution parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): tempfile parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): asyncio submodule parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `collections.abc`, `_collections_abc`, `_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `platform`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `copy`, `copyreg`, `string`, `numbers`, `unicodedata`, `tempfile`, `ctypes`) to minimal parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): ast parity gaps.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): cgi 3.12-path parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close `_abc` edge-case cache/version parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining abc edge-case parity around subclasshook/cache invalidation.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining non-UTF8 bytes/traversal-order edge parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining shlex parser/state parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining string parity gaps.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining textwrap edge-case/module-surface parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining urllib.error/request integration parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining urllib.parse parity gaps.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close remaining urllib.response file-wrapper and integration edge parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `fnmatch` bytes/normcase/cache parity on top of intrinsic-backed `molt_fnmatch*` runtime lane.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `glob` parity (`root_dir`, `recursive`/`**` edge semantics, `include_hidden`) on top of intrinsic-backed `molt_glob`/`molt_glob_has_magic`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): complete `shlex` parser/state parity (`sourcehook`, `wordchars`, incremental stream semantics) on top of intrinsic-backed lexer/join lane.
+- Note (doctest dynamic execution policy): doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand ctypes surface + data model parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand locale parity beyond deterministic runtime shim semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand locale parity beyond deterministic runtime shim semantics.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement full gettext translation catalog/domain parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement gettext translation catalog/domain parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement tarfile parity.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement zipimporter bytecode/cache parity + broader archive support.) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity (package/module shaping + file reads + restricted-source execution lanes are intrinsic-lowered; remaining loader/finder parity is namespace/extension/zip behavior).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): inspect pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): pkgutil loader/zipimport/iter_importers parity (filesystem-only iter_modules/walk_packages today).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): test package pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten `weakref.finalize` shutdown-order parity (including `atexit` edge cases) against CPython.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): traceback pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): types pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): warnings pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): argparse pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): binascii pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.header pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.message pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.parser pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.policy pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.utils pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): getopt pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): html pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): html.parser pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): ipaddress pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.config pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.handlers pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): numbers pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): tomllib pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): unicodedata pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): xml pending parity) |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): zlib pending parity) |
+- TODO(stdlib-parity, owner:stdlib, milestone:SL1, priority:P1, status:planned): continue tightening math determinism policy coverage and platform notes.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): complete native re parity and continue migrating parser/matcher execution into Rust (remaining lookaround variants, named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics).
+- TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): continue expanding socket parity (remaining option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage).
+- TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): parity backlog.\n",
+- TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P2, status:planned): continue broadening pathlib parity (glob recursion corner cases, Windows drive/anchor flavor nuances, and symlink edge semantics) while keeping path shaping in runtime intrinsics.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): "
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_aix_support` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_android_support` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_apple_support` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ast_unparse` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ast` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_blake2` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_colorize` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compat_pickle` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compression` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_contextvars` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_crypt` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_csv` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ctypes` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses_panel` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_datetime` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_dbm` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_decimal` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_elementtree` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_functools` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_gdbm` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_hashlib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_heapq` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_hmac` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_imp` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpchannels` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpqueues` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpreters` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_io` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ios_support` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_locale` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_lsprof` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_lzma` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_markupbase` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_md5` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_msi` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_osx_support` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_overlapped` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_posixshmem` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_py_warnings` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pydatetime` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pydecimal` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyio` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pylong` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl._minimal_curses` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl._module_completer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl._threading_handler` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.base_eventqueue` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.commands` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.completing_reader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.console` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.curses` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.fancy_termios` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.historical_reader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.input` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.keymap` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.main` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.pager` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.reader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.readline` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.simple_interact` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.terminfo` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.trace` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.types` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.unix_console` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.unix_eventqueue` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.utils` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.windows_console` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.windows_eventqueue` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_random` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_remote_debugging` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_scproxy` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha1` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha2` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha3` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_signal` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sqlite3` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sre` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ssl` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_stat` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_string` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_strptime` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_struct` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_suggestions` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_symtable` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sysconfig` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_thread` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tokenize` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tracemalloc` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_types` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_uuid` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_warnings` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_winapi` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_wmi` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_zoneinfo` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_zstd` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `aifc` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `annotationlib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `antigravity` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.tools` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.windows_events` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.windows_utils` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `audioop` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `cgi` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `cgitb` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `chunk` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `compression.zstd._zstdfile` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `compression.zstd` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `concurrent.futures.interpreter` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `concurrent.interpreters._crossinterp` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `concurrent.interpreters._queues` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `concurrent.interpreters` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `crypt` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ctypes._layout` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `dbm.gnu` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `dbm.sqlite3` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings._win_cp_codecs` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ensurepip.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ensurepip._uninstall` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `getopt` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.autocomplete_w` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.autocomplete` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.autoexpand` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.browser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.calltip_w` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.calltip` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.codecontext` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.colorizer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.config_key` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.config` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.configdialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.debugger_r` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.debugger` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.debugobj_r` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.debugobj` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.delegator` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.dynoption` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.editor` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.filelist` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.format` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.grep` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.help_about` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.help` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.history` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.hyperparser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.idle` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.iomenu` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.macosx` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.mainmenu` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.multicall` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.outwin` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.parenmatch` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.pathbrowser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.percolator` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.pyparse` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.pyshell` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.query` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.redirector` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.replace` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.rpc` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.run` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.runscript` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.scrolledlist` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.search` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.searchbase` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.searchengine` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.sidebar` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.squeezer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.stackviewer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.statusbar` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.textview` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.tooltip` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.tree` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.undo` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.util` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.window` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.zoomheight` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib.zzdummy` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `idlelib` top-level stub with full intrinsic-backed lowering.
+- Implemented: replaced `importlib.metadata.diagnose` stub with CPython-shaped diagnostic helpers (`inspect(path)` + `run()`) under intrinsic-first module policy.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.btm_matcher` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.btm_utils` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixer_base` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixer_util` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_apply` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_asserts` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_basestring` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_buffer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_dict` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_except` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_exec` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_execfile` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_exitfunc` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_filter` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_funcattrs` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_future` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_getcwdu` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_has_key` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_idioms` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_import` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_imports2` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_imports` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_input` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_intern` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_isinstance` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_itertools_imports` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_itertools` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_long` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_map` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_metaclass` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_methodattrs` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_ne` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_next` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_nonzero` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_numliterals` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_operator` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_paren` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_print` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_raise` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_raw_input` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_reduce` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_reload` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_renames` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_repr` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_set_literal` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_standarderror` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_sys_exc` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_throw` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_tuple_params` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_types` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_unicode` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_urllib` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_ws_comma` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_xrange` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_xreadlines` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_zip` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.main` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.patcomp` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.conv` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.driver` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.grammar` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.literals` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.parse` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.pgen` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.token` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2.tokenize` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pgen2` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pygram` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.pytree` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.refactor` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `mailcap` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `mimetypes` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `msilib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `msvcrt` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `nis` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `nntplib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `nt` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ntpath` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `nturl2path` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `numbers` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `ossaudiodev` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pipes` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pydoc_data.topics` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `site` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sndhdr` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `spwd` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sqlite3.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sqlite3.dbapi2` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sqlite3.dump` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sqlite3` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `string.templatelib` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sunau` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sysconfig.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `sysconfig` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `telnetlib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.colorchooser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.commondialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.constants` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.dialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.dnd` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.filedialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.font` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.messagebox` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.scrolledtext` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.simpledialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.tix` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._parser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._re` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._types` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtle` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.bytedesign` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.chaos` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.clock` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.colormixer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.forest` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.fractalcurves` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.lindenmayer` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.minimal_hanoi` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.nim` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.paint` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.peace` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.penrose` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.planet_and_moon` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.rosette` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.round_dance` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.sorting_animate` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.tree` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.two_canvases` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo.yinyang` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `turtledemo` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest._log` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.async_case` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.case` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.loader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.main` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.mock` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.result` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.runner` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.signals` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.suite` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.util` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `urllib.robotparser` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `uu` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `venv.__main__` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `winreg` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `winsound` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `wsgiref.handlers` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `wsgiref.types` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `wsgiref.validate` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xdrlib` top-level stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.NodeFilter` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.domreg` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.expatbuilder` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.minicompat` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.minidom` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.pulldom` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom.xmlbuilder` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.dom` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree.ElementInclude` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree.ElementPath` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree.ElementTree` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree.cElementTree` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.parsers.expat` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.parsers` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax._exceptions` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax.expatreader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax.handler` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax.saxutils` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax.xmlreader` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.sax` package stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml` top-level stub with full intrinsic-backed lowering.
+- Implemented: replaced `zipfile.__main__` stub with `python -m zipfile` entrypoint wiring to `zipfile.main()` (create/list/test/extract paths now execute through Molt’s intrinsic-first zipfile implementation).
+- Implemented: replaced `zipfile._path.glob` stub with version-gated CPython-style glob translation helpers (`translate` lane on 3.12; `Translator` lane on 3.13+).
+- Implemented: replaced `zipfile._path` package stub with CPython-shaped `Path`/directory lookup behavior for Molt zip archives (no host-Python fallback lane).
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `zoneinfo._common` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `zoneinfo._tzpath` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `zoneinfo._zoneinfo` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P2, status:planned): implement bz2 compression/decompression parity or runtime-backed hooks.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): continue signature/introspection parity expansion.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): continue unittest runner/result/decorator parity expansion.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): extend import_helper coverage (extension loader helpers, importlib.machinery parity, and script helper utilities beyond ready_to_import).
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): expand os_helper coverage for file, path, and process helpers used by CPython tests.
+- Note (doctest dynamic execution policy): doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- TODO(syntax, owner:frontend, milestone:LF1, priority:P1, status:partial): `with` lowering for async/multi-context managers + try/finally lowering in IR.
+- TODO(syntax, owner:frontend, milestone:LF2, priority:P2, status:planned): class lowering for `__init__` and factory classmethods (dataclass defaults now wired in stdlib).
+- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:missing): full `with`/contextlib lowering with exception flow.
+- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): f-string format specifiers and debug spec (`f"{x:.2f}"`, `f"{x=}"`) parity (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
+- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
+- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): structural pattern matching (`match`/`case`) lowering and semantics (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
+- TODO(syntax, owner:frontend, milestone:M3, priority:P3, status:missing): type alias statement (`type X = ...`) and generic class syntax (`class C[T]: ...`) coverage (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
+- TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
+- TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes.
+- TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): add security-focused differential tests for attribute access edge cases (descriptor exceptions, `__getattr__` recursion traps).
+- TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): expand exception differential coverage.
+- TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): security-focused attribute access tests (descriptor exceptions, `__getattr__` recursion traps).
+- TODO(tests, owner:stdlib, milestone:SL1, priority:P2, status:planned): add wasm parity coverage for core stdlib shims (`heapq`, `itertools`, `functools`, `bisect`, `collections`).
+- TODO(tests, owner:stdlib, milestone:SL1, priority:P2, status:planned): wasm parity coverage for core stdlib shims (`heapq`, `itertools`, `functools`, `bisect`, `collections`).
+- TODO(tooling, owner:release, milestone:TL2, priority:P2, status:partial): enforce signature verification/trust policy during load.)
+- TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): formalize release tagging (start at `v0.0.001`, increment thousandth) and require super-bench stats for README performance summaries.
+- TODO(tooling, owner:runtime, milestone:TL2, priority:P1, status:partial): remove the temporary dual `fallible-iterator` graph when postgres ecosystem crates support `0.3+`; until then, keep 0.2 usage isolated to postgres-boundary code paths and document the constraint in status/review notes.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:missing): implement `molt extension build` with `libmolt` headers + ABI tagging.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:missing): implement `molt extension audit` and wire into `molt verify`.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): define canonical wheel tags for `libmolt` extensions.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): extension rebuild pipeline (headers, build helpers, audit tooling) for `libmolt`-compiled wheels.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility + worker telemetry/perf tuning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane (multi-job compile API, bounded request/job guardrails, richer health telemetry, and deterministic readiness/restart semantics are landed; remaining work is sustained high-contention soak evidence + restart/backoff tuning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): surface active optimization profile/tier policy and degrade events in CLI build diagnostics and JSON outputs for deterministic triage (diagnostics sink is landed for policy/tier/degrade + pass hotspots; remaining work is richer CLI UX controls and optional verbosity partitioning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add batch compile server mode for diff runs to amortize backend startup and reduce per-test compile overhead (in-process JSON-line batch server and fail-open/strict client modes are landed behind env gates; remaining work is default-on rollout criteria + perf guard thresholds).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add function-level object caching so unchanged functions can be relinked without recompiling whole scripts (function cache-key lane, module/function cache-tier fallback, and daemon function-cache plumbing are landed; remaining work is invalidation heuristics + import-graph-aware scheduling/perf tuning).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:partial): cross-target ergonomics).
+- Implemented: `molt doctor` now surfaces optimization-path diagnostics beyond basic toolchain presence (`sccache`, backend daemon enablement, cargo/cache path routing, and external-volume routing hints).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): CI perf artifacts + release uploads)
+- Implemented: `molt parity-run` now runs file/module entrypoints with CPython only (no Molt compilation), supports `--python`/`--python-version`, forwards script args, and exposes optional `--timing`/`--json` reporting for parity workflows.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add distributed cache guidance/tooling for multi-host agent fleets (remote `sccache` backend and validation playbooks).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add import-graph-aware diff scheduling to maximize cache locality and reduce redundant rebuild pressure.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): broaden deopt taxonomy + profile-consumption loop).
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): lockfile-missing policy decision).
+- Implemented: when `MOLT_HOME` is unset, CLI defaults now place `MOLT_HOME` under `MOLT_CACHE/home`, removing default reliance on the legacy `~/.molt` artifact/cleanup path.
+- TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): runtime profiling hints in TFA).
+- TODO(type-coverage, owner:compiler, milestone:TC2, priority:P2, status:planned): generator/iterator state in wasm ABI.
+- TODO(type-coverage, owner:compiler, milestone:TC2, priority:P2, status:planned): wasm ABI for generator state. |
+- TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): `try/except/finally` lowering + raise paths.
+- TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
+- TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin reductions (`sum/min/max`) and `len` parity.
+- TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): type-hint specialization policy (`--type-hints=check` with runtime guards).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:missing): complex literal lowering + runtime support.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): `int()` keyword arguments (`x`, `base`) parity.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): lower classes defining `__next__` without `__iter__` without backend panics.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): builtin conversions (`str`, `bool`).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): comprehension lowering currently routes through iterator/generator paths with a narrow `LIST_FROM_RANGE` fast path; broaden lowering coverage while preserving CPython semantics.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): async iteration builtins (`aiter`, `anext`).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin conversions (`int`, `float`, `complex`, `str`, `bool`).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): builtin numeric ops (`abs`, `round`, `pow`, `divmod`, `min`, `max`, `sum`).
+- TODO(type-coverage, owner:frontend, milestone:TC3, priority:P2, status:missing): full import/module fallback classification.
+- TODO(type-coverage, owner:runtime, milestone:LF2, priority:P2, status:planned): `type`/`object` layout, `isinstance`/`issubclass`.
+- TODO(type-coverage, owner:runtime, milestone:LF2, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
+- TODO(type-coverage, owner:runtime, milestone:LF2, priority:P2, status:planned): type/object + MRO + descriptor protocol. |
+- TODO(type-coverage, owner:runtime, milestone:TC1, priority:P1, status:partial): exception object model + raise/try. |
+- TODO(type-coverage, owner:runtime, milestone:TC1, priority:P1, status:partial): exception objects + stack trace capture.
+- TODO(type-coverage, owner:runtime, milestone:TC1, priority:P1, status:partial): recursion limits + `RecursionError` guard semantics.
+- TODO(type-coverage, owner:runtime, milestone:TC1, priority:P2, status:partial): expand `bytes`/`bytearray` encoding coverage (additional codecs + full error handlers).
+- TODO(type-coverage, owner:runtime, milestone:TC1, priority:P2, status:partial): typed exception matching beyond kind-name classes.
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): bytes semantics beyond literals).
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (named fields, format specs, conversion flags).
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): generator state objects + StopIteration.
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): identity builtins (`hash`, `id`, `callable`).
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): set/frozenset hashing + deterministic ordering.
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (C-order parity).
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (retain C-order semantics + parity errors).
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): metaclass execution). |
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): derive `types.GenericAlias.__parameters__` from `TypeVar`/`ParamSpec`/`TypeVarTuple` once typing metadata lands.
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): buffer protocol + memoryview layout.
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
+- TODO(type-coverage, owner:stdlib, milestone:TC2, priority:P2, status:planned): `builtins` module parity notes.
+- TODO(type-coverage, owner:stdlib, milestone:TC2, priority:P3, status:planned): `builtins` module parity notes.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- Note (dynamic execution policy): dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- Note (reflection policy): unrestricted reflection (`dir`/`vars`/`globals`/`locals`) is policy-deferred for compiled binaries; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- Note (runtime monkeypatch policy): runtime monkeypatching of modules, types, or functions is policy-deferred for compiled binaries; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): module object + import rules. |
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
+- TODO(type-coverage, owner:tests, milestone:TC1, priority:P1, status:planned): add exception + set coverage to molt_diff.
+- TODO(type-coverage, owner:tests, milestone:TC2, priority:P2, status:partial): execute matrix end-to-end).
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity with real backends + coverage).
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity).
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P2, status:planned): ship additional production host adapters (CF Workers) and wasm parity tests that exercise real DB backends with cancellation.
+- TODO(wasm-host, owner:runtime, milestone:RT3, priority:P3, status:planned): component model target support).
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): capability-enabled runtime-heavy wasm tranche (`/Volumes/APDataStore/Molt/wasm_runtime_heavy_tranche_20260213c/summary.json`) is still blocked (`1/5` pass): `asyncio__asyncio_running_loop_intrinsic.py` event-loop-policy parity mismatch, `asyncio_task_basic.py` table-ref trap in linked wasm runtime, `zipimport_basic.py` zipimport module-lookup parity gap, and `smtplib_basic.py` thread-unavailable wasm limitation. Keep this as a blocker before promoting runtime-heavy cluster completion.
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): wire local timezone + locale on wasm hosts). (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |
+- TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
+- TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P2, status:planned): zero-copy string passing for WASM).
+<!-- END TODO MIRROR LEDGER -->

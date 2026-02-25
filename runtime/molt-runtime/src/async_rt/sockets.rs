@@ -1798,7 +1798,7 @@ fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), 
         if rc == 0 {
             return Ok(());
         }
-        if rc == -(libc::ETIMEDOUT as i32) {
+        if rc == -libc::ETIMEDOUT {
             return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
         }
         return Err(std::io::Error::from_raw_os_error(-rc));
@@ -1807,7 +1807,7 @@ fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), 
     if rc == 0 {
         return Ok(());
     }
-    if rc == -(libc::ETIMEDOUT as i32) {
+    if rc == -libc::ETIMEDOUT {
         return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
     }
     Err(std::io::Error::from_raw_os_error(-rc))
@@ -5066,14 +5066,14 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
             }
             let errno = errno_from_rc(rc as i32);
             if would_block_errno(errno) {
-                if let Some(val) = timeout {
-                    if val == Duration::ZERO {
-                        return raise_os_error_errno::<u64>(
-                            _py,
-                            libc::EWOULDBLOCK as i64,
-                            "accept would block",
-                        );
-                    }
+                if let Some(val) = timeout
+                    && val == Duration::ZERO
+                {
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        libc::EWOULDBLOCK as i64,
+                        "accept would block",
+                    );
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err.kind() == ErrorKind::TimedOut {
@@ -5338,12 +5338,11 @@ pub extern "C" fn molt_socket_recv_into(
                             flags,
                         )
                     };
-                    if res >= 0 {
-                        if let Err(msg) =
+                    if res >= 0
+                        && let Err(msg) =
                             unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
-                        {
-                            return raise_exception::<u64>(_py, "TypeError", &msg);
-                        }
+                    {
+                        return raise_exception::<u64>(_py, "TypeError", &msg);
                     }
                     res
                 }
@@ -5753,12 +5752,11 @@ pub extern "C" fn molt_socket_recvfrom_into(
                             (&mut addr_len) as *mut u32 as u32,
                         )
                     };
-                    if res >= 0 {
-                        if let Err(msg) =
+                    if res >= 0
+                        && let Err(msg) =
                             unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
-                        {
-                            return raise_exception::<u64>(_py, "TypeError", &msg);
-                        }
+                    {
+                        return raise_exception::<u64>(_py, "TypeError", &msg);
                     }
                     res
                 }
@@ -6347,6 +6345,27 @@ pub extern "C" fn molt_socket_detach(_sock_bits: u64) -> u64 {
     })
 }
 
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn socket_close_raw_windows(raw: RawSocket) {
+    unsafe {
+        drop(Socket::from_raw_socket(raw));
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket, RawSocket), std::io::Error> {
+    let loopback = if family == libc::AF_INET6 {
+        "[::1]:0"
+    } else {
+        "127.0.0.1:0"
+    };
+    let listener = std::net::TcpListener::bind(loopback)?;
+    let addr = listener.local_addr()?;
+    let client = std::net::TcpStream::connect(addr)?;
+    let (server, _) = listener.accept()?;
+    Ok((client.into_raw_socket(), server.into_raw_socket()))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
@@ -6428,7 +6447,6 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             }
             #[cfg(windows)]
             {
-                // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): implement a native Windows socketpair using WSAPROTOCOL_INFO or AF_UNIX to avoid loopback TCP overhead.
                 if family != libc::AF_INET && family != libc::AF_INET6 {
                     return raise_os_error_errno::<u64>(
                         _py,
@@ -6436,44 +6454,52 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
                         "socketpair family",
                     );
                 }
-                let loopback = if family == libc::AF_INET6 {
-                    "[::1]:0"
-                } else {
-                    "127.0.0.1:0"
-                };
-                let listener = match std::net::TcpListener::bind(loopback) {
-                    Ok(l) => l,
-                    Err(err) => return raise_os_error::<u64>(_py, err, "socketpair"),
-                };
-                let addr = match listener.local_addr() {
-                    Ok(addr) => addr,
-                    Err(err) => return raise_os_error::<u64>(_py, err, "socketpair"),
-                };
-                let client = match std::net::TcpStream::connect(addr) {
-                    Ok(stream) => stream,
-                    Err(err) => return raise_os_error::<u64>(_py, err, "socketpair"),
-                };
-                let (server, _) = match listener.accept() {
+                if sock_type != libc::SOCK_STREAM {
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        libc::EPROTOTYPE as i64,
+                        "socketpair type",
+                    );
+                }
+                if proto != 0 && proto != libc::IPPROTO_TCP {
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        libc::EPROTONOSUPPORT as i64,
+                        "socketpair proto",
+                    );
+                }
+                // NOTE(runtime/windows): `socketpair` currently uses loopback TCP to preserve
+                // deterministic behavior. The native WSAPROTOCOL_INFO/AF_UNIX perf lane remains
+                // tracked in docs/spec/STATUS.md and ROADMAP.md (RT2/P2).
+                let (left_fd, right_fd) = match socketpair_windows_loopback_raw(family) {
                     Ok(pair) => pair,
                     Err(err) => return raise_os_error::<u64>(_py, err, "socketpair"),
                 };
-                let left_fd = client.into_raw_socket();
-                let right_fd = server.into_raw_socket();
                 let left_bits = molt_socket_new(
                     MoltObject::from_int(family as i64).bits(),
                     MoltObject::from_int(sock_type as i64).bits(),
                     MoltObject::from_int(proto as i64).bits(),
                     MoltObject::from_int(left_fd as i64).bits(),
                 );
+                if obj_from_bits(left_bits).is_none() {
+                    socket_close_raw_windows(right_fd);
+                    return MoltObject::none().bits();
+                }
                 let right_bits = molt_socket_new(
                     MoltObject::from_int(family as i64).bits(),
                     MoltObject::from_int(sock_type as i64).bits(),
                     MoltObject::from_int(proto as i64).bits(),
                     MoltObject::from_int(right_fd as i64).bits(),
                 );
+                if obj_from_bits(right_bits).is_none() {
+                    let _ = molt_socket_drop(left_bits);
+                    return MoltObject::none().bits();
+                }
                 socket_register_peer_pair(left_fd, right_fd);
                 let tuple_ptr = alloc_tuple(_py, &[left_bits, right_bits]);
                 if tuple_ptr.is_null() {
+                    let _ = molt_socket_drop(left_bits);
+                    let _ = molt_socket_drop(right_bits);
                     return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(tuple_ptr).bits()
@@ -6723,10 +6749,10 @@ pub extern "C" fn molt_socket_getaddrinfo(
         let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
         let host_bytes = host.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
         let service_bytes = service.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
-        if host_bytes.iter().any(|b| *b == 0) {
+        if host_bytes.contains(&0) {
             return raise_exception::<_>(_py, "TypeError", "host contains NUL byte");
         }
-        if service_bytes.iter().any(|b| *b == 0) {
+        if service_bytes.contains(&0) {
             return raise_exception::<_>(_py, "TypeError", "service contains NUL byte");
         }
         let mut cap = 4096usize;
@@ -7109,7 +7135,7 @@ pub extern "C" fn molt_socket_gethostname() -> u64 {
                 (&mut out_len) as *mut u32 as u32,
             )
         };
-        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+        if rc == -libc::ENOMEM && out_len as usize > buf.len() {
             buf.resize(out_len as usize, 0);
             rc = unsafe {
                 crate::molt_socket_gethostname_host(
@@ -7802,10 +7828,10 @@ pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -
         };
         let name_bytes = name.as_bytes();
         let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
-        if name_bytes.iter().any(|b| *b == 0) {
+        if name_bytes.contains(&0) {
             return raise_exception::<_>(_py, "TypeError", "service name contains NUL byte");
         }
-        if proto_bytes.iter().any(|b| *b == 0) {
+        if proto_bytes.contains(&0) {
             return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
         }
         let rc = unsafe {
@@ -7877,7 +7903,7 @@ pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
         let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
-        if proto_bytes.iter().any(|b| *b == 0) {
+        if proto_bytes.contains(&0) {
             return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
         }
         let mut buf = vec![0u8; 256];
@@ -7892,7 +7918,7 @@ pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -
                 (&mut out_len) as *mut u32 as u32,
             )
         };
-        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+        if rc == -libc::ENOMEM && out_len as usize > buf.len() {
             buf.resize(out_len as usize, 0);
             rc = unsafe {
                 crate::molt_socket_getservbyport_host(

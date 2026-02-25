@@ -2257,6 +2257,7 @@ dependencies = [
  "hmac",
  "lazy_static",
  "libc",
+ "libloading",
  "libm",
  "md-5",
  "md4",

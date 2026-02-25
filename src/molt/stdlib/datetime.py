@@ -107,7 +107,7 @@ def _civil_from_days(days: int) -> tuple[int, int, int]:
 def _normalize_day_second_micro(
     days: int, seconds: int, microseconds: int
 ) -> tuple[int, int, int]:
-    result = _MOLT_DT_TD_NORMALIZE(days, seconds, microseconds)
+    result = _MOLT_DT_TD_NORMALIZE(days, seconds, microseconds, 0, 0, 0, 0)
     return (int(result[0]), int(result[1]), int(result[2]))
 
 
@@ -144,13 +144,18 @@ class timedelta:
         hours: int = 0,
         weeks: int = 0,
     ) -> None:
-        d = _as_int(days) + _as_int(weeks) * 7
-        s = _as_int(seconds) + _as_int(minutes) * 60 + _as_int(hours) * 3600
-        us = _as_int(microseconds) + _as_int(milliseconds) * 1000
-        d, s, us = _normalize_day_second_micro(d, s, us)
-        self.days = d
-        self.seconds = s
-        self.microseconds = us
+        result = _MOLT_DT_TD_NORMALIZE(
+            _as_int(days),
+            _as_int(seconds),
+            _as_int(microseconds),
+            _as_int(milliseconds),
+            _as_int(minutes),
+            _as_int(hours),
+            _as_int(weeks),
+        )
+        self.days = int(result[0])
+        self.seconds = int(result[1])
+        self.microseconds = int(result[2])
 
     @classmethod
     def _from_parts(cls, days: int, seconds: int, microseconds: int) -> timedelta:

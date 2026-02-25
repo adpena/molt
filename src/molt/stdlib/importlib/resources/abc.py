@@ -12,7 +12,7 @@ import io
 import itertools
 import os
 import pathlib
-from typing import Any, BinaryIO, Iterable, Iterator, NoReturn, Optional, Protocol
+from typing import Any, BinaryIO, Iterable, Iterator, NoReturn, Optional, Protocol, Text  # noqa: F401
 from typing import Union
 from typing import runtime_checkable
 

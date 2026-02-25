@@ -7,7 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): implement doctest once eval/exec/compile are gated and supported.
+# Policy-deferred: doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) remains intentionally unsupported for now; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 
 
 def DocTestSuite(*_args, **_kwargs):

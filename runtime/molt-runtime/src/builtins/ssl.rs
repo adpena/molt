@@ -11,7 +11,6 @@
 
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
-#[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]

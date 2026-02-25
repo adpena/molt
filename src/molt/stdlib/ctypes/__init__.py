@@ -18,8 +18,7 @@ _MOLT_CTYPES_COERCE_VALUE = _require_intrinsic("molt_ctypes_coerce_value", globa
 _MOLT_CTYPES_DEFAULT_VALUE = _require_intrinsic("molt_ctypes_default_value", globals())
 _MOLT_CTYPES_SIZEOF = _require_intrinsic("molt_ctypes_sizeof", globals())
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand
-# ctypes intrinsic coverage beyond the core scalar/structure/array/pointer subset.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand ctypes intrinsic coverage beyond the core scalar/structure/array/pointer subset.
 
 
 def _require_ffi() -> None:

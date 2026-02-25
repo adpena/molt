@@ -64,16 +64,24 @@ if _PY_GE_313:
         pass
 
 
-def _normalize_timeout(block: bool, timeout: float | None) -> float | None:
-    # CPython ignores timeout for non-blocking Queue.put/get calls.
-    if not block:
+def _normalize_get_timeout(block: bool, timeout: float | None) -> float | None:
+    # CPython ignores timeout for non-blocking Queue.get calls.
+    if not block or timeout is None:
         return None
-    if timeout is None:
-        return None
-    value = float(timeout)
-    if value < 0.0:
+    if timeout < 0:
         raise ValueError("'timeout' must be a non-negative number")
-    return value
+    return timeout
+
+
+def _normalize_put_timeout(
+    maxsize: int, block: bool, timeout: float | None
+) -> float | None:
+    # CPython ignores timeout for non-blocking Queue.put calls and unbounded queues.
+    if maxsize <= 0 or not block or timeout is None:
+        return None
+    if timeout < 0:
+        raise ValueError("'timeout' must be a non-negative number")
+    return timeout
 
 
 class Queue:
@@ -95,8 +103,9 @@ class Queue:
         return bool(_MOLT_QUEUE_FULL(self._handle))
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        wait = _normalize_timeout(bool(block), timeout)
-        ok = bool(_MOLT_QUEUE_PUT(self._handle, item, bool(block), wait))
+        blocking = bool(block)
+        wait = _normalize_put_timeout(self.maxsize, blocking, timeout)
+        ok = bool(_MOLT_QUEUE_PUT(self._handle, item, blocking, wait))
         if not ok:
             if _queue_is_shutdown(self._handle):
                 raise ShutDown
@@ -106,8 +115,9 @@ class Queue:
         self.put(item, block=False)
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        wait = _normalize_timeout(bool(block), timeout)
-        item = _MOLT_QUEUE_GET(self._handle, bool(block), wait, _GET_TIMEOUT)
+        blocking = bool(block)
+        wait = _normalize_get_timeout(blocking, timeout)
+        item = _MOLT_QUEUE_GET(self._handle, blocking, wait, _GET_TIMEOUT)
         if item is _GET_TIMEOUT:
             if _queue_is_shutdown(self._handle):
                 raise ShutDown

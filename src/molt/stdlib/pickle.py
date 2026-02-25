@@ -129,6 +129,19 @@ class PickleBuffer:
     def release(self) -> None:
         self._buffer = b""
 
+    @property
+    def readonly(self) -> bool:
+        return isinstance(self._buffer, (bytes, memoryview))
+
+    def __bytes__(self) -> bytes:
+        if isinstance(self._buffer, bytes):
+            return self._buffer
+        if isinstance(self._buffer, bytearray):
+            return bytes(self._buffer)
+        if isinstance(self._buffer, memoryview):
+            return bytes(self._buffer)
+        return bytes(self._buffer)
+
 
 HIGHEST_PROTOCOL = 5
 DEFAULT_PROTOCOL = 4

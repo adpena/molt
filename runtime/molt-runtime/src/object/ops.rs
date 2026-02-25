@@ -4189,6 +4189,20 @@ pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
                 }
             }
         }
+        unsafe {
+            let matmul_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.matmul_name, b"__matmul__");
+            let rmatmul_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rmatmul_name,
+                b"__rmatmul__",
+            );
+            if let Some(res_bits) =
+                call_binary_dunder(_py, a, b, matmul_name_bits, rmatmul_name_bits)
+            {
+                return res_bits;
+            }
+        }
         binary_type_error(_py, lhs, rhs, "@")
     })
 }
@@ -10326,8 +10340,8 @@ fn civil_from_days(days: i64) -> (i32, i32, i32) {
     let mut y = (yoe + era * 400) as i32;
     let doy = (doe - (365 * yoe + yoe / 4 - yoe / 100)) as i32;
     let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as i32;
-    let m = (mp + if mp < 10 { 3 } else { -9 }) as i32;
+    let d = (doy - (153 * mp + 2) / 5 + 1);
+    let m = (mp + if mp < 10 { 3 } else { -9 });
     if m <= 2 {
         y += 1;
     }
@@ -10791,7 +10805,7 @@ fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
     fn push_num(out: &mut String, val: i32, width: usize, pad: char) {
         let mut buf = [pad as u8; 12];
         let mut idx = buf.len();
-        let mut n = val.abs() as u32;
+        let mut n = val.unsigned_abs();
         if n == 0 {
             idx -= 1;
             buf[idx] = b'0';
@@ -11058,7 +11072,7 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
             let mut parts = time_parts_from_epoch_utc(secs.saturating_sub(offset_west));
             let std_offset_west = timezone_west_wasm().unwrap_or(offset_west);
             parts.isdst = if offset_west != std_offset_west { 1 } else { 0 };
-            return time_parts_to_tuple(_py, parts);
+            time_parts_to_tuple(_py, parts)
         }
     })
 }
@@ -11090,7 +11104,7 @@ pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
             let parts = time_parts_from_epoch_utc(secs);
-            return time_parts_to_tuple(_py, parts);
+            time_parts_to_tuple(_py, parts)
         }
     })
 }
@@ -11172,7 +11186,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            return MoltObject::from_ptr(ptr).bits();
+            MoltObject::from_ptr(ptr).bits()
         }
     })
 }
@@ -14467,7 +14481,178 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(_self_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS {
+            return MoltObject::none().bits();
+        }
+
+        // 1. Collect __dict__ entries.
+        let mut dict_state_bits: Option<u64> = None;
+        let dict_bits = if type_id == crate::TYPE_ID_DATACLASS {
+            unsafe { crate::dataclass_dict_bits(ptr) }
+        } else {
+            unsafe { crate::instance_dict_bits(ptr) }
+        };
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
+            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+        {
+            inc_ref_bits(_py, dict_bits);
+            dict_state_bits = Some(dict_bits);
+        }
+
+        // 2. Collect typed/slot field values.
+        let slot_state_bits = if type_id == crate::TYPE_ID_DATACLASS {
+            dataclass_getstate_slot_state(_py, ptr)
+        } else {
+            object_getstate_slot_state(_py, ptr)
+        };
+
+        // 3. Combine following CPython's (dict, slots) tuple convention.
+        match (dict_state_bits, slot_state_bits) {
+            (Some(d), Some(s)) => {
+                let tuple_ptr = crate::alloc_tuple(_py, &[d, s]);
+                dec_ref_bits(_py, d);
+                dec_ref_bits(_py, s);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+            (None, Some(s)) => {
+                let none_bits = MoltObject::none().bits();
+                let tuple_ptr = crate::alloc_tuple(_py, &[none_bits, s]);
+                dec_ref_bits(_py, s);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+            (Some(d), None) => d,
+            (None, None) => {
+                // CPython returns self.__dict__ which may be empty {}.
+                let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+                if dict_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(dict_ptr).bits()
+            }
+        }
+    })
+}
+
+/// Extract typed field values from `__molt_field_offsets__` into a new dict.
+fn object_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+    if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
+        return None;
+    }
+    let class_dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+    let class_dict_ptr = obj_from_bits(class_dict_bits).as_ptr()?;
+    if unsafe { object_type_id(class_dict_ptr) } != crate::TYPE_ID_DICT {
+        return None;
+    }
+    let offsets_name_bits =
+        crate::builtins::attr::attr_name_bits_from_bytes(_py, b"__molt_field_offsets__")?;
+    let offsets_bits = unsafe { crate::dict_get_in_place(_py, class_dict_ptr, offsets_name_bits) };
+    dec_ref_bits(_py, offsets_name_bits);
+    if exception_pending(_py) {
+        return None;
+    }
+    let offsets_bits = offsets_bits?;
+    let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
+    if unsafe { object_type_id(offsets_ptr) } != crate::TYPE_ID_DICT {
+        return None;
+    }
+
+    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return None;
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+    let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        let name_bits = pairs[idx];
+        let offset_bits = pairs[idx + 1];
+        idx += 2;
+        let offset = obj_from_bits(offset_bits).as_int().filter(|&v| v >= 0)?;
+        let value_bits = unsafe { crate::object_field_get_ptr_raw(_py, ptr, offset as usize) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
+            dec_ref_bits(_py, value_bits);
+            continue;
+        }
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, value_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return None;
+    }
+    Some(state_bits)
+}
+
+/// Extract dataclass field values from the descriptor layout into a new dict.
+fn dataclass_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+    let desc_ptr = unsafe { crate::dataclass_desc_ptr(ptr) };
+    if desc_ptr.is_null() {
+        return None;
+    }
+    let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+    let field_names = unsafe { &(*desc_ptr).field_names };
+    if field_names.is_empty() {
+        return None;
+    }
+
+    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return None;
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+    for (name, &value_bits) in field_names.iter().zip(field_values.iter()) {
+        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
+            continue;
+        }
+        let Some(name_bits) =
+            crate::builtins::attr::attr_name_bits_from_bytes(_py, name.as_bytes())
+        else {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        };
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return None;
+    }
+    Some(state_bits)
 }
 
 fn dir_runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
@@ -29914,6 +30099,36 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
+            // Check __bytes__ method (e.g. PickleBuffer, custom objects).
+            if matches!(kind, BytesCtorKind::Bytes) {
+                let bytes_dunder = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.bytes_dunder,
+                    b"__bytes__",
+                );
+                let call = attr_lookup_ptr(_py, ptr, bytes_dunder);
+                if let Some(call_bits) = call {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if let Some(res_ptr) = obj_from_bits(res_bits).as_ptr()
+                        && object_type_id(res_ptr) == TYPE_ID_BYTES
+                    {
+                        return res_bits;
+                    }
+                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    let msg = format!("__bytes__ returned non-bytes (type {res_type})");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if exception_pending(_py) {
+                    clear_exception(_py);
+                }
+            }
             if type_id == TYPE_ID_BIGINT {
                 let big = bigint_ref(ptr);
                 if big.is_negative() {
@@ -38455,6 +38670,32 @@ fn format_default_object_repr(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         }
     };
     let class_name = class_name_for_error(class_bits);
+    // Look up __module__ on the class to produce CPython-style qualified repr.
+    let class_obj = obj_from_bits(class_bits);
+    if let Some(class_ptr) = class_obj.as_ptr() {
+        unsafe {
+            if object_type_id(class_ptr) == TYPE_ID_TYPE && !exception_pending(_py) {
+                let dict_bits = class_dict_bits(class_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && let Some(module_key) = attr_name_bits_from_bytes(_py, b"__module__")
+                    && let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key)
+                    && let Some(module) = string_obj_to_owned(obj_from_bits(bits))
+                    && !module.is_empty()
+                    && module != "builtins"
+                {
+                    let mut qualname = class_name.clone();
+                    if let Some(qual_key) = attr_name_bits_from_bytes(_py, b"__qualname__")
+                        && let Some(qbits) = dict_get_in_place(_py, dict_ptr, qual_key)
+                        && let Some(val) = string_obj_to_owned(obj_from_bits(qbits))
+                    {
+                        qualname = val;
+                    }
+                    return format!("<{module}.{qualname} object at 0x{:x}>", ptr as usize);
+                }
+            }
+        }
+    }
     format!("<{class_name} object at 0x{:x}>", ptr as usize)
 }
 
@@ -40838,7 +41079,7 @@ fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         if acc == u32::MAX {
             return 1546275796;
         }
-        return (acc as i32) as i64;
+        (acc as i32) as i64
     }
 }
 
@@ -40958,7 +41199,7 @@ fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         if acc == u32::MAX {
             return 1546275796;
         }
-        return (acc as i32) as i64;
+        (acc as i32) as i64
     }
 }
 
@@ -41000,7 +41241,7 @@ fn hash_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         if acc == u32::MAX {
             return 1546275796;
         }
-        return (acc as i32) as i64;
+        (acc as i32) as i64
     }
 }
 
@@ -41060,7 +41301,7 @@ pub(crate) fn hash_slice_bits(
         if acc == u32::MAX {
             return Some(1546275796);
         }
-        return Some((acc as i32) as i64);
+        Some((acc as i32) as i64)
     }
 }
 

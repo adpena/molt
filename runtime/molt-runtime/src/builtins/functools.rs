@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
 
@@ -9,10 +11,10 @@ use crate::{
     alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
     dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
     dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_truthy, molt_class_set_base, molt_getattr_builtin, molt_is_callable,
-    molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
-    string_obj_to_owned, to_i64,
+    intern_static_name, is_truthy, isinstance_runtime, molt_class_set_base, molt_getattr_builtin,
+    molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
+    object_class_bits, object_set_class_bits, object_type_id, raise_exception, raise_not_iterable,
+    seq_vec_ref, string_obj_to_owned, to_i64,
 };
 
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -1818,4 +1820,239 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+// ─── singledispatch state ──────────────────────────────────────────────────
+
+struct SingleDispatchState {
+    default_func: u64,
+    /// Registry: (type_bits, func_bits) pairs.
+    /// type_bits is the NaN-boxed class/type object.
+    registry: Vec<(u64, u64)>,
+}
+
+static NEXT_SINGLEDISPATCH_HANDLE: AtomicI64 = AtomicI64::new(1);
+
+fn next_singledispatch_handle() -> i64 {
+    NEXT_SINGLEDISPATCH_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+thread_local! {
+    static SINGLEDISPATCH_HANDLES: RefCell<HashMap<i64, SingleDispatchState>> =
+        RefCell::new(HashMap::new());
+}
+
+fn sd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(handle_bits);
+    let Some(id) = to_i64(obj) else {
+        let _ = raise_exception::<u64>(_py, "TypeError", "singledispatch handle must be an int");
+        return None;
+    };
+    Some(id)
+}
+
+// ─── singledispatch intrinsics ─────────────────────────────────────────────
+
+/// Create a new singledispatch handle, storing the default function.
+/// Returns an integer handle (NaN-boxed).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_new(default_func_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = next_singledispatch_handle();
+        inc_ref_bits(_py, default_func_bits);
+        let state = SingleDispatchState {
+            default_func: default_func_bits,
+            registry: Vec::new(),
+        };
+        SINGLEDISPATCH_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        MoltObject::from_int(id).bits()
+    })
+}
+
+/// Register a function for a given type. Adds (type_bits, func_bits) to the
+/// registry, incrementing refcounts for both.  Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_register(
+    handle_bits: u64,
+    type_bits: u64,
+    func_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        inc_ref_bits(_py, type_bits);
+        inc_ref_bits(_py, func_bits);
+        SINGLEDISPATCH_HANDLES.with(|h| {
+            let mut map = h.borrow_mut();
+            if let Some(state) = map.get_mut(&id) {
+                // If a registration already exists for this type, replace it.
+                if let Some(entry) = state.registry.iter_mut().find(|(t, _)| *t == type_bits) {
+                    // Dec-ref the old func, dec-ref the extra type inc we did above.
+                    dec_ref_bits(_py, entry.1);
+                    dec_ref_bits(_py, type_bits);
+                    entry.1 = func_bits;
+                } else {
+                    state.registry.push((type_bits, func_bits));
+                }
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
+/// Dispatch: given an argument's type, look up the registered function.
+/// Checks for an exact type match first, then walks the registry using
+/// isinstance for MRO-aware matching.  Returns the function bits
+/// (registered function or default).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        SINGLEDISPATCH_HANDLES.with(|h| {
+            let map = h.borrow();
+            let Some(state) = map.get(&id) else {
+                return MoltObject::none().bits();
+            };
+            // 1. Exact type match.
+            for &(reg_type, reg_func) in &state.registry {
+                if reg_type == type_bits {
+                    inc_ref_bits(_py, reg_func);
+                    return reg_func;
+                }
+            }
+            // 2. MRO / isinstance-based match (first match wins, like CPython).
+            for &(reg_type, reg_func) in &state.registry {
+                if isinstance_runtime(_py, type_bits, reg_type) {
+                    inc_ref_bits(_py, reg_func);
+                    return reg_func;
+                }
+            }
+            // 3. Fall back to default.
+            let default = state.default_func;
+            inc_ref_bits(_py, default);
+            default
+        })
+    })
+}
+
+/// Call the singledispatch wrapper: extract first positional arg, get its
+/// type, dispatch, and return the matched function bits.  The Python shim
+/// performs the actual function call.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_call(
+    handle_bits: u64,
+    args_bits: u64,
+    _kwargs_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        // Extract first positional arg from the args tuple.
+        let first_arg_bits = if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
+            unsafe {
+                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(args_ptr);
+                    if elems.is_empty() {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "singledispatch requires at least one positional argument",
+                        );
+                    }
+                    elems[0]
+                } else {
+                    args_bits
+                }
+            }
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "singledispatch requires at least one positional argument",
+            );
+        };
+        // Get the type of the first argument.
+        let arg_type_bits = crate::type_of_bits(_py, first_arg_bits);
+        // Look up the function for this type.
+        SINGLEDISPATCH_HANDLES.with(|h| {
+            let map = h.borrow();
+            let Some(state) = map.get(&id) else {
+                return MoltObject::none().bits();
+            };
+            // 1. Exact type match.
+            for &(reg_type, reg_func) in &state.registry {
+                if reg_type == arg_type_bits {
+                    inc_ref_bits(_py, reg_func);
+                    return reg_func;
+                }
+            }
+            // 2. MRO / isinstance-based match.
+            for &(reg_type, reg_func) in &state.registry {
+                if isinstance_runtime(_py, first_arg_bits, reg_type) {
+                    inc_ref_bits(_py, reg_func);
+                    return reg_func;
+                }
+            }
+            // 3. Fall back to default.
+            let default = state.default_func;
+            inc_ref_bits(_py, default);
+            default
+        })
+    })
+}
+
+/// Return a dict mapping {type: func} for all registered implementations,
+/// including the `object` -> default mapping.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_registry(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        SINGLEDISPATCH_HANDLES.with(|h| {
+            let map = h.borrow();
+            let Some(state) = map.get(&id) else {
+                return MoltObject::none().bits();
+            };
+            // Build pairs: [type0, func0, type1, func1, ...]
+            // Include the `object` -> default_func mapping first.
+            let builtins = builtin_classes(_py);
+            let mut pairs: Vec<u64> = Vec::with_capacity(2 + state.registry.len() * 2);
+            pairs.push(builtins.object);
+            pairs.push(state.default_func);
+            for &(type_bits, func_bits) in &state.registry {
+                pairs.push(type_bits);
+                pairs.push(func_bits);
+            }
+            let dict_ptr = crate::alloc_dict_with_pairs(_py, &pairs);
+            if dict_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(dict_ptr).bits()
+        })
+    })
+}
+
+/// Drop a singledispatch handle, dec-refing all stored bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
+            return MoltObject::none().bits();
+        };
+        SINGLEDISPATCH_HANDLES.with(|h| {
+            if let Some(state) = h.borrow_mut().remove(&id) {
+                dec_ref_bits(_py, state.default_func);
+                for (type_bits, func_bits) in state.registry {
+                    dec_ref_bits(_py, type_bits);
+                    dec_ref_bits(_py, func_bits);
+                }
+            }
+        });
+        MoltObject::none().bits()
+    })
 }

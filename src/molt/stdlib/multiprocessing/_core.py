@@ -2094,8 +2094,7 @@ def get_context(method: str | None = None) -> Context:
     if method not in get_all_start_methods():
         raise ValueError("unknown start method")
     if method != "spawn":
-        # TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent):
-        # Fork/forkserver currently map to spawn semantics; implement true fork support.
+        # TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): fork/forkserver currently map to spawn semantics; implement true fork support.
         return Context(method)
     return Context(method)
 

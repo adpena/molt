@@ -1,6 +1,6 @@
 # Optimization Progress Log
 
-Last updated: 2026-02-12
+Last updated: 2026-02-25
 Canonical plan: `OPTIMIZATIONS_PLAN.md`
 
 ## Purpose
@@ -9,9 +9,9 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 - Make it clear when work is planning-only versus execution-complete.
 
 ## Current Program State
-- Program phase: Week 1 (Observability + Hot-Path Attribution), with Week 0 baseline lock complete.
-- Execution assumption: implementation work has started for instrumentation/attribution and wasm stabilization, with follow-on Week 2 specialization queued behind wasm parity/perf hardening.
-- Status summary: runtime observability counters + profile JSON emission are landed/validated; refreshed uv-first linked-WASM artifact captured with 43/45 pass; wasm triage tooling now captures failure classes and optional wasmtime control-runner evidence; compile-time recovery tightening is now landed (stdlib Tier-C bias, finer budget degrade checkpoints, stdlib-aware parallel policy) with green validation gates.
+- Program phase: control-plane swarm rollout with Week 0 baseline lock complete and Wave 0 baseline refresh in-progress.
+- Execution assumption: implementation work is active; new optimization landings are sequenced through Wave 0 (baseline refresh), Wave 1 (experiment packets), then Wave 2 (controlled implementation slices).
+- Status summary: runtime observability counters + profile JSON emission are landed/validated; linked-WASM stabilization remains partial (43/45 in last captured tranche); compile-time recovery tightening is landed in targeted slices; docs + planning canon are synchronized around swarm gating and regression firewall policy; Wave 0 release compile refresh remains blocked by long-tail release build churn and benchmark-harness interpreter/dependency mismatches.
 
 ## Week 0 Checklist
 - [x] Build baseline captured (`tools/compile_progress.py`)
@@ -29,6 +29,13 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 - [x] Add benchmark artifact diff tooling for run-to-run trend comparisons.
 - [x] Normalize baseline lock artifacts (build/native/wasm) and publish Week 0 lock entry.
 
+## Wave 0 Checklist (Swarm Refresh, 2026-02-24)
+- [ ] Refresh compile KPI artifact bundle (`tools/compile_progress.py`) under external-volume roots.
+- [ ] Refresh native benchmark artifact bundle (`tools/bench.py --json-out ...`) and diff vs prior lock.
+- [ ] Refresh wasm benchmark artifact bundle (`tools/bench_wasm.py --json-out ...`) and diff vs prior lock.
+- [ ] Refresh friend-suite run attempt (`tools/bench_friends.py`) and publish adapter/runner blockers with pinned metadata.
+- [ ] Attach perf + correctness + lowering gate outputs for the baseline lock revision.
+
 ## Run Log
 
 | Date | Phase | Action | Result | Artifact Paths | Next Step |
@@ -42,6 +49,9 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 | 2026-02-11 | WASM stabilization | Re-ran full linked WASM suite with uv-first interpreter routing and published refreshed artifacts + diff versus week-0 baseline lock. `bench_bytes_find` and `bench_str_join` moved to passing; remaining failures are async/channel benches under Node with V8 Zone OOM during wasm compilation. | Partial complete (43/45 pass) | `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked.json`, `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked_summary.md`, `bench/results/optimization_progress/2026-02-11_week1_wasm_stabilization/bench_wasm_uv_linked_vs_week0.json` | Triage async/channel failures with wasmtime-native runner as control and reduce Node/V8 compile-memory pressure for linked modules. |
 | 2026-02-11 | WASM stabilization | Extended `tools/bench_wasm.py` for focused async/channel triage: added benchmark selection (`--bench`), structured failure classification (`molt_wasm_failure_*`), optional control-runner reruns (`--control-runner wasmtime`), and Node heap tuning (`--node-max-old-space-mb` / `MOLT_WASM_NODE_MAX_OLD_SPACE_MB`). | In progress | `tools/bench_wasm.py`, `docs/benchmarks/optimization_progress.md` | Re-run `bench_async_await` + `bench_channel_throughput` with `--runner node --control-runner wasmtime` and publish fresh stabilization artifact bundle. |
 | 2026-02-12 | Compile-throughput recovery | Tightened frontend compile policy + strict stdlib gating: stdlib defaults to Tier C unless explicitly promoted, mid-end budget degrade now has finer stage/pre-pass checkpoints, and frontend layer policy includes stdlib-aware effective min-cost diagnostics. Also flipped stdlib fallback-pattern lint to all-stdlib default mode and cleaned all violations. | Complete (targeted tranche) | `src/molt/frontend/__init__.py`, `src/molt/cli.py`, `tools/check_stdlib_intrinsics.py`, `src/molt/stdlib/*`, `/tmp/molt_diag_new_serial.json`, `/tmp/molt_diag_new_parallel.json` | Run larger no-cache build matrix + wasm stabilization follow-up to quantify broader compile-time deltas beyond `examples/hello.py`. |
+| 2026-02-24 | Swarm governance alignment | Consolidated optimization docs and synchronized plan/status/roadmap signals: removed stale kickoff-reset semantics from active tracks, aligned lowering metric mode expectations, and documented swarm role model + wave protocol + non-negotiable merge gates in canonical docs. | Complete (docs/control-plane tranche) | `OPTIMIZATIONS_PLAN.md`, `docs/spec/STATUS.md`, `ROADMAP.md`, `docs/ROADMAP_90_DAYS.md`, `docs/benchmarks/optimization_progress.md` | Execute Wave 0 refresh runs (`tools/compile_progress.py`, `tools/bench.py`, `tools/bench_wasm.py`, lane diffs) and lock a fresh artifact bundle before Wave 1 implementation packets. |
+| 2026-02-24 | Wave 0 targeted blocker closure | Closed a linked-WASM regression in builtin import wiring by adding missing `sys_hexversion`/`sys_api_version`/`sys_abiflags`/`sys_implementation_payload` wasm import ids, reran focused linked `bench_bytes_find`, and reran compression differential smoke lanes with RSS/memory-cap constraints. | Complete (targeted gate slice) | `runtime/molt-backend/src/wasm.rs`, `tests/differential/stdlib/{bz2_basic.py,gzip_basic.py,lzma_basic.py,zlib_basic.py}`, command evidence: `bench_bytes_find | 54.3568 | 25822.0 KB` | Continue Wave 0 full refresh bundle (`tools/compile_progress.py`, `tools/bench.py`, full `tools/bench_wasm.py`) before Wave 1 experiment packets. |
+| 2026-02-25 | Wave 0 release-lane triage | Diagnosed release build failures as runtime compile breakage in `_asyncio` scheduler error paths (`raise_exception` signature misuse), patched `runtime/molt-runtime/src/async_rt/scheduler.rs`, and revalidated targeted correctness gates; confirmed compile-throughput tooling still exhibits long-tail release churn and background contention sensitivity. | Partial complete (blocker isolated + patch landed) | `runtime/molt-runtime/src/async_rt/scheduler.rs`, `/Volumes/APDataStore/Molt/compile_progress_20260224T230653Z_wave0/compile_progress.json`, `/Volumes/APDataStore/Molt/bench/results/optimization_progress/2026-02-24_wave0_refresh/bench_native_bytes_find_20260225.json` | Stabilize release compile lane execution contract (lock/daemon/sccache policy), rerun Wave 0 compile refresh, then capture native/wasm benchmark artifacts with `.venv`-backed interpreter to avoid missing `packaging` failures. |
 
 ## Experiment Template (Use For Each OPT Track)
 

@@ -1,12 +1,60 @@
-"""Intrinsic-first stdlib module stub for `tkinter.dialog`."""
+"""Phase-0 intrinsic-backed `tkinter.dialog` wrappers."""
 
+import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_DIALOG_SHOW = _require_intrinsic("molt_tk_dialog_show", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.dialog` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "tkinter.dialog" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def _resolve_master(master):
+    if master is None:
+        return _tkinter._get_default_root()
+    if not isinstance(master, _tkinter.Misc):
+        raise TypeError("dialog master must be a tkinter widget or root")
+    return master
+
+
+def _app_handle(master):
+    app = master._tk_app
+    return getattr(app, "_handle", app)
+
+
+class Dialog:
+    """Thin wrapper over the Tcl `tk_dialog` command."""
+
+    def __init__(
+        self,
+        master=None,
+        title=None,
+        text=None,
+        bitmap=None,
+        default=0,
+        strings=(),
+    ):
+        self.master = master
+        self.title = "" if title is None else str(title)
+        self.text = "" if text is None else str(text)
+        self.bitmap = "" if bitmap is None else str(bitmap)
+        self.default = int(default)
+        self.strings = tuple(str(value) for value in strings)
+        self.num = None
+
+    def show(self):
+        master = _resolve_master(self.master)
+        result = _MOLT_TK_DIALOG_SHOW(
+            _app_handle(master),
+            str(master),
+            self.title,
+            self.text,
+            self.bitmap,
+            self.default,
+            list(self.strings),
+        )
+        try:
+            self.num = int(result)
+        except Exception:  # noqa: BLE001
+            self.num = result
+        return self.num
+
+
+__all__ = ["Dialog"]

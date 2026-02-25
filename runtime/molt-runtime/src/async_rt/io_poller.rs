@@ -1103,92 +1103,97 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `obj_bits` is a valid I/O object pointer.
 pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let obj_ptr = ptr_from_bits(obj_bits);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits() as i64;
-        }
-        let header = header_from_obj_ptr(obj_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
-        let payload_len = payload_bytes / std::mem::size_of::<u64>();
-        if payload_len < 2 {
-            return raise_exception::<i64>(_py, "TypeError", "io wait payload too small");
-        }
-        let payload_ptr = obj_ptr as *mut u64;
-        let socket_bits = *payload_ptr;
-        let socket_obj = obj_from_bits(socket_bits);
-        let Some(handle) = to_i64(socket_obj) else {
-            return raise_exception::<i64>(_py, "TypeError", "invalid socket");
-        };
-        if handle < 0 {
-            return raise_exception::<i64>(_py, "TypeError", "invalid socket");
-        }
-        let events_bits = *payload_ptr.add(1);
-        let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
-        if events == 0 {
-            return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
-        }
-        if (*header).state == 0 {
-            let mut timeout: Option<f64> = None;
-            if payload_len >= 3 {
-                let timeout_bits = *payload_ptr.add(2);
-                let timeout_obj = obj_from_bits(timeout_bits);
-                if !timeout_obj.is_none() {
-                    if let Some(val) = to_f64(timeout_obj) {
-                        if !val.is_finite() || val < 0.0 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let obj_ptr = ptr_from_bits(obj_bits);
+            if obj_ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            let header = header_from_obj_ptr(obj_ptr);
+            let payload_bytes = (*header)
+                .size
+                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_len = payload_bytes / std::mem::size_of::<u64>();
+            if payload_len < 2 {
+                return raise_exception::<i64>(_py, "TypeError", "io wait payload too small");
+            }
+            let payload_ptr = obj_ptr as *mut u64;
+            let socket_bits = *payload_ptr;
+            let socket_obj = obj_from_bits(socket_bits);
+            let Some(handle) = to_i64(socket_obj) else {
+                return raise_exception::<i64>(_py, "TypeError", "invalid socket");
+            };
+            if handle < 0 {
+                return raise_exception::<i64>(_py, "TypeError", "invalid socket");
+            }
+            let events_bits = *payload_ptr.add(1);
+            let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
+            if events == 0 {
+                return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
+            }
+            if (*header).state == 0 {
+                let mut timeout: Option<f64> = None;
+                if payload_len >= 3 {
+                    let timeout_bits = *payload_ptr.add(2);
+                    let timeout_obj = obj_from_bits(timeout_bits);
+                    if !timeout_obj.is_none() {
+                        if let Some(val) = to_f64(timeout_obj) {
+                            if !val.is_finite() || val < 0.0 {
+                                return raise_exception::<i64>(
+                                    _py,
+                                    "ValueError",
+                                    "timeout must be non-negative",
+                                );
+                            }
+                            timeout = Some(val);
+                        } else {
                             return raise_exception::<i64>(
                                 _py,
-                                "ValueError",
-                                "timeout must be non-negative",
+                                "TypeError",
+                                "timeout must be float or None",
                             );
                         }
-                        timeout = Some(val);
-                    } else {
-                        return raise_exception::<i64>(
-                            _py,
-                            "TypeError",
-                            "timeout must be float or None",
-                        );
                     }
                 }
-            }
-            if let Some(val) = timeout {
-                if val == 0.0 {
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                if let Some(val) = timeout {
+                    if val == 0.0 {
+                        return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                    }
+                    let deadline = monotonic_now_secs(_py) + val;
+                    let deadline_bits = MoltObject::from_float(deadline).bits();
+                    if payload_len >= 3 {
+                        dec_ref_bits(_py, *payload_ptr.add(2));
+                        *payload_ptr.add(2) = deadline_bits;
+                        inc_ref_bits(_py, deadline_bits);
+                    }
                 }
-                let deadline = monotonic_now_secs(_py) + val;
-                let deadline_bits = MoltObject::from_float(deadline).bits();
-                if payload_len >= 3 {
-                    dec_ref_bits(_py, *payload_ptr.add(2));
-                    *payload_ptr.add(2) = deadline_bits;
-                    inc_ref_bits(_py, deadline_bits);
+                if let Err(err) = runtime_state(_py)
+                    .io_poller()
+                    .register_wait(obj_ptr, handle, events)
+                {
+                    return raise_exception::<i64>(_py, "RuntimeError", &err.to_string());
                 }
+                (*header).state = 1;
+                return pending_bits_i64();
             }
-            if let Err(err) = runtime_state(_py)
-                .io_poller()
-                .register_wait(obj_ptr, handle, events)
-            {
-                return raise_exception::<i64>(_py, "RuntimeError", &err.to_string());
+            if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
+                let res_bits = MoltObject::from_int(mask as i64).bits();
+                return res_bits as i64;
             }
-            (*header).state = 1;
-            return pending_bits_i64();
-        }
-        if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
-            let res_bits = MoltObject::from_int(mask as i64).bits();
-            return res_bits as i64;
-        }
-        if payload_len >= 3 {
-            let deadline_obj = obj_from_bits(*payload_ptr.add(2));
-            if let Some(deadline) = to_f64(deadline_obj) {
-                if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
+            if payload_len >= 3 {
+                let deadline_obj = obj_from_bits(*payload_ptr.add(2));
+                if let Some(deadline) = to_f64(deadline_obj)
+                    && deadline.is_finite()
+                    && monotonic_now_secs(_py) >= deadline
+                {
                     runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
                     return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
             }
-        }
-        pending_bits_i64()
-    })
+            pending_bits_i64()
+        })
+    }
 }

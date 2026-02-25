@@ -1,12 +1,9 @@
-"""Intrinsic-first stdlib module stub for `compression.bz2`."""
+"""``compression.bz2`` — re-export from top-level ``bz2`` module."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `compression.bz2` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "compression.bz2" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+from bz2 import *  # noqa: F401, F403
+from bz2 import __all__ as __all__  # noqa: F811
+from bz2 import BZ2Compressor, BZ2Decompressor  # noqa: F401

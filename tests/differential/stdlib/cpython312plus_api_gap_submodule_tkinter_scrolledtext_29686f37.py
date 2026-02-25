@@ -8,8 +8,8 @@ import io
 import json
 
 MODULE_NAME = "tkinter.scrolledtext"
-SPEC_ONLY_MODULES = ['antigravity']
-SPEC_ONLY_PREFIXES = ('tkinter', 'turtle', 'turtledemo')
+SPEC_ONLY_MODULES = ["antigravity"]
+SPEC_ONLY_PREFIXES = ("turtle", "turtledemo")
 
 
 def _digest_text(text: str) -> str:
@@ -48,8 +48,16 @@ def _module_api_digest(module: object) -> tuple[int, str, list[str]]:
     return len(rows), digest, head
 
 
+def _host_tkinter_available() -> bool:
+    return importlib.util.find_spec("_tkinter") is not None
+
+
 def _is_spec_only(module_name: str) -> bool:
     if module_name in SPEC_ONLY_MODULES:
+        return True
+    if (
+        module_name == "_tkinter" or module_name.startswith("tkinter")
+    ) and not _host_tkinter_available():
         return True
     for prefix in SPEC_ONLY_PREFIXES:
         if module_name == prefix or module_name.startswith(prefix + "."):
@@ -64,7 +72,10 @@ def _probe(module_name: str) -> dict[str, object]:
     cap_stdout = io.StringIO()
     cap_stderr = io.StringIO()
     try:
-        with contextlib.redirect_stdout(cap_stdout), contextlib.redirect_stderr(cap_stderr):
+        with (
+            contextlib.redirect_stdout(cap_stdout),
+            contextlib.redirect_stderr(cap_stderr),
+        ):
             module = importlib.import_module(module_name)
     except BaseException as exc:  # noqa: BLE001
         return {

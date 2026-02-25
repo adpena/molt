@@ -15,7 +15,7 @@ def _as_int(value: Any, default: int | None = None) -> int | None:
 def list_items(payload: dict[str, Any]) -> dict[str, Any]:
     """Demo entrypoint for the Django offload contract.
 
-    TODO(offload, owner:runtime, milestone:SL1): compile entrypoints into molt_worker.
+    TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): compile entrypoints into molt_worker.
     """
     user_id = _as_int(payload.get("user_id"))
     if user_id is None:

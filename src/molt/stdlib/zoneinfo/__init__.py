@@ -10,9 +10,7 @@ _MOLT_ZONEINFO_RUNTIME_READY = _require_intrinsic(
     "molt_zoneinfo_runtime_ready", globals()
 )
 
-# TODO(stdlib, owner:runtime, milestone:TL3, priority:P2, status:planned):
-# Replace the minimal built-in timezone table with a full IANA tzdb-backed
-# ZoneInfo implementation in Rust intrinsics.
+# TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): replace the minimal built-in timezone table with a full IANA tzdb-backed ZoneInfo implementation in Rust intrinsics.
 _SUPPORTED_ZONE_KEYS = {"UTC", "America/New_York"}
 
 
