@@ -572,6 +572,7 @@ enum TkOperation {
     After,
     Call,
     BindCommand,
+    UnbindCommand,
     FileHandlerCreate,
     FileHandlerDelete,
     DestroyWidget,
@@ -592,6 +593,7 @@ impl TkOperation {
             Self::After => "molt_tk_after",
             Self::Call => "molt_tk_call",
             Self::BindCommand => "molt_tk_bind_command",
+            Self::UnbindCommand => "molt_tk_unbind_command",
             Self::FileHandlerCreate => "molt_tk_filehandler_create",
             Self::FileHandlerDelete => "molt_tk_filehandler_delete",
             Self::DestroyWidget => "molt_tk_destroy_widget",
@@ -612,6 +614,7 @@ impl TkOperation {
                 | Self::After
                 | Self::Call
                 | Self::BindCommand
+                | Self::UnbindCommand
                 | Self::FileHandlerCreate
                 | Self::FileHandlerDelete
                 | Self::DestroyWidget
@@ -663,6 +666,7 @@ struct TkAppState {
 struct TkWidgetState {
     widget_command: String,
     options: HashMap<String, u64>,
+    treeview: Option<TkTreeviewState>,
 }
 
 struct TkFileHandlerRegistration {
@@ -675,6 +679,32 @@ struct TkFileHandlerRegistration {
 struct TkFileHandlerCommand {
     fd: i64,
     mask: i64,
+}
+
+#[derive(Default)]
+struct TkTreeviewState {
+    items: HashMap<String, TkTreeviewItem>,
+    root_children: Vec<String>,
+    selection: Vec<String>,
+    focus: Option<String>,
+    columns: HashMap<String, HashMap<String, u64>>,
+    headings: HashMap<String, HashMap<String, u64>>,
+    tags: HashMap<String, TkTreeTagState>,
+    next_auto_id: u64,
+}
+
+#[derive(Default)]
+struct TkTreeviewItem {
+    parent: String,
+    children: Vec<String>,
+    options: HashMap<String, u64>,
+    values: HashMap<String, u64>,
+}
+
+#[derive(Default)]
+struct TkTreeTagState {
+    options: HashMap<String, u64>,
+    bindings: HashMap<String, String>,
 }
 
 enum TkEvent {
@@ -936,9 +966,40 @@ fn clear_value_map_refs(py: &PyToken<'_>, values: &mut HashMap<String, u64>) {
     }
 }
 
+fn value_map_set_bits(py: &PyToken<'_>, values: &mut HashMap<String, u64>, key: String, bits: u64) {
+    inc_ref_bits(py, bits);
+    if let Some(old_bits) = values.insert(key, bits) {
+        dec_ref_bits(py, old_bits);
+    }
+}
+
+fn clear_treeview_refs(py: &PyToken<'_>, treeview: &mut TkTreeviewState) {
+    for item in treeview.items.values_mut() {
+        clear_value_map_refs(py, &mut item.options);
+        clear_value_map_refs(py, &mut item.values);
+    }
+    for options in treeview.columns.values_mut() {
+        clear_value_map_refs(py, options);
+    }
+    for options in treeview.headings.values_mut() {
+        clear_value_map_refs(py, options);
+    }
+    for tag in treeview.tags.values_mut() {
+        clear_value_map_refs(py, &mut tag.options);
+        tag.bindings.clear();
+    }
+    treeview.items.clear();
+    treeview.root_children.clear();
+    treeview.selection.clear();
+    treeview.focus = None;
+}
+
 fn clear_widget_refs(py: &PyToken<'_>, widget: TkWidgetState) {
     let mut options = widget.options;
     clear_value_map_refs(py, &mut options);
+    if let Some(mut treeview) = widget.treeview {
+        clear_treeview_refs(py, &mut treeview);
+    }
 }
 
 fn drop_app_state_refs(py: &PyToken<'_>, app: &mut TkAppState) {
@@ -1124,6 +1185,158 @@ fn parse_expr_literal(expression: &str) -> Option<TkExprLiteral> {
     None
 }
 
+fn alloc_tuple_bits(py: &PyToken<'_>, elems: &[u64], alloc_context: &str) -> Result<u64, u64> {
+    let ptr = crate::object::builders::alloc_tuple(py, elems);
+    if ptr.is_null() {
+        return Err(raise_exception::<u64>(py, "MemoryError", alloc_context));
+    }
+    Ok(MoltObject::from_ptr(ptr).bits())
+}
+
+fn alloc_tuple_from_strings(
+    py: &PyToken<'_>,
+    values: &[String],
+    alloc_context: &str,
+) -> Result<u64, u64> {
+    let mut bits = Vec::with_capacity(values.len());
+    for value in values {
+        match alloc_string_bits(py, value) {
+            Ok(value_bits) => bits.push(value_bits),
+            Err(err_bits) => {
+                for value_bits in bits {
+                    dec_ref_bits(py, value_bits);
+                }
+                return Err(err_bits);
+            }
+        }
+    }
+    let tuple_bits = alloc_tuple_bits(py, bits.as_slice(), alloc_context);
+    for value_bits in bits {
+        dec_ref_bits(py, value_bits);
+    }
+    tuple_bits
+}
+
+fn parse_treeview_index(value: &str, len: usize) -> usize {
+    if value.eq_ignore_ascii_case("end") {
+        return len;
+    }
+    match value.trim().parse::<i64>() {
+        Ok(parsed) if parsed <= 0 => 0,
+        Ok(parsed) => (parsed as usize).min(len),
+        Err(_) => len,
+    }
+}
+
+fn parse_treeview_item_list_arg(
+    py: &PyToken<'_>,
+    handle: i64,
+    bits: u64,
+    label: &str,
+) -> Result<Vec<String>, u64> {
+    if let Some(raw_items) = decode_value_list(obj_from_bits(bits)) {
+        let mut out = Vec::with_capacity(raw_items.len());
+        for item_bits in raw_items {
+            out.push(get_string_arg(py, handle, item_bits, label)?);
+        }
+        return Ok(out);
+    }
+    Ok(vec![get_string_arg(py, handle, bits, label)?])
+}
+
+fn parse_treeview_tags(item: &TkTreeviewItem) -> Vec<String> {
+    let Some(tags_bits) = item.options.get("-tags").copied() else {
+        return Vec::new();
+    };
+    if let Some(raw) = decode_value_list(obj_from_bits(tags_bits)) {
+        let mut out = Vec::with_capacity(raw.len());
+        for tag_bits in raw {
+            if let Some(tag) = string_obj_to_owned(obj_from_bits(tag_bits)) {
+                out.push(tag);
+            }
+        }
+        return out;
+    }
+    let value = obj_from_bits(tags_bits);
+    if let Some(tag) = string_obj_to_owned(value) {
+        if tag.trim().is_empty() {
+            return Vec::new();
+        }
+        return tag.split_whitespace().map(str::to_string).collect();
+    }
+    Vec::new()
+}
+
+fn treeview_remove_from_parent(treeview: &mut TkTreeviewState, item_id: &str) {
+    if let Some(parent_name) = treeview.items.get(item_id).map(|item| item.parent.clone()) {
+        if parent_name.is_empty() {
+            treeview.root_children.retain(|child| child != item_id);
+            return;
+        }
+        if let Some(parent) = treeview.items.get_mut(&parent_name) {
+            parent.children.retain(|child| child != item_id);
+        }
+    } else {
+        treeview.root_children.retain(|child| child != item_id);
+    }
+}
+
+fn treeview_insert_into_parent(
+    treeview: &mut TkTreeviewState,
+    parent_id: &str,
+    index: usize,
+    item_id: String,
+) {
+    if parent_id.is_empty() {
+        let idx = index.min(treeview.root_children.len());
+        treeview.root_children.insert(idx, item_id);
+        return;
+    }
+    if let Some(parent) = treeview.items.get_mut(parent_id) {
+        let idx = index.min(parent.children.len());
+        parent.children.insert(idx, item_id);
+    }
+}
+
+fn treeview_remove_item(py: &PyToken<'_>, treeview: &mut TkTreeviewState, item_id: &str) {
+    let Some(mut item) = treeview.items.remove(item_id) else {
+        return;
+    };
+    let children = std::mem::take(&mut item.children);
+    for child in children {
+        treeview_remove_item(py, treeview, &child);
+    }
+    clear_value_map_refs(py, &mut item.options);
+    clear_value_map_refs(py, &mut item.values);
+    treeview.selection.retain(|selected| selected != item_id);
+    if treeview.focus.as_deref() == Some(item_id) {
+        treeview.focus = None;
+    }
+}
+
+fn treeview_set_pairs_to_tuple(py: &PyToken<'_>, item: &TkTreeviewItem) -> Result<u64, u64> {
+    let mut keys: Vec<String> = item.values.keys().cloned().collect();
+    keys.sort_unstable();
+    let mut tuple_elems = Vec::with_capacity(keys.len() * 2);
+    for column in keys {
+        let Some(value_bits) = item.values.get(&column).copied() else {
+            continue;
+        };
+        let column_bits = alloc_string_bits(py, &column)?;
+        tuple_elems.push(column_bits);
+        tuple_elems.push(value_bits);
+    }
+    let out = alloc_tuple_bits(
+        py,
+        tuple_elems.as_slice(),
+        "failed to allocate treeview set tuple",
+    );
+    for bits in tuple_elems {
+        dec_ref_bits(py, bits);
+    }
+    out
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn option_use_tk(py: &PyToken<'_>, options_bits: u64) -> bool {
     let obj = obj_from_bits(options_bits);
@@ -1208,6 +1421,12 @@ fn unregister_tcl_callback_proc(app: &mut TkAppState, name: &str) {
     };
     let _ = interp.eval(("rename", name.to_string(), ""));
 }
+
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+fn unregister_tcl_callback_proc(_app: &mut TkAppState, _name: &str) {}
+
+#[cfg(target_arch = "wasm32")]
+fn unregister_tcl_callback_proc(_app: &mut TkAppState, _name: &str) {}
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn unregister_all_tcl_callback_procs(app: &mut TkAppState) {
@@ -2001,11 +2220,824 @@ fn handle_widget_create_command(
         TkWidgetState {
             widget_command: widget_command.to_string(),
             options,
+            treeview: (widget_command == "ttk::treeview").then(TkTreeviewState::default),
         },
     );
     app.last_error = None;
     drop(registry);
     alloc_string_bits(py, &widget_path)
+}
+
+fn handle_treeview_widget_path_command(
+    py: &PyToken<'_>,
+    handle: i64,
+    widget_path: &str,
+    subcommand: &str,
+    args: &[u64],
+) -> Result<Option<u64>, u64> {
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    let Some(widget) = app.widgets.get_mut(widget_path) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad window path name \"{widget_path}\""),
+        ));
+    };
+    let Some(treeview) = widget.treeview.as_mut() else {
+        return Ok(None);
+    };
+
+    match subcommand {
+        "bbox" => {
+            if args.len() != 3 && args.len() != 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "bbox expects item and optional column",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item")?;
+            if treeview.items.contains_key(&item_id) {
+                let bbox = vec![
+                    "1".to_string(),
+                    "2".to_string(),
+                    "3".to_string(),
+                    "4".to_string(),
+                ];
+                app.last_error = None;
+                return alloc_tuple_from_strings(py, &bbox, "failed to allocate treeview bbox")
+                    .map(Some);
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, "").map(Some);
+        }
+        "children" => {
+            if args.len() != 3 && args.len() != 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "children expects item and optional replacement children",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item")?;
+            if args.len() == 3 {
+                let children = if item_id.is_empty() {
+                    treeview.root_children.clone()
+                } else {
+                    let Some(item) = treeview.items.get(&item_id) else {
+                        return Err(raise_tcl_for_handle(
+                            py,
+                            handle,
+                            format!("item \"{item_id}\" not found"),
+                        ));
+                    };
+                    item.children.clone()
+                };
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    &children,
+                    "failed to allocate treeview children tuple",
+                )
+                .map(Some);
+            }
+
+            let replacement = parse_treeview_item_list_arg(
+                py,
+                handle,
+                args[3],
+                "treeview replacement child item",
+            )?;
+            for child in &replacement {
+                if !treeview.items.contains_key(child) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("item \"{child}\" not found"),
+                    ));
+                }
+            }
+
+            let old_children = if item_id.is_empty() {
+                std::mem::take(&mut treeview.root_children)
+            } else {
+                let Some(parent) = treeview.items.get_mut(&item_id) else {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("item \"{item_id}\" not found"),
+                    ));
+                };
+                std::mem::take(&mut parent.children)
+            };
+            for child in old_children {
+                if let Some(item) = treeview.items.get_mut(&child) {
+                    item.parent.clear();
+                }
+            }
+            for child in &replacement {
+                treeview_remove_from_parent(treeview, child);
+                if let Some(item) = treeview.items.get_mut(child) {
+                    item.parent = item_id.clone();
+                }
+            }
+            if item_id.is_empty() {
+                treeview.root_children = replacement;
+            } else if let Some(parent) = treeview.items.get_mut(&item_id) {
+                parent.children = replacement;
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "column" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "column expects a column identifier",
+                ));
+            }
+            let column = get_string_arg(py, handle, args[2], "treeview column")?;
+            let options = treeview.columns.entry(column).or_default();
+            if args.len() == 4 {
+                let opt = get_string_arg(py, handle, args[3], "treeview column option")?;
+                let bits = options
+                    .get(&opt)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if bits != MoltObject::none().bits() {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_string_bits(py, "").map(Some);
+            }
+            if !(args.len() - 3).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "column configure expects key/value pairs",
+                ));
+            }
+            for idx in (3..args.len()).step_by(2) {
+                let option = get_string_arg(py, handle, args[idx], "treeview column option")?;
+                value_map_set_bits(py, options, option, args[idx + 1]);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "delete" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "delete expects one or more item ids",
+                ));
+            }
+            for &item_bits in &args[2..] {
+                let item_id = get_string_arg(py, handle, item_bits, "treeview item id")?;
+                treeview_remove_from_parent(treeview, &item_id);
+                treeview_remove_item(py, treeview, &item_id);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "detach" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "detach expects one or more item ids",
+                ));
+            }
+            for &item_bits in &args[2..] {
+                let item_id = get_string_arg(py, handle, item_bits, "treeview item id")?;
+                treeview_remove_from_parent(treeview, &item_id);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "exists" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "exists expects exactly one item id",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            app.last_error = None;
+            return Ok(Some(
+                MoltObject::from_bool(treeview.items.contains_key(&item_id)).bits(),
+            ));
+        }
+        "focus" => {
+            if args.len() == 2 {
+                let value = treeview.focus.clone().unwrap_or_default();
+                app.last_error = None;
+                return alloc_string_bits(py, &value).map(Some);
+            }
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "focus expects zero or one item id",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            if !item_id.is_empty() && !treeview.items.contains_key(&item_id) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            }
+            treeview.focus = if item_id.is_empty() {
+                None
+            } else {
+                Some(item_id)
+            };
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "heading" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "heading expects a column identifier",
+                ));
+            }
+            let column = get_string_arg(py, handle, args[2], "treeview heading column")?;
+            let options = treeview.headings.entry(column).or_default();
+            if args.len() == 4 {
+                let opt = get_string_arg(py, handle, args[3], "treeview heading option")?;
+                let bits = options
+                    .get(&opt)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if bits != MoltObject::none().bits() {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_string_bits(py, "").map(Some);
+            }
+            if !(args.len() - 3).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "heading configure expects key/value pairs",
+                ));
+            }
+            for idx in (3..args.len()).step_by(2) {
+                let option = get_string_arg(py, handle, args[idx], "treeview heading option")?;
+                value_map_set_bits(py, options, option, args[idx + 1]);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "identify" => {
+            if args.len() != 5 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "identify expects component, x, y",
+                ));
+            }
+            let component = get_string_arg(py, handle, args[2], "treeview identify component")?;
+            let result = match component.as_str() {
+                "row" => treeview.root_children.first().cloned().unwrap_or_default(),
+                "column" => "#0".to_string(),
+                "region" => "cell".to_string(),
+                "element" => "text".to_string(),
+                _ => String::new(),
+            };
+            app.last_error = None;
+            return alloc_string_bits(py, &result).map(Some);
+        }
+        "index" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(py, handle, "index expects an item id"));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let Some(item) = treeview.items.get(&item_id) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            };
+            let siblings = if item.parent.is_empty() {
+                &treeview.root_children
+            } else {
+                let Some(parent) = treeview.items.get(&item.parent) else {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("parent \"{}\" not found", item.parent),
+                    ));
+                };
+                &parent.children
+            };
+            let position = siblings
+                .iter()
+                .position(|candidate| candidate == &item_id)
+                .unwrap_or(0) as i64;
+            app.last_error = None;
+            return Ok(Some(MoltObject::from_int(position).bits()));
+        }
+        "insert" => {
+            if args.len() < 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "insert expects parent and index",
+                ));
+            }
+            let parent = get_string_arg(py, handle, args[2], "treeview parent item")?;
+            let index_spec = get_string_arg(py, handle, args[3], "treeview insert index")?;
+            if !parent.is_empty() && !treeview.items.contains_key(&parent) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{parent}\" not found"),
+                ));
+            }
+            if !(args.len() - 4).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "insert options must be key/value pairs",
+                ));
+            }
+            let mut item_id: Option<String> = None;
+            let mut item_options: HashMap<String, u64> = HashMap::new();
+            for idx in (4..args.len()).step_by(2) {
+                let option_name =
+                    get_string_arg(py, handle, args[idx], "treeview insert option name")?;
+                let value_bits = args[idx + 1];
+                if option_name == "-id" {
+                    item_id = Some(get_string_arg(
+                        py,
+                        handle,
+                        value_bits,
+                        "treeview inserted item id",
+                    )?);
+                    continue;
+                }
+                value_map_set_bits(py, &mut item_options, option_name, value_bits);
+            }
+            let resolved_item_id = if let Some(value) = item_id {
+                value
+            } else {
+                treeview.next_auto_id = treeview.next_auto_id.saturating_add(1);
+                format!("I{}", treeview.next_auto_id)
+            };
+            if treeview.items.contains_key(&resolved_item_id) {
+                clear_value_map_refs(py, &mut item_options);
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{resolved_item_id}\" already exists"),
+                ));
+            }
+            let sibling_len = if parent.is_empty() {
+                treeview.root_children.len()
+            } else {
+                treeview
+                    .items
+                    .get(&parent)
+                    .map(|item| item.children.len())
+                    .unwrap_or(0)
+            };
+            let index = parse_treeview_index(&index_spec, sibling_len);
+            treeview_insert_into_parent(treeview, &parent, index, resolved_item_id.clone());
+            treeview.items.insert(
+                resolved_item_id.clone(),
+                TkTreeviewItem {
+                    parent,
+                    children: Vec::new(),
+                    options: item_options,
+                    values: HashMap::new(),
+                },
+            );
+            app.last_error = None;
+            return alloc_string_bits(py, &resolved_item_id).map(Some);
+        }
+        "item" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(py, handle, "item expects an item id"));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let Some(item) = treeview.items.get_mut(&item_id) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            };
+            if args.len() == 3 {
+                let mut keys: Vec<String> = item.options.keys().cloned().collect();
+                keys.sort_unstable();
+                let mut tuple_elems = Vec::with_capacity(keys.len() * 2);
+                for key in keys {
+                    let key_bits = alloc_string_bits(py, &key)?;
+                    tuple_elems.push(key_bits);
+                    if let Some(bits) = item.options.get(&key).copied() {
+                        tuple_elems.push(bits);
+                    } else {
+                        tuple_elems.push(MoltObject::none().bits());
+                    }
+                }
+                let out = alloc_tuple_bits(
+                    py,
+                    tuple_elems.as_slice(),
+                    "failed to allocate treeview item tuple",
+                );
+                for bits in tuple_elems {
+                    dec_ref_bits(py, bits);
+                }
+                app.last_error = None;
+                return out.map(Some);
+            }
+            if args.len() == 4 {
+                let option = get_string_arg(py, handle, args[3], "treeview item option")?;
+                let bits = item
+                    .options
+                    .get(&option)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if bits != MoltObject::none().bits() {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_string_bits(py, "").map(Some);
+            }
+            if !(args.len() - 3).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "item configure expects key/value pairs",
+                ));
+            }
+            for idx in (3..args.len()).step_by(2) {
+                let option = get_string_arg(py, handle, args[idx], "treeview item option")?;
+                value_map_set_bits(py, &mut item.options, option, args[idx + 1]);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "move" => {
+            if args.len() != 5 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "move expects item, parent, index",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let parent = get_string_arg(py, handle, args[3], "treeview parent item")?;
+            let index_spec = get_string_arg(py, handle, args[4], "treeview index")?;
+            if !treeview.items.contains_key(&item_id) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            }
+            if !parent.is_empty() && !treeview.items.contains_key(&parent) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{parent}\" not found"),
+                ));
+            }
+            treeview_remove_from_parent(treeview, &item_id);
+            let sibling_len = if parent.is_empty() {
+                treeview.root_children.len()
+            } else {
+                treeview
+                    .items
+                    .get(&parent)
+                    .map(|item| item.children.len())
+                    .unwrap_or(0)
+            };
+            let index = parse_treeview_index(&index_spec, sibling_len);
+            if let Some(item) = treeview.items.get_mut(&item_id) {
+                item.parent = parent.clone();
+            }
+            treeview_insert_into_parent(treeview, &parent, index, item_id);
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "next" | "prev" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("{subcommand} expects an item id"),
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let Some(item) = treeview.items.get(&item_id) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            };
+            let siblings = if item.parent.is_empty() {
+                &treeview.root_children
+            } else if let Some(parent) = treeview.items.get(&item.parent) {
+                &parent.children
+            } else {
+                &treeview.root_children
+            };
+            let mut result = String::new();
+            if let Some(position) = siblings.iter().position(|candidate| candidate == &item_id) {
+                let neighbor = if subcommand == "next" {
+                    siblings.get(position + 1)
+                } else if position > 0 {
+                    siblings.get(position - 1)
+                } else {
+                    None
+                };
+                if let Some(item) = neighbor {
+                    result = item.clone();
+                }
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, &result).map(Some);
+        }
+        "parent" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "parent expects an item id",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let Some(item) = treeview.items.get(&item_id) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            };
+            app.last_error = None;
+            return alloc_string_bits(py, &item.parent).map(Some);
+        }
+        "see" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(py, handle, "see expects an item id"));
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "selection" => {
+            if args.len() == 2 {
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    &treeview.selection,
+                    "failed to allocate treeview selection tuple",
+                )
+                .map(Some);
+            }
+            if args.len() < 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "selection expects operation and one or more item ids",
+                ));
+            }
+            let op = get_string_arg(py, handle, args[2], "treeview selection operation")?;
+            let mut items = Vec::with_capacity(args.len() - 3);
+            for &item_bits in &args[3..] {
+                items.push(get_string_arg(
+                    py,
+                    handle,
+                    item_bits,
+                    "treeview selection item",
+                )?);
+            }
+            match op.as_str() {
+                "set" => {
+                    treeview.selection.clear();
+                    for item in items {
+                        if treeview.items.contains_key(&item)
+                            && !treeview.selection.iter().any(|selected| selected == &item)
+                        {
+                            treeview.selection.push(item);
+                        }
+                    }
+                }
+                "add" => {
+                    for item in items {
+                        if treeview.items.contains_key(&item)
+                            && !treeview.selection.iter().any(|selected| selected == &item)
+                        {
+                            treeview.selection.push(item);
+                        }
+                    }
+                }
+                "remove" => {
+                    for item in items {
+                        treeview.selection.retain(|selected| selected != &item);
+                    }
+                }
+                "toggle" => {
+                    for item in items {
+                        if treeview.selection.iter().any(|selected| selected == &item) {
+                            treeview.selection.retain(|selected| selected != &item);
+                        } else if treeview.items.contains_key(&item) {
+                            treeview.selection.push(item);
+                        }
+                    }
+                }
+                _ => {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unsupported treeview selection operation \"{op}\""),
+                    ));
+                }
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "set" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "set expects item, optional column, and optional value",
+                ));
+            }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            let Some(item) = treeview.items.get_mut(&item_id) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            };
+            if args.len() == 3 {
+                app.last_error = None;
+                return treeview_set_pairs_to_tuple(py, item).map(Some);
+            }
+            let column = get_string_arg(py, handle, args[3], "treeview column")?;
+            if args.len() == 4 {
+                let bits = item
+                    .values
+                    .get(&column)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if bits != MoltObject::none().bits() {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_string_bits(py, "").map(Some);
+            }
+            value_map_set_bits(py, &mut item.values, column, args[4]);
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "tag" => {
+            if args.len() < 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "tag expects operation and tagname",
+                ));
+            }
+            let tag_op = get_string_arg(py, handle, args[2], "treeview tag operation")?;
+            let tagname = get_string_arg(py, handle, args[3], "treeview tag name")?;
+            match tag_op.as_str() {
+                "bind" => {
+                    let tag_state = treeview.tags.entry(tagname).or_default();
+                    if args.len() == 4 {
+                        app.last_error = None;
+                        return alloc_string_bits(py, "").map(Some);
+                    }
+                    if args.len() == 5 {
+                        let sequence =
+                            get_string_arg(py, handle, args[4], "treeview tag bind sequence")?;
+                        let script = tag_state
+                            .bindings
+                            .get(&sequence)
+                            .cloned()
+                            .unwrap_or_default();
+                        app.last_error = None;
+                        return alloc_string_bits(py, &script).map(Some);
+                    }
+                    if args.len() == 6 {
+                        let sequence =
+                            get_string_arg(py, handle, args[4], "treeview tag bind sequence")?;
+                        let script =
+                            get_string_arg(py, handle, args[5], "treeview tag bind script")?;
+                        tag_state.bindings.insert(sequence, script);
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        "tag bind expects tagname, sequence, optional script",
+                    ));
+                }
+                "configure" => {
+                    let tag_state = treeview.tags.entry(tagname).or_default();
+                    if args.len() == 4 {
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    if args.len() == 5 {
+                        let option =
+                            get_string_arg(py, handle, args[4], "treeview tag configure option")?;
+                        let bits = tag_state
+                            .options
+                            .get(&option)
+                            .copied()
+                            .unwrap_or_else(|| MoltObject::none().bits());
+                        if bits != MoltObject::none().bits() {
+                            inc_ref_bits(py, bits);
+                            app.last_error = None;
+                            return Ok(Some(bits));
+                        }
+                        app.last_error = None;
+                        return alloc_string_bits(py, "").map(Some);
+                    }
+                    if !(args.len() - 4).is_multiple_of(2) {
+                        return Err(raise_tcl_for_handle(
+                            py,
+                            handle,
+                            "tag configure expects key/value pairs",
+                        ));
+                    }
+                    for idx in (4..args.len()).step_by(2) {
+                        let option = get_string_arg(py, handle, args[idx], "treeview tag option")?;
+                        value_map_set_bits(py, &mut tag_state.options, option, args[idx + 1]);
+                    }
+                    app.last_error = None;
+                    return Ok(Some(MoltObject::none().bits()));
+                }
+                "has" => {
+                    if args.len() == 4 {
+                        let mut item_ids: Vec<String> = treeview
+                            .items
+                            .iter()
+                            .filter_map(|(item_id, item)| {
+                                parse_treeview_tags(item)
+                                    .iter()
+                                    .any(|tag| tag == &tagname)
+                                    .then_some(item_id.clone())
+                            })
+                            .collect();
+                        item_ids.sort_unstable();
+                        app.last_error = None;
+                        return alloc_tuple_from_strings(
+                            py,
+                            &item_ids,
+                            "failed to allocate treeview tag has tuple",
+                        )
+                        .map(Some);
+                    }
+                    if args.len() == 5 {
+                        let item_id = get_string_arg(py, handle, args[4], "treeview tag has item")?;
+                        let has_tag = treeview.items.get(&item_id).is_some_and(|item| {
+                            parse_treeview_tags(item).iter().any(|tag| tag == &tagname)
+                        });
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::from_bool(has_tag).bits()));
+                    }
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        "tag has expects tagname and optional item",
+                    ));
+                }
+                _ => {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unsupported treeview tag operation \"{tag_op}\""),
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(None)
 }
 
 fn handle_widget_path_command(
@@ -2022,6 +3054,11 @@ fn handle_widget_path_command(
         ));
     }
     let subcommand = get_string_arg(py, handle, args[1], "widget subcommand")?;
+    if let Some(bits) =
+        handle_treeview_widget_path_command(py, handle, widget_path, &subcommand, args)?
+    {
+        return Ok(bits);
+    }
     match subcommand.as_str() {
         "configure" => {
             if args.len() == 2 {
@@ -2652,6 +3689,40 @@ pub extern "C" fn molt_tk_bind_command(app_bits: u64, name_bits: u64, callback_b
         app.one_shot_callbacks.remove(&name);
         app.last_error = None;
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_unbind_command(app_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::UnbindCommand) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_tcl_for_handle(_py, handle, "unbind command name must be str");
+        };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        if let Some(callback_bits) = app.callbacks.remove(&name) {
+            app.one_shot_callbacks.remove(&name);
+            unregister_tcl_callback_proc(app, &name);
+            dec_ref_bits(_py, callback_bits);
+            app.last_error = None;
+            return MoltObject::none().bits();
+        }
+        if let Some(filehandler) = app.filehandler_commands.get(&name).copied() {
+            if let Err(bits) = clear_filehandler_registration_locked(_py, app, filehandler.fd) {
+                return bits;
+            }
+            app.last_error = None;
+            return MoltObject::none().bits();
+        }
+        app_tcl_error_locked(_py, app, format!("invalid command name \"{name}\""))
     })
 }
 

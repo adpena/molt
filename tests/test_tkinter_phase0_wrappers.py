@@ -48,6 +48,7 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_after": lambda _app=None, _delay=None, _fn=None: _runtime_unavailable("molt_tk_after"),
     "molt_tk_call": lambda _app=None, _argv=None: _runtime_unavailable("molt_tk_call"),
     "molt_tk_bind_command": lambda _app=None, _name=None, _fn=None: _runtime_unavailable("molt_tk_bind_command"),
+    "molt_tk_unbind_command": lambda _app=None, _name=None: _runtime_unavailable("molt_tk_unbind_command"),
     "molt_tk_filehandler_create": lambda _app=None, _fd=None, _mask=None, _callback=None, _file=None: _runtime_unavailable("molt_tk_filehandler_create"),
     "molt_tk_filehandler_delete": lambda _app=None, _fd=None: _runtime_unavailable("molt_tk_filehandler_delete"),
     "molt_tk_destroy_widget": lambda _app=None, _w=None: _runtime_unavailable("molt_tk_destroy_widget"),
@@ -280,6 +281,28 @@ def _tk_call(app, argv):
 def _tk_bind_command(app, name, callback):
     app["commands"][str(name)] = callback
 
+def _tk_unbind_command(app, name):
+    name = str(name)
+    if name in app["commands"]:
+        app["commands"].pop(name, None)
+        app["calls"].append(("rename", name, ""))
+        return None
+    for fd, events in tuple(app["fileevents"].items()):
+        found_event = None
+        for event_name, command_name in tuple(events.items()):
+            if command_name == name:
+                found_event = event_name
+                break
+        if found_event is None:
+            continue
+        events.pop(found_event, None)
+        if not events:
+            app["fileevents"].pop(fd, None)
+        app["commands"].pop(name, None)
+        app["calls"].append(("rename", name, ""))
+        return None
+    raise RuntimeError(f'invalid command name "{name}"')
+
 def _tk_after(_app, delay_ms, callback):
     callback()
     return f"after#{int(delay_ms)}"
@@ -384,6 +407,7 @@ builtins._molt_intrinsics = {
     "molt_tk_after": _tk_after,
     "molt_tk_call": _tk_call,
     "molt_tk_bind_command": _tk_bind_command,
+    "molt_tk_unbind_command": _tk_unbind_command,
     "molt_tk_filehandler_create": _tk_filehandler_create,
     "molt_tk_filehandler_delete": _tk_filehandler_delete,
     "molt_tk_destroy_widget": lambda _app=None, _w=None: None,
