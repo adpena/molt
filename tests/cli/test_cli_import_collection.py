@@ -597,6 +597,126 @@ def test_backend_daemon_request_payload_bytes_enforces_limit(
     assert "too large" in err
 
 
+def test_backend_codegen_env_digest_tracks_codegen_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
+    native_changed = cli._backend_codegen_env_digest(is_wasm=False)
+    assert native_changed != baseline_native
+
+    baseline_wasm = cli._backend_codegen_env_digest(is_wasm=True)
+    monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "2048")
+    wasm_changed = cli._backend_codegen_env_digest(is_wasm=True)
+    assert wasm_changed != baseline_wasm
+
+
+def test_backend_daemon_config_digest_and_socket_path_include_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
+    digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+    monkeypatch.setenv("MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2", "2")
+    digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+    assert digest_a != digest_b
+
+    socket_a = cli._backend_daemon_socket_path(
+        tmp_path, "dev-fast", config_digest=digest_a
+    )
+    socket_b = cli._backend_daemon_socket_path(
+        tmp_path, "dev-fast", config_digest=digest_b
+    )
+    assert socket_a != socket_b
+
+
+def test_function_cache_key_tracks_top_level_ir_extras() -> None:
+    ir_base = {"functions": [{"name": "f", "ops": []}], "profile": None}
+    ir_extra_a = {
+        "profile": None,
+        "functions": [{"name": "f", "ops": []}],
+        "meta": {"x": 1},
+    }
+    ir_extra_b = {
+        "functions": [{"name": "f", "ops": []}],
+        "meta": {"x": 1},
+        "profile": None,
+    }
+    key_base = cli._function_cache_key(ir_base, "native", None, "variant")
+    key_extra_a = cli._function_cache_key(ir_extra_a, "native", None, "variant")
+    key_extra_b = cli._function_cache_key(ir_extra_b, "native", None, "variant")
+    assert key_extra_a != key_base
+    assert key_extra_a == key_extra_b
+
+
+def test_compile_with_backend_daemon_surfaces_cache_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    captured_payload: dict[str, object] = {}
+
+    def _fake_request(
+        socket_path: Path,
+        payload: dict[str, object],
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        captured_payload.update(payload)
+        backend_output.write_bytes(b"\x7fELF")
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": True,
+                        "cached": True,
+                        "cache_tier": "function",
+                    }
+                ],
+                "health": {"pid": 42, "cache_hits": 1, "cache_misses": 0},
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        timeout=0.1,
+    )
+    assert result.ok is True
+    assert result.cached is True
+    assert result.cache_tier == "function"
+    assert captured_payload.get("config_digest") == "digest123"
+
+
+def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
+    wasm_bad = tmp_path / "bad.wasm"
+    wasm_bad.write_bytes(b"not-wasm")
+    assert not cli._is_valid_cached_backend_artifact(wasm_bad, is_wasm=True)
+
+    wasm_good = tmp_path / "good.wasm"
+    wasm_good.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    assert cli._is_valid_cached_backend_artifact(wasm_good, is_wasm=True)
+
+    native_empty = tmp_path / "empty.o"
+    native_empty.write_bytes(b"")
+    assert not cli._is_valid_cached_backend_artifact(native_empty, is_wasm=False)
+
+    native_nonempty = tmp_path / "nonempty.o"
+    native_nonempty.write_bytes(b"\x01")
+    assert cli._is_valid_cached_backend_artifact(native_nonempty, is_wasm=False)
+
+
 def test_backend_daemon_health_from_response_parses_int_fields() -> None:
     response = {
         "ok": True,

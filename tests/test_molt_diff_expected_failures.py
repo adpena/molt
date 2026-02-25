@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
@@ -255,7 +257,193 @@ def test_diff_batch_compile_server_env_flags(monkeypatch) -> None:
 def test_diff_batch_compile_server_timeout_env(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", raising=False)
-    assert module._diff_batch_compile_server_request_timeout() == 60.0
+    assert module._diff_batch_compile_server_request_timeout(90.0) == 90.0
+    assert module._diff_batch_compile_server_request_timeout(None) == 60.0
 
     monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", "15.5")
-    assert module._diff_batch_compile_server_request_timeout() == 15.5
+    assert module._diff_batch_compile_server_request_timeout(90.0) == 15.5
+
+    monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", "invalid")
+    assert module._diff_batch_compile_server_request_timeout(42.0) == 42.0
+
+
+def test_diff_build_helper_command_matches_internal_batch_server() -> None:
+    module = _load_diff_module()
+    cmd = f"{sys.executable} -m molt.cli internal-batch-build-server"
+    assert module._is_diff_build_helper_command(cmd)
+
+
+def test_batch_compile_server_readline_timeout_is_hard_deadline() -> None:
+    module = _load_diff_module()
+
+    class _DummyProc:
+        def __init__(self) -> None:
+            self.stderr = None
+
+    client = module._BatchCompileServerClient.__new__(module._BatchCompileServerClient)
+    client._proc = _DummyProc()
+    client._response_queue = module.queue.Queue()
+
+    start = module.time.monotonic()
+    with pytest.raises(TimeoutError):
+        client._readline(0.05)
+    elapsed = module.time.monotonic() - start
+    assert elapsed < 0.5
+
+
+def test_shutdown_batch_compile_server_uses_force_close_path(monkeypatch) -> None:
+    module = _load_diff_module()
+    calls: list[tuple[bool, float | None]] = []
+
+    class _FakeClient:
+        def close(self, *, force: bool = False, timeout: float | None = None) -> None:
+            calls.append((force, timeout))
+
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT", _FakeClient())
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 12345)
+
+    module._shutdown_batch_compile_server()
+
+    assert calls == [(True, None)]
+    assert module._BATCH_COMPILE_SERVER_CLIENT is None
+    assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
+
+
+def test_batch_compile_server_ping_failure_force_closes_and_cools_down(
+    monkeypatch,
+) -> None:
+    module = _load_diff_module()
+    events: list[tuple[str, bool | float | None | str]] = []
+
+    class _FakeClient:
+        def __init__(self, _env) -> None:
+            events.append(("init", None))
+
+        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            events.append(("request", timeout))
+            assert op == "ping"
+            raise TimeoutError("ping timeout")
+
+        def close(self, *, force: bool = False, timeout: float | None = None) -> None:
+            events.append(("close", force))
+
+    monkeypatch.setattr(module, "_BatchCompileServerClient", _FakeClient)
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT", None)
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 0)
+    module._batch_compile_server_reset_disabled()
+
+    client, error = module._batch_compile_server_client({}, request_timeout=0.1)
+    assert client is None
+    assert error is not None
+    assert "ping timeout" in error
+    assert ("close", True) in events
+
+    client_retry, retry_error = module._batch_compile_server_client(
+        {},
+        request_timeout=0.1,
+    )
+    assert client_retry is None
+    assert retry_error is not None
+    assert "temporarily disabled" in retry_error
+
+
+def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    attempts = {"count": 0}
+    resets = {"count": 0}
+
+    class _FakeClient:
+        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            assert op == "build"
+            assert isinstance(params, dict)
+            return {
+                "id": 1,
+                "ok": True,
+                "returncode": 0,
+                "stdout": "ok",
+                "stderr": "",
+            }
+
+    def _fake_client_factory(_env, *, request_timeout: float):
+        assert request_timeout == 12.0
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return None, "transient startup failure"
+        return _FakeClient(), None
+
+    def _fake_reset_disabled() -> None:
+        resets["count"] += 1
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
+    monkeypatch.setattr(
+        module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
+    )
+
+    rc, stdout, stderr, error = module._run_batch_compile_build(
+        env={"MOLT_CODEC": "msgpack"},
+        file_path="tests/differential/basic/arith.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "arith_molt",
+        build_profile="dev",
+        no_cache=False,
+        rebuild=False,
+        request_timeout=12.0,
+        strict_mode=True,
+    )
+
+    assert error is None
+    assert rc == 0
+    assert stdout == "ok"
+    assert stderr == ""
+    assert attempts["count"] == 2
+    assert resets["count"] == 1
+
+
+def test_run_batch_compile_build_error_path_force_closes_server(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    shutdown_calls: list[bool] = []
+    disabled_reasons: list[str] = []
+
+    class _FailingClient:
+        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            assert op == "build"
+            raise TimeoutError("build timed out")
+
+    def _fake_client_factory(_env, *, request_timeout: float):
+        assert request_timeout == 8.0
+        return _FailingClient(), None
+
+    def _fake_shutdown(*, force: bool = True) -> None:
+        shutdown_calls.append(force)
+
+    def _fake_mark_disabled(reason: str) -> None:
+        disabled_reasons.append(reason)
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
+    monkeypatch.setattr(module, "_shutdown_batch_compile_server", _fake_shutdown)
+    monkeypatch.setattr(
+        module, "_batch_compile_server_mark_disabled", _fake_mark_disabled
+    )
+
+    rc, stdout, stderr, error = module._run_batch_compile_build(
+        env={"MOLT_CODEC": "msgpack"},
+        file_path="tests/differential/basic/arith.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "arith_molt",
+        build_profile="dev",
+        no_cache=False,
+        rebuild=False,
+        request_timeout=8.0,
+        strict_mode=False,
+    )
+
+    assert rc == 0
+    assert stdout == ""
+    assert stderr == ""
+    assert error == "build timed out"
+    assert shutdown_calls == [True]
+    assert disabled_reasons == ["build timed out"]
