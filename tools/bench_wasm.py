@@ -659,9 +659,9 @@ def build_runtime_wasm(
         "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC", default=300.0
     )
     env = os.environ.copy()
-    # Runtime wasm artifacts have shown intermittent corruption on external
-    # target roots in this environment. Keep runtime builds on local target.
-    target_root = _repo_root() / "target"
+    target_root = _cargo_target_root()
+    if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
+        target_root = _repo_root() / "target"
     env["CARGO_TARGET_DIR"] = str(target_root)
     if reloc:
         base_flags = (

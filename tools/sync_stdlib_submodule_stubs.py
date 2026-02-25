@@ -56,7 +56,7 @@ def _stub_text(name: str, *, kind: str) -> str:
         "\n"
         '_require_intrinsic("molt_capabilities_has", globals())\n'
         "\n"
-        f"# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): "
+        f"# STDLIB_GAP(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): "
         f"replace `{name}` {kind} stub with full intrinsic-backed lowering.\n"
         "def __getattr__(attr: str):\n"
         "    raise RuntimeError(\n"

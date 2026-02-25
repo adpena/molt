@@ -112,10 +112,13 @@ pub(crate) struct InternedNames {
     pub(crate) ipow_name: AtomicU64,
     pub(crate) ilshift_name: AtomicU64,
     pub(crate) irshift_name: AtomicU64,
+    pub(crate) matmul_name: AtomicU64,
+    pub(crate) rmatmul_name: AtomicU64,
     pub(crate) imatmul_name: AtomicU64,
     pub(crate) ior_name: AtomicU64,
     pub(crate) iand_name: AtomicU64,
     pub(crate) ixor_name: AtomicU64,
+    pub(crate) bytes_dunder: AtomicU64,
 }
 
 impl InternedNames {
@@ -228,10 +231,13 @@ impl InternedNames {
             ipow_name: AtomicU64::new(0),
             ilshift_name: AtomicU64::new(0),
             irshift_name: AtomicU64::new(0),
+            matmul_name: AtomicU64::new(0),
+            rmatmul_name: AtomicU64::new(0),
             imatmul_name: AtomicU64::new(0),
             ior_name: AtomicU64::new(0),
             iand_name: AtomicU64::new(0),
             ixor_name: AtomicU64::new(0),
+            bytes_dunder: AtomicU64::new(0),
         }
     }
 }

@@ -80,19 +80,20 @@ def _chain_from_iterable(iterables: Iterable[Iterable[T]]) -> Iterator[T]:
 chain.from_iterable = _chain_from_iterable  # type: ignore[attr-defined]
 
 
-def islice(iterable: Iterable[T], /, *args: Any) -> Iterator[T]:
-    if len(args) == 1:
-        start = args[0]
-        stop = _MISSING
-        step = _MISSING
-    elif len(args) == 2:
-        start, stop = args
-        step = _MISSING
-    elif len(args) == 3:
-        start, stop, step = args
-    else:
+def islice(
+    iterable: Iterable[T],
+    /,
+    start_or_stop: Any = _MISSING,
+    stop: Any = _MISSING,
+    step: Any = _MISSING,
+) -> Iterator[T]:
+    if start_or_stop is _MISSING:
         raise TypeError("islice() takes 2 to 4 arguments")
-    return _MOLT_ISLICE(iterable, start, stop, step)
+    if stop is _MISSING and step is _MISSING:
+        # islice(iterable, stop) — single positional arg is the stop value
+        return _MOLT_ISLICE(iterable, start_or_stop, _MISSING, _MISSING)
+    # islice(iterable, start, stop[, step])
+    return _MOLT_ISLICE(iterable, start_or_stop, stop, step)
 
 
 def repeat(obj: T, times: int | None = None) -> Iterator[T]:

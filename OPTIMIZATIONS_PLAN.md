@@ -1,14 +1,14 @@
 # Molt Optimization Program (Comprehensive)
 
-Last updated: 2026-02-12
+Last updated: 2026-02-25
 Owner: compiler + runtime + backend + stdlib + tooling
-Status: Phase 1 Week 1 Observability Completed; Week 0 baseline lock captured
+Status: Execution active (Week 1 observability complete, compile-throughput recovery partial, swarm orchestration in control-plane rollout)
 
 ## 0. Clean-Slate Kickoff (Assume No Prior Execution)
 
 Kickoff date: 2026-02-11
 Kickoff owner: compiler + runtime + backend + stdlib + tooling
-Execution assumption (explicit): optimization implementation work is treated as not started.
+Execution assumption (explicit): optimization implementation work is active; observability and early recovery slices are landed, with wave-based swarm execution gated on fresh baseline refresh.
 
 ### 0.1 Operating Rules For This Kickoff
 - Existing optimization tracks in this document are treated as backlog/design scope until Week 0 evidence is captured.
@@ -34,6 +34,8 @@ Execution assumption (explicit): optimization implementation work is treated as 
 | 2026-02-12 | Landed PR-6 + PR-7 tranche: CLI diagnostics now sinks frontend mid-end policy/budget/pass telemetry into build diagnostics (stderr + JSON payload), and deterministic process-level module lowering is available behind `MOLT_FRONTEND_PARALLEL_MODULES` with stable dependency-layer merge ordering and conservative auto-fallback to serial when unsupported (`type_facts`/phase-timeout lanes). | `src/molt/cli.py`, `tests/cli/test_cli_import_collection.py`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/ROADMAP_90_DAYS.md` | Validation gates passed (`uv run --python 3.12 pytest -q tests/cli/test_cli_import_collection.py` -> `20 passed`; `uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/test_frontend_ir_alias_ops.py tests/test_check_molt_ir_ops.py` -> `94 passed`). |
 | 2026-02-12 | Tightened compile-throughput control + strict stdlib fallback enforcement: stdlib mid-end classification now defaults to Tier C unless explicitly promoted, stage-level budget checkpoints now include pre-pass/preemptive degrade logic, and frontend layer parallel policy now applies stdlib-aware effective min-cost thresholds with diagnostics visibility. In parallel, `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (with explicit opt-down flag), and remaining violating modules were cleaned up to keep the gate green. | `src/molt/frontend/__init__.py`, `src/molt/cli.py`, `tools/check_stdlib_intrinsics.py`, `src/molt/stdlib/{builtins.py,runpy.py,signal.py,typing.py,pathlib.py,warnings.py,zipfile.py,zipimport.py,importlib/metadata.py,pprint.py,test/import_helper.py,test/list_tests.py,test/seq_tests.py,test/support.py}`, `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `README.md` | Validation gates passed (`python3 tools/check_stdlib_intrinsics.py --update-doc && python3 tools/check_stdlib_intrinsics.py`; `python3 tools/check_core_lane_lowering.py`; `python3 tools/check_molt_ir_ops.py`; `uv run --python 3.12 pytest -q tests/test_frontend_midend_passes.py tests/cli/test_cli_import_collection.py` -> `93 passed`). No-cache diagnostics probes on `examples/hello.py` show tier shift to `A=12/B=7/C=187` (from prior `A=12/B=189/C=3`) and lower wall time in forced-parallel probe (`35.94s` vs `40.99s` serial). |
 | 2026-02-13 | Applied Cranelift backend tuning tranche after the 0.128 upgrade: release defaults now include minimum function alignment (`log2_min_function_alignment=4`), dev defaults use faster register allocation (`regalloc_algorithm=single_pass`), and backend exposes explicit tuning knobs (`MOLT_BACKEND_REGALLOC_ALGORITHM`, `MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2`, `MOLT_BACKEND_LIBCALL_CALL_CONV`) for measured sweeps. | `runtime/molt-backend/src/lib.rs`, `OPTIMIZATIONS_PLAN.md`, `ROADMAP.md`, `docs/spec/STATUS.md`, `README.md` | Validation gates passed (`cargo check -p molt-backend`; `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py` -> `42`). |
+| 2026-02-24 | Closed linked-WASM metadata import regression and refreshed targeted gate evidence: wasm backend now registers missing `sys_*` import ids used by linked builtin wrappers, focused linked wasm bench for `bench_bytes_find` is green again, and compression differential smoke lanes were rerun under RSS/memory-cap policy. | `runtime/molt-backend/src/wasm.rs`, `OPTIMIZATIONS_PLAN.md`, `docs/benchmarks/optimization_progress.md`, `docs/spec/STATUS.md`, `ROADMAP.md` | Validation gates passed (`python3 -u tests/molt_diff.py tests/differential/stdlib/bz2_basic.py tests/differential/stdlib/gzip_basic.py tests/differential/stdlib/lzma_basic.py tests/differential/stdlib/zlib_basic.py` -> `4/4 pass`; `python3 -u tools/bench_wasm.py --linked --allow-unlinked --samples 1 --warmup 0 --bench bench_bytes_find --runner node --control-runner none` -> `bench_bytes_find | 54.3568 | 25822.0 KB`). |
+| 2026-02-25 | Isolated and fixed Wave 0 release-lane compile blocker: release builds were failing from `_asyncio` scheduler exception-call signature regressions (`raise_exception` misuse); patched `runtime/molt-runtime/src/async_rt/scheduler.rs`, revalidated runtime compile/test gates, and captured that compile/bench Wave 0 refresh remains partially blocked by release-runtime churn and benchmark interpreter env mismatch (`packaging.markers` missing in uv-only interpreter lane). | `runtime/molt-runtime/src/async_rt/scheduler.rs`, `docs/benchmarks/optimization_progress.md`, `docs/spec/STATUS.md`, `ROADMAP.md` | Validation gates passed (`cargo check -p molt-runtime`; `UV_NO_SYNC=1 .venv/bin/python3 -m pytest -q tests/test_tkinter_phase0_wrappers.py` -> `2 passed`). Wave 0 benchmark artifact attempt produced partial failure signal (`bench_native_bytes_find_20260225.json`: CPython/PyPy times captured, Molt build failed before runtime sample). |
 
 ### 0.3 Week 0 Deliverables (Required Before Week 1 Execution)
 - [x] Capture fresh build baseline (`tools/compile_progress.py`) with reproducibility metadata and artifact paths.
@@ -51,7 +53,32 @@ Optimization execution is considered started only when all are true:
 
 ### 0.5 Historical Content Handling
 - The detailed OPT tracks below remain the canonical optimization scope.
-- Their implementation status is reset to not started for this kickoff unless a new progress entry explicitly promotes a track state.
+- Kickoff-reset status is retained only as historical provenance; active execution state is governed by the Program Board and `docs/benchmarks/optimization_progress.md`.
+
+### 0.6 Swarm Orchestration Protocol (2026-02-24)
+- This optimization program now runs under a control-plane-first swarm model to avoid performance-only churn and regression escape.
+- Canonical precedence for decisions:
+  1. `docs/spec/STATUS.md` (current truth)
+  2. `ROADMAP.md` (active forward plan)
+  3. `OPTIMIZATIONS_PLAN.md` (optimization scope + KPIs)
+  4. `docs/benchmarks/optimization_progress.md` (execution ledger)
+- Swarm roles:
+  - conductor: sequence lanes, own stop/go decisions, enforce no-overlap ownership
+  - integrator: single merge authority for optimization landings
+  - perf sheriff: benchmark/throughput gate owner
+  - correctness sheriff: parity/memory/safety gate owner
+  - docs sheriff: same-change doc sync owner
+  - execution workers: lane-specific implementation owners
+- Wave sequence:
+  1. wave 0 (baseline and doc alignment): refresh compile/native/wasm baseline artifacts, reconcile metric modes, lock revision.
+  2. wave 1 (experiment packets): parallel hypothesis + measurement slices without broad behavior rollout.
+  3. wave 2 (controlled implementation): small gated landings with kill switches and rollback-ready flags.
+- Non-negotiable merge gate for every optimization slice:
+  - baseline diff artifact from `tools/bench_diff.py` and throughput evidence from `tools/compile_progress.py`/`tools/throughput_matrix.py`
+  - differential parity + RSS profiling gate (`MOLT_DIFF_MEASURE_RSS=1`, memory cap enabled)
+  - strict lowering gates (`tools/check_stdlib_intrinsics.py`, `tools/check_core_lane_lowering.py`)
+  - same-change sync to `docs/spec/STATUS.md`, `ROADMAP.md`, and `docs/benchmarks/optimization_progress.md`
+- Any red-line regression or unresolved correctness risk is a hard stop; no "optimize then fix later" merges.
 
 ## 1A. Concrete 6-Week Execution Plan (Codon-Focused, Generalizable)
 
@@ -228,6 +255,7 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 - `release` warm no-cache: 3.033s (target <= 18.0s, green).
 - `release-fast` warm cache-hit: 2.033s (green).
 - `hello.py` native IR size reduced from 40.923MB to 5.289MB; ops from 409900 to 50483 after init-closure tightening.
+- Freshness note: current compile KPI table is based on the last captured run set in `docs/benchmarks/compile_progress.md`; Wave 0 swarm refresh must recapture these lanes before Wave 2 rollout decisions.
 
 ### Runtime / Performance
 - Source: [Bench summary](docs/benchmarks/bench_summary.md)
@@ -236,14 +264,20 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 - Median wasm speedup vs CPython: 0.47x.
 - Median wasm/native ratio: 4.81x.
 - Native regressions remain in attribute/descriptor/struct/tuple/deep-loop/csv/fib lanes.
+- Friend suite source: [Friend benchmark summary](docs/benchmarks/friend_summary.md) (current state: harness scaffolding landed, suites still adapter-blocked/skipped).
+- Freshness note: benchmark summary artifacts are historical snapshots; Wave 0 refresh is required before promotion/rollback decisions on new optimization slices.
 
 ### Lowering Coverage Signals
 - Stdlib audit source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
-- Audited modules: 112 total.
-- `intrinsic-backed`: 58.
-- `intrinsic-partial`: 16.
-- `probe-only`: 13.
-- `python-only`: 25.
+- Canonical snapshot source: `docs/spec/STATUS.md` (current checker mode for CPython 3.12/3.13/3.14 union coverage).
+- Current checker snapshot:
+  - `intrinsic-backed`: 0
+  - `intrinsic-partial`: 873
+  - `probe-only`: 0
+  - `python-only`: 0
+  - `missing_top_level`: 0
+  - `missing_submodules`: 0
+- Metric mode note: historical "112 modules" counts are no longer canonical for program gating; use checker snapshot + ratchet gates from `tools/check_stdlib_intrinsics.py`.
 
 - Core lowering program source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
 - Phase 2 (concurrency substrate) is active: `socket` -> `threading` -> `asyncio`.
@@ -258,14 +292,14 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 
 | ID | Track | Priority | Status | Primary KPI | Exit Gate |
 | --- | --- | --- | --- | --- | --- |
-| OPT-1001 | Build Throughput and Determinism | P0 | Not Started (Kickoff Reset) | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
-| OPT-1002 | Core Primitive Lowering Expansion | P0 | Not Started (Kickoff Reset) | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
-| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Not Started (Kickoff Reset) | `python-only` modules from 25 -> <= 5 (shipped surface) | strict lowering gates green |
-| OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Not Started (Kickoff Reset) | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
-| OPT-1005 | WASM Lowering and Runtime Parity | P0 | Not Started (Kickoff Reset) | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
-| OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Not Started (Kickoff Reset) | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
-| OPT-1007 | Perf Governance and CI Guardrails | P0 | Not Started (Kickoff Reset) | prevent hidden regressions | budget checks enforced in CI and local tooling |
-| OPT-1008 | Friend-Native Benchmark Program | P0 | Not Started (Kickoff Reset) | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
+| OPT-1001 | Build Throughput and Determinism | P0 | Active (Partial) | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
+| OPT-1002 | Core Primitive Lowering Expansion | P0 | Active (Early slices) | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
+| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Active (Partial) | keep `probe-only=0`, `python-only=0`, and ratchet intrinsic-partial reduction | strict lowering gates green |
+| OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Planned (Wave 2 target) | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
+| OPT-1005 | WASM Lowering and Runtime Parity | P0 | Active (Partial) | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
+| OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Planned (Wave 2 target) | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
+| OPT-1007 | Perf Governance and CI Guardrails | P0 | Active (Partial) | prevent hidden regressions | budget checks enforced in CI and local tooling |
+| OPT-1008 | Friend-Native Benchmark Program | P0 | Active (Scaffold landed) | run Molt against friend-owned suites reproducibly | published scorecard with fair, apples-to-apples methodology |
 
 ---
 
@@ -645,7 +679,8 @@ adjusted from telemetry after landing PR-5/PR-6.
 - Full lowering is mandatory for production-grade compiled execution semantics.
 
 ### Current Evidence
-- 58 intrinsic-backed, 16 intrinsic-partial, 13 probe-only, 25 python-only.
+- Checker snapshot now reports `intrinsic-backed=0`, `intrinsic-partial=873`, `probe-only=0`, `python-only=0` under full-coverage attestation mode.
+- Program KPI focuses on preserving zero probe/python-only modules while burning down intrinsic-partial backlog with ratchet governance.
 - Program phase sequencing already exists and is active for concurrency substrate.
 
 ### Hypotheses
@@ -679,7 +714,7 @@ adjusted from telemetry after landing PR-5/PR-6.
 1. Keep 0026 program order as canonical.
 2. Create module-family work packets with explicit intrinsic manifests.
 3. Require native+wasm parity test per promoted module.
-4. Reduce `python-only` count every sprint and publish scoreboard.
+4. Preserve `probe-only=0` and `python-only=0`, and reduce `intrinsic-partial` via ratcheted closure sprints with published scoreboards.
 
 ### Validation Checklist
 - [ ] `tools/check_stdlib_intrinsics.py` and `tools/check_core_lane_lowering.py` green.
@@ -955,7 +990,7 @@ adjusted from telemetry after landing PR-5/PR-6.
 
 ### Phase C (Programmatic, 1-2 months)
 - Convert high-fanout stdlib module families to intrinsic-backed state in phase order.
-- Replace remaining probe-only/python-only modules in shipped surface according to roadmap priorities.
+- Keep `probe-only`/`python-only` at zero while burning down `intrinsic-partial` backlog by priority surface.
 - Tie lowering-completion milestones to benchmark goals and release gates.
 
 ## 5. Success Criteria (Program)
@@ -967,7 +1002,8 @@ adjusted from telemetry after landing PR-5/PR-6.
 - WASM:
   - Improve median wasm/native ratio from 4.81x to < 2.5x.
 - Lowering:
-  - `python-only` stdlib modules reduced from 25 to <= 5 in shipped compiled surface.
+  - `probe-only=0` and `python-only=0` remain sustained.
+  - `intrinsic-partial` count trends downward via explicit weekly ratchet budgets and closure evidence.
   - measurable reduction in backend runtime-call/import-call density on hot lanes.
 - Governance:
   - perf and lowering gates enforced in CI with clear red-line thresholds.

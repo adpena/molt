@@ -148,8 +148,8 @@
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
   - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (retain C-order semantics + parity errors).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
-  - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
-  - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
+  - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
+  - Policy-deferred note: dynamic execution (`eval`/`exec`/`compile`) remains intentionally unsupported for now; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
 - TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish `open`/file object parity (broader codecs + full error handlers, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage.
   - Implemented: descriptor deleter support (`__delete__`, property deleter) + attribute deletion wiring.

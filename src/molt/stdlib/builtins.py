@@ -361,7 +361,7 @@ def breakpoint(*args: object, **kws: object) -> object:
     return hook(*args, **kws)
 
 
-# TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): implement eval/exec builtins with runtime-lowered sandboxing rules beyond fail-fast errors.
+# Policy-deferred: dynamic execution (`eval`/`exec`/`compile`) remains intentionally unsupported for compiled binaries; `compile` currently provides parser-backed validation only and any broader execution support requires explicit capability-gated approval with utility/performance evidence.
 __all__ = [
     "object",
     "type",

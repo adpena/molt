@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import abc as _abc
+import sys as _sys
+import types as _types
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -61,15 +63,56 @@ _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile", globals())
 _MOLT_PATH_ISLINK = _require_intrinsic("molt_path_islink", globals())
 _MOLT_PATH_READLINK = _require_intrinsic("molt_path_readlink", globals())
 _MOLT_PATH_SYMLINK = _require_intrinsic("molt_path_symlink", globals())
+_MOLT_OS_OPEN = _require_intrinsic("molt_os_open", globals())
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
 _MOLT_OS_READ = _require_intrinsic("molt_os_read", globals())
 _MOLT_OS_WRITE = _require_intrinsic("molt_os_write", globals())
 _MOLT_OS_PIPE = _require_intrinsic("molt_os_pipe", globals())
 _MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
+_MOLT_OS_DUP2 = _require_intrinsic("molt_os_dup2", globals())
 _MOLT_OS_GET_INHERITABLE = _require_intrinsic("molt_os_get_inheritable", globals())
 _MOLT_OS_SET_INHERITABLE = _require_intrinsic("molt_os_set_inheritable", globals())
 _MOLT_OS_URANDOM = _require_intrinsic("molt_os_urandom", globals())
 _MOLT_OS_FSENCODE = _require_intrinsic("molt_os_fsencode", globals())
+_MOLT_OS_ACCESS = _require_intrinsic("molt_os_access", globals())
+_MOLT_OS_CHDIR = _require_intrinsic("molt_os_chdir", globals())
+_MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count", globals())
+_MOLT_OS_LINK = _require_intrinsic("molt_os_link", globals())
+_MOLT_OS_TRUNCATE = _require_intrinsic("molt_os_truncate", globals())
+_MOLT_OS_UMASK = _require_intrinsic("molt_os_umask", globals())
+_MOLT_OS_UNAME = _require_intrinsic("molt_os_uname", globals())
+_MOLT_OS_GETPPID = _require_intrinsic("molt_os_getppid", globals())
+_MOLT_OS_GETUID = _require_intrinsic("molt_os_getuid", globals())
+_MOLT_OS_GETGID = _require_intrinsic("molt_os_getgid", globals())
+_MOLT_OS_GETEUID = _require_intrinsic("molt_os_geteuid", globals())
+_MOLT_OS_GETEGID = _require_intrinsic("molt_os_getegid", globals())
+_MOLT_OS_GETLOGIN = _require_intrinsic("molt_os_getlogin", globals())
+_MOLT_OS_GETLOADAVG = _require_intrinsic("molt_os_getloadavg", globals())
+_MOLT_OS_REMOVEDIRS = _require_intrinsic("molt_os_removedirs", globals())
+_MOLT_OS_DEVNULL = _require_intrinsic("molt_os_devnull", globals())
+_MOLT_OS_GET_TERMINAL_SIZE = _require_intrinsic("molt_os_get_terminal_size", globals())
+_MOLT_OS_WALK = _require_intrinsic("molt_os_walk", globals())
+_MOLT_OS_SCANDIR = _require_intrinsic("molt_os_scandir", globals())
+_MOLT_OS_LSEEK = _require_intrinsic("molt_os_lseek", globals())
+_MOLT_OS_FTRUNCATE = _require_intrinsic("molt_os_ftruncate", globals())
+_MOLT_OS_ISATTY = _require_intrinsic("molt_os_isatty", globals())
+_MOLT_OS_KILL = _require_intrinsic("molt_os_kill", globals())
+_MOLT_OS_WAITPID = _require_intrinsic("molt_os_waitpid", globals())
+_MOLT_OS_GETPGRP = _require_intrinsic("molt_os_getpgrp", globals())
+_MOLT_OS_SETPGRP = _require_intrinsic("molt_os_setpgrp", globals())
+_MOLT_OS_SETSID = _require_intrinsic("molt_os_setsid", globals())
+_MOLT_OS_SYSCONF = _require_intrinsic("molt_os_sysconf", globals())
+_MOLT_OS_SYSCONF_NAMES = _require_intrinsic("molt_os_sysconf_names", globals())
+_MOLT_OS_PATH_REALPATH = _require_intrinsic("molt_os_path_realpath", globals())
+_MOLT_OS_UTIME = _require_intrinsic("molt_os_utime", globals())
+_MOLT_OS_SENDFILE = _require_intrinsic("molt_os_sendfile", globals())
+_MOLT_OS_PATH_COMMONPATH = _require_intrinsic("molt_os_path_commonpath", globals())
+_MOLT_OS_PATH_COMMONPREFIX = _require_intrinsic("molt_os_path_commonprefix", globals())
+_MOLT_OS_PATH_GETATIME = _require_intrinsic("molt_os_path_getatime", globals())
+_MOLT_OS_PATH_GETCTIME = _require_intrinsic("molt_os_path_getctime", globals())
+_MOLT_OS_PATH_GETMTIME = _require_intrinsic("molt_os_path_getmtime", globals())
+_MOLT_OS_PATH_GETSIZE = _require_intrinsic("molt_os_path_getsize", globals())
+_MOLT_OS_PATH_SAMEFILE = _require_intrinsic("molt_os_path_samefile", globals())
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
@@ -89,25 +132,53 @@ __all__ = [
     "pardir",
     "extsep",
     "altsep",
+    "devnull",
     "SEEK_SET",
     "SEEK_CUR",
     "SEEK_END",
+    "F_OK",
+    "R_OK",
+    "W_OK",
+    "X_OK",
+    "O_RDONLY",
+    "O_WRONLY",
+    "O_RDWR",
+    "O_APPEND",
+    "O_CREAT",
+    "O_EXCL",
+    "O_TRUNC",
+    "O_NONBLOCK",
+    "O_CLOEXEC",
+    "open",
     "getcwd",
     "getpid",
+    "getppid",
+    "getuid",
+    "getgid",
+    "geteuid",
+    "getegid",
+    "getlogin",
     "getenv",
     "putenv",
     "unsetenv",
     "urandom",
     "listdir",
+    "scandir",
+    "walk",
     "mkdir",
     "chmod",
     "makedirs",
+    "removedirs",
     "rmdir",
     "read",
     "write",
     "close",
     "pipe",
     "dup",
+    "dup2",
+    "lseek",
+    "ftruncate",
+    "isatty",
     "get_inheritable",
     "set_inheritable",
     "stat_result",
@@ -118,9 +189,38 @@ __all__ = [
     "replace",
     "unlink",
     "remove",
+    "link",
     "readlink",
     "symlink",
+    "access",
+    "chdir",
+    "cpu_count",
+    "truncate",
+    "umask",
+    "uname",
+    "uname_result",
+    "getloadavg",
+    "get_terminal_size",
+    "terminal_size",
+    "DirEntry",
     "environ",
+    "kill",
+    "waitpid",
+    "getpgrp",
+    "setpgrp",
+    "setsid",
+    "sysconf",
+    "sysconf_names",
+    "utime",
+    "sendfile",
+    "WNOHANG",
+    "WUNTRACED",
+    "WIFEXITED",
+    "WEXITSTATUS",
+    "WIFSIGNALED",
+    "WTERMSIG",
+    "WIFSTOPPED",
+    "WSTOPSIG",
     "path",
     "PathLike",
     "fspath",
@@ -144,6 +244,76 @@ extsep = "."
 SEEK_SET = 0
 SEEK_CUR = 1
 SEEK_END = 2
+
+# waitpid options
+WNOHANG = 1
+WUNTRACED = 2
+
+
+def WIFEXITED(status: int) -> bool:
+    return (status & 0x7F) == 0
+
+
+def WEXITSTATUS(status: int) -> int:
+    return (status >> 8) & 0xFF
+
+
+def WIFSIGNALED(status: int) -> bool:
+    return ((status & 0x7F) + 1) >> 1 > 0
+
+
+def WTERMSIG(status: int) -> int:
+    return status & 0x7F
+
+
+def WIFSTOPPED(status: int) -> bool:
+    return (status & 0xFF) == 0x7F
+
+
+def WSTOPSIG(status: int) -> int:
+    return (status >> 8) & 0xFF
+
+
+# access() mode constants
+F_OK = 0
+R_OK = 4
+W_OK = 2
+X_OK = 1
+
+# POSIX file open flags — platform values sourced from libc at build time.
+_MOLT_OS_OPEN_FLAGS = _require_intrinsic("molt_os_open_flags", globals())
+_open_flags = _MOLT_OS_OPEN_FLAGS()
+O_RDONLY = _open_flags[0]
+O_WRONLY = _open_flags[1]
+O_RDWR = _open_flags[2]
+O_APPEND = _open_flags[3]
+O_CREAT = _open_flags[4]
+O_TRUNC = _open_flags[5]
+O_EXCL = _open_flags[6]
+O_NONBLOCK = _open_flags[7]
+O_CLOEXEC = _open_flags[8]
+del _open_flags
+
+# devnull — platform-appropriate null device path
+_devnull_raw = _MOLT_OS_DEVNULL()
+if not isinstance(_devnull_raw, str):
+    raise RuntimeError("os devnull intrinsic returned invalid value")
+devnull = _devnull_raw
+del _devnull_raw
+
+# sysconf_names — built from runtime intrinsic flat list
+_sysconf_names_raw = _MOLT_OS_SYSCONF_NAMES()
+sysconf_names: dict[str, int] = {}
+if isinstance(_sysconf_names_raw, (list, tuple)):
+    _i = 0
+    while _i + 1 < len(_sysconf_names_raw):
+        _k = _sysconf_names_raw[_i]
+        _v = _sysconf_names_raw[_i + 1]
+        if isinstance(_k, str) and isinstance(_v, int):
+            sysconf_names[_k] = _v
+        _i += 2
+    del _i
+del _sysconf_names_raw
 
 _ENV_MISSING = object()
 
@@ -358,6 +528,121 @@ class stat_result(tuple):
         return int(self.st_ctime * 1_000_000_000)
 
 
+class uname_result:
+    """Result type for os.uname()."""
+
+    __slots__ = ("sysname", "nodename", "release", "version", "machine")
+    n_fields = 5
+    n_sequence_fields = 5
+    n_unnamed_fields = 0
+
+    def __init__(
+        self,
+        sysname: str,
+        nodename: str,
+        release: str,
+        version: str,
+        machine: str,
+    ) -> None:
+        self.sysname = sysname
+        self.nodename = nodename
+        self.release = release
+        self.version = version
+        self.machine = machine
+
+    def __repr__(self) -> str:
+        return (
+            f"posix.uname_result(sysname={self.sysname!r}, "
+            f"nodename={self.nodename!r}, release={self.release!r}, "
+            f"version={self.version!r}, machine={self.machine!r})"
+        )
+
+    def __iter__(self):
+        yield self.sysname
+        yield self.nodename
+        yield self.release
+        yield self.version
+        yield self.machine
+
+    def __getitem__(self, index: int) -> str:
+        return (self.sysname, self.nodename, self.release, self.version, self.machine)[
+            index
+        ]
+
+    def __len__(self) -> int:
+        return 5
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, uname_result):
+            return (
+                self.sysname == other.sysname
+                and self.nodename == other.nodename
+                and self.release == other.release
+                and self.version == other.version
+                and self.machine == other.machine
+            )
+        if isinstance(other, tuple):
+            return tuple(self) == other
+        return NotImplemented
+
+
+class terminal_size(tuple):
+    """Result type for os.get_terminal_size()."""
+
+    __slots__ = ()
+
+    def __new__(cls, values: tuple[int, int]) -> "terminal_size":
+        if len(values) != 2:
+            raise TypeError("terminal_size() takes a 2-sequence")
+        return tuple.__new__(cls, (int(values[0]), int(values[1])))
+
+    def __repr__(self) -> str:
+        return f"os.terminal_size(columns={self.columns}, lines={self.lines})"
+
+    @property
+    def columns(self) -> int:
+        return int(self[0])
+
+    @property
+    def lines(self) -> int:
+        return int(self[1])
+
+
+class DirEntry:
+    """Entry yielded by os.scandir()."""
+
+    __slots__ = ("name", "path", "_is_dir", "_is_file", "_is_symlink")
+
+    def __init__(
+        self,
+        name: str,
+        path: str,
+        is_dir: bool,
+        is_file: bool,
+        is_symlink: bool,
+    ) -> None:
+        self.name = name
+        self.path = path
+        self._is_dir = is_dir
+        self._is_file = is_file
+        self._is_symlink = is_symlink
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        return self._is_dir
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        return self._is_file
+
+    def is_symlink(self) -> bool:
+        return self._is_symlink
+
+    def __repr__(self) -> str:
+        return f"<DirEntry {self.name!r}>"
+
+    def __fspath__(self) -> str:
+        return self.path
+
+
 class _Environ:
     def _check_key(self, key: Any) -> str:
         if not isinstance(key, str):
@@ -512,25 +797,26 @@ class _Path:
 
     @staticmethod
     def join(
-        first: str,
-        second: str | None = None,
-        third: str | None = None,
-        fourth: str | None = None,
-    ) -> str:
-        parts: list[str] = []
-        if first:
+        first: Any,
+        second: Any = None,
+        third: Any = None,
+        fourth: Any = None,
+    ) -> Any:
+        parts: list[Any] = []
+        if first is not None:
             parts.append(first)
-        if second:
+        if second is not None:
             parts.append(second)
-        if third:
+        if third is not None:
             parts.append(third)
-        if fourth:
+        if fourth is not None:
             parts.append(fourth)
         if not parts:
             return ""
-        return _expect_str(
-            _MOLT_PATH_JOIN_MANY(parts[0], tuple(parts[1:])), "path_join_many"
-        )
+        result = _MOLT_PATH_JOIN_MANY(parts[0], tuple(parts[1:]))
+        if isinstance(parts[0], bytes):
+            return result
+        return _expect_str(result, "path_join_many")
 
     @staticmethod
     def isabs(path: str) -> bool:
@@ -619,8 +905,81 @@ class _Path:
         intrinsic = _require_callable_intrinsic(_MOLT_PATH_RMDIR, "molt_path_rmdir")
         intrinsic(path)
 
+    @staticmethod
+    def commonpath(paths: Any) -> str:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_COMMONPATH, "molt_os_path_commonpath"
+        )
+        return _expect_str(intrinsic(list(paths)), "path_commonpath")
 
-path = _Path()
+    @staticmethod
+    def commonprefix(list_of_paths: Any) -> str:
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_COMMONPREFIX, "molt_os_path_commonprefix"
+        )
+        return _expect_str(intrinsic(list(list_of_paths)), "path_commonprefix")
+
+    @staticmethod
+    def getatime(path: Any) -> float:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_GETATIME, "molt_os_path_getatime"
+        )
+        return float(intrinsic(str(path)))
+
+    @staticmethod
+    def getctime(path: Any) -> float:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_GETCTIME, "molt_os_path_getctime"
+        )
+        return float(intrinsic(str(path)))
+
+    @staticmethod
+    def getmtime(path: Any) -> float:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_GETMTIME, "molt_os_path_getmtime"
+        )
+        return float(intrinsic(str(path)))
+
+    @staticmethod
+    def getsize(path: Any) -> int:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_GETSIZE, "molt_os_path_getsize"
+        )
+        return int(intrinsic(str(path)))
+
+    @staticmethod
+    def samefile(path1: Any, path2: Any) -> bool:
+        _require_cap("fs.read")
+        intrinsic = _require_callable_intrinsic(
+            _MOLT_OS_PATH_SAMEFILE, "molt_os_path_samefile"
+        )
+        return bool(intrinsic(str(path1), str(path2)))
+
+    @staticmethod
+    def realpath(path: Any, *, strict: bool = False) -> str:
+        return _expect_str(_MOLT_OS_PATH_REALPATH(str(path)), "path_realpath")
+
+
+_path_impl = _Path()
+path = _types.ModuleType("os.path")
+for _name in dir(_path_impl):
+    if _name.startswith("_"):
+        continue
+    setattr(path, _name, getattr(_path_impl, _name))
+path.sep = sep
+path.pathsep = pathsep
+path.extsep = extsep
+path.curdir = curdir
+path.pardir = pardir
+path.altsep = altsep
+_sys.modules.setdefault("os.path", path)
+_sys.modules.setdefault(f"{__name__}.path", path)
+__path__ = []  # Enable dotted imports like `import os.path`.
 
 
 def listdir(path: Any = ".") -> list[str]:
@@ -721,6 +1080,14 @@ def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     intrinsic(path, mode, bool(exist_ok))
 
 
+def open(path: Any, flags: int, mode: int = 0o777) -> int:
+    _require_cap("fs.write")
+    result = _MOLT_OS_OPEN(path, flags, mode)
+    if isinstance(result, int):
+        return result
+    raise RuntimeError("os open intrinsic returned invalid value")
+
+
 def close(fd: int) -> None:
     intrinsic = _require_callable_intrinsic(_MOLT_OS_CLOSE, "molt_os_close")
     intrinsic(fd)
@@ -751,6 +1118,22 @@ def pipe() -> tuple[int, int]:
 def dup(fd: int) -> int:
     intrinsic = _require_callable_intrinsic(_MOLT_OS_DUP, "molt_os_dup")
     return int(intrinsic(fd))
+
+
+def dup2(fd: int, fd2: int) -> int:
+    return int(_MOLT_OS_DUP2(int(fd), int(fd2)))
+
+
+def lseek(fd: int, pos: int, how: int) -> int:
+    return int(_MOLT_OS_LSEEK(int(fd), int(pos), int(how)))
+
+
+def ftruncate(fd: int, length: int) -> None:
+    _MOLT_OS_FTRUNCATE(int(fd), int(length))
+
+
+def isatty(fd: int) -> bool:
+    return bool(_MOLT_OS_ISATTY(int(fd)))
 
 
 def get_inheritable(fd: int) -> bool:
@@ -824,3 +1207,209 @@ def replace(
         raise NotImplementedError("os.replace(dst_dir_fd=...) is not supported")
     intrinsic = _require_os_intrinsic("molt_os_replace")
     intrinsic(src, dst)
+
+
+def access(path: Any, mode: int, *, follow_symlinks: bool = True) -> bool:
+    _require_cap("fs.read")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_ACCESS, "molt_os_access")
+    return bool(intrinsic(str(path), mode))
+
+
+def chdir(path: Any) -> None:
+    _require_cap("fs.write")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_CHDIR, "molt_os_chdir")
+    intrinsic(str(path))
+
+
+def cpu_count() -> int | None:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_CPU_COUNT, "molt_os_cpu_count")
+    result = intrinsic()
+    if result is None:
+        return None
+    return int(result)
+
+
+def link(
+    src: Any,
+    dst: Any,
+    *,
+    src_dir_fd: int | None = None,
+    dst_dir_fd: int | None = None,
+    follow_symlinks: bool = True,
+) -> None:
+    _require_cap("fs.write")
+    if src_dir_fd is not None:
+        raise NotImplementedError("os.link(src_dir_fd=...) is not supported")
+    if dst_dir_fd is not None:
+        raise NotImplementedError("os.link(dst_dir_fd=...) is not supported")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_LINK, "molt_os_link")
+    intrinsic(str(src), str(dst))
+
+
+def truncate(path: Any, length: int) -> None:
+    _require_cap("fs.write")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_TRUNCATE, "molt_os_truncate")
+    intrinsic(str(path), length)
+
+
+def umask(mask: int) -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_UMASK, "molt_os_umask")
+    return int(intrinsic(mask))
+
+
+def uname() -> uname_result:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_UNAME, "molt_os_uname")
+    result = intrinsic()
+    if not isinstance(result, (tuple, list)) or len(result) != 5:
+        raise RuntimeError("os uname intrinsic returned invalid value")
+    return uname_result(
+        _expect_str(result[0], "uname"),
+        _expect_str(result[1], "uname"),
+        _expect_str(result[2], "uname"),
+        _expect_str(result[3], "uname"),
+        _expect_str(result[4], "uname"),
+    )
+
+
+def getppid() -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETPPID, "molt_os_getppid")
+    return int(intrinsic())
+
+
+def getuid() -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETUID, "molt_os_getuid")
+    return int(intrinsic())
+
+
+def getgid() -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETGID, "molt_os_getgid")
+    return int(intrinsic())
+
+
+def geteuid() -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETEUID, "molt_os_geteuid")
+    return int(intrinsic())
+
+
+def getegid() -> int:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETEGID, "molt_os_getegid")
+    return int(intrinsic())
+
+
+def getlogin() -> str:
+    _require_cap("env.read")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETLOGIN, "molt_os_getlogin")
+    return _expect_str(intrinsic(), "getlogin")
+
+
+def getloadavg() -> tuple[float, float, float]:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_GETLOADAVG, "molt_os_getloadavg")
+    result = intrinsic()
+    if not isinstance(result, (tuple, list)) or len(result) != 3:
+        raise RuntimeError("os getloadavg intrinsic returned invalid value")
+    return (float(result[0]), float(result[1]), float(result[2]))
+
+
+def kill(pid: int, sig: int) -> None:
+    _MOLT_OS_KILL(int(pid), int(sig))
+
+
+def waitpid(pid: int, options: int) -> tuple[int, int]:
+    result = _MOLT_OS_WAITPID(int(pid), int(options))
+    return (int(result[0]), int(result[1]))
+
+
+def getpgrp() -> int:
+    return int(_MOLT_OS_GETPGRP())
+
+
+def setpgrp() -> None:
+    _MOLT_OS_SETPGRP()
+
+
+def setsid() -> int:
+    return int(_MOLT_OS_SETSID())
+
+
+def sysconf(name: int | str) -> int:
+    if isinstance(name, str):
+        _name = sysconf_names.get(name, -1)
+        if _name == -1:
+            raise ValueError("unrecognized configuration name")
+        name = _name
+    return int(_MOLT_OS_SYSCONF(int(name)))
+
+
+def utime(
+    path: Any,
+    times: tuple[float, float] | None = None,
+    *,
+    ns: tuple[int, int] | None = None,
+    dir_fd: int | None = None,
+    follow_symlinks: bool = True,
+) -> None:
+    if dir_fd is not None:
+        raise NotImplementedError("os.utime(dir_fd=...) is not supported")
+    if ns is not None:
+        raise NotImplementedError("os.utime(ns=...) is not supported")
+    if times is not None:
+        _MOLT_OS_UTIME(str(path), float(times[0]), float(times[1]))
+    else:
+        _MOLT_OS_UTIME(str(path), None, None)
+
+
+def sendfile(out_fd: int, in_fd: int, offset: int | None, count: int) -> int:
+    return int(_MOLT_OS_SENDFILE(int(out_fd), int(in_fd), offset, int(count)))
+
+
+def removedirs(name: Any) -> None:
+    _require_cap("fs.write")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_REMOVEDIRS, "molt_os_removedirs")
+    intrinsic(str(name))
+
+
+def get_terminal_size(fd: int = 1) -> terminal_size:
+    intrinsic = _require_callable_intrinsic(
+        _MOLT_OS_GET_TERMINAL_SIZE, "molt_os_get_terminal_size"
+    )
+    result = intrinsic(fd)
+    if not isinstance(result, (tuple, list)) or len(result) != 2:
+        raise RuntimeError("os get_terminal_size intrinsic returned invalid value")
+    return terminal_size((int(result[0]), int(result[1])))
+
+
+def walk(
+    top: Any,
+    topdown: bool = True,
+    onerror: Any = None,
+    followlinks: bool = False,
+) -> Any:
+    _require_cap("fs.read")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_WALK, "molt_os_walk")
+    result = intrinsic(str(top), bool(topdown), bool(followlinks))
+    if not isinstance(result, (list, tuple)):
+        raise RuntimeError("os walk intrinsic returned invalid value")
+    for entry in result:
+        yield entry
+
+
+def scandir(path: Any = ".") -> list:
+    _require_cap("fs.read")
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_SCANDIR, "molt_os_scandir")
+    raw = intrinsic(str(path))
+    if not isinstance(raw, (list, tuple)):
+        raise RuntimeError("os scandir intrinsic returned invalid value")
+    entries: list[DirEntry] = []
+    for item in raw:
+        if not isinstance(item, (tuple, list)) or len(item) < 5:
+            raise RuntimeError("os scandir intrinsic returned invalid entry")
+        entries.append(
+            DirEntry(
+                name=str(item[0]),
+                path=str(item[1]),
+                is_dir=bool(item[2]),
+                is_file=bool(item[3]),
+                is_symlink=bool(item[4]),
+            )
+        )
+    return entries

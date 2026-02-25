@@ -30,6 +30,10 @@ Drive Molt to a strict stdlib posture where:
 | 3 | Core-adjacent stdlib | Planned | Phase 2 complete | target families promoted to `intrinsic-backed` |
 | 4 | Capability-gated long tail | Planned | Phase 3 complete | shipped compiled surface has no `python-only` modules |
 
+Specialized long-tail plan:
+- Tkinter family (`_tkinter`, `tkinter`, `ttk`, dialogs) is tracked in
+  `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`.
+
 ## Acceptance Template (Required For Each Module Conversion)
 1. Rust intrinsic implementation.
 2. manifest entry in `runtime/molt-runtime/src/intrinsics/manifest.pyi`.

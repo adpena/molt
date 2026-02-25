@@ -149,6 +149,7 @@ uv run --python 3.12 python3 tools/compile_progress.py \
 
 | Date (UTC) | Run ID | Notes |
 | --- | --- | --- |
+| 2026-02-24 | `compile_progress_wave0_refresh_pending` | Swarm control-plane refresh checkpoint: optimization docs synchronized; next required action is a fresh Wave 0 compile-progress run to replace stale benchmark-era build snapshots before new optimization implementation slices. |
 | 2026-02-09 | `molt_compile_probe_1770664249` | Baseline established (native IR bloat confirmed; cache-hit and no-cache timings recorded). |
 | 2026-02-09 | `molt_hello_ir_after_1770666669` | Post-fix IR probe: 1546 -> 203 functions, 409900 -> 50483 ops, 40.923MB -> 5.289MB. |
 | 2026-02-09 | `molt_compile_progress_after_spawn_gate_1770666725` | Dev no-cache daemon-on dropped to 4.452s. Fresh rebuild timing lanes hit an unrelated runtime compile blocker in `runtime/molt-runtime/src/builtins/ast.rs` (BigInt type mismatch); release/latest warm-lane updates blocked until that is resolved. |

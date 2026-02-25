@@ -933,6 +933,10 @@ impl WasmBackend {
         add_import("getargv", 0, &mut self.import_ids);
         add_import("sys_version_info", 0, &mut self.import_ids);
         add_import("sys_version", 0, &mut self.import_ids);
+        add_import("sys_hexversion", 0, &mut self.import_ids);
+        add_import("sys_api_version", 0, &mut self.import_ids);
+        add_import("sys_abiflags", 0, &mut self.import_ids);
+        add_import("sys_implementation_payload", 0, &mut self.import_ids);
         add_import("sys_stdin", 0, &mut self.import_ids);
         add_import("sys_stdout", 0, &mut self.import_ids);
         add_import("sys_stderr", 0, &mut self.import_ids);

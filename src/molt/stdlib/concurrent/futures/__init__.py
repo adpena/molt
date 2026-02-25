@@ -6,7 +6,6 @@ from collections import deque, namedtuple
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
-import multiprocessing as _molt_multiprocessing
 import os
 import threading
 import time
@@ -85,15 +84,6 @@ class _WorkItem:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     future: "Future"
-
-
-@dataclass(slots=True)
-class _ProcessTask:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    future: "Future"
-    async_result: Any | None = None
 
 
 class Future:
@@ -243,7 +233,7 @@ class Executor:
             raise ValueError("chunksize must be >= 1")
 
         args_iter = iter(zip(*iterables))
-        pending: deque[Future] = deque()
+        pending: list[Future] = []
         deadline = None if timeout is None else (time.monotonic() + float(timeout))
 
         def _remaining() -> float | None:
@@ -259,7 +249,7 @@ class Executor:
 
         try:
             while pending:
-                fut = pending.popleft()
+                fut = pending.pop(0)
                 yield fut.result(timeout=_remaining())
         finally:
             for fut in pending:
@@ -485,7 +475,15 @@ class ThreadPoolExecutor(Executor):
                     pass
 
 
-class ProcessPoolExecutor(Executor):
+class ProcessPoolExecutor(ThreadPoolExecutor):
+    """ProcessPoolExecutor implemented as a thread-based executor.
+
+    Molt compiles Python to native/WASM binaries and does not support
+    fork() or process-based multiprocessing.  This shim provides full
+    API compatibility for code that uses ProcessPoolExecutor by
+    delegating to the thread-based executor.
+    """
+
     def __init__(
         self,
         max_workers: int | None = None,
@@ -495,243 +493,22 @@ class ProcessPoolExecutor(Executor):
         *,
         max_tasks_per_child: int | None = None,
     ) -> None:
-        if max_workers is None:
-            max_workers = os.cpu_count() or 1
-        if max_workers <= 0:
-            raise ValueError("max_workers must be greater than 0")
-        if initializer is not None and not callable(initializer):
-            raise TypeError("initializer must be a callable")
+        # Validate process-specific arguments for API compatibility,
+        # then silently ignore them since we run threads, not processes.
         if max_tasks_per_child is not None:
             if not isinstance(max_tasks_per_child, int) or max_tasks_per_child <= 0:
                 raise ValueError("max_tasks_per_child must be a positive int or None")
+        # mp_context is not meaningful in thread-based execution; ignore.
+        # max_tasks_per_child is not meaningful in thread-based execution; ignore.
 
-        self._max_workers = int(max_workers)
-        self._pending_queue: deque[_ProcessTask] = deque()
-        self._running_tasks: list[_ProcessTask] = []
-        self._manager_lock = threading.Lock()
-        self._manager_cond = threading.Condition(self._manager_lock)
-        self._shutdown = False
-        self._cancel_futures = False
-        self._broken: BrokenProcessPool | None = None
+        if max_workers is None:
+            max_workers = os.cpu_count() or 1
 
-        self._pool = _molt_multiprocessing.Pool(
-            processes=self._max_workers,
+        super().__init__(
+            max_workers=max_workers,
             initializer=initializer,
-            initargs=tuple(initargs),
-            maxtasksperchild=max_tasks_per_child,
-            context=mp_context,
+            initargs=initargs,
         )
-
-        self._manager = threading.Thread(
-            target=_processpool_manager_worker,
-            args=(self,),
-            name="ProcessPoolExecutor-manager",
-            daemon=False,
-        )
-        self._manager.start()
-
-    def _submit_locked(
-        self,
-        fn: Callable[..., Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> Future:
-        if self._broken is not None:
-            raise self._broken
-        if self._shutdown:
-            raise RuntimeError("cannot schedule new futures after shutdown")
-        future = Future()
-        self._pending_queue.append(
-            _ProcessTask(fn=fn, args=args, kwargs=kwargs, future=future)
-        )
-        self._dispatch_locked()
-        self._manager_cond.notify_all()
-        return future
-
-    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        if fn is None or not callable(fn):
-            raise TypeError("submit expects a callable")
-        with self._manager_cond:
-            return self._submit_locked(fn, tuple(args), dict(kwargs))
-
-    def map(
-        self,
-        fn: Callable[..., Any],
-        *iterables: Iterable[Any],
-        timeout: float | None = None,
-        chunksize: int = 1,
-    ) -> Iterator[Any]:
-        if chunksize < 1:
-            raise ValueError("chunksize must be >= 1")
-        return super().map(
-            fn,
-            *iterables,
-            timeout=timeout,
-            chunksize=chunksize,
-        )
-
-    def _dispatch_locked(self) -> bool:
-        progressed = False
-        while self._pending_queue and len(self._running_tasks) < self._max_workers:
-            task = self._pending_queue.popleft()
-            if task.future.cancelled():
-                progressed = True
-                continue
-            if self._shutdown and self._cancel_futures:
-                task.future.cancel()
-                progressed = True
-                continue
-            try:
-                if not task.future.set_running_or_notify_cancel():
-                    progressed = True
-                    continue
-            except InvalidStateError:
-                progressed = True
-                continue
-            try:
-                task.async_result = self._pool.apply_async(
-                    task.fn, task.args, task.kwargs
-                )
-            except BaseException as exc:  # noqa: BLE001
-                broken = BrokenProcessPool("ProcessPoolExecutor cannot submit work")
-                broken.__cause__ = exc
-                self._broken = broken
-                self._shutdown = True
-                try:
-                    task.future.set_exception(broken)
-                except InvalidStateError:
-                    pass
-                for queued in self._pending_queue:
-                    if not queued.future.done():
-                        try:
-                            queued.future.set_exception(broken)
-                        except InvalidStateError:
-                            pass
-                self._pending_queue.clear()
-                self._manager_cond.notify_all()
-                return True
-            self._running_tasks.append(task)
-            progressed = True
-        return progressed
-
-    def _complete_task(self, task: _ProcessTask) -> bool:
-        async_result = task.async_result
-        if async_result is None:
-            return False
-
-        try:
-            result = async_result.get(timeout=0.0)
-        except _BuiltinTimeoutError:
-            return False
-        except BaseException as exc:  # noqa: BLE001
-            with self._manager_cond:
-                try:
-                    self._running_tasks.remove(task)
-                except ValueError:
-                    pass
-                self._manager_cond.notify_all()
-            if not task.future.done():
-                try:
-                    task.future.set_exception(exc)
-                except InvalidStateError:
-                    pass
-        else:
-            with self._manager_cond:
-                try:
-                    self._running_tasks.remove(task)
-                except ValueError:
-                    pass
-                self._manager_cond.notify_all()
-            if not task.future.done():
-                try:
-                    task.future.set_result(result)
-                except InvalidStateError:
-                    pass
-        return True
-
-    def _manager_loop(self) -> None:
-        while True:
-            progressed = False
-            try:
-                self._pool._poll_results()
-            except BaseException as exc:  # noqa: BLE001
-                broken = (
-                    exc
-                    if isinstance(exc, BrokenProcessPool)
-                    else BrokenProcessPool("ProcessPoolExecutor worker failure")
-                )
-                if broken is not exc:
-                    broken.__cause__ = exc
-                with self._manager_cond:
-                    self._broken = broken
-                    self._shutdown = True
-                    for task in self._running_tasks:
-                        if not task.future.done():
-                            try:
-                                task.future.set_exception(broken)
-                            except InvalidStateError:
-                                pass
-                    self._running_tasks.clear()
-                    while self._pending_queue:
-                        queued = self._pending_queue.popleft()
-                        if not queued.future.done():
-                            try:
-                                queued.future.set_exception(broken)
-                            except InvalidStateError:
-                                pass
-                    self._manager_cond.notify_all()
-                break
-            with self._manager_cond:
-                if self._shutdown and self._cancel_futures:
-                    while self._pending_queue:
-                        pending = self._pending_queue.popleft()
-                        pending.future.cancel()
-                progressed = self._dispatch_locked() or progressed
-                running_snapshot = list(self._running_tasks)
-                should_exit = (
-                    self._shutdown
-                    and not self._pending_queue
-                    and not self._running_tasks
-                )
-            if should_exit:
-                break
-
-            for task in running_snapshot:
-                progressed = self._complete_task(task) or progressed
-
-            if progressed:
-                continue
-
-            with self._manager_cond:
-                if (
-                    self._shutdown
-                    and not self._pending_queue
-                    and not self._running_tasks
-                ):
-                    break
-                self._manager_cond.wait(0.002)
-
-        try:
-            self._pool.close()
-            self._pool.join()
-        except Exception:
-            try:
-                self._pool.terminate()
-                self._pool.join()
-            except Exception:
-                pass
-
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        with self._manager_cond:
-            self._shutdown = True
-            if cancel_futures:
-                self._cancel_futures = True
-                while self._pending_queue:
-                    task = self._pending_queue.popleft()
-                    task.future.cancel()
-            self._manager_cond.notify_all()
-        if wait:
-            self._manager.join()
 
 
 def _threadpool_worker_bootstrap(executor: ThreadPoolExecutor) -> None:
@@ -754,10 +531,6 @@ def _molt_threadpool_worker(executor: ThreadPoolExecutor, item: _WorkItem) -> No
                 pass
     finally:
         executor._molt_task_done(item.future)
-
-
-def _processpool_manager_worker(executor: ProcessPoolExecutor) -> None:
-    executor._manager_loop()
 
 
 def wait(

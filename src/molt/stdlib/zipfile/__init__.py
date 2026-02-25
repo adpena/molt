@@ -9,6 +9,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = [
     "BadZipFile",
+    "Path",
     "ZipFile",
     "ZipFileError",
     "ZipInfo",
@@ -40,6 +41,12 @@ _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
 _MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 _MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32", globals())
+_MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY = _require_intrinsic(
+    "molt_zipfile_parse_central_directory", globals()
+)
+_MOLT_ZIPFILE_BUILD_ZIP64_EXTRA = _require_intrinsic(
+    "molt_zipfile_build_zip64_extra", globals()
+)
 
 
 class ZipInfo:
@@ -113,8 +120,9 @@ class ZipFile:
             self._fp = open(file, "wb")
         else:
             _require_capability("fs.read")
-            with open(file, "rb") as handle:
-                data = handle.read()
+            handle = open(file, "rb")
+            data = handle.read()
+            handle.close()
             self._data = data
             self._index = _parse_central_directory(data)
 
@@ -334,124 +342,24 @@ class ZipFile:
 
 
 def _parse_central_directory(data: bytes) -> dict[str, _IndexEntry]:
-    if len(data) < 22:
-        raise BadZipFile("file is not a zip file")
-    eocd_offset = _find_eocd(data)
-    if eocd_offset < 0:
-        raise BadZipFile("end of central directory not found")
-    cd_size = _read_u32(data, eocd_offset + 12)
-    cd_offset = _read_u32(data, eocd_offset + 16)
-    total_entries = _read_u16(data, eocd_offset + 10)
-    if (
-        total_entries == ZIP64_COUNT_LIMIT
-        or cd_size == ZIP64_LIMIT
-        or cd_offset == ZIP64_LIMIT
-    ):
-        cd_offset, cd_size = _read_zip64_eocd(data, eocd_offset)
-    pos = cd_offset
-    end = cd_offset + cd_size
-    index: dict[str, _IndexEntry] = {}
-    while pos + 46 <= end:
-        if data[pos : pos + 4] != _CENTRAL_SIG:
-            break
-        comp_method = _read_u16(data, pos + 10)
-        comp_size = _read_u32(data, pos + 20)
-        uncomp_size = _read_u32(data, pos + 24)
-        name_len = _read_u16(data, pos + 28)
-        extra_len = _read_u16(data, pos + 30)
-        comment_len = _read_u16(data, pos + 32)
-        local_offset = _read_u32(data, pos + 42)
-        name_start = pos + 46
-        name_bytes = data[name_start : name_start + name_len]
-        try:
-            name = name_bytes.decode("utf-8")
-        except Exception:
-            name = name_bytes.decode("utf-8", errors="replace")
-        extra_start = name_start + name_len
-        extra = data[extra_start : extra_start + extra_len]
-        if (
-            comp_size == ZIP64_LIMIT
-            or uncomp_size == ZIP64_LIMIT
-            or local_offset == ZIP64_LIMIT
-        ):
-            comp_size, uncomp_size, local_offset = _parse_zip64_extra(
-                extra,
-                comp_size,
-                uncomp_size,
-                local_offset,
-            )
-        index[name] = (local_offset, comp_size, comp_method, name_len, uncomp_size)
-        pos = name_start + name_len + extra_len + comment_len
+    try:
+        index = _MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY(data)
+    except ValueError as exc:
+        raise BadZipFile(str(exc)) from exc
+    if not isinstance(index, dict):
+        raise BadZipFile("zip index unavailable")
     return index
 
 
-def _find_eocd(data: bytes) -> int:
-    max_comment = 65535
-    start = len(data) - (22 + max_comment)
-    if start < 0:
-        start = 0
-    return data.rfind(_EOCD_SIG, start)
-
-
-def _read_zip64_eocd(data: bytes, eocd_offset: int) -> tuple[int, int]:
-    locator_offset = eocd_offset - 20
-    if locator_offset < 0:
-        raise BadZipFile("zip64 locator missing")
-    if data[locator_offset : locator_offset + 4] != _ZIP64_LOCATOR_SIG:
-        raise BadZipFile("zip64 locator missing")
-    zip64_eocd_offset = _read_u64(data, locator_offset + 8)
-    if data[zip64_eocd_offset : zip64_eocd_offset + 4] != _ZIP64_EOCD_SIG:
-        raise BadZipFile("zip64 eocd missing")
-    cd_size = _read_u64(data, zip64_eocd_offset + 40)
-    cd_offset = _read_u64(data, zip64_eocd_offset + 48)
-    return cd_offset, cd_size
-
-
-def _parse_zip64_extra(
-    extra: bytes,
-    comp_size: int,
-    uncomp_size: int,
-    local_offset: int,
-) -> tuple[int, int, int]:
-    pos = 0
-    while pos + 4 <= len(extra):
-        header_id = _read_u16(extra, pos)
-        data_size = _read_u16(extra, pos + 2)
-        pos += 4
-        if pos + data_size > len(extra):
-            break
-        if header_id == ZIP64_EXTRA_ID:
-            cursor = pos
-            if uncomp_size == ZIP64_LIMIT:
-                if cursor + 8 > pos + data_size:
-                    raise BadZipFile("zip64 extra missing size")
-                uncomp_size = _read_u64(extra, cursor)
-                cursor += 8
-            if comp_size == ZIP64_LIMIT:
-                if cursor + 8 > pos + data_size:
-                    raise BadZipFile("zip64 extra missing comp size")
-                comp_size = _read_u64(extra, cursor)
-                cursor += 8
-            if local_offset == ZIP64_LIMIT:
-                if cursor + 8 > pos + data_size:
-                    raise BadZipFile("zip64 extra missing offset")
-                local_offset = _read_u64(extra, cursor)
-            return comp_size, uncomp_size, local_offset
-        pos += data_size
-    raise BadZipFile("zip64 extra missing")
-
-
 def _zip64_extra(size: int, comp_size: int, offset: int | None) -> bytes:
-    data = bytearray()
-    data.extend(_u64(size))
-    data.extend(_u64(comp_size))
-    if offset is not None:
-        data.extend(_u64(offset))
-    return _u16(ZIP64_EXTRA_ID) + _u16(len(data)) + data
+    return _MOLT_ZIPFILE_BUILD_ZIP64_EXTRA(size, comp_size, offset)
 
 
 _MOLT_DEFLATE_RAW = _require_intrinsic("molt_deflate_raw", globals())
 _MOLT_INFLATE_RAW = _require_intrinsic("molt_inflate_raw", globals())
+_MOLT_ZIPFILE_NORMALIZE_MEMBER_PATH = _require_intrinsic(
+    "molt_zipfile_normalize_member_path", globals()
+)
 
 
 def _deflate_raw(data: bytes, level: int | None) -> bytes:
@@ -460,3 +368,117 @@ def _deflate_raw(data: bytes, level: int | None) -> bytes:
 
 def _inflate_raw(data: bytes) -> bytes:
     return _MOLT_INFLATE_RAW(data)
+
+
+def main(args=None):
+    import argparse
+    import os
+    import sys
+
+    description = "A simple command-line interface for zipfile module."
+    parser = argparse.ArgumentParser(description=description)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "-l", "--list", metavar="<zipfile>", help="Show listing of a zipfile"
+    )
+    group.add_argument(
+        "-e",
+        "--extract",
+        nargs=2,
+        metavar=("<zipfile>", "<output_dir>"),
+        help="Extract zipfile into target dir",
+    )
+    group.add_argument(
+        "-c",
+        "--create",
+        nargs="+",
+        metavar=("<name>", "<file>"),
+        help="Create zipfile from sources",
+    )
+    group.add_argument(
+        "-t", "--test", metavar="<zipfile>", help="Test if a zipfile is valid"
+    )
+    parser.add_argument(
+        "--metadata-encoding",
+        metavar="<encoding>",
+        help="Specify encoding of member names for -l, -e and -t",
+    )
+    parsed = parser.parse_args(args)
+    encoding = parsed.metadata_encoding
+
+    if parsed.test is not None:
+        src = parsed.test
+        badfile = None
+        with ZipFile(src, "r") as zf:
+            for name in zf.namelist():
+                try:
+                    zf.read(name)
+                except Exception:
+                    badfile = name
+                    break
+        if badfile is not None:
+            print(f"The following enclosed file is corrupted: {badfile!r}")
+        print("Done testing")
+        return
+
+    if parsed.list is not None:
+        src = parsed.list
+        with ZipFile(src, "r") as zf:
+            for name in zf.namelist():
+                print(name)
+        return
+
+    if parsed.extract is not None:
+        src, output_dir = parsed.extract
+        with ZipFile(src, "r") as zf:
+            for member in zf.namelist():
+                normalized = _MOLT_ZIPFILE_NORMALIZE_MEMBER_PATH(member)
+                if normalized is None:
+                    continue
+                target = os.path.join(output_dir, normalized)
+                if member.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                parent = os.path.dirname(target)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                with open(target, "wb") as handle:
+                    handle.write(zf.read(member))
+        return
+
+    if parsed.create is None:
+        return
+    if encoding:
+        print("Non-conforming encodings not supported with -c.", file=sys.stderr)
+        sys.exit(1)
+
+    zip_name = parsed.create.pop(0)
+    files = parsed.create
+
+    def add_to_zip(zf: ZipFile, path: str, zippath: str) -> None:
+        if os.path.isfile(path):
+            arcname = zippath.replace(os.sep, "/")
+            with open(path, "rb") as handle:
+                zf.writestr(arcname, handle.read(), ZIP_DEFLATED)
+            return
+        if not os.path.isdir(path):
+            return
+        if zippath:
+            zf.writestr(zippath.replace(os.sep, "/").rstrip("/") + "/", b"")
+        for name in sorted(os.listdir(path)):
+            add_to_zip(zf, os.path.join(path, name), os.path.join(zippath, name))
+
+    with ZipFile(zip_name, "w") as zf:
+        for path in files:
+            zippath = os.path.basename(path)
+            if not zippath:
+                zippath = os.path.basename(os.path.dirname(path))
+            if zippath in ("", os.curdir, os.pardir):
+                zippath = ""
+            add_to_zip(zf, path, zippath)
+
+
+from ._path import (  # noqa: E402
+    Path,
+    CompleteDirs,  # noqa: F401
+)

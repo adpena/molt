@@ -444,7 +444,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             if normalized_poll_fn_addr < crate::wasm_table_base() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid wasm poll function");
             }
-            return crate::molt_call_indirect1(normalized_poll_fn_addr, addr);
+            crate::molt_call_indirect1(normalized_poll_fn_addr, addr)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

@@ -59,7 +59,7 @@ For historical milestone framing, use `docs/spec/areas/process/0006-roadmap.md`.
 - Implemented: Rust 2024 unsafe hardening in `runtime/molt-runtime/src/async_rt/channels.rs` to remove `unsafe_op_in_unsafe_fn` warnings in that module.
 - Implemented: explicit `fallible-iterator-02` alias boundary in `runtime/molt-worker` so `0.2` usage is isolated to postgres decode surfaces while `0.3` remains on rusqlite paths.
 - Upstream-constrained exception: dependency graph still contains `fallible-iterator 0.2 + 0.3` because `tokio-postgres`/`postgres-protocol` require `0.2` while `rusqlite` requires `0.3`.
-- TODO(toolchain, owner:runtime, milestone:TL2, priority:P1, status:partial): remove the temporary dual `fallible-iterator` graph when postgres ecosystem crates support `0.3+`; until then, keep 0.2 usage isolated to postgres-boundary code paths and document the constraint in status/review notes.
+- TODO(tooling, owner:runtime, milestone:TL2, priority:P1, status:partial): remove the temporary dual `fallible-iterator` graph when postgres ecosystem crates support `0.3+`; until then, keep 0.2 usage isolated to postgres-boundary code paths and document the constraint in status/review notes.
 
 ---
 
@@ -87,7 +87,7 @@ Planned acceleration lanes:
 | Milestone | Focus | Owners | Status | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **TC1** | Exceptions + full container semantics + range/slice polish | runtime, frontend, tests | 🚧 In Progress | TODO(type-coverage, owner:runtime, milestone:TC1, priority:P1, status:partial): exception object model + raise/try. |
-| **TC2** | set/frozenset + generators/coroutines + callables | runtime, frontend, backend | 📅 Planned | TODO(type-coverage, owner:backend, milestone:TC2, priority:P2, status:planned): wasm ABI for generator state. |
+| **TC2** | set/frozenset + generators/coroutines + callables | runtime, frontend, backend | 📅 Planned | TODO(type-coverage, owner:compiler, milestone:TC2, priority:P2, status:planned): wasm ABI for generator state. |
 | **TC3** | memoryview + type/object + modules/descriptors | runtime, stdlib | 📅 Planned | TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): module object + import rules. |
 
 Type coverage TODOs tracked here for CI parity:
@@ -121,7 +121,7 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:planned): identity builtins (`hash`, `id`, `callable`).
 - Implemented: iterable unpacking + starred targets for assignment/loop targets with CPython-style error semantics (PEP 3132 + PEP 448 coverage).
-- TODO(type-coverage, owner:backend, milestone:TC2, priority:P2, status:planned): generator/iterator state in wasm ABI.
+- TODO(type-coverage, owner:compiler, milestone:TC2, priority:P2, status:planned): generator/iterator state in wasm ABI.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): type-hint specialization policy (`--type-hints=check` with runtime guards).
 - TODO(type-coverage, owner:stdlib, milestone:TC2, priority:P2, status:planned): `builtins` module parity notes.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): buffer protocol + memoryview layout.
@@ -144,7 +144,7 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery hardening, `__init__` edge handling, deterministic dependency graph caching).
 - Implemented: relative import resolution honors `__package__`/`__spec__` metadata (including `__main__`), namespace packages, and CPython-matching missing/beyond-top-level errors.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
-- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution builtins: `compile` now performs Rust parser-backed syntax/scope validation for `exec`/`eval`/`single` modes and returns a runtime code object, but `eval`/`exec` and full compile codegen/sandboxing remain missing.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; current scope is parser-backed `compile` validation only (`exec`/`eval`/`single` to a runtime code object), while `eval`/`exec` execution and full compile codegen remain intentionally unsupported; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
 
@@ -217,7 +217,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/std
 - Implemented: `urllib.parse.urlencode` now lowers via runtime intrinsic `molt_urllib_urlencode` (no Python-side encoding loop in the module shim).
 - Implemented: `urllib.error` now lowers through runtime intrinsics (`molt_urllib_error_urlerror_init`, `molt_urllib_error_urlerror_str`, `molt_urllib_error_httperror_init`, `molt_urllib_error_httperror_str`, `molt_urllib_error_content_too_short_init`) with exception formatting parity handled in runtime and Python shim limited to class shell/property wiring.
 - Implemented: `urllib.request` opener core is now intrinsic-backed (`molt_urllib_request_request_init`, `molt_urllib_request_opener_init`, `molt_urllib_request_add_handler`, `molt_urllib_request_open`) with runtime-owned handler ordering/dispatch + `data:` URL fallback behind default-opener wiring and thin Python class wrappers only; `data:` responses now align with CPython metadata semantics (`getcode()`/`status` -> `None`).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest blocked on eval/exec/compile gating, full unittest parity pending.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 - Implemented: `__future__`/`keyword` module bootstrap now loads feature metadata and keyword tables/checks from Rust intrinsics (`molt_future_features`, `molt_keyword_lists`, `molt_keyword_iskeyword`, `molt_keyword_issoftkeyword`), eliminating probe-only status.
 - linecache module implemented (`getline`, `getlines`, `checkcache`, `lazycache`) with `fs.read` gating; lazy loader `get_source` calls now lower through `molt_linecache_loader_get_source`.
 - reprlib module implemented (`Repr`, `repr`, `recursive_repr` parity).
@@ -321,7 +321,7 @@ Language feature TODOs tracked here for parity:
 - [x] Molt-native channel/spawn wrappers (`molt.channel`, `molt.spawn`) with no CPython fallback
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - [ ] Per-runtime GIL strategy + runtime instance ownership model (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
-- [ ] PyToken enforcement across runtime mutation entrypoints (TODO(concurrency, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).
+- [ ] PyToken enforcement across runtime mutation entrypoints (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).
 - [~] Process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (capability-gated spawn, IPC primitives, worker lifecycle). Spawn-based `multiprocessing` is now partial; `fork`/`forkserver` map to spawn semantics and need true fork support; `subprocess`/`concurrent.futures` remain pending.
   (TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.)
   (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
@@ -335,7 +335,7 @@ Language feature TODOs tracked here for parity:
 - [x] `molt build` CLI
 - [x] Cross-compilation to WASM
 - [x] `molt-diff` Harness (CPython Semantics Matcher)
-- [ ] Explicit CPython parity runner (separate from `molt run`) (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): add a CPython parity runner distinct from compiled `molt run`).
+- [x] Explicit CPython parity runner (separate from `molt run`) via `molt parity-run` (CPython-only execution with optional `--timing`/`--json`).
 - [x] SBOM Generation + signing hooks (`molt package` CycloneDX/SPDX sidecars + cosign/codesign).
 - [~] Signature verification + trust policy for packaged artifacts (publish/verify enforced; load-time enforcement pending).
   (TODO(tooling, owner:release, milestone:TL2, priority:P2, status:partial): enforce signature verification/trust policy during load.)

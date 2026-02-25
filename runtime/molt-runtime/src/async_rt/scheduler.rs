@@ -1208,6 +1208,128 @@ pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
     })
 }
 
+// --- _asyncio C-extension surface: _enter_task / _leave_task / _register_task / _unregister_task ---
+
+fn asyncio_current_tasks_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &runtime_state(_py).asyncio_current_tasks
+}
+
+/// CPython `_asyncio._enter_task(loop, task)`:
+/// Sets `task` as the current task for `loop`. Raises RuntimeError if a task is already set.
+fn asyncio_enter_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) -> u64 {
+    if obj_from_bits(loop_bits).is_none() || obj_from_bits(task_bits).is_none() {
+        return raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "_enter_task requires non-None loop and task",
+        );
+    }
+    let mut guard = asyncio_current_tasks_map(_py).lock().unwrap();
+    if let Some(existing_bits) = guard.get(&loop_bits).copied()
+        && existing_bits != 0
+        && !obj_from_bits(existing_bits).is_none()
+    {
+        drop(guard);
+        return raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "Cannot enter into task while another task is being executed",
+        );
+    }
+    guard.insert(loop_bits, task_bits);
+    inc_ref_bits(_py, loop_bits);
+    inc_ref_bits(_py, task_bits);
+    MoltObject::none().bits()
+}
+
+/// CPython `_asyncio._leave_task(loop, task)`:
+/// Clears the current task for `loop`. Raises RuntimeError if the current task is not `task`.
+fn asyncio_leave_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) -> u64 {
+    if obj_from_bits(loop_bits).is_none() || obj_from_bits(task_bits).is_none() {
+        return raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "_leave_task requires non-None loop and task",
+        );
+    }
+    let mut guard = asyncio_current_tasks_map(_py).lock().unwrap();
+    let current = guard.get(&loop_bits).copied();
+    match current {
+        Some(current_bits) if current_bits == task_bits => {
+            guard.remove(&loop_bits);
+            drop(guard);
+            dec_ref_bits(_py, loop_bits);
+            dec_ref_bits(_py, task_bits);
+            MoltObject::none().bits()
+        }
+        _ => {
+            drop(guard);
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "Leaving a task that is not the current task",
+            )
+        }
+    }
+}
+
+/// CPython `_asyncio._register_task(task)`:
+/// Adds task to the global task registry. Uses the task's id() as the key.
+fn asyncio_register_task_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
+    if obj_from_bits(task_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let mut guard = asyncio_task_map(_py).lock().unwrap();
+    // Use the raw bits as the key (acts as id)
+    let old = guard.insert(task_bits, task_bits);
+    if old != Some(task_bits) {
+        inc_ref_bits(_py, task_bits);
+        if let Some(old_bits) = old
+            && old_bits != 0
+            && !obj_from_bits(old_bits).is_none()
+        {
+            dec_ref_bits(_py, old_bits);
+        }
+    }
+    MoltObject::none().bits()
+}
+
+/// CPython `_asyncio._unregister_task(task)`:
+/// Removes task from the global task registry.
+fn asyncio_unregister_task_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
+    if obj_from_bits(task_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let mut guard = asyncio_task_map(_py).lock().unwrap();
+    if let Some(old_bits) = guard.remove(&task_bits) {
+        drop(guard);
+        if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+            dec_ref_bits(_py, old_bits);
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_enter_task(loop_bits: u64, task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_enter_task_impl(_py, loop_bits, task_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_leave_task(loop_bits: u64, task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_leave_task_impl(_py, loop_bits, task_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_register_task(task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_register_task_impl(_py, task_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_unregister_task(task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_unregister_task_impl(_py, task_bits) })
+}
+
 pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
     crate::gil_assert();
     if fn_ptr == 0 {
@@ -1601,7 +1723,7 @@ pub(crate) fn block_on_wait_spec(
     #[cfg(target_arch = "wasm32")]
     {
         let _ = deadline;
-        return None;
+        None
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -2303,9 +2425,7 @@ impl MoltScheduler {
     }
 
     pub fn shutdown(&self) {
-        if !self.running.swap(false, AtomicOrdering::SeqCst) {
-            return;
-        }
+        self.running.swap(false, AtomicOrdering::SeqCst);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let handles = {
@@ -2467,7 +2587,6 @@ impl MoltScheduler {
                     );
                 }
             }
-            return;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

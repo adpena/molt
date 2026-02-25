@@ -106,12 +106,7 @@ thread_local! {
 // CPython's ThreadPoolExecutor model.
 
 fn worker_loop(receiver: Receiver<Option<WorkItem>>) {
-    loop {
-        let item = match receiver.recv() {
-            Ok(Some(item)) => item,
-            Ok(None) | Err(_) => break, // shutdown
-        };
-
+    while let Ok(Some(item)) = receiver.recv() {
         // Mark running.
         {
             let mut state = item.future.lock().unwrap();

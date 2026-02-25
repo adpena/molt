@@ -23,8 +23,6 @@ __all__ = [
     "sha256",
     "sha384",
     "sha512",
-    "sha512_224",
-    "sha512_256",
     "sha3_224",
     "sha3_256",
     "sha3_384",
@@ -254,14 +252,6 @@ def sha512(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
     return new("sha512", data, usedforsecurity=usedforsecurity)
 
 
-def sha512_224(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
-    return new("sha512_224", data, usedforsecurity=usedforsecurity)
-
-
-def sha512_256(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
-    return new("sha512_256", data, usedforsecurity=usedforsecurity)
-
-
 def sha3_224(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
     return new("sha3_224", data, usedforsecurity=usedforsecurity)
 
@@ -423,8 +413,6 @@ _CONSTRUCTORS: dict[str, Callable[..., _Hash]] = {
     "sha256": sha256,
     "sha384": sha384,
     "sha512": sha512,
-    "sha512_224": sha512_224,
-    "sha512_256": sha512_256,
     "sha3_224": sha3_224,
     "sha3_256": sha3_256,
     "sha3_384": sha3_384,

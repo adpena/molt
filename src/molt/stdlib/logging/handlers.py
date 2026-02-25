@@ -1,21 +1,143 @@
-"""Queue-based handlers for the stdlib `logging` package."""
+"""Handlers for the stdlib `logging` package."""
 
 from __future__ import annotations
 
+import os as _os
+import time as _time
 from typing import Any, cast
 
 import logging as _logging
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# TODO(stdlib, owner:runtime, milestone:TL3, priority:P2, status:planned):
-# Extend queue-backed logging handler parity for advanced listener lifecycle and
-# queue edge cases after baseline stdlib queue support stabilizes.
+# TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend queue-backed logging handler parity for advanced listener lifecycle and queue edge cases after baseline stdlib queue support stabilizes.
 _MOLT_LOGGING_RUNTIME_READY = _require_intrinsic(
     "molt_logging_runtime_ready", globals()
 )
 
-__all__ = ["QueueHandler", "QueueListener"]
+__all__ = [
+    "BaseRotatingHandler",
+    "TimedRotatingFileHandler",
+    "QueueHandler",
+    "QueueListener",
+]
+
+
+class BaseRotatingHandler(_logging.FileHandler):
+    def __init__(
+        self,
+        filename: str,
+        mode: str = "a",
+        encoding: str | None = None,
+        delay: bool = False,
+    ) -> None:
+        super().__init__(filename, mode, encoding, delay)
+        self.namer: Any = None
+        self.rotator: Any = None
+
+    def shouldRollover(self, record: _logging.LogRecord) -> bool:
+        return False
+
+    def doRollover(self) -> None:
+        pass
+
+    def emit(self, record: _logging.LogRecord) -> None:
+        try:
+            if self.shouldRollover(record):
+                self.doRollover()
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def rotation_filename(self, default_name: str) -> str:
+        if self.namer is None:
+            return default_name
+        return self.namer(default_name)
+
+    def rotate(self, source: str, dest: str) -> None:
+        if self.rotator is None:
+            if _os.path.exists(source):
+                _os.rename(source, dest)
+        else:
+            self.rotator(source, dest)
+
+
+class TimedRotatingFileHandler(BaseRotatingHandler):
+    _WHEN_MAP = {
+        "S": (1, "%Y-%m-%d_%H-%M-%S"),
+        "M": (60, "%Y-%m-%d_%H-%M"),
+        "H": (3600, "%Y-%m-%d_%H"),
+        "D": (86400, "%Y-%m-%d"),
+        "MIDNIGHT": (86400, "%Y-%m-%d"),
+    }
+
+    def __init__(
+        self,
+        filename: Any,
+        when: str = "h",
+        interval: int = 1,
+        backupCount: int = 0,
+        encoding: str | None = None,
+        delay: bool = False,
+        utc: bool = False,
+        atTime: Any = None,
+    ) -> None:
+        super().__init__(str(filename), "a", encoding, delay)
+        self.when = when.upper()
+        entry = self._WHEN_MAP.get(self.when)
+        if entry is None:
+            raise ValueError("Invalid rollover interval specified: %s" % self.when)
+        base_interval, self.suffix = entry
+        self.interval = base_interval * max(interval, 1)
+        self.backupCount = backupCount
+        self.utc = utc
+        self.atTime = atTime
+        self.rolloverAt = self._computeRollover(_time.time())
+
+    def _computeRollover(self, currentTime: float) -> float:
+        return currentTime + self.interval
+
+    def shouldRollover(self, record: _logging.LogRecord) -> bool:
+        return _time.time() >= self.rolloverAt
+
+    def getFilesToDelete(self) -> list[str]:
+        dirName = _os.path.dirname(self.baseFilename)
+        baseName = _os.path.basename(self.baseFilename)
+        if not dirName:
+            dirName = "."
+        result: list[str] = []
+        try:
+            entries = _os.listdir(dirName)
+        except OSError:
+            return result
+        prefix = baseName + "."
+        for entry in entries:
+            if entry[: len(prefix)] == prefix and len(entry) > len(prefix):
+                result.append(_os.path.join(dirName, entry))
+        result.sort()
+        if len(result) <= self.backupCount:
+            return []
+        return result[: len(result) - self.backupCount]
+
+    def doRollover(self) -> None:
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        currentTime = int(_time.time())
+        if self.utc:
+            timeTuple = _time.gmtime(currentTime)
+        else:
+            timeTuple = _time.localtime(currentTime)
+        dfn = self.rotation_filename(
+            self.baseFilename + "." + _time.strftime(self.suffix, timeTuple)
+        )
+        if _os.path.exists(dfn):
+            _os.remove(dfn)
+        self.rotate(self.baseFilename, dfn)
+        for s in self.getFilesToDelete():
+            _os.remove(s)
+        self.stream = self._open()
+        self.rolloverAt = self._computeRollover(currentTime)
 
 
 class QueueHandler(_logging.Handler):

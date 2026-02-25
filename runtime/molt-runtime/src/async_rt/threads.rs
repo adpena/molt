@@ -214,7 +214,6 @@ fn thread_worker(rx: Receiver<ThreadWork>) {
     with_gil(|py| crate::state::clear_worker_thread_state(&py));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn call_thread_callable(
     _py: &PyToken<'_>,
     callable_bits: u64,
@@ -344,6 +343,85 @@ pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `_obj_bits` is a valid thread object pointer or zero.
 pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, { pending_bits_i64() })
+}
+
+// --- asyncio.to_thread intrinsic ---
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Submits a synchronous callable to the runtime thread pool, returning an
+/// awaitable future.  This is the intrinsic backing `asyncio.to_thread()`.
+///
+/// # Safety
+/// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid NaN-boxed
+/// runtime objects.  The runtime must be initialized.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_asyncio_to_thread(
+    callable_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // Create a future backed by the thread poll function, identical to
+        // molt_thread_submit — the only difference is the name so that the
+        // Python shim can invoke the intrinsic directly.
+        let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
+        let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
+            return MoltObject::none().bits();
+        };
+        let state = Arc::new(ThreadTaskState::new(future_ptr));
+        runtime_state(_py)
+            .thread_tasks
+            .lock()
+            .unwrap()
+            .insert(PtrSlot(future_ptr), Arc::clone(&state));
+        inc_ref_bits(_py, callable_bits);
+        if !obj_from_bits(args_bits).is_none() {
+            inc_ref_bits(_py, args_bits);
+        }
+        if !obj_from_bits(kwargs_bits).is_none() {
+            inc_ref_bits(_py, kwargs_bits);
+        }
+        runtime_state(_py).thread_pool().submit(ThreadWorkItem {
+            task: state,
+            callable_bits,
+            args_bits,
+            kwargs_bits,
+        });
+        future_bits
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+/// WASM fallback: execute the callable synchronously (WASM is single-threaded)
+/// and return a resolved future so that `await asyncio.to_thread(fn)` still works.
+///
+/// # Safety
+/// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid NaN-boxed
+/// runtime objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_asyncio_to_thread(
+    callable_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            // On WASM there is no thread pool; call the function synchronously.
+            let result = call_thread_callable(_py, callable_bits, args_bits, kwargs_bits);
+            if exception_pending(_py) {
+                return result;
+            }
+            // Wrap the result in an already-resolved future so `await` works.
+            let future_bits = molt_promise_new();
+            if future_bits == 0 || obj_from_bits(future_bits).is_none() {
+                return result;
+            }
+            molt_promise_set_result(future_bits, result);
+            future_bits
+        })
+    }
 }

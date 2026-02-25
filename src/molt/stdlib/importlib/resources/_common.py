@@ -8,6 +8,7 @@ _MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic(
 )
 
 import functools
+import importlib  # noqa: F401
 import inspect
 import itertools
 import contextlib  # noqa: F401

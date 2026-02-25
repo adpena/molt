@@ -61,6 +61,7 @@ Hand-edited control files:
 - `surfaces/c_api/libmolt_c_api_surface.md`
 - `surfaces/c_api/c_api_symbol_matrix.md`
 - `plans/stdlib_lowering_plan.md`
+- `plans/tkinter_lowering_plan.md`
 - all files under `contracts/`
 
 ## Required Update Workflow
@@ -75,6 +76,7 @@ Hand-edited control files:
 4. Re-run compatibility gates:
    - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
+   - `python3 tools/check_dynamic_policy.py`
    - `python3 tools/check_differential_suite_layout.py`
 5. Sync rollup docs in the same change:
    - `docs/spec/STATUS.md`
@@ -86,4 +88,6 @@ Hand-edited control files:
 - Language surface index: `docs/spec/areas/compat/surfaces/language/language_surface_matrix.md`
 - Stdlib surface index: `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md`
 - C-API surface index: `docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md`
+- Dynamic execution/reflection policy contract: `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`
 - Execution plan: `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
+- Tkinter execution plan: `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`

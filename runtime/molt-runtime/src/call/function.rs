@@ -1635,12 +1635,11 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
         #[cfg(target_arch = "wasm32")]
         {
             let func_obj = obj_from_bits(func_bits);
-            if let Some(func_ptr) = func_obj.as_ptr() {
-                if object_type_id(func_ptr) == TYPE_ID_FUNCTION
-                    && function_trampoline_ptr(func_ptr) != 0
-                {
-                    return call_function_obj_trampoline(_py, func_bits, args);
-                }
+            if let Some(func_ptr) = func_obj.as_ptr()
+                && object_type_id(func_ptr) == TYPE_ID_FUNCTION
+                && function_trampoline_ptr(func_ptr) != 0
+            {
+                return call_function_obj_trampoline(_py, func_bits, args);
             }
         }
         if function_needs_task_trampoline(_py, func_bits) {

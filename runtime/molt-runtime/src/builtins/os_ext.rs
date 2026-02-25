@@ -1429,3 +1429,603 @@ pub extern "C" fn molt_os_pathsep() -> u64 {
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// File descriptor operations (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// `os.dup2(fd, fd2)` → int — duplicate fd onto fd2
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        };
+        let Some(fd2) = to_i64(obj_from_bits(fd2_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fd2 must be an integer");
+        };
+        if fd < 0 || fd2 < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "dup2");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "dup2")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::dup2(fd as libc::c_int, fd2 as libc::c_int) };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "dup2");
+                }
+                return raise_os_error::<u64>(_py, err, "dup2");
+            }
+            MoltObject::from_int(result as i64).bits()
+        }
+    })
+}
+
+/// `os.lseek(fd, pos, how)` → int — seek within file descriptor
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be an integer");
+        };
+        let Some(how) = to_i64(obj_from_bits(how_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "how must be an integer");
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "lseek");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lseek")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result =
+                unsafe { libc::lseek(fd as libc::c_int, pos as libc::off_t, how as libc::c_int) };
+            if result == -1 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "lseek");
+                }
+                return raise_os_error::<u64>(_py, err, "lseek");
+            }
+            MoltObject::from_int(result as i64).bits()
+        }
+    })
+}
+
+/// `os.ftruncate(fd, length)` → None — truncate fd to length
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        };
+        let Some(length) = to_i64(obj_from_bits(length_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "length must be an integer");
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "ftruncate");
+        }
+        if length < 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "ftruncate: length must be non-negative",
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::ftruncate(fd as libc::c_int, length as libc::off_t) };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "ftruncate");
+                }
+                return raise_os_error::<u64>(_py, err, "ftruncate");
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+/// `os.isatty(fd)` → bool — return True if fd is a tty
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        };
+        if fd < 0 {
+            return MoltObject::from_bool(false).bits();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            MoltObject::from_bool(false).bits()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::isatty(fd as libc::c_int) };
+            MoltObject::from_bool(result == 1).bits()
+        }
+    })
+}
+
+/// `os.fdopen(fd, mode, closefd)` — stub: raises NotImplementedError
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(
+            _py,
+            "NotImplementedError",
+            "os.fdopen() is not yet implemented in Molt",
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Process operations (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// `os.kill(pid, sig)` → None — send signal to process
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<_>(_py, "PermissionError", "missing process capability");
+        }
+        let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pid must be an integer");
+        };
+        let Some(sig) = to_i64(obj_from_bits(sig_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "sig must be an integer");
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (pid, sig);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "kill")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::kill(pid as libc::pid_t, sig as libc::c_int) };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "kill");
+                }
+                return raise_os_error::<u64>(_py, err, "kill");
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+/// `os.waitpid(pid, options)` → (pid, status) — wait for process
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<_>(_py, "PermissionError", "missing process capability");
+        }
+        let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pid must be an integer");
+        };
+        let Some(options) = to_i64(obj_from_bits(options_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "options must be an integer");
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (pid, options);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "waitpid")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut status: libc::c_int = 0;
+            let result =
+                unsafe { libc::waitpid(pid as libc::pid_t, &mut status, options as libc::c_int) };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "waitpid");
+                }
+                return raise_os_error::<u64>(_py, err, "waitpid");
+            }
+            let elems = [
+                MoltObject::from_int(result as i64).bits(),
+                MoltObject::from_int(status as i64).bits(),
+            ];
+            let tup_ptr = alloc_tuple(_py, &elems);
+            if tup_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(tup_ptr).bits()
+        }
+    })
+}
+
+/// `os.getpgrp()` → int — get process group
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_getpgrp() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pgrp = unsafe { libc::getpgrp() };
+            MoltObject::from_int(pgrp as i64).bits()
+        }
+    })
+}
+
+/// `os.setpgrp()` → None — set process group
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_setpgrp() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<_>(_py, "PermissionError", "missing process capability");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setpgrp")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // macOS does not have setpgrp(); use setpgid(0, 0) which is equivalent
+            let result = unsafe { libc::setpgid(0, 0) };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "setpgrp");
+                }
+                return raise_os_error::<u64>(_py, err, "setpgrp");
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+/// `os.setsid()` → int — create new session
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_setsid() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<_>(_py, "PermissionError", "missing process capability");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setsid")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::setsid() };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "setsid");
+                }
+                return raise_os_error::<u64>(_py, err, "setsid");
+            }
+            MoltObject::from_int(result as i64).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// System configuration (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// `os.sysconf(name)` → int — get system configuration value
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = to_i64(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "sysconf name must be an integer");
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = name;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = unsafe { libc::sysconf(name as libc::c_int) };
+            if result == -1 {
+                // sysconf returns -1 for both errors and "indeterminate" values.
+                // Check last OS error — if non-zero, it's a real error.
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error()
+                    && errno != 0
+                {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "sysconf");
+                }
+                // errno == 0 means "no limit" / indeterminate — return -1
+            }
+            MoltObject::from_int(result as i64).bits()
+        }
+    })
+}
+
+/// `os.sysconf_names` — returns flat list [name_str, value_int, ...] of common POSIX sysconf names
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_sysconf_names() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Return an empty list on WASM — Python side builds dict from it
+            let list_ptr = alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let names: &[(&str, libc::c_int)] = &[
+                ("SC_PAGE_SIZE", libc::_SC_PAGE_SIZE),
+                ("SC_NPROCESSORS_CONF", libc::_SC_NPROCESSORS_CONF),
+                ("SC_NPROCESSORS_ONLN", libc::_SC_NPROCESSORS_ONLN),
+                ("SC_CLK_TCK", libc::_SC_CLK_TCK),
+                ("SC_OPEN_MAX", libc::_SC_OPEN_MAX),
+                ("SC_ARG_MAX", libc::_SC_ARG_MAX),
+                ("SC_CHILD_MAX", libc::_SC_CHILD_MAX),
+                ("SC_HOST_NAME_MAX", libc::_SC_HOST_NAME_MAX),
+                ("SC_LOGIN_NAME_MAX", libc::_SC_LOGIN_NAME_MAX),
+                ("SC_PHYS_PAGES", libc::_SC_PHYS_PAGES),
+            ];
+            let mut entries: Vec<u64> = Vec::with_capacity(names.len() * 2);
+            for (name_str, val) in names {
+                let s_ptr = alloc_string(_py, name_str.as_bytes());
+                if s_ptr.is_null() {
+                    for e in &entries {
+                        dec_ref_bits(_py, *e);
+                    }
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                entries.push(MoltObject::from_ptr(s_ptr).bits());
+                entries.push(MoltObject::from_int(*val as i64).bits());
+            }
+            let list_ptr = alloc_list(_py, &entries);
+            // dec_ref the string entries (ints are inline, no dec_ref needed)
+            for (i, e) in entries.iter().enumerate() {
+                if i % 2 == 0 {
+                    // string entries at even indices
+                    dec_ref_bits(_py, *e);
+                }
+            }
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem operations (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// `os.path.realpath(path)` → str — resolve path following symlinks
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        match std::fs::canonicalize(&path) {
+            Ok(resolved) => str_bits(_py, &resolved.to_string_lossy()),
+            Err(err) => os_err_bits(_py, err, "realpath"),
+        }
+    })
+}
+
+/// `os.utime(path, atime, mtime)` → None — set access/modification times
+///
+/// `atime_bits` and `mtime_bits` are floats, or both None for current time.
+/// The Python wrapper decomposes the `times` tuple before calling this.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, atime_bits, mtime_bits);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::ffi::CString;
+
+            let c_path = match CString::new(path.to_string_lossy().as_bytes()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return raise_exception::<_>(_py, "ValueError", "path contains null byte");
+                }
+            };
+
+            let atime_obj = obj_from_bits(atime_bits);
+            if atime_obj.is_none() {
+                // None means set to current time — pass null to utimes
+                let result = unsafe { libc::utimes(c_path.as_ptr(), std::ptr::null()) };
+                if result < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "utime");
+                    }
+                    return raise_os_error::<u64>(_py, err, "utime");
+                }
+            } else {
+                let atime_f = match to_f64(atime_obj) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: atime must be a number",
+                        );
+                    }
+                };
+                let mtime_f = match to_f64(obj_from_bits(mtime_bits)) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: mtime must be a number",
+                        );
+                    }
+                };
+                let tv = [
+                    libc::timeval {
+                        tv_sec: atime_f as libc::time_t,
+                        tv_usec: ((atime_f.fract() * 1_000_000.0) as libc::suseconds_t),
+                    },
+                    libc::timeval {
+                        tv_sec: mtime_f as libc::time_t,
+                        tv_usec: ((mtime_f.fract() * 1_000_000.0) as libc::suseconds_t),
+                    },
+                ];
+                let result = unsafe { libc::utimes(c_path.as_ptr(), tv.as_ptr()) };
+                if result < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "utime");
+                    }
+                    return raise_os_error::<u64>(_py, err, "utime");
+                }
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+/// `os.sendfile(out_fd, in_fd, offset, count)` → int — zero-copy file send
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_sendfile(
+    out_fd_bits: u64,
+    in_fd_bits: u64,
+    offset_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(out_fd) = to_i64(obj_from_bits(out_fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "out_fd must be an integer");
+        };
+        let Some(in_fd) = to_i64(obj_from_bits(in_fd_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "in_fd must be an integer");
+        };
+        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+        };
+        let offset_obj = obj_from_bits(offset_bits);
+        let offset_val = if offset_obj.is_none() {
+            None
+        } else {
+            match to_i64(offset_obj) {
+                Some(v) => Some(v),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "offset must be an integer or None",
+                    );
+                }
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (out_fd, in_fd, offset_val, count);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sendfile")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut off = offset_val.map(|v| v as libc::off_t);
+            let off_ptr = match off.as_mut() {
+                Some(o) => o as *mut libc::off_t,
+                None => std::ptr::null_mut(),
+            };
+            let result = unsafe {
+                libc::sendfile(
+                    out_fd as libc::c_int,
+                    in_fd as libc::c_int,
+                    off_ptr,
+                    count as usize,
+                )
+            };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "sendfile");
+                }
+                return raise_os_error::<u64>(_py, err, "sendfile");
+            }
+            MoltObject::from_int(result as i64).bits()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS sendfile: sendfile(in_fd, out_fd, offset, &mut len, hdtr, flags)
+            // Note reversed fd order compared to Linux!
+            let off = offset_val.unwrap_or(0) as libc::off_t;
+            let mut len = count as libc::off_t;
+            let result = unsafe {
+                libc::sendfile(
+                    in_fd as libc::c_int,
+                    out_fd as libc::c_int,
+                    off,
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "sendfile");
+                }
+                return raise_os_error::<u64>(_py, err, "sendfile");
+            }
+            // On macOS, len is set to the number of bytes sent
+            MoltObject::from_int(len as i64).bits()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_arch = "wasm32")))]
+        {
+            let _ = (out_fd, in_fd, offset_val, count);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sendfile")
+        }
+    })
+}

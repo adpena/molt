@@ -83,6 +83,26 @@ __all__ = [
     "get_asyncgen_hooks",
     "set_asyncgen_hooks",
     "exit",
+    "maxsize",
+    "maxunicode",
+    "byteorder",
+    "prefix",
+    "exec_prefix",
+    "base_prefix",
+    "base_exec_prefix",
+    "platlibdir",
+    "float_info",
+    "int_info",
+    "hash_info",
+    "thread_info",
+    "intern",
+    "getsizeof",
+    "stdlib_module_names",
+    "builtin_module_names",
+    "orig_argv",
+    "copyright",
+    "displayhook",
+    "excepthook",
 ]
 
 _MOLT_GETARGV = _as_callable(_require_intrinsic("molt_getargv", globals()))
@@ -133,6 +153,45 @@ _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _as_callable(
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _as_callable(
     _require_intrinsic("molt_sys_bootstrap_payload", globals())
+)
+_MOLT_SYS_MAXSIZE = _as_callable(_require_intrinsic("molt_sys_maxsize", globals()))
+_MOLT_SYS_MAXUNICODE = _as_callable(
+    _require_intrinsic("molt_sys_maxunicode", globals())
+)
+_MOLT_SYS_BYTEORDER = _as_callable(_require_intrinsic("molt_sys_byteorder", globals()))
+_MOLT_SYS_PREFIX = _as_callable(_require_intrinsic("molt_sys_prefix", globals()))
+_MOLT_SYS_EXEC_PREFIX = _as_callable(
+    _require_intrinsic("molt_sys_exec_prefix", globals())
+)
+_MOLT_SYS_BASE_PREFIX = _as_callable(
+    _require_intrinsic("molt_sys_base_prefix", globals())
+)
+_MOLT_SYS_BASE_EXEC_PREFIX = _as_callable(
+    _require_intrinsic("molt_sys_base_exec_prefix", globals())
+)
+_MOLT_SYS_PLATLIBDIR = _as_callable(
+    _require_intrinsic("molt_sys_platlibdir", globals())
+)
+_MOLT_SYS_FLOAT_INFO = _as_callable(
+    _require_intrinsic("molt_sys_float_info", globals())
+)
+_MOLT_SYS_INT_INFO = _as_callable(_require_intrinsic("molt_sys_int_info", globals()))
+_MOLT_SYS_HASH_INFO = _as_callable(_require_intrinsic("molt_sys_hash_info", globals()))
+_MOLT_SYS_THREAD_INFO = _as_callable(
+    _require_intrinsic("molt_sys_thread_info", globals())
+)
+_MOLT_SYS_INTERN = _as_callable(_require_intrinsic("molt_sys_intern", globals()))
+_MOLT_SYS_GETSIZEOF = _as_callable(_require_intrinsic("molt_sys_getsizeof", globals()))
+_MOLT_SYS_STDLIB_MODULE_NAMES = _as_callable(
+    _require_intrinsic("molt_sys_stdlib_module_names", globals())
+)
+_MOLT_SYS_BUILTIN_MODULE_NAMES = _as_callable(
+    _require_intrinsic("molt_sys_builtin_module_names", globals())
+)
+_MOLT_SYS_ORIG_ARGV = _as_callable(_require_intrinsic("molt_sys_orig_argv", globals()))
+_MOLT_SYS_COPYRIGHT = _as_callable(_require_intrinsic("molt_sys_copyright", globals()))
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _as_callable(
+    _require_intrinsic("molt_traceback_format_exception", globals())
 )
 
 raw_argv = _MOLT_GETARGV()
@@ -329,14 +388,182 @@ class flags(tuple):
         return f"sys.flags({items})"
 
 
+# --- version_info structured tuple ---
+
+_VERSION_INFO_FIELDS = ("major", "minor", "micro", "releaselevel", "serial")
+_VERSION_INFO_INDEX = {name: i for i, name in enumerate(_VERSION_INFO_FIELDS)}
+
+
+class version_info(tuple):
+    __slots__ = ()
+    n_fields = len(_VERSION_INFO_FIELDS)
+    n_sequence_fields = len(_VERSION_INFO_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: object) -> "version_info":
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _VERSION_INFO_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(
+            f"{field}={self[index]!r}"
+            for index, field in enumerate(_VERSION_INFO_FIELDS)
+        )
+        return f"sys.version_info({items})"
+
+
+# --- float_info structured tuple ---
+
+_FLOAT_INFO_FIELDS = (
+    "max",
+    "max_exp",
+    "max_10_exp",
+    "min",
+    "min_exp",
+    "min_10_exp",
+    "dig",
+    "mant_dig",
+    "epsilon",
+    "radix",
+    "rounds",
+)
+_FLOAT_INFO_INDEX = {name: i for i, name in enumerate(_FLOAT_INFO_FIELDS)}
+
+
+class float_info(tuple):
+    __slots__ = ()
+    n_fields = len(_FLOAT_INFO_FIELDS)
+    n_sequence_fields = len(_FLOAT_INFO_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: object) -> "float_info":
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _FLOAT_INFO_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{f}={self[i]!r}" for i, f in enumerate(_FLOAT_INFO_FIELDS))
+        return f"sys.float_info({items})"
+
+
+# --- int_info structured tuple ---
+
+_INT_INFO_FIELDS = (
+    "bits_per_digit",
+    "sizeof_digit",
+    "default_max_str_digits",
+    "str_digits_check_threshold",
+)
+_INT_INFO_INDEX = {name: i for i, name in enumerate(_INT_INFO_FIELDS)}
+
+
+class int_info(tuple):
+    __slots__ = ()
+    n_fields = len(_INT_INFO_FIELDS)
+    n_sequence_fields = len(_INT_INFO_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: object) -> "int_info":
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _INT_INFO_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{f}={self[i]!r}" for i, f in enumerate(_INT_INFO_FIELDS))
+        return f"sys.int_info({items})"
+
+
+# --- hash_info structured tuple ---
+
+_HASH_INFO_FIELDS = (
+    "width",
+    "modulus",
+    "inf",
+    "nan",
+    "imag",
+    "algorithm",
+    "hash_bits",
+    "seed_bits",
+    "cutoff",
+)
+_HASH_INFO_INDEX = {name: i for i, name in enumerate(_HASH_INFO_FIELDS)}
+
+
+class hash_info(tuple):
+    __slots__ = ()
+    n_fields = len(_HASH_INFO_FIELDS)
+    n_sequence_fields = len(_HASH_INFO_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: object) -> "hash_info":
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _HASH_INFO_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{f}={self[i]!r}" for i, f in enumerate(_HASH_INFO_FIELDS))
+        return f"sys.hash_info({items})"
+
+
+# --- thread_info structured tuple ---
+
+_THREAD_INFO_FIELDS = (
+    "name",
+    "lock",
+    "version",
+)
+_THREAD_INFO_INDEX = {name: i for i, name in enumerate(_THREAD_INFO_FIELDS)}
+
+
+class thread_info(tuple):
+    __slots__ = ()
+    n_fields = len(_THREAD_INFO_FIELDS)
+    n_sequence_fields = len(_THREAD_INFO_FIELDS)
+    n_unnamed_fields = 0
+
+    def __new__(cls, values: object) -> "thread_info":
+        return tuple.__new__(cls, values)
+
+    def __getattr__(self, name: str) -> object:
+        index = _THREAD_INFO_INDEX.get(name)
+        if index is not None:
+            return self[index]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{f}={self[i]!r}" for i, f in enumerate(_THREAD_INFO_FIELDS))
+        return f"sys.thread_info({items})"
+
+
 platform = _resolve_platform()
 version_obj = _MOLT_SYS_VERSION()
 if not _MOLT_IS_STRING_OBJ(version_obj):
     raise RuntimeError("molt_sys_version returned invalid value")
 version = cast(str, version_obj)
-version_info = _expect_version_info_tuple(
-    _MOLT_SYS_VERSION_INFO(), "molt_sys_version_info", "version_info"
+_version_info_type = version_info
+version_info = _version_info_type(
+    _expect_version_info_tuple(
+        _MOLT_SYS_VERSION_INFO(), "molt_sys_version_info", "version_info"
+    )
 )
+del _version_info_type
 hexversion = _expect_int(_MOLT_SYS_HEXVERSION(), "molt_sys_hexversion", "hexversion")
 api_version = _expect_int(
     _MOLT_SYS_API_VERSION(), "molt_sys_api_version", "api_version"
@@ -362,6 +589,53 @@ path: list[str] = []
 meta_path: list[object] = []
 path_hooks: list[object] = []
 path_importer_cache: dict[str, object] = {}
+
+# --- New sys attributes (CPython 3.12+ parity) ---
+maxsize = _MOLT_SYS_MAXSIZE()
+maxunicode = _MOLT_SYS_MAXUNICODE()
+_byteorder_val = _MOLT_SYS_BYTEORDER()
+if not _MOLT_IS_STRING_OBJ(_byteorder_val):
+    raise RuntimeError("molt_sys_byteorder returned invalid value")
+byteorder = cast(str, _byteorder_val)
+_prefix_val = _MOLT_SYS_PREFIX()
+if not _MOLT_IS_STRING_OBJ(_prefix_val):
+    raise RuntimeError("molt_sys_prefix returned invalid value")
+prefix = cast(str, _prefix_val)
+_exec_prefix_val = _MOLT_SYS_EXEC_PREFIX()
+if not _MOLT_IS_STRING_OBJ(_exec_prefix_val):
+    raise RuntimeError("molt_sys_exec_prefix returned invalid value")
+exec_prefix = cast(str, _exec_prefix_val)
+_base_prefix_val = _MOLT_SYS_BASE_PREFIX()
+if not _MOLT_IS_STRING_OBJ(_base_prefix_val):
+    raise RuntimeError("molt_sys_base_prefix returned invalid value")
+base_prefix = cast(str, _base_prefix_val)
+_base_exec_prefix_val = _MOLT_SYS_BASE_EXEC_PREFIX()
+if not _MOLT_IS_STRING_OBJ(_base_exec_prefix_val):
+    raise RuntimeError("molt_sys_base_exec_prefix returned invalid value")
+base_exec_prefix = cast(str, _base_exec_prefix_val)
+_platlibdir_val = _MOLT_SYS_PLATLIBDIR()
+if not _MOLT_IS_STRING_OBJ(_platlibdir_val):
+    raise RuntimeError("molt_sys_platlibdir returned invalid value")
+platlibdir = cast(str, _platlibdir_val)
+_float_info_type = float_info
+float_info = _float_info_type(_MOLT_SYS_FLOAT_INFO())
+del _float_info_type
+_int_info_type = int_info
+int_info = _int_info_type(_MOLT_SYS_INT_INFO())
+del _int_info_type
+_hash_info_type = hash_info
+hash_info = _hash_info_type(_MOLT_SYS_HASH_INFO())
+del _hash_info_type
+_thread_info_type = thread_info
+thread_info = _thread_info_type(_MOLT_SYS_THREAD_INFO())
+del _thread_info_type
+orig_argv = _MOLT_SYS_ORIG_ARGV()
+_copyright_val = _MOLT_SYS_COPYRIGHT()
+if not _MOLT_IS_STRING_OBJ(_copyright_val):
+    raise RuntimeError("molt_sys_copyright returned invalid value")
+copyright = cast(str, _copyright_val)
+stdlib_module_names = frozenset(_MOLT_SYS_STDLIB_MODULE_NAMES())
+builtin_module_names = _MOLT_SYS_BUILTIN_MODULE_NAMES()
 
 
 def _bootstrap_module_file() -> str | None:
@@ -546,3 +820,47 @@ def set_asyncgen_hooks(
 ) -> None:
     _MOLT_ASYNCGEN_HOOKS_SET(firstiter, finalizer)
     return None
+
+
+def intern(s: object) -> str:
+    if not isinstance(s, str):
+        raise TypeError(f"intern() argument 1 must be str, not {type(s).__name__}")
+    return cast(str, _MOLT_SYS_INTERN(s))
+
+
+def getsizeof(obj: object, default: object = ...) -> int:
+    if default is ...:
+        return cast(int, _MOLT_SYS_GETSIZEOF(obj, None))
+    return cast(int, _MOLT_SYS_GETSIZEOF(obj, default))
+
+
+def displayhook(value: object) -> None:
+    if value is None:
+        return
+    _builtins = modules.get("builtins")
+    text = repr(value)
+    stdout.write(text)
+    stdout.write("\n")
+    if _builtins is not None:
+        _builtins._ = value  # type: ignore[attr-defined]
+
+
+def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
+    try:
+        lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
+            exc_type, exc_value, exc_tb, None, True
+        )
+    except BaseException:  # noqa: BLE001
+        lines = None
+    if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
+        stderr.write("".join(lines))
+        return
+
+    type_name = getattr(exc_type, "__name__", None)
+    if not isinstance(type_name, str):
+        type_name = str(exc_type)
+    detail = str(exc_value) if exc_value is not None else ""
+    if detail:
+        stderr.write(f"{type_name}: {detail}\n")
+        return
+    stderr.write(f"{type_name}\n")

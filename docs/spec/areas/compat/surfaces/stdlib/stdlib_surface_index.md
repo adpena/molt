@@ -23,6 +23,8 @@
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md`
 - Generated CPython availability matrix:
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`
+- Tkinter lowering execution plan:
+  - `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`
 
 ## Required Dimensions
 For stdlib surfaces, coverage rows should include or clearly document:

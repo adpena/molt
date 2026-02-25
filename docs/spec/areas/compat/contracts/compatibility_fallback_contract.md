@@ -13,6 +13,7 @@
 - **Hard errors when required:** If policy forbids fallback, compilation fails with a detailed error.
 - **No implicit CPython fallback:** `molt run` / `molt build` never fall back to CPython.
 - **No CPython in binaries:** compiled artifacts are self-contained; the bridge is tooling-only and treated as unavailable for production builds.
+- **Dynamic policy alignment:** unrestricted `eval`/`exec`, runtime monkeypatching, and unrestricted reflection stay deferred unless explicitly re-approved under [dynamic_execution_policy_contract.md](dynamic_execution_policy_contract.md).
 
 ---
 

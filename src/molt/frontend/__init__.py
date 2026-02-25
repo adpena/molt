@@ -4752,6 +4752,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
 
+    def _should_attempt_runtime_module_import(self, module_name: str) -> bool:
+        if module_name in self.stdlib_allowlist:
+            return True
+        normalized_name = self._normalize_allowlist_module(module_name)
+        if normalized_name and normalized_name in self.stdlib_allowlist:
+            return True
+        if "." not in module_name:
+            return False
+        top_level = module_name.split(".", 1)[0]
+        if top_level in self.stdlib_allowlist or top_level in self.known_modules:
+            return True
+        normalized_top = self._normalize_allowlist_module(top_level)
+        return bool(
+            normalized_top
+            and (
+                normalized_top in self.stdlib_allowlist
+                or normalized_top in self.known_modules
+            )
+        )
+
     def _emit_module_load(self, module_name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
@@ -4770,7 +4790,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.current_func_name == "molt_main" and not self.try_end_labels
             )
             self._emit_raise_if_pending(clear_handlers=clear_handlers)
-        elif module_name in self.stdlib_allowlist:
+        elif self._should_attempt_runtime_module_import(module_name):
             imported_val = MoltValue(self.next_var(), type_hint="module")
             self.emit(
                 MoltOp(kind="MODULE_IMPORT", args=[name_val], result=imported_val)
@@ -16475,15 +16495,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if func_id in self.classes:
                 class_id = func_id
             if class_id is not None:
-                class_info = self.classes[class_id]
                 if imported_from:
                     class_ref = self._emit_module_attr_get_on(imported_from, class_id)
+                    # Class metadata is currently keyed by simple class name; when
+                    # multiple modules export the same name (e.g. pathlib.Path and
+                    # zipfile._path.Path), static ctor lowering can pick the wrong
+                    # __init__ symbol. Imported class calls therefore dispatch via
+                    # bound-call so runtime class identity decides construction.
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[class_ref, callargs],
+                            result=res,
+                        )
+                    )
+                    return res
+                class_info = self.classes[class_id]
+                local_class = self._load_local_value(class_id)
+                if local_class is not None:
+                    class_ref = local_class
                 else:
-                    local_class = self._load_local_value(class_id)
-                    if local_class is not None:
-                        class_ref = local_class
-                    else:
-                        class_ref = self._emit_module_attr_get(class_id)
+                    class_ref = self._emit_module_attr_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
                     new_method = class_info.get("methods", {}).get("__new__")
                     if new_method is None:
@@ -23250,152 +23284,99 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         result = self.visit(node.values[0])
         if result is None:
             raise NotImplementedError("Unsupported bool op operand")
-        # TODO(core-lowering, owner:compiler, milestone:TL2, priority:P1, status:in-progress): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
-        use_phi = False
+        # Invariant: short-circuit bool ops must preserve operand object identity.
+        # Keep list-cell lowering as the canonical path until PHI merge semantics
+        # are proven object-exact across all short-circuit branches.
         for value in node.values[1:]:
             if isinstance(node.op, ast.And):
-                if use_phi:
-                    spill_slot = None
-                    if self._expr_may_yield(value):
-                        spill_slot = self._spill_async_value(
-                            result, f"__bool_left_{len(self.async_locals)}"
-                        )
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
+                cell = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
+                idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+                cell_slot = None
+                idx_slot = None
+                if self._expr_may_yield(value):
+                    cell_slot = self._spill_async_value(
+                        cell, f"__bool_cell_{len(self.async_locals)}"
                     )
-                    right = self.visit(value)
-                    if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    left_for_phi = result
-                    if spill_slot is not None:
-                        left_for_phi = self._reload_async_value(
-                            spill_slot, result.type_hint
-                        )
-                    merged = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="PHI", args=[right, left_for_phi], result=merged)
+                    idx_slot = self._spill_async_value(
+                        idx, f"__bool_idx_{len(self.async_locals)}"
                     )
-                    result = merged
-                else:
-                    cell = MoltValue(self.next_var(), type_hint="list")
-                    self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
-                    idx = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                    cell_slot = None
-                    idx_slot = None
-                    if self._expr_may_yield(value):
-                        cell_slot = self._spill_async_value(
-                            cell, f"__bool_cell_{len(self.async_locals)}"
-                        )
-                        idx_slot = self._spill_async_value(
-                            idx, f"__bool_idx_{len(self.async_locals)}"
-                        )
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
+                self.emit(MoltOp(kind="IF", args=[result], result=MoltValue("none")))
+                right = self.visit(value)
+                if right is None:
+                    raise NotImplementedError("Unsupported bool op operand")
+                store_cell = cell
+                store_idx = idx
+                if cell_slot is not None and idx_slot is not None:
+                    store_cell = self._reload_async_value(cell_slot, "list")
+                    store_idx = self._reload_async_value(idx_slot, "int")
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[store_cell, store_idx, right],
+                        result=MoltValue("none"),
                     )
-                    right = self.visit(value)
-                    if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
-                    store_cell = cell
-                    store_idx = idx
-                    if cell_slot is not None and idx_slot is not None:
-                        store_cell = self._reload_async_value(cell_slot, "list")
-                        store_idx = self._reload_async_value(idx_slot, "int")
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_INDEX",
-                            args=[store_cell, store_idx, right],
-                            result=MoltValue("none"),
-                        )
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                final_cell = cell
+                final_idx = idx
+                if cell_slot is not None and idx_slot is not None:
+                    final_cell = self._reload_async_value(cell_slot, "list")
+                    final_idx = self._reload_async_value(idx_slot, "int")
+                result = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="INDEX",
+                        args=[final_cell, final_idx],
+                        result=result,
                     )
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    final_cell = cell
-                    final_idx = idx
-                    if cell_slot is not None and idx_slot is not None:
-                        final_cell = self._reload_async_value(cell_slot, "list")
-                        final_idx = self._reload_async_value(idx_slot, "int")
-                    result = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="INDEX",
-                            args=[final_cell, final_idx],
-                            result=result,
-                        )
-                    )
+                )
             elif isinstance(node.op, ast.Or):
-                if use_phi:
-                    spill_slot = None
-                    if self._expr_may_yield(value):
-                        spill_slot = self._spill_async_value(
-                            result, f"__bool_left_{len(self.async_locals)}"
-                        )
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
+                cell = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
+                idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+                cell_slot = None
+                idx_slot = None
+                if self._expr_may_yield(value):
+                    cell_slot = self._spill_async_value(
+                        cell, f"__bool_cell_{len(self.async_locals)}"
                     )
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    right = self.visit(value)
-                    if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    left_for_phi = result
-                    if spill_slot is not None:
-                        left_for_phi = self._reload_async_value(
-                            spill_slot, result.type_hint
-                        )
-                    merged = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="PHI", args=[left_for_phi, right], result=merged)
+                    idx_slot = self._spill_async_value(
+                        idx, f"__bool_idx_{len(self.async_locals)}"
                     )
-                    result = merged
-                else:
-                    cell = MoltValue(self.next_var(), type_hint="list")
-                    self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
-                    idx = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                    cell_slot = None
-                    idx_slot = None
-                    if self._expr_may_yield(value):
-                        cell_slot = self._spill_async_value(
-                            cell, f"__bool_cell_{len(self.async_locals)}"
-                        )
-                        idx_slot = self._spill_async_value(
-                            idx, f"__bool_idx_{len(self.async_locals)}"
-                        )
-                    self.emit(
-                        MoltOp(kind="IF", args=[result], result=MoltValue("none"))
+                self.emit(MoltOp(kind="IF", args=[result], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                right = self.visit(value)
+                if right is None:
+                    raise NotImplementedError("Unsupported bool op operand")
+                store_cell = cell
+                store_idx = idx
+                if cell_slot is not None and idx_slot is not None:
+                    store_cell = self._reload_async_value(cell_slot, "list")
+                    store_idx = self._reload_async_value(idx_slot, "int")
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[store_cell, store_idx, right],
+                        result=MoltValue("none"),
                     )
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    right = self.visit(value)
-                    if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
-                    store_cell = cell
-                    store_idx = idx
-                    if cell_slot is not None and idx_slot is not None:
-                        store_cell = self._reload_async_value(cell_slot, "list")
-                        store_idx = self._reload_async_value(idx_slot, "int")
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_INDEX",
-                            args=[store_cell, store_idx, right],
-                            result=MoltValue("none"),
-                        )
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                final_cell = cell
+                final_idx = idx
+                if cell_slot is not None and idx_slot is not None:
+                    final_cell = self._reload_async_value(cell_slot, "list")
+                    final_idx = self._reload_async_value(idx_slot, "int")
+                result = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="INDEX",
+                        args=[final_cell, final_idx],
+                        result=result,
                     )
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    final_cell = cell
-                    final_idx = idx
-                    if cell_slot is not None and idx_slot is not None:
-                        final_cell = self._reload_async_value(cell_slot, "list")
-                        final_idx = self._reload_async_value(idx_slot, "int")
-                    result = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="INDEX",
-                            args=[final_cell, final_idx],
-                            result=result,
-                        )
-                    )
+                )
             else:
                 raise NotImplementedError("Unsupported boolean operator")
         return result
@@ -29378,18 +29359,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         }:
             self.midend_stats["midend_module_skips"] += 1
             return ops
-        # TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned):
-        # Root-cause/fix dev-profile mid-end miscompiles before re-enabling by
-        # default; `MOLT_MIDEND_DEV_ENABLE=1` is the explicit opt-in escape hatch.
+        # Correctness gate: keep dev-profile mid-end passes opt-in until the
+        # missing-value miscompile cluster is fully closed (tracked in ROADMAP TL2).
         if self.optimization_profile == "dev" and os.getenv(
             "MOLT_MIDEND_DEV_ENABLE", ""
         ).strip().lower() not in {"1", "true", "yes", "on"}:
             self.midend_stats["midend_module_skips"] += 1
             return ops
-        # TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned):
-        # Root-cause and fix stdlib mid-end miscompiles that can route missing
-        # values into runtime lookups/call sites; keep this hard safety gate until
-        # canonicalized stdlib lowering is proven stable.
+        # Correctness gate: keep stdlib modules out of mid-end canonicalization
+        # until canonicalized stdlib lowering is proven stable (ROADMAP TL2).
         if self._source_is_stdlib_module:
             self.midend_stats["midend_module_skips"] += 1
             return ops
@@ -31611,11 +31589,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         max_iters_override: int | None = None,
     ) -> SCCPResult:
-        # TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial):
-        # extend loop/try edge threading beyond current executable-edge +
-        # conservative loop-marker rewrites into full loop-end and
-        # exceptional-handler CFG rewrites with dominance/post-dominance
-        # preservation.
+        # Current contract: SCCP tracks executable edges and supplies facts for
+        # conservative loop/try marker rewrites only; broader LOOP_END and
+        # exceptional-handler CFG rewrites remain roadmap work and must preserve
+        # dominance/post-dominance invariants.
         in_values: dict[int, dict[str, Any]] = {block.id: {} for block in cfg.blocks}
         out_values: dict[int, dict[str, Any]] = {block.id: {} for block in cfg.blocks}
         executable_blocks: set[int] = {0} if cfg.blocks else set()
@@ -34101,10 +34078,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         allow_cross_block_const_dedupe: bool,
     ) -> list[MoltOp]:
-        # TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:partial):
-        # extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of
-        # coverage into broader heap/call-specialization families and a
-        # stronger loop-bound solver for cross-iteration constant reasoning.
+        # Current contract: sparse SCCP covers arithmetic/boolean/comparison/type
+        # families plus bounded loop facts used by today’s fixed-point passes;
+        # heap/call-specialization widening and stronger cross-iteration solvers
+        # remain roadmap work and are intentionally not inferred here.
         validated_ops, preflight_rewrites = self._ensure_structural_cfg_validity(
             ops, stage="midend_fixed_point_entry"
         )

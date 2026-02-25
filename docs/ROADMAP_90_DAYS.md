@@ -7,7 +7,7 @@ Document role:
 - Active long-horizon plan lives in [ROADMAP.md](../ROADMAP.md).
 - This document is the rolling 90-day execution slice and must stay aligned with both.
 
-## Execution Tracker (2026-02-12)
+## Execution Tracker (2026-02-24)
 - [x] Month 1: define determinism/security enforcement checklists.
   - Delivered: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md).
 - [x] Month 1: define minimum must-pass test matrix for Tier 0/1 + diff parity.
@@ -32,6 +32,10 @@ Document role:
     reporting are landed; CLI/JSON diagnostics sink integration and opt-in
     process-level parallel lowering are now landed as well; remaining work is
     broader parallel eligibility and diagnostics UX refinement.
+- [ ] Month 2: run optimization swarm waves under hard regression firewall.
+  - Wave 0 (baseline refresh + doc/mode alignment): pending.
+  - Wave 1 (hypothesis + measurement packets): queued after Wave 0 lock.
+  - Wave 2 (controlled implementation slices): gated on Wave 0/1 evidence.
 
 ## Version Policy
 Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,
@@ -64,7 +68,8 @@ document the chosen target in specs/tests.
 - Month 2 exit criteria for this tranche:
   - deterministic second-run IR stability for identical inputs/profile/policy,
   - reduced p95 frontend lowering wall time on stdlib-heavy modules,
-  - no increase in verifier fallback or correctness regressions.
+  - no increase in verifier fallback or correctness regressions,
+  - optimization docs + benchmarks synchronized per landing with reproducible artifacts.
 
 ## Month 3: Packaging + validation gates
 - Add benchmark regression checks and publish results in CI.

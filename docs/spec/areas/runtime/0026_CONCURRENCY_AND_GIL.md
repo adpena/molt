@@ -66,9 +66,5 @@ ordered to avoid deadlocks and performance regressions.
   memory contract (freeze/share rules or per-object synchronization).
 
 ## 6. Tracking
-- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned):
-  define the per-runtime GIL strategy, runtime instance ownership model, and
-  the allowed cross-thread object sharing rules.
-- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned):
-  reduce handle-resolution overhead beyond the sharded registry and measure
-  lock-sensitive benchmark deltas (attr access, container ops).
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define the per-runtime GIL strategy, runtime instance ownership model, and the allowed cross-thread object sharing rules.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): reduce handle-resolution overhead beyond the sharded registry and measure lock-sensitive benchmark deltas (attr access, container ops).

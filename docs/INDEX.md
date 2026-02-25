@@ -49,10 +49,14 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
 - Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
+- Stdlib surface matrix: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
+- Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
 - Compatibility fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
+- Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
+- **Stdlib intrinsics sprint (2026-02-25)**: ~85 new Rust intrinsics across os, sys, signal, _thread, _asyncio, subprocess. See [STATUS.md](spec/STATUS.md) and [ROADMAP.md](../ROADMAP.md) for details.
 
 ## Testing and Benchmarks
 - 0007 Testing: [docs/spec/areas/testing/0007-testing.md](docs/spec/areas/testing/0007-testing.md)
@@ -67,6 +71,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - [docs/SECURITY.md](docs/SECURITY.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0211 Compatibility And Fallback Contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
+- 0216 Dynamic Execution And Reflection Policy Contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - 0215 Verified Subset Contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Web, DB, and WASM

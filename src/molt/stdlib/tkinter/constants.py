@@ -1,12 +1,86 @@
-"""Intrinsic-first stdlib module stub for `tkinter.constants`."""
+"""Phase-0 intrinsic-backed constants for `tkinter`."""
 
+import _tkinter as _phase0_tk
 from _intrinsics import require_intrinsic as _require_intrinsic
+from ._support import has_gui_capability as _has_gui_capability
+from ._support import tk_available as _tk_available
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 
+NO = 0
+FALSE = 0
+OFF = 0
+YES = 1
+TRUE = 1
+ON = 1
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.constants` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "tkinter.constants" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+N = "n"
+S = "s"
+E = "e"
+W = "w"
+NW = "nw"
+NE = "ne"
+SW = "sw"
+SE = "se"
+CENTER = "center"
+NS = "ns"
+EW = "ew"
+NSEW = "nsew"
+
+TOP = "top"
+BOTTOM = "bottom"
+LEFT = "left"
+RIGHT = "right"
+BOTH = "both"
+X = "x"
+Y = "y"
+
+ACTIVE = "active"
+DISABLED = "disabled"
+NORMAL = "normal"
+HIDDEN = "hidden"
+END = "end"
+INSERT = "insert"
+CURRENT = "current"
+SEL = "sel"
+SEL_FIRST = "sel.first"
+SEL_LAST = "sel.last"
+
+HORIZONTAL = "horizontal"
+VERTICAL = "vertical"
+RAISED = "raised"
+SUNKEN = "sunken"
+FLAT = "flat"
+RIDGE = "ridge"
+GROOVE = "groove"
+SOLID = "solid"
+ROUND = "round"
+PROJECTING = "projecting"
+BUTT = "butt"
+BEVEL = "bevel"
+MITER = "miter"
+
+ALL = "all"
+NONE = "none"
+UNITS = "units"
+PAGES = "pages"
+CHAR = "char"
+WORD = "word"
+
+TK_VERSION = _phase0_tk.TK_VERSION
+TCL_VERSION = _phase0_tk.TCL_VERSION
+READABLE = _phase0_tk.READABLE
+WRITABLE = _phase0_tk.WRITABLE
+EXCEPTION = _phase0_tk.EXCEPTION
+DONT_WAIT = _phase0_tk.DONT_WAIT
+ALL_EVENTS = _phase0_tk.ALL_EVENTS
+FILE_EVENTS = _phase0_tk.FILE_EVENTS
+TIMER_EVENTS = _phase0_tk.TIMER_EVENTS
+IDLE_EVENTS = _phase0_tk.IDLE_EVENTS
+WINDOW_EVENTS = _phase0_tk.WINDOW_EVENTS
+
+TK_AVAILABLE = _tk_available()
+HAS_GUI_CAPABILITY = _has_gui_capability()
+
+__all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]

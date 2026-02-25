@@ -11,7 +11,7 @@ import types
 with tempfile.TemporaryDirectory() as tmp:
     mod_path = os.path.join(tmp, "modalter.py")
     with open(mod_path, "w", encoding="utf-8") as handle:
-        handle.write("value = 17\n")
+        handle.write("import sys\nvalue = 17\nargv0_seen = sys.argv[0]\n")
 
     original_path = list(sys.path)
     prior_argv0 = sys.argv[0]
@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory() as tmp:
         ns = runpy.run_module("modalter", run_name="alias.runner", alter_sys=True)
         print(ns.get("value"))
         print(ns.get("__name__"))
+        print(str(ns.get("argv0_seen", "")).endswith("modalter.py"))
         print("alias.runner" in sys.modules)
         print(sys.modules.get("alias.runner") is sentinel)
         print(sys.argv[0] == prior_argv0)
