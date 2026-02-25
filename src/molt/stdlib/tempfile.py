@@ -20,24 +20,101 @@ _TEMP_DIR: str | None = None
 _TEMP_COUNTER = 0
 
 
-def _pick_tempdir() -> str:
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL3): implement full tempfile
-    # candidate search, permissions checks, and secure fallback semantics.
+def _candidate_tempdir_list() -> list[str]:
+    dirlist: list[str] = []
     for key in ("TMPDIR", "TEMP", "TMP"):
         try:
             val = _os.getenv(key)
         except PermissionError:
-            # TODO(stdlib-compat, owner:stdlib, milestone:SL3): decide whether
-            # temp dir probing should require env.read or allow a fallback.
-            return "/tmp"
+            # Capability-gated env reads can be denied; keep scanning deterministic
+            # OS fallbacks instead of hard-failing.
+            continue
         if val:
-            trimmed = val.rstrip("/\\")
-            return trimmed or val
+            dirlist.append(val)
+
     if _os.name == "nt":
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL3): align Windows defaults
-        # with CPython (USERPROFILE, HOMEPATH, and temp folder probing).
-        return "C:\\TEMP"
-    return "/tmp"
+        dirlist.extend(
+            [
+                _os.path.expanduser(r"~\AppData\Local\Temp"),
+                _os.path.expandvars(r"%SYSTEMROOT%\Temp"),
+                r"c:\temp",
+                r"c:\tmp",
+                r"\temp",
+                r"\tmp",
+            ]
+        )
+    else:
+        dirlist.extend(["/tmp", "/var/tmp", "/usr/tmp"])
+
+    try:
+        dirlist.append(_os.getcwd())
+    except (AttributeError, OSError):
+        dirlist.append(_os.curdir)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for dirname in dirlist:
+        if not dirname:
+            continue
+        normalized = str(dirname)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _dir_is_usable(dirname: str) -> bool:
+    directory = dirname if dirname == _os.curdir else _os.path.abspath(dirname)
+    try:
+        if not _os.path.isdir(directory):
+            return False
+    except OSError:
+        return False
+
+    flags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL
+    if hasattr(_os, "O_BINARY"):
+        flags |= _os.O_BINARY
+
+    for seq in range(64):
+        probe_name = f".molt_tmp_probe_{_os.getpid()}_{seq}"
+        probe_path = _MOLT_PATH_JOIN(directory, probe_name)
+        try:
+            fd = _os.open(probe_path, flags, 0o600)
+        except FileExistsError:
+            continue
+        except PermissionError:
+            if _os.name == "nt":
+                try:
+                    if _os.path.isdir(directory) and _os.access(directory, _os.W_OK):
+                        continue
+                except OSError:
+                    pass
+            return False
+        except OSError:
+            return False
+
+        try:
+            _os.write(fd, b"molt")
+        finally:
+            _os.close(fd)
+        try:
+            _os.unlink(probe_path)
+        except OSError:
+            pass
+        return True
+
+    return False
+
+
+def _pick_tempdir() -> str:
+    dirlist = _candidate_tempdir_list()
+    for dirname in dirlist:
+        if _dir_is_usable(dirname):
+            return dirname if dirname == _os.curdir else _os.path.abspath(dirname)
+    raise FileNotFoundError(
+        "No usable temporary directory found in " + ", ".join(dirlist)
+    )
 
 
 def gettempdir() -> str:

@@ -1,12 +1,29 @@
-"""Intrinsic-first stdlib module stub for `importlib.metadata.diagnose`."""
+"""Diagnostic helpers for ``importlib.metadata`` package discovery."""
+
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+import sys
+
+from . import Distribution
 
 _require_intrinsic("molt_capabilities_has", globals())
 
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `importlib.metadata.diagnose` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "importlib.metadata.diagnose" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+def inspect(path: str) -> None:
+    print("Inspecting", path)
+    dists = list(Distribution.discover(path=[path]))
+    if not dists:
+        return
+    print("Found", len(dists), "packages:", end=" ")
+    print(", ".join(dist.name for dist in dists))
+
+
+def run() -> None:
+    for path in sys.path:
+        inspect(path)
+
+
+if __name__ == "__main__":
+    run()

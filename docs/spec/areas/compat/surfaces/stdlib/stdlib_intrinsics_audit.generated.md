@@ -9,9 +9,9 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `875`
+- Total audited modules: `877`
 - `intrinsic-backed`: `8`
-- `intrinsic-partial`: `867`
+- `intrinsic-partial`: `869`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -747,6 +747,7 @@
 - `pyclbr`
 - `pydoc`
 - `pydoc_data`
+- `pydoc_data.module_docs`
 - `pydoc_data.topics`
 - `pyexpat`
 - `queue`
@@ -818,6 +819,7 @@
 - `timeit`
 - `tkinter`
 - `tkinter.__main__`
+- `tkinter._support`
 - `tkinter.colorchooser`
 - `tkinter.commondialog`
 - `tkinter.constants`
@@ -1003,5 +1005,5 @@
 - Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
-## TODO
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.
+## Backlog Focus
+- Replace remaining `python-only` stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.

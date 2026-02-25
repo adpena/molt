@@ -12,6 +12,7 @@ import os as _os
 import sys as _sys
 
 from . import abc
+from . import readers  # noqa: F401
 from .abc import ResourceReader
 
 _require_intrinsic("molt_stdlib_probe", globals())

@@ -169,16 +169,14 @@ pub extern "C" fn molt_lzma_compress(
         };
         let result: Result<Vec<u8>, std::io::Error> = match format {
             FORMAT_XZ | FORMAT_AUTO => {
-                let stream =
-                    match xz2::stream::Stream::new_easy_encoder(xz_preset, xz_check) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let msg = format!("lzma init error: {e}");
-                            return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
-                        }
-                    };
-                let mut enc =
-                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                let stream = match xz2::stream::Stream::new_easy_encoder(xz_preset, xz_check) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let msg = format!("lzma init error: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                };
+                let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                 enc.write_all(data).and_then(|()| enc.finish())
             }
             FORMAT_ALONE | FORMAT_RAW => {
@@ -191,8 +189,7 @@ pub extern "C" fn molt_lzma_compress(
                         return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
                     }
                 };
-                let mut enc =
-                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                 enc.write_all(data).and_then(|()| enc.finish())
             }
             _ => {
@@ -369,18 +366,15 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
         let input = std::mem::take(&mut handle.buffer);
         let result: Result<Vec<u8>, std::io::Error> = match handle.format {
             FORMAT_XZ | FORMAT_AUTO => {
-                let stream = match xz2::stream::Stream::new_easy_encoder(
-                    handle.preset,
-                    handle.check,
-                ) {
+                let stream =
+                    match xz2::stream::Stream::new_easy_encoder(handle.preset, handle.check) {
                         Ok(s) => s,
                         Err(e) => {
                             let msg = format!("lzma init error: {e}");
                             return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
                         }
                     };
-                let mut enc =
-                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                 enc.write_all(&input).and_then(|()| enc.finish())
             }
             FORMAT_ALONE | FORMAT_RAW => {
@@ -393,8 +387,7 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
                         return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
                     }
                 };
-                let mut enc =
-                    xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                 enc.write_all(&input).and_then(|()| enc.finish())
             }
             _ => {

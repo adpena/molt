@@ -2,17 +2,19 @@
 //
 // Intrinsic implementations for collections.OrderedDict and collections.ChainMap.
 //
-// Handle model: thread-local HashMap<i64, State> keyed by an atomically-issued
-// handle ID, returned to Python as a NaN-boxed integer. Matches the pattern
-// established by builtins/csv.rs.
+// Handle model: global Mutex<HashMap<i64, State>> keyed by an atomically-issued
+// handle ID, returned to Python as a NaN-boxed integer. Uses a global registry
+// (not thread-local) so handles are visible across all threads — critical for
+// collections used cross-thread (e.g. deque in queue.Queue, concurrent.futures).
+// The GIL serializes all Python-level access, so the Mutex is always uncontended.
 //
 // dict_order() is a flattened Vec<u64> of [key0, val0, key1, val1, ...] that
 // is the canonical ordered representation of a Molt dict object.
 
 use crate::*;
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 // ─── Handle counters ──────────────────────────────────────────────────────────
 
@@ -153,10 +155,9 @@ impl OrderedDictState {
     }
 }
 
-thread_local! {
-    static ORDEREDDICT_HANDLES: RefCell<HashMap<i64, OrderedDictState>> =
-        RefCell::new(HashMap::new());
-}
+// Global registry — visible across all threads.  GIL serializes access.
+static ORDEREDDICT_REGISTRY: LazyLock<Mutex<HashMap<i64, OrderedDictState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -176,7 +177,10 @@ fn od_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 pub extern "C" fn molt_ordereddict_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let id = next_ordereddict_handle();
-        ORDEREDDICT_HANDLES.with(|h| h.borrow_mut().insert(id, OrderedDictState::new()));
+        ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, OrderedDictState::new());
         MoltObject::from_int(id).bits()
     })
 }
@@ -211,7 +215,7 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
             state.insert(pair[0], pair[1]);
         }
         let id = next_ordereddict_handle();
-        ORDEREDDICT_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        ORDEREDDICT_REGISTRY.lock().unwrap().insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -227,12 +231,12 @@ pub extern "C" fn molt_ordereddict_setitem(
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        ORDEREDDICT_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = ORDEREDDICT_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.insert(key_bits, value_bits);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -244,7 +248,11 @@ pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let val = ORDEREDDICT_HANDLES.with(|h| h.borrow().get(&id).and_then(|s| s.get(key_bits)));
+        let val = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.get(key_bits));
         match val {
             Some(v) => v,
             None => raise_exception::<_>(_py, "KeyError", "key not found"),
@@ -259,8 +267,11 @@ pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = ORDEREDDICT_HANDLES
-            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(key_bits)));
+        let removed = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.remove(key_bits));
         if removed.is_none() {
             return raise_exception::<_>(_py, "KeyError", "key not found");
         }
@@ -275,12 +286,14 @@ pub extern "C" fn molt_ordereddict_contains(handle_bits: u64, key_bits: u64) -> 
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let found = ORDEREDDICT_HANDLES.with(|h| {
-            h.borrow()
+        let found = {
+            ORDEREDDICT_REGISTRY
+                .lock()
+                .unwrap()
                 .get(&id)
                 .map(|s| s.contains(key_bits))
                 .unwrap_or(false)
-        });
+        };
         MoltObject::from_bool(found).bits()
     })
 }
@@ -292,7 +305,12 @@ pub extern "C" fn molt_ordereddict_len(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let len = ORDEREDDICT_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.len()).unwrap_or(0));
+        let len = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.len())
+            .unwrap_or(0);
         MoltObject::from_int(len as i64).bits()
     })
 }
@@ -304,12 +322,14 @@ pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let keys: Vec<u64> = ORDEREDDICT_HANDLES.with(|h| {
-            h.borrow()
+        let keys: Vec<u64> = {
+            ORDEREDDICT_REGISTRY
+                .lock()
+                .unwrap()
                 .get(&id)
                 .map(|s| s.order.iter().map(|(k, _)| *k).collect())
                 .unwrap_or_default()
-        });
+        };
         let ptr = alloc_list(_py, &keys);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
@@ -325,12 +345,14 @@ pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let vals: Vec<u64> = ORDEREDDICT_HANDLES.with(|h| {
-            h.borrow()
+        let vals: Vec<u64> = {
+            ORDEREDDICT_REGISTRY
+                .lock()
+                .unwrap()
                 .get(&id)
                 .map(|s| s.order.iter().map(|(_, v)| *v).collect())
                 .unwrap_or_default()
-        });
+        };
         let ptr = alloc_list(_py, &vals);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
@@ -346,12 +368,14 @@ pub extern "C" fn molt_ordereddict_items(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let pairs: Vec<(u64, u64)> = ORDEREDDICT_HANDLES.with(|h| {
-            h.borrow()
+        let pairs: Vec<(u64, u64)> = {
+            ORDEREDDICT_REGISTRY
+                .lock()
+                .unwrap()
                 .get(&id)
                 .map(|s| s.order.clone())
                 .unwrap_or_default()
-        });
+        };
         let mut tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
             let tptr = alloc_tuple(_py, &[k, v]);
@@ -380,8 +404,8 @@ pub extern "C" fn molt_ordereddict_move_to_end(
             return MoltObject::none().bits();
         };
         let last = is_truthy(_py, obj_from_bits(last_bits));
-        let found = ORDEREDDICT_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        let found = {
+            let mut map = ORDEREDDICT_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if state.contains(key_bits) {
                     state.move_to_end(key_bits, last);
@@ -392,7 +416,7 @@ pub extern "C" fn molt_ordereddict_move_to_end(
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<_>(_py, "KeyError", "key not found");
         }
@@ -408,8 +432,11 @@ pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> 
             return MoltObject::none().bits();
         };
         let last = is_truthy(_py, obj_from_bits(last_bits));
-        let item =
-            ORDEREDDICT_HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.popitem(last)));
+        let item = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.popitem(last));
         let Some((k, v)) = item else {
             return raise_exception::<_>(_py, "KeyError", "dictionary is empty");
         };
@@ -429,8 +456,11 @@ pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = ORDEREDDICT_HANDLES
-            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(key_bits)));
+        let removed = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.remove(key_bits));
         match removed {
             Some((_, v)) => v,
             None => {
@@ -462,19 +492,22 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
         // Accept either a regular Molt dict or another OrderedDict handle (int).
         if let Some(other_id) = to_i64(other_obj) {
             // Treat as another OrderedDict handle.
-            let pairs: Vec<(u64, u64)> = ORDEREDDICT_HANDLES.with(|h| {
-                h.borrow()
+            let pairs: Vec<(u64, u64)> = {
+                ORDEREDDICT_REGISTRY
+                    .lock()
+                    .unwrap()
                     .get(&other_id)
                     .map(|s| s.order.clone())
                     .unwrap_or_default()
-            });
-            ORDEREDDICT_HANDLES.with(|h| {
-                if let Some(state) = h.borrow_mut().get_mut(&id) {
+            };
+            {
+                let mut map = ORDEREDDICT_REGISTRY.lock().unwrap();
+                if let Some(state) = map.get_mut(&id) {
                     for (k, v) in pairs {
                         state.insert(k, v);
                     }
                 }
-            });
+            }
         } else if let Some(ptr) = other_obj.as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_DICT {
@@ -482,13 +515,14 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
                 // pairs is flattened [k0, v0, k1, v1, ...]
                 let kv_pairs: Vec<(u64, u64)> =
                     pairs.chunks_exact(2).map(|c| (c[0], c[1])).collect();
-                ORDEREDDICT_HANDLES.with(|h| {
-                    if let Some(state) = h.borrow_mut().get_mut(&id) {
+                {
+                    let mut map = ORDEREDDICT_REGISTRY.lock().unwrap();
+                    if let Some(state) = map.get_mut(&id) {
                         for (k, v) in kv_pairs {
                             state.insert(k, v);
                         }
                     }
-                });
+                }
             } else {
                 return raise_exception::<_>(_py, "TypeError", "update requires a dict");
             }
@@ -506,11 +540,12 @@ pub extern "C" fn molt_ordereddict_clear(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        ORDEREDDICT_HANDLES.with(|h| {
-            if let Some(state) = h.borrow_mut().get_mut(&id) {
+        {
+            let mut map = ORDEREDDICT_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
                 state.clear();
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -522,12 +557,19 @@ pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let cloned = ORDEREDDICT_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.clone_state()));
+        let cloned = ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.clone_state());
         let Some(new_state) = cloned else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid OrderedDict handle");
         };
         let new_id = next_ordereddict_handle();
-        ORDEREDDICT_HANDLES.with(|h| h.borrow_mut().insert(new_id, new_state));
+        ORDEREDDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(new_id, new_state);
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -539,7 +581,7 @@ pub extern "C" fn molt_ordereddict_drop(handle_bits: u64) -> u64 {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        ORDEREDDICT_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        ORDEREDDICT_REGISTRY.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
@@ -558,10 +600,9 @@ struct ChainMapState {
     maps: Vec<u64>,
 }
 
-thread_local! {
-    static CHAINMAP_HANDLES: RefCell<HashMap<i64, ChainMapState>> =
-        RefCell::new(HashMap::new());
-}
+// Global registry — visible across all threads.  GIL serializes access.
+static CHAINMAP_REGISTRY: LazyLock<Mutex<HashMap<i64, ChainMapState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cm_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
@@ -617,9 +658,10 @@ pub extern "C" fn molt_chainmap_new(maps_bits: u64) -> u64 {
             map_list.push(MoltObject::from_ptr(empty_ptr).bits());
         }
         let id = next_chainmap_handle();
-        CHAINMAP_HANDLES.with(|h| {
-            h.borrow_mut().insert(id, ChainMapState { maps: map_list });
-        });
+        CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, ChainMapState { maps: map_list });
         MoltObject::from_int(id).bits()
     })
 }
@@ -631,12 +673,12 @@ pub extern "C" fn molt_chainmap_getitem(handle_bits: u64, key_bits: u64) -> u64 
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         for dict_bits in maps {
             let dict_obj = obj_from_bits(dict_bits);
             let Some(dict_ptr) = dict_obj.as_ptr() else {
@@ -660,8 +702,11 @@ pub extern "C" fn molt_chainmap_setitem(handle_bits: u64, key_bits: u64, value_b
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let first_map_bits =
-            CHAINMAP_HANDLES.with(|h| h.borrow().get(&id).and_then(|s| s.maps.first().copied()));
+        let first_map_bits = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.maps.first().copied());
         let Some(dict_bits) = first_map_bits else {
             return raise_exception::<_>(_py, "KeyError", "ChainMap has no maps");
         };
@@ -686,8 +731,11 @@ pub extern "C" fn molt_chainmap_delitem(handle_bits: u64, key_bits: u64) -> u64 
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let first_map_bits =
-            CHAINMAP_HANDLES.with(|h| h.borrow().get(&id).and_then(|s| s.maps.first().copied()));
+        let first_map_bits = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.maps.first().copied());
         let Some(dict_bits) = first_map_bits else {
             return raise_exception::<_>(_py, "KeyError", "key not found");
         };
@@ -713,12 +761,12 @@ pub extern "C" fn molt_chainmap_contains(handle_bits: u64, key_bits: u64) -> u64
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         for dict_bits in maps {
             let dict_obj = obj_from_bits(dict_bits);
             let Some(dict_ptr) = dict_obj.as_ptr() else {
@@ -742,12 +790,12 @@ pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         // Collect unique key bits across all maps.
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for dict_bits in maps {
@@ -776,12 +824,12 @@ pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut keys: Vec<u64> = Vec::new();
         for dict_bits in maps {
@@ -818,12 +866,12 @@ pub extern "C" fn molt_chainmap_new_child(handle_bits: u64, m_bits: u64) -> u64 
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let existing_maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let existing_maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         let new_first = {
             let m_obj = obj_from_bits(m_bits);
             if m_obj.is_none() {
@@ -846,10 +894,10 @@ pub extern "C" fn molt_chainmap_new_child(handle_bits: u64, m_bits: u64) -> u64 
         new_maps.push(new_first);
         new_maps.extend_from_slice(&existing_maps);
         let new_id = next_chainmap_handle();
-        CHAINMAP_HANDLES.with(|h| {
-            h.borrow_mut()
-                .insert(new_id, ChainMapState { maps: new_maps });
-        });
+        CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(new_id, ChainMapState { maps: new_maps });
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -861,12 +909,12 @@ pub extern "C" fn molt_chainmap_parents(handle_bits: u64) -> u64 {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let mut maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let mut maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         if !maps.is_empty() {
             maps.remove(0);
         }
@@ -878,9 +926,10 @@ pub extern "C" fn molt_chainmap_parents(handle_bits: u64) -> u64 {
             maps.push(MoltObject::from_ptr(empty_ptr).bits());
         }
         let new_id = next_chainmap_handle();
-        CHAINMAP_HANDLES.with(|h| {
-            h.borrow_mut().insert(new_id, ChainMapState { maps });
-        });
+        CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(new_id, ChainMapState { maps });
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -892,12 +941,12 @@ pub extern "C" fn molt_chainmap_maps(handle_bits: u64) -> u64 {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maps: Vec<u64> = CHAINMAP_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.maps.clone())
-                .unwrap_or_default()
-        });
+        let maps: Vec<u64> = CHAINMAP_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.maps.clone())
+            .unwrap_or_default();
         let ptr = alloc_list(_py, &maps);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
@@ -913,7 +962,7 @@ pub extern "C" fn molt_chainmap_drop(handle_bits: u64) -> u64 {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        CHAINMAP_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        CHAINMAP_REGISTRY.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
@@ -932,10 +981,11 @@ struct DequeState {
     maxlen: Option<usize>,
 }
 
-thread_local! {
-    static DEQUE_HANDLES: RefCell<HashMap<i64, DequeState>> =
-        RefCell::new(HashMap::new());
-}
+// Global registry — NOT thread_local. Deques must be visible across threads
+// (e.g. queue.Queue, concurrent.futures use deque cross-thread). The GIL
+// serializes all Python-level access, so this Mutex is always uncontended.
+static DEQUE_REGISTRY: LazyLock<Mutex<HashMap<i64, DequeState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -986,11 +1036,7 @@ fn extract_iterable_elements(_py: &PyToken<'_>, iterable_bits: u64) -> Option<&'
 /// Resolve a potentially negative index against a given length.
 /// Returns the resolved index or None if out of bounds.
 fn resolve_index(index: i64, len: usize) -> Option<usize> {
-    let resolved = if index < 0 {
-        index + len as i64
-    } else {
-        index
-    };
+    let resolved = if index < 0 { index + len as i64 } else { index };
     if resolved < 0 || resolved >= len as i64 {
         None
     } else {
@@ -1009,12 +1055,13 @@ pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
             Err(()) => return MoltObject::none().bits(),
         };
         let id = next_deque_handle();
-        DEQUE_HANDLES.with(|h| {
-            h.borrow_mut().insert(id, DequeState {
+        DEQUE_REGISTRY.lock().unwrap().insert(
+            id,
+            DequeState {
                 data: VecDeque::new(),
                 maxlen,
-            });
-        });
+            },
+        );
         MoltObject::from_int(id).bits()
     })
 }
@@ -1043,9 +1090,10 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
             elems.iter().copied().collect()
         };
         let id = next_deque_handle();
-        DEQUE_HANDLES.with(|h| {
-            h.borrow_mut().insert(id, DequeState { data, maxlen });
-        });
+        DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, DequeState { data, maxlen });
         MoltObject::from_int(id).bits()
     })
 }
@@ -1058,13 +1106,13 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(ml) = state.maxlen {
                     if ml == 0 {
                         // maxlen is 0, element is silently dropped.
-                        return;
+                        return MoltObject::none().bits();
                     }
                     if state.data.len() == ml {
                         state.data.pop_front();
@@ -1072,7 +1120,7 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
                 }
                 state.data.push_back(item_bits);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1085,12 +1133,12 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(ml) = state.maxlen {
                     if ml == 0 {
-                        return;
+                        return MoltObject::none().bits();
                     }
                     if state.data.len() == ml {
                         state.data.pop_back();
@@ -1098,7 +1146,7 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
                 }
                 state.data.push_front(item_bits);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1111,8 +1159,11 @@ pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let result =
-            DEQUE_HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.data.pop_back()));
+        let result = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.data.pop_back());
         match result {
             Some(bits) => bits,
             None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
@@ -1128,8 +1179,11 @@ pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let result =
-            DEQUE_HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.data.pop_front()));
+        let result = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.data.pop_front());
         match result {
             Some(bits) => bits,
             None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
@@ -1149,10 +1203,10 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        // Clone the elements to avoid holding the borrow across the mutation.
+        // Clone the elements to avoid holding the seq_vec_ref borrow across the mutation.
         let elems_owned: Vec<u64> = elems.clone();
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 for &item in &elems_owned {
                     if let Some(ml) = state.maxlen {
@@ -1166,7 +1220,7 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
                     state.data.push_back(item);
                 }
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1186,8 +1240,8 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
             return MoltObject::none().bits();
         };
         let elems_owned: Vec<u64> = elems.clone();
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 // Each element is prepended in order, which reverses the iterable.
                 for &item in &elems_owned {
@@ -1202,7 +1256,7 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
                     state.data.push_front(item);
                 }
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1223,26 +1277,25 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
         let Some(n) = to_i64(n_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let len = state.data.len();
-                if len == 0 {
-                    return;
-                }
-                if n > 0 {
-                    let steps = (n as usize) % len;
-                    if steps > 0 {
-                        state.data.rotate_right(steps);
-                    }
-                } else if n < 0 {
-                    let steps = ((-n) as usize) % len;
-                    if steps > 0 {
-                        state.data.rotate_left(steps);
+                if len > 0 {
+                    if n > 0 {
+                        let steps = (n as usize) % len;
+                        if steps > 0 {
+                            state.data.rotate_right(steps);
+                        }
+                    } else if n < 0 {
+                        let steps = ((-n) as usize) % len;
+                        if steps > 0 {
+                            state.data.rotate_left(steps);
+                        }
                     }
                 }
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1254,8 +1307,12 @@ pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let len =
-            DEQUE_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.data.len()).unwrap_or(0));
+        let len = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.data.len())
+            .unwrap_or(0);
         MoltObject::from_int(len as i64).bits()
     })
 }
@@ -1272,12 +1329,13 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(index) = to_i64(idx_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        let result = DEQUE_HANDLES.with(|h| {
-            let map = h.borrow();
-            let state = map.get(&id)?;
-            let resolved = resolve_index(index, state.data.len())?;
-            state.data.get(resolved).copied()
-        });
+        let result = {
+            let map = DEQUE_REGISTRY.lock().unwrap();
+            map.get(&id).and_then(|state| {
+                let resolved = resolve_index(index, state.data.len())?;
+                state.data.get(resolved).copied()
+            })
+        };
         match result {
             Some(bits) => bits,
             None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
@@ -1298,17 +1356,19 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
         let Some(index) = to_i64(idx_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        let ok = DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
-            let Some(state) = map.get_mut(&id) else {
-                return false;
-            };
-            let Some(resolved) = resolve_index(index, state.data.len()) else {
-                return false;
-            };
-            state.data[resolved] = value_bits;
-            true
-        });
+        let ok = {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
+                if let Some(resolved) = resolve_index(index, state.data.len()) {
+                    state.data[resolved] = value_bits;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
         if !ok {
             return raise_exception::<_>(_py, "IndexError", "deque index out of range");
         }
@@ -1330,17 +1390,19 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(index) = to_i64(idx_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        let ok = DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
-            let Some(state) = map.get_mut(&id) else {
-                return false;
-            };
-            let Some(resolved) = resolve_index(index, state.data.len()) else {
-                return false;
-            };
-            state.data.remove(resolved);
-            true
-        });
+        let ok = {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
+                if let Some(resolved) = resolve_index(index, state.data.len()) {
+                    state.data.remove(resolved);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
         if !ok {
             return raise_exception::<_>(_py, "IndexError", "deque index out of range");
         }
@@ -1356,14 +1418,14 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        // Snapshot the elements to avoid holding the borrow during obj_eq calls,
+        // Snapshot the elements to avoid holding the lock during obj_eq calls,
         // which may re-enter the runtime.
-        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.data.iter().copied().collect())
-                .unwrap_or_default()
-        });
+        let elements: Vec<u64> = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.data.iter().copied().collect())
+            .unwrap_or_default();
         let target = obj_from_bits(item_bits);
         for &elem_bits in &elements {
             if obj_eq(_py, obj_from_bits(elem_bits), target) {
@@ -1382,12 +1444,12 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.data.iter().copied().collect())
-                .unwrap_or_default()
-        });
+        let elements: Vec<u64> = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.data.iter().copied().collect())
+            .unwrap_or_default();
         let target = obj_from_bits(item_bits);
         let mut count: i64 = 0;
         for &elem_bits in &elements {
@@ -1421,17 +1483,25 @@ pub extern "C" fn molt_deque_index(
         let Some(stop_raw) = to_i64(stop_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        // Snapshot elements to avoid holding borrow during obj_eq.
-        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.data.iter().copied().collect())
-                .unwrap_or_default()
-        });
+        // Snapshot elements to avoid holding the lock during obj_eq.
+        let elements: Vec<u64> = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.data.iter().copied().collect())
+            .unwrap_or_default();
         let len = elements.len() as i64;
         // Resolve negative indices.
-        let mut start = if start_raw < 0 { start_raw + len } else { start_raw };
-        let mut stop = if stop_raw < 0 { stop_raw + len } else { stop_raw };
+        let mut start = if start_raw < 0 {
+            start_raw + len
+        } else {
+            start_raw
+        };
+        let mut stop = if stop_raw < 0 {
+            stop_raw + len
+        } else {
+            stop_raw
+        };
         // Clamp to [0, len].
         if start < 0 {
             start = 0;
@@ -1448,7 +1518,12 @@ pub extern "C" fn molt_deque_index(
         let target = obj_from_bits(item_bits);
         let start_usize = start as usize;
         let stop_usize = stop as usize;
-        for (i, &elem_bits) in elements.iter().enumerate().take(stop_usize).skip(start_usize) {
+        for (i, &elem_bits) in elements
+            .iter()
+            .enumerate()
+            .take(stop_usize)
+            .skip(start_usize)
+        {
             if obj_eq(_py, obj_from_bits(elem_bits), target) {
                 return MoltObject::from_int(i as i64).bits();
             }
@@ -1471,35 +1546,44 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
         let Some(index) = to_i64(idx_obj) else {
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
-        let ok = DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
-            let Some(state) = map.get_mut(&id) else {
-                return Ok(());
-            };
-            // Check maxlen constraint before insertion.
-            if let Some(ml) = state.maxlen
-                && state.data.len() >= ml
-            {
-                return Err(());
+        let ok = {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
+                // Check maxlen constraint before insertion.
+                if let Some(ml) = state.maxlen {
+                    if state.data.len() >= ml {
+                        Err(())
+                    } else {
+                        let len = state.data.len() as i64;
+                        let mut resolved = if index < 0 { index + len } else { index };
+                        if resolved < 0 {
+                            resolved = 0;
+                        }
+                        if resolved > len {
+                            resolved = len;
+                        }
+                        state.data.insert(resolved as usize, item_bits);
+                        Ok(())
+                    }
+                } else {
+                    let len = state.data.len() as i64;
+                    let mut resolved = if index < 0 { index + len } else { index };
+                    if resolved < 0 {
+                        resolved = 0;
+                    }
+                    if resolved > len {
+                        resolved = len;
+                    }
+                    state.data.insert(resolved as usize, item_bits);
+                    Ok(())
+                }
+            } else {
+                Ok(())
             }
-            let len = state.data.len() as i64;
-            // Resolve negative index, clamp to [0, len].
-            let mut resolved = if index < 0 { index + len } else { index };
-            if resolved < 0 {
-                resolved = 0;
-            }
-            if resolved > len {
-                resolved = len;
-            }
-            // VecDeque::insert panics if index > len, but we clamped above.
-            state.data.insert(resolved as usize, item_bits);
-            Ok(())
-        });
+        };
         match ok {
             Ok(()) => MoltObject::none().bits(),
-            Err(()) => {
-                raise_exception::<_>(_py, "IndexError", "deque already at its maximum size")
-            }
+            Err(()) => raise_exception::<_>(_py, "IndexError", "deque already at its maximum size"),
         }
     })
 }
@@ -1513,13 +1597,13 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        // Snapshot to find the index without holding the borrow during obj_eq.
-        let elements: Vec<u64> = DEQUE_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.data.iter().copied().collect())
-                .unwrap_or_default()
-        });
+        // Snapshot to find the index without holding the lock during obj_eq.
+        let elements: Vec<u64> = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.data.iter().copied().collect())
+            .unwrap_or_default();
         let target = obj_from_bits(item_bits);
         let mut found_idx: Option<usize> = None;
         for (i, &elem_bits) in elements.iter().enumerate() {
@@ -1529,18 +1613,14 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
             }
         }
         let Some(idx) = found_idx else {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "deque.remove(x): x not in deque",
-            );
+            return raise_exception::<_>(_py, "ValueError", "deque.remove(x): x not in deque");
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.data.remove(idx);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1554,12 +1634,12 @@ pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.data.make_contiguous().reverse();
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1571,12 +1651,12 @@ pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEQUE_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = DEQUE_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.data.clear();
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1589,17 +1669,15 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let cloned = DEQUE_HANDLES.with(|h| {
-            h.borrow().get(&id).map(|s| DequeState {
-                data: s.data.clone(),
-                maxlen: s.maxlen,
-            })
+        let cloned = DEQUE_REGISTRY.lock().unwrap().get(&id).map(|s| DequeState {
+            data: s.data.clone(),
+            maxlen: s.maxlen,
         });
         let Some(new_state) = cloned else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid deque handle");
         };
         let new_id = next_deque_handle();
-        DEQUE_HANDLES.with(|h| h.borrow_mut().insert(new_id, new_state));
+        DEQUE_REGISTRY.lock().unwrap().insert(new_id, new_state);
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -1611,7 +1689,11 @@ pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maxlen = DEQUE_HANDLES.with(|h| h.borrow().get(&id).and_then(|s| s.maxlen));
+        let maxlen = DEQUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.maxlen);
         match maxlen {
             Some(ml) => MoltObject::from_int(ml as i64).bits(),
             None => MoltObject::none().bits(),
@@ -1619,23 +1701,23 @@ pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
     })
 }
 
-/// Remove handle from thread-local map. Returns None.
+/// Remove handle from the global registry. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEQUE_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        DEQUE_REGISTRY.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
 
 // ─── Counter intrinsics ─────────────────────────────────────────────────────
 //
-// Handle model: thread-local HashMap<i64, CounterState> keyed by an atomically-
+// Handle model: global Mutex<HashMap<i64, CounterState>> keyed by an atomically-
 // issued handle ID, returned to Python as a NaN-boxed integer.  Matches the
-// pattern established by builtins/collections_ext.rs (OrderedDict, ChainMap).
+// pattern established by the other collection types in this file.
 //
 // Internal state: Vec<(u64, i64)> for insertion-order.
 // Key lookup uses content-based equality (obj_eq) to correctly handle
@@ -1774,14 +1856,13 @@ fn next_defaultdict_handle() -> i64 {
     NEXT_DEFAULTDICT_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
-// ─── Thread-local handle maps ───────────────────────────────────────────────
+// ─── Global handle registries ────────────────────────────────────────────────
+// Visible across all threads.  GIL serializes access.
 
-thread_local! {
-    static COUNTER_HANDLES: RefCell<HashMap<i64, CounterState>> =
-        RefCell::new(HashMap::new());
-    static DEFAULTDICT_HANDLES: RefCell<HashMap<i64, DefaultDictState>> =
-        RefCell::new(HashMap::new());
-}
+static COUNTER_REGISTRY: LazyLock<Mutex<HashMap<i64, CounterState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static DEFAULTDICT_REGISTRY: LazyLock<Mutex<HashMap<i64, DefaultDictState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── Handle helpers ─────────────────────────────────────────────────────────
 
@@ -1810,7 +1891,10 @@ fn dd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 pub extern "C" fn molt_counter_new() -> u64 {
     crate::with_gil_entry!(_py, {
         let id = next_counter_handle();
-        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, CounterState::new()));
+        COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, CounterState::new());
         MoltObject::from_int(id).bits()
     })
 }
@@ -1834,7 +1918,7 @@ pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
             state.add_count(_py, elem_bits, 1);
         }
         let id = next_counter_handle();
-        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        COUNTER_REGISTRY.lock().unwrap().insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1849,11 +1933,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
         };
         let type_id = unsafe { object_type_id(ptr) };
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "expected a list of (key, count) pairs",
-            );
+            return raise_exception::<_>(_py, "TypeError", "expected a list of (key, count) pairs");
         }
         let elems = unsafe { seq_vec_ref(ptr) };
         let mut state = CounterState::new();
@@ -1868,11 +1948,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
             }
             let pair = unsafe { seq_vec_ref(elem_ptr) };
             if pair.len() < 2 {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "each pair must have 2 elements",
-                );
+                return raise_exception::<_>(_py, "ValueError", "each pair must have 2 elements");
             }
             let count_obj = obj_from_bits(pair[1]);
             let Some(count) = to_i64(count_obj) else {
@@ -1881,7 +1957,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
             state.set_count_i64(_py, pair[0], count);
         }
         let id = next_counter_handle();
-        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        COUNTER_REGISTRY.lock().unwrap().insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1895,33 +1971,29 @@ pub extern "C" fn molt_counter_getitem(handle_bits: u64, key_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        COUNTER_HANDLES
-            .with(|h| {
-                h.borrow()
-                    .get(&id)
-                    .map(|s| s.get_count_bits(_py, key_bits))
-                    .unwrap_or_else(|| i64_to_count(0))
-            })
+        COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.get_count_bits(_py, key_bits))
+            .unwrap_or_else(|| i64_to_count(0))
     })
 }
 
 /// Set count for key.  Accepts any NaN-boxed value (int, float, etc.).
 /// Returns None.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_counter_setitem(
-    handle_bits: u64,
-    key_bits: u64,
-    count_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_counter_setitem(handle_bits: u64, key_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        COUNTER_HANDLES.with(|h| {
-            if let Some(state) = h.borrow_mut().get_mut(&id) {
+        {
+            let mut map = COUNTER_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
                 state.set_count_raw(_py, key_bits, count_bits);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1933,8 +2005,11 @@ pub extern "C" fn molt_counter_delitem(handle_bits: u64, key_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = COUNTER_HANDLES
-            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(_py, key_bits)));
+        let removed = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.remove(_py, key_bits));
         if removed.is_none() {
             return raise_key_error_with_key::<u64>(_py, key_bits);
         }
@@ -1952,22 +2027,24 @@ pub extern "C" fn molt_counter_elements(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let items: Vec<u64> = COUNTER_HANDLES.with(|h| {
-            let map = h.borrow();
-            let Some(state) = map.get(&id) else {
-                return Vec::new();
-            };
-            let mut out = Vec::new();
-            for &(elem_bits, count_bits) in &state.entries {
-                let count = count_to_i64(count_bits);
-                if count > 0 {
-                    for _ in 0..count {
-                        out.push(elem_bits);
+        let items: Vec<u64> = {
+            let map = COUNTER_REGISTRY.lock().unwrap();
+            match map.get(&id) {
+                None => Vec::new(),
+                Some(state) => {
+                    let mut out = Vec::new();
+                    for &(elem_bits, count_bits) in &state.entries {
+                        let count = count_to_i64(count_bits);
+                        if count > 0 {
+                            for _ in 0..count {
+                                out.push(elem_bits);
+                            }
+                        }
                     }
+                    out
                 }
             }
-            out
-        });
+        };
         let ptr = alloc_list(_py, &items);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
@@ -1992,22 +2069,17 @@ pub extern "C" fn molt_counter_most_common(handle_bits: u64, n_bits: u64) -> u64
             let Some(n) = to_i64(n_obj) else {
                 return raise_exception::<_>(_py, "TypeError", "n must be an integer or None");
             };
-            if n < 0 {
-                Some(0)
-            } else {
-                Some(n as usize)
-            }
+            if n < 0 { Some(0) } else { Some(n as usize) }
         };
 
-        let mut pairs: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.entries.clone())
-                .unwrap_or_default()
-        });
+        let mut pairs: Vec<(u64, u64)> = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
 
-        let cmp_count =
-            |a: &(u64, u64), b: &(u64, u64)| count_to_i64(b.1).cmp(&count_to_i64(a.1));
+        let cmp_count = |a: &(u64, u64), b: &(u64, u64)| count_to_i64(b.1).cmp(&count_to_i64(a.1));
 
         // Always use stable sort to preserve insertion order for equal counts.
         match n_limit {
@@ -2045,12 +2117,12 @@ pub extern "C" fn molt_counter_total(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let total: i64 = COUNTER_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.entries.iter().map(|(_, c)| count_to_i64(*c)).sum())
-                .unwrap_or(0)
-        });
+        let total: i64 = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.entries.iter().map(|(_, c)| count_to_i64(*c)).sum())
+            .unwrap_or(0);
         MoltObject::from_int(total).bits()
     })
 }
@@ -2111,21 +2183,23 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
                 };
                 deltas.push((pair[0], count));
             }
-            COUNTER_HANDLES.with(|h| {
-                if let Some(state) = h.borrow_mut().get_mut(&id) {
+            {
+                let mut map = COUNTER_REGISTRY.lock().unwrap();
+                if let Some(state) = map.get_mut(&id) {
                     for (key, delta) in deltas {
                         state.add_count(_py, key, delta);
                     }
                 }
-            });
+            }
         } else {
-            COUNTER_HANDLES.with(|h| {
-                if let Some(state) = h.borrow_mut().get_mut(&id) {
+            {
+                let mut map = COUNTER_REGISTRY.lock().unwrap();
+                if let Some(state) = map.get_mut(&id) {
                     for &elem_bits in &elems {
                         state.add_count(_py, elem_bits, 1);
                     }
                 }
-            });
+            }
         }
         MoltObject::none().bits()
     })
@@ -2190,21 +2264,23 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 };
                 deltas.push((pair[0], count));
             }
-            COUNTER_HANDLES.with(|h| {
-                if let Some(state) = h.borrow_mut().get_mut(&id) {
+            {
+                let mut map = COUNTER_REGISTRY.lock().unwrap();
+                if let Some(state) = map.get_mut(&id) {
                     for (key, delta) in deltas {
                         state.add_count(_py, key, -delta);
                     }
                 }
-            });
+            }
         } else {
-            COUNTER_HANDLES.with(|h| {
-                if let Some(state) = h.borrow_mut().get_mut(&id) {
+            {
+                let mut map = COUNTER_REGISTRY.lock().unwrap();
+                if let Some(state) = map.get_mut(&id) {
                     for &elem_bits in &elems {
                         state.add_count(_py, elem_bits, -1);
                     }
                 }
-            });
+            }
         }
         MoltObject::none().bits()
     })
@@ -2219,12 +2295,12 @@ pub extern "C" fn molt_counter_items(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let pairs: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.entries.clone())
-                .unwrap_or_default()
-        });
+        let pairs: Vec<(u64, u64)> = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
         let mut tuple_bits: Vec<u64> = Vec::with_capacity(pairs.len());
         for (elem_bits, count_bits) in &pairs {
             let tptr = alloc_tuple(_py, &[*elem_bits, *count_bits]);
@@ -2248,7 +2324,12 @@ pub extern "C" fn molt_counter_len(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let len = COUNTER_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.len()).unwrap_or(0));
+        let len = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.len())
+            .unwrap_or(0);
         MoltObject::from_int(len as i64).bits()
     })
 }
@@ -2260,12 +2341,12 @@ pub extern "C" fn molt_counter_contains(handle_bits: u64, key_bits: u64) -> u64 
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let found = COUNTER_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| s.contains(_py, key_bits))
-                .unwrap_or(false)
-        });
+        let found = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.contains(_py, key_bits))
+            .unwrap_or(false);
         MoltObject::from_bool(found).bits()
     })
 }
@@ -2287,18 +2368,18 @@ fn counter_binary_op(
         return MoltObject::none().bits();
     };
 
-    let a_entries: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
-        h.borrow()
-            .get(&a_id)
-            .map(|s| s.entries.clone())
-            .unwrap_or_default()
-    });
-    let b_entries: Vec<(u64, u64)> = COUNTER_HANDLES.with(|h| {
-        h.borrow()
-            .get(&b_id)
-            .map(|s| s.entries.clone())
-            .unwrap_or_default()
-    });
+    let a_entries: Vec<(u64, u64)> = COUNTER_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&a_id)
+        .map(|s| s.entries.clone())
+        .unwrap_or_default();
+    let b_entries: Vec<(u64, u64)> = COUNTER_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&b_id)
+        .map(|s| s.entries.clone())
+        .unwrap_or_default();
 
     let mut result = CounterState::new();
 
@@ -2331,7 +2412,7 @@ fn counter_binary_op(
     }
 
     let id = next_counter_handle();
-    COUNTER_HANDLES.with(|h| h.borrow_mut().insert(id, result));
+    COUNTER_REGISTRY.lock().unwrap().insert(id, result);
     MoltObject::from_int(id).bits()
 }
 
@@ -2376,13 +2457,16 @@ pub extern "C" fn molt_counter_copy(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let cloned =
-            COUNTER_HANDLES.with(|h| h.borrow().get(&id).map(|s| s.clone_state(_py)));
+        let cloned = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.clone_state(_py));
         let Some(new_state) = cloned else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid Counter handle");
         };
         let new_id = next_counter_handle();
-        COUNTER_HANDLES.with(|h| h.borrow_mut().insert(new_id, new_state));
+        COUNTER_REGISTRY.lock().unwrap().insert(new_id, new_state);
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -2394,11 +2478,12 @@ pub extern "C" fn molt_counter_clear(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        COUNTER_HANDLES.with(|h| {
-            if let Some(state) = h.borrow_mut().get_mut(&id) {
+        {
+            let mut map = COUNTER_REGISTRY.lock().unwrap();
+            if let Some(state) = map.get_mut(&id) {
                 state.clear(_py);
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -2406,17 +2491,16 @@ pub extern "C" fn molt_counter_clear(handle_bits: u64) -> u64 {
 /// Remove key and return its count.  If key not found and default_bits is not
 /// None, return default.  Otherwise raise KeyError.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_counter_pop(
-    handle_bits: u64,
-    key_bits: u64,
-    default_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_counter_pop(handle_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = COUNTER_HANDLES
-            .with(|h| h.borrow_mut().get_mut(&id).and_then(|s| s.remove(_py, key_bits)));
+        let removed = COUNTER_REGISTRY
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .and_then(|s| s.remove(_py, key_bits));
         match removed {
             Some(count_bits) => count_bits,
             None => {
@@ -2438,7 +2522,7 @@ pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = COUNTER_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        let removed = COUNTER_REGISTRY.lock().unwrap().remove(&id);
         if let Some(state) = removed {
             for &(key, _) in &state.entries {
                 dec_ref_bits(_py, key);
@@ -2456,10 +2540,10 @@ pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = next_defaultdict_handle();
-        DEFAULTDICT_HANDLES.with(|h| {
-            h.borrow_mut()
-                .insert(id, DefaultDictState { factory_bits });
-        });
+        DEFAULTDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, DefaultDictState { factory_bits });
         MoltObject::from_int(id).bits()
     })
 }
@@ -2475,8 +2559,11 @@ pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let factory = DEFAULTDICT_HANDLES
-            .with(|h| h.borrow().get(&id).map(|s| s.factory_bits));
+        let factory = DEFAULTDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.factory_bits);
         let Some(factory_bits) = factory else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
         };
@@ -2500,13 +2587,12 @@ pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEFAULTDICT_HANDLES
-            .with(|h| {
-                h.borrow()
-                    .get(&id)
-                    .map(|s| s.factory_bits)
-                    .unwrap_or_else(|| MoltObject::none().bits())
-            })
+        DEFAULTDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.factory_bits)
+            .unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 
@@ -2517,16 +2603,19 @@ pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let factory = DEFAULTDICT_HANDLES
-            .with(|h| h.borrow().get(&id).map(|s| s.factory_bits));
+        let factory = DEFAULTDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.factory_bits);
         let Some(factory_bits) = factory else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
         };
         let new_id = next_defaultdict_handle();
-        DEFAULTDICT_HANDLES.with(|h| {
-            h.borrow_mut()
-                .insert(new_id, DefaultDictState { factory_bits });
-        });
+        DEFAULTDICT_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(new_id, DefaultDictState { factory_bits });
         MoltObject::from_int(new_id).bits()
     })
 }
@@ -2538,7 +2627,7 @@ pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        DEFAULTDICT_HANDLES.with(|h| h.borrow_mut().remove(&id));
+        DEFAULTDICT_REGISTRY.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }

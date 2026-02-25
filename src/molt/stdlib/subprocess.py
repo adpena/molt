@@ -12,6 +12,8 @@ _MOLT_SUBPROCESS_RUNTIME_READY = _require_intrinsic(
     "molt_subprocess_runtime_ready", globals()
 )
 _MOLT_PROCESS_SPAWN = _require_intrinsic("molt_process_spawn", globals())
+_MOLT_PROCESS_SPAWN_EX = _require_intrinsic("molt_process_spawn_ex", globals())
+_MOLT_PROCESS_PID = _require_intrinsic("molt_process_pid", globals())
 _MOLT_PROCESS_RETURNCODE = _require_intrinsic("molt_process_returncode", globals())
 _MOLT_PROCESS_KILL = _require_intrinsic("molt_process_kill", globals())
 _MOLT_PROCESS_TERMINATE = _require_intrinsic("molt_process_terminate", globals())
@@ -26,10 +28,22 @@ _MOLT_STREAM_READER_NEW = _require_intrinsic("molt_stream_reader_new", globals()
 _MOLT_STREAM_READER_READ = _require_intrinsic("molt_stream_reader_read", globals())
 _MOLT_STREAM_READER_DROP = _require_intrinsic("molt_stream_reader_drop", globals())
 _MOLT_PENDING = _require_intrinsic("molt_pending", globals())
+_MOLT_SUBPROCESS_PIPE_CONST = _require_intrinsic(
+    "molt_subprocess_pipe_const", globals()
+)
+_MOLT_SUBPROCESS_STDOUT_CONST = _require_intrinsic(
+    "molt_subprocess_stdout_const", globals()
+)
+_MOLT_SUBPROCESS_DEVNULL_CONST = _require_intrinsic(
+    "molt_subprocess_devnull_const", globals()
+)
 
-PIPE = 1
-DEVNULL = 2
-STDOUT = -2
+PIPE = int(_MOLT_SUBPROCESS_PIPE_CONST())
+DEVNULL = int(_MOLT_SUBPROCESS_DEVNULL_CONST())
+STDOUT = int(_MOLT_SUBPROCESS_STDOUT_CONST())
+_MODE_PIPE = 1
+_MODE_DEVNULL = 2
+_MODE_STDOUT = -2
 _INHERIT = 0
 _FD_BASE = 1 << 30
 _POLL_SLEEP = 0.001
@@ -157,12 +171,12 @@ def _normalize_timeout(timeout: float | None) -> float | None:
 def _stdio_mode(value: Any, name: str) -> int:
     if value is None:
         return _INHERIT
-    if value is PIPE:
-        return PIPE
-    if value is DEVNULL:
-        return DEVNULL
-    if name == "stderr" and value is STDOUT:
-        return STDOUT
+    if value == PIPE:
+        return _MODE_PIPE
+    if value == DEVNULL:
+        return _MODE_DEVNULL
+    if name == "stderr" and value == STDOUT:
+        return _MODE_STDOUT
     if isinstance(value, int) and value >= 0:
         return _FD_BASE + int(value)
     raise ValueError(f"unsupported {name} redirection value")
@@ -185,6 +199,8 @@ class Popen:
         text: bool = False,
         encoding: str | None = None,
         errors: str | None = None,
+        start_new_session: bool = False,
+        process_group: int | None = None,
     ) -> None:
         del bufsize, executable, preexec_fn, close_fds
         _MOLT_SUBPROCESS_RUNTIME_READY()
@@ -199,25 +215,44 @@ class Popen:
 
         argv = _coerce_argv(args, bool(shell))
         env_map = _coerce_env(env)
-        self._handle = _MOLT_PROCESS_SPAWN(
-            argv,
-            env_map,
-            cwd,
-            self._stdin_mode,
-            self._stdout_mode,
-            self._stderr_mode,
-        )
+        use_ex = bool(start_new_session) or process_group is not None
+        if use_ex:
+            self._handle = _MOLT_PROCESS_SPAWN_EX(
+                argv,
+                env_map,
+                cwd,
+                self._stdin_mode,
+                self._stdout_mode,
+                self._stderr_mode,
+                bool(start_new_session),
+                process_group,
+            )
+        else:
+            self._handle = _MOLT_PROCESS_SPAWN(
+                argv,
+                env_map,
+                cwd,
+                self._stdin_mode,
+                self._stdout_mode,
+                self._stderr_mode,
+            )
         if self._handle is None:
             raise RuntimeError("process spawn failed")
 
         self._stdin_stream = (
-            _MOLT_PROCESS_STDIN(self._handle) if self._stdin_mode == PIPE else None
+            _MOLT_PROCESS_STDIN(self._handle)
+            if self._stdin_mode == _MODE_PIPE
+            else None
         )
         self._stdout_stream = (
-            _MOLT_PROCESS_STDOUT(self._handle) if self._stdout_mode == PIPE else None
+            _MOLT_PROCESS_STDOUT(self._handle)
+            if self._stdout_mode == _MODE_PIPE
+            else None
         )
         self._stderr_stream = (
-            _MOLT_PROCESS_STDERR(self._handle) if self._stderr_mode == PIPE else None
+            _MOLT_PROCESS_STDERR(self._handle)
+            if self._stderr_mode == _MODE_PIPE
+            else None
         )
         self._stdout_reader = (
             _MOLT_STREAM_READER_NEW(self._stdout_stream)
@@ -234,6 +269,15 @@ class Popen:
         self.stdin = self._stdin_stream
         self.stdout = self._stdout_stream
         self.stderr = self._stderr_stream
+
+    @property
+    def pid(self) -> int:
+        """Return the process ID of the child process."""
+        return int(_MOLT_PROCESS_PID(self._handle))
+
+    def send_signal(self, sig: int) -> None:
+        """Send a signal to the child process."""
+        _os.kill(self.pid, sig)
 
     def _sleep(self) -> None:
         _time.sleep(_POLL_SLEEP)
@@ -358,6 +402,8 @@ def run(
     stdin: Any | None = None,
     stdout: Any | None = None,
     stderr: Any | None = None,
+    start_new_session: bool = False,
+    process_group: int | None = None,
 ) -> CompletedProcess:
     if capture_output:
         if stdout is not None or stderr is not None:
@@ -380,6 +426,8 @@ def run(
         text=text,
         encoding=encoding,
         errors=errors,
+        start_new_session=start_new_session,
+        process_group=process_group,
     )
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
@@ -409,15 +457,60 @@ def check_output(args: Any, *, timeout: float | None = None, **kwargs: Any) -> A
     return result.stdout
 
 
+def check_call(args: Any, *, timeout: float | None = None, **kwargs: Any) -> int:
+    """Run command with arguments and return returncode; raise on non-zero exit.
+
+    Equivalent to ``run(..., check=True).returncode``.
+    """
+    result = run(args, timeout=timeout, check=True, **kwargs)
+    return result.returncode
+
+
+def getstatusoutput(
+    cmd: str,
+    *,
+    encoding: str | None = None,
+    errors: str | None = None,
+) -> tuple[int, str]:
+    """Return ``(exitcode, output)`` of executing *cmd* in a shell.
+
+    The locale encoding is used for decoding; trailing newlines are stripped
+    from *output*.  The combined stdout and stderr is returned.
+    """
+    try:
+        result = run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding=encoding,
+            errors=errors,
+        )
+        data = (result.stdout or "") + (result.stderr or "")
+        if data and data[-1] == "\n":
+            data = data[:-1]
+        return result.returncode, data
+    except SubprocessError:
+        return 1, ""
+
+
+def getoutput(cmd: str) -> str:
+    """Return the output of executing *cmd* in a shell."""
+    return getstatusoutput(cmd)[1]
+
+
 __all__ = [
-    "PIPE",
-    "DEVNULL",
-    "STDOUT",
-    "Popen",
-    "CompletedProcess",
-    "SubprocessError",
     "CalledProcessError",
+    "CompletedProcess",
+    "DEVNULL",
+    "PIPE",
+    "Popen",
+    "STDOUT",
+    "SubprocessError",
     "TimeoutExpired",
-    "run",
+    "check_call",
     "check_output",
+    "getoutput",
+    "getstatusoutput",
+    "run",
 ]

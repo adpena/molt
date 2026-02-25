@@ -2674,7 +2674,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         runtime_state(_py)
             .sleep_queue()
             .register_blocking(_py, task_ptr, deadline);
-        return true;
+        true
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

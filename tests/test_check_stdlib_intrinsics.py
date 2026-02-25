@@ -42,10 +42,7 @@ def _seed_bootstrap_strict_modules(
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
         '_require_intrinsic("molt_capabilities_has", globals())\n'
     )
-    partial_todo = (
-        "# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, "
-        "status:partial): test fixture partial marker.\n"
-    )
+    partial_gap_marker = "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:partial): test fixture partial marker.\n"
 
     module_names = (
         "builtins",
@@ -75,7 +72,7 @@ def _seed_bootstrap_strict_modules(
             path = package_dir / f"{parts[-1]}.py"
         text = intrinsic_line
         if module_name in partial_modules:
-            text += partial_todo
+            text += partial_gap_marker
         path.write_text(text, encoding="utf-8")
 
     for module_name in module_names:
@@ -144,6 +141,19 @@ def _configure_required_top_level(module, monkeypatch, stdlib_root: Path) -> Non
         "_load_required_stdlib_submodules",
         lambda: (frozenset(required_submodules), frozenset(required_subpackages)),
     )
+    monkeypatch.setattr(
+        module,
+        "_load_fully_covered_stdlib_modules",
+        lambda _path: frozenset(),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_full_coverage_required_intrinsics",
+        lambda _path: {},
+    )
+
+
+def _disable_full_coverage_contract(module, monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "_load_fully_covered_stdlib_modules",
@@ -380,7 +390,7 @@ def parse_value(text: str):
     assert module.main() == 0
 
 
-def test_stdlib_parity_todo_is_classified_intrinsic_partial(
+def test_stdlib_parity_gap_marker_is_classified_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_gate_module()
@@ -389,8 +399,7 @@ def test_stdlib_parity_todo_is_classified_intrinsic_partial(
     _seed_intrinsic_module(
         stdlib_root,
         "parity_mod",
-        "# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, "
-        "status:planned): parity backlog.\n",
+        "# STDLIB_GAP(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): parity backlog.\n",
     )
     audit_doc = tmp_path / "audit.md"
     report = tmp_path / "report.json"
@@ -420,7 +429,7 @@ def test_stdlib_parity_todo_is_classified_intrinsic_partial(
     assert module_status.get("parity_mod") == "intrinsic-partial"
 
 
-def test_stdlib_generic_todo_is_classified_intrinsic_partial(
+def test_stdlib_generic_gap_marker_is_classified_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_gate_module()
@@ -429,8 +438,7 @@ def test_stdlib_generic_todo_is_classified_intrinsic_partial(
     _seed_intrinsic_module(
         stdlib_root,
         "generic_mod",
-        "# TODO(stdlib, owner:runtime, milestone:TL3, priority:P2, "
-        "status:planned): runtime backlog.\n",
+        "# STDLIB_GAP(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): runtime backlog.\n",
     )
     audit_doc = tmp_path / "audit.md"
     report = tmp_path / "report.json"
@@ -478,6 +486,7 @@ def test_top_level_union_gate_rejects_missing_entries(
         "_load_required_stdlib_submodules",
         lambda: (frozenset(), frozenset()),
     )
+    _disable_full_coverage_contract(module, monkeypatch)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(
@@ -517,6 +526,7 @@ def test_top_level_union_gate_rejects_module_package_collision(
         "_load_required_stdlib_submodules",
         lambda: (frozenset(), frozenset()),
     )
+    _disable_full_coverage_contract(module, monkeypatch)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(
@@ -555,6 +565,7 @@ def test_top_level_union_gate_rejects_package_kind_mismatch(
         "_load_required_stdlib_submodules",
         lambda: (frozenset(), frozenset()),
     )
+    _disable_full_coverage_contract(module, monkeypatch)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(
@@ -593,6 +604,7 @@ def test_submodule_union_gate_rejects_missing_entries(
         "_load_required_stdlib_submodules",
         lambda: (frozenset({"alpha.beta", "alpha.gamma"}), frozenset({"alpha"})),
     )
+    _disable_full_coverage_contract(module, monkeypatch)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(
@@ -631,6 +643,7 @@ def test_submodule_union_gate_rejects_subpackage_kind_mismatch(
         "_load_required_stdlib_submodules",
         lambda: (frozenset({"alpha.beta"}), frozenset({"alpha.beta"})),
     )
+    _disable_full_coverage_contract(module, monkeypatch)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
     monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
     monkeypatch.setattr(
@@ -660,8 +673,7 @@ def test_intrinsic_partial_ratchet_gate_rejects_regression(
     _seed_intrinsic_module(
         stdlib_root,
         "partial_mod",
-        "# TODO(stdlib, owner:stdlib, milestone:SL2, priority:P1, "
-        "status:partial): fixture partial marker.\n",
+        "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): fixture partial marker.\n",
     )
     ratchet = tmp_path / "ratchet.json"
     ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
@@ -698,8 +710,7 @@ def test_intrinsic_partial_ratchet_gate_allows_within_budget(
     _seed_intrinsic_module(
         stdlib_root,
         "partial_mod",
-        "# TODO(stdlib, owner:stdlib, milestone:SL2, priority:P1, "
-        "status:partial): fixture partial marker.\n",
+        "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): fixture partial marker.\n",
     )
     ratchet = tmp_path / "ratchet.json"
     ratchet.write_text('{"max_intrinsic_partial": 1}\n', encoding="utf-8")

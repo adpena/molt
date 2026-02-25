@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import molt.cli as cli
 import pytest
@@ -580,3 +584,79 @@ def test_backend_daemon_retryable_error_classification() -> None:
     assert not cli._backend_daemon_retryable_error(
         "backend daemon failed to compile job"
     )
+
+
+def test_backend_daemon_request_payload_bytes_enforces_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_MAX_REQUEST_BYTES", "64")
+    payload = {"version": 1, "jobs": [{"id": "x", "ir": "x" * 4096}]}
+    data, err = cli._backend_daemon_request_payload_bytes(payload)
+    assert data is None
+    assert isinstance(err, str)
+    assert "too large" in err
+
+
+def test_backend_daemon_health_from_response_parses_int_fields() -> None:
+    response = {
+        "ok": True,
+        "pong": True,
+        "health": {
+            "pid": 123,
+            "uptime_ms": 456,
+            "cache_entries": 2,
+            "cache_bytes": 100,
+            "cache_max_bytes": 200,
+            "request_limit_bytes": 1024,
+            "max_jobs": 8,
+            "requests_total": 7,
+            "jobs_total": 9,
+            "cache_hits": 4,
+            "cache_misses": 5,
+        },
+    }
+    health = cli._backend_daemon_health_from_response(response)
+    assert isinstance(health, dict)
+    assert health["pid"] == 123
+    assert health["max_jobs"] == 8
+
+
+def test_backend_daemon_ping_health_backcompat_without_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_backend_daemon_request",
+        lambda socket_path, payload, timeout: ({"ok": True, "pong": True}, None),
+    )
+    ready, health = cli._backend_daemon_ping_health(Path("/tmp/fake.sock"), timeout=0.1)
+    assert ready is True
+    assert health is None
+
+
+def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "molt.cli", "internal-batch-build-server"],
+        cwd=str(ROOT),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    proc.stdin.write(json.dumps({"id": 1, "op": "ping"}) + "\n")
+    proc.stdin.flush()
+    ping_response = json.loads(proc.stdout.readline())
+    assert ping_response["ok"] is True
+    assert ping_response["pong"] is True
+    proc.stdin.write(json.dumps({"id": 2, "op": "shutdown"}) + "\n")
+    proc.stdin.flush()
+    shutdown_response = json.loads(proc.stdout.readline())
+    assert shutdown_response["ok"] is True
+    assert shutdown_response["shutdown"] is True
+    proc.wait(timeout=5)
+    assert proc.returncode == 0

@@ -27,9 +27,7 @@ __all__ = [
     "JSONEncoder",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial):
-# continue full json parity work (JSONDecodeError formatting nuances, cls hooks,
-# and additional runtime fast paths).
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue full json parity work (JSONDecodeError formatting nuances, cls hooks, and additional runtime fast paths).
 
 
 class JSONDecodeError(ValueError):

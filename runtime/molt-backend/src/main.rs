@@ -7,9 +7,12 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
+const BACKEND_DAEMON_DEFAULT_CACHE_MB: usize = 512;
+const BACKEND_DAEMON_DEFAULT_REQUEST_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+const BACKEND_DAEMON_DEFAULT_MAX_JOBS: usize = 8;
 
 #[derive(Debug, Deserialize)]
 struct DaemonJobRequest {
@@ -18,6 +21,7 @@ struct DaemonJobRequest {
     target_triple: Option<String>,
     output: String,
     cache_key: String,
+    function_cache_key: Option<String>,
     ir: SimpleIR,
 }
 
@@ -33,7 +37,24 @@ struct DaemonJobResponse {
     id: String,
     ok: bool,
     cached: bool,
+    cache_tier: Option<String>,
     message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonHealthResponse {
+    protocol_version: u32,
+    pid: u32,
+    uptime_ms: u64,
+    cache_entries: usize,
+    cache_bytes: usize,
+    cache_max_bytes: usize,
+    request_limit_bytes: usize,
+    max_jobs: usize,
+    requests_total: u64,
+    jobs_total: u64,
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +63,16 @@ struct DaemonResponse {
     pong: bool,
     jobs: Vec<DaemonJobResponse>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<DaemonHealthResponse>,
+}
+
+#[derive(Default)]
+struct DaemonStats {
+    requests_total: u64,
+    jobs_total: u64,
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
 struct DaemonCache {
@@ -101,15 +132,67 @@ impl DaemonCache {
 }
 
 fn daemon_cache_limit_bytes() -> usize {
-    let raw = env::var("MOLT_BACKEND_DAEMON_CACHE_MB").unwrap_or_else(|_| "512".to_string());
+    daemon_parse_positive_usize(
+        "MOLT_BACKEND_DAEMON_CACHE_MB",
+        BACKEND_DAEMON_DEFAULT_CACHE_MB,
+    )
+    .saturating_mul(1024 * 1024)
+}
+
+fn daemon_request_limit_bytes() -> usize {
+    daemon_parse_positive_usize(
+        "MOLT_BACKEND_DAEMON_MAX_REQUEST_BYTES",
+        BACKEND_DAEMON_DEFAULT_REQUEST_LIMIT_BYTES,
+    )
+}
+
+fn daemon_max_jobs() -> usize {
+    daemon_parse_positive_usize(
+        "MOLT_BACKEND_DAEMON_MAX_JOBS",
+        BACKEND_DAEMON_DEFAULT_MAX_JOBS,
+    )
+}
+
+fn daemon_parse_positive_usize(var: &str, default: usize) -> usize {
+    let raw = env::var(var).unwrap_or_else(|_| default.to_string());
     match raw.trim().parse::<usize>() {
-        Ok(mb) if mb > 0 => mb.saturating_mul(1024 * 1024),
-        _ => 512 * 1024 * 1024,
+        Ok(value) if value > 0 => value,
+        _ => default,
+    }
+}
+
+fn daemon_health(
+    cache: &DaemonCache,
+    stats: &DaemonStats,
+    start: Instant,
+    request_limit_bytes: usize,
+    max_jobs: usize,
+) -> DaemonHealthResponse {
+    let uptime_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    DaemonHealthResponse {
+        protocol_version: BACKEND_DAEMON_PROTOCOL_VERSION,
+        pid: std::process::id(),
+        uptime_ms,
+        cache_entries: cache.entries.len(),
+        cache_bytes: cache.bytes,
+        cache_max_bytes: cache.max_bytes,
+        request_limit_bytes,
+        max_jobs,
+        requests_total: stats.requests_total,
+        jobs_total: stats.jobs_total,
+        cache_hits: stats.cache_hits,
+        cache_misses: stats.cache_misses,
     }
 }
 
 fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
     let cache_key = job.cache_key.trim().to_string();
+    let function_cache_key = job
+        .function_cache_key
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
     if !cache_key.is_empty()
         && let Some(bytes) = cache.get_cloned(&cache_key)
     {
@@ -119,6 +202,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     id: job.id,
                     ok: true,
                     cached: true,
+                    cache_tier: Some("module".to_string()),
                     message: None,
                 };
             }
@@ -127,6 +211,32 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     id: job.id,
                     ok: false,
                     cached: false,
+                    cache_tier: None,
+                    message: Some(format!("failed to write cached output: {err}")),
+                };
+            }
+        }
+    }
+    if !function_cache_key.is_empty()
+        && function_cache_key != cache_key
+        && let Some(bytes) = cache.get_cloned(&function_cache_key)
+    {
+        match write_output(&job.output, &bytes) {
+            Ok(()) => {
+                return DaemonJobResponse {
+                    id: job.id,
+                    ok: true,
+                    cached: true,
+                    cache_tier: Some("function".to_string()),
+                    message: None,
+                };
+            }
+            Err(err) => {
+                return DaemonJobResponse {
+                    id: job.id,
+                    ok: false,
+                    cached: false,
+                    cache_tier: None,
                     message: Some(format!("failed to write cached output: {err}")),
                 };
             }
@@ -146,18 +256,23 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             id: job.id,
             ok: false,
             cached: false,
+            cache_tier: None,
             message: Some(format!("failed to write compiled output: {err}")),
         };
     }
 
     if !cache_key.is_empty() {
-        cache.insert(cache_key, output_bytes);
+        cache.insert(cache_key.clone(), output_bytes.clone());
+    }
+    if !function_cache_key.is_empty() && function_cache_key != cache_key {
+        cache.insert(function_cache_key, output_bytes.clone());
     }
 
     DaemonJobResponse {
         id: job.id,
         ok: true,
         cached: false,
+        cache_tier: None,
         message: None,
     }
 }
@@ -220,10 +335,21 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
 
     let listener = UnixListener::bind(socket)?;
     let mut cache = DaemonCache::new(daemon_cache_limit_bytes());
+    let mut stats = DaemonStats::default();
+    let request_limit_bytes = daemon_request_limit_bytes();
+    let max_jobs = daemon_max_jobs();
+    let started_at = Instant::now();
     for stream in listener.incoming() {
         match stream {
             Ok(mut conn) => {
-                if let Err(err) = handle_daemon_connection(&mut conn, &mut cache) {
+                if let Err(err) = handle_daemon_connection(
+                    &mut conn,
+                    &mut cache,
+                    &mut stats,
+                    started_at,
+                    request_limit_bytes,
+                    max_jobs,
+                ) {
                     eprintln!("backend daemon connection error: {err}");
                 }
             }
@@ -239,15 +365,49 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
 fn handle_daemon_connection(
     stream: &mut std::os::unix::net::UnixStream,
     cache: &mut DaemonCache,
+    stats: &mut DaemonStats,
+    started_at: Instant,
+    request_limit_bytes: usize,
+    max_jobs: usize,
 ) -> io::Result<()> {
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw)?;
+    let mut raw_bytes = Vec::new();
+    let read_limit = (request_limit_bytes as u64).saturating_add(1);
+    stream.take(read_limit).read_to_end(&mut raw_bytes)?;
+    stats.requests_total = stats.requests_total.saturating_add(1);
+    if raw_bytes.len() > request_limit_bytes {
+        let response = DaemonResponse {
+            ok: false,
+            pong: false,
+            jobs: Vec::new(),
+            error: Some(format!(
+                "request too large: {} bytes (max {request_limit_bytes})",
+                raw_bytes.len()
+            )),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
+        };
+        write_daemon_response(stream, &response)?;
+        return Ok(());
+    }
+    let raw = String::from_utf8_lossy(&raw_bytes);
     if raw.trim().is_empty() {
         let response = DaemonResponse {
             ok: false,
             pong: false,
             jobs: Vec::new(),
             error: Some("empty request".to_string()),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -260,6 +420,13 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some(format!("invalid request JSON: {err}")),
+                health: Some(daemon_health(
+                    cache,
+                    stats,
+                    started_at,
+                    request_limit_bytes,
+                    max_jobs,
+                )),
             };
             write_daemon_response(stream, &response)?;
             return Ok(());
@@ -274,6 +441,13 @@ fn handle_daemon_connection(
             error: Some(format!(
                 "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
             )),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -284,6 +458,13 @@ fn handle_daemon_connection(
             pong: true,
             jobs: Vec::new(),
             error: None,
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -294,13 +475,64 @@ fn handle_daemon_connection(
             pong: false,
             jobs: Vec::new(),
             error: Some("missing jobs in request".to_string()),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
     };
+    if jobs.is_empty() {
+        let response = DaemonResponse {
+            ok: false,
+            pong: false,
+            jobs: Vec::new(),
+            error: Some("empty jobs in request".to_string()),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
+        };
+        write_daemon_response(stream, &response)?;
+        return Ok(());
+    }
+    if jobs.len() > max_jobs {
+        let response = DaemonResponse {
+            ok: false,
+            pong: false,
+            jobs: Vec::new(),
+            error: Some(format!(
+                "too many jobs in request: {} (max {max_jobs})",
+                jobs.len()
+            )),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
+        };
+        write_daemon_response(stream, &response)?;
+        return Ok(());
+    }
+    stats.jobs_total = stats.jobs_total.saturating_add(jobs.len() as u64);
     let mut results = Vec::with_capacity(jobs.len());
     for job in jobs {
-        results.push(compile_single_job(job, cache));
+        let result = compile_single_job(job, cache);
+        if result.ok && result.cached {
+            stats.cache_hits = stats.cache_hits.saturating_add(1);
+        } else {
+            stats.cache_misses = stats.cache_misses.saturating_add(1);
+        }
+        results.push(result);
     }
     let all_ok = results.iter().all(|job| job.ok);
     let response = DaemonResponse {
@@ -308,6 +540,13 @@ fn handle_daemon_connection(
         pong: false,
         jobs: results,
         error: None,
+        health: Some(daemon_health(
+            cache,
+            stats,
+            started_at,
+            request_limit_bytes,
+            max_jobs,
+        )),
     };
     write_daemon_response(stream, &response)?;
     Ok(())

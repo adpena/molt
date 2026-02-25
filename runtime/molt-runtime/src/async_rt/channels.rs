@@ -727,8 +727,9 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
                 } else {
                     #[cfg(target_arch = "wasm32")]
                     {
-                        let _ = crate::molt_db_host_poll();
-                        let _ = crate::molt_process_host_poll();
+                        // SAFETY: these are extern "C" host poll functions; safe to call from unsafe fn context.
+                        let _ = unsafe { crate::molt_db_host_poll() };
+                        let _ = unsafe { crate::molt_process_host_poll() };
                         if let Ok(bytes) = stream.receiver.try_recv() {
                             let ptr = alloc_bytes(_py, &bytes);
                             return if ptr.is_null() {
@@ -922,7 +923,7 @@ extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -
     let rc = unsafe { crate::molt_ws_send_host(handle, data_ptr, len as u64) };
     if rc == 0 {
         0
-    } else if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+    } else if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
         pending_bits_i64()
     } else {
         // Treat send errors as a closed socket for now.
@@ -964,10 +965,10 @@ extern "C" fn ws_recv_host_hook(ctx: *mut u8) -> i64 {
             }
             return MoltObject::from_ptr(ptr).bits() as i64;
         }
-        if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+        if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
             return pending_bits_i64();
         }
-        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+        if rc == -libc::ENOMEM && out_len as usize > buf.len() {
             cap = out_len as usize;
             buf.resize(cap, 0);
             continue;
@@ -2200,44 +2201,46 @@ pub unsafe extern "C" fn molt_ws_connect(
     url_len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
-        if out.is_null() {
-            return 2;
-        }
-        let url_len = usize_from_bits(url_len_bits);
-        if url_ptr.is_null() && url_len != 0 {
-            return 1;
-        }
-        if !has_capability(_py, "websocket.connect") {
-            return 6;
-        }
-        let mut handle: i64 = 0;
-        let rc = unsafe {
-            crate::molt_ws_connect_host(url_ptr as u32, url_len_bits, &mut handle as *mut i64)
-        };
-        if rc != 0 {
-            return rc;
-        }
-        if handle == 0 {
-            return 7;
-        }
-        let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
-        let ws_ptr = molt_ws_new_with_hooks(
-            ws_send_host_hook as usize,
-            ws_recv_host_hook as usize,
-            ws_close_host_hook as usize,
-            ctx_ptr,
-        );
-        if ws_ptr.is_null() {
-            let _ = unsafe { crate::molt_ws_close_host(handle) };
-            unsafe {
-                drop(Box::from_raw(ctx_ptr as *mut i64));
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            if out.is_null() {
+                return 2;
             }
-            return 7;
-        }
-        *out = bits_from_ptr(ws_ptr);
-        0
-    })
+            let url_len = usize_from_bits(url_len_bits);
+            if url_ptr.is_null() && url_len != 0 {
+                return 1;
+            }
+            if !has_capability(_py, "websocket.connect") {
+                return 6;
+            }
+            let mut handle: i64 = 0;
+            let rc = unsafe {
+                crate::molt_ws_connect_host(url_ptr as u32, url_len_bits, &mut handle as *mut i64)
+            };
+            if rc != 0 {
+                return rc;
+            }
+            if handle == 0 {
+                return 7;
+            }
+            let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
+            let ws_ptr = molt_ws_new_with_hooks(
+                ws_send_host_hook as *const () as usize,
+                ws_recv_host_hook as *const () as usize,
+                ws_close_host_hook as *const () as usize,
+                ctx_ptr,
+            );
+            if ws_ptr.is_null() {
+                let _ = unsafe { crate::molt_ws_close_host(handle) };
+                unsafe {
+                    drop(Box::from_raw(ctx_ptr as *mut i64));
+                }
+                return 7;
+            }
+            *out = bits_from_ptr(ws_ptr);
+            0
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2454,6 +2457,8 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `obj_bits` is a valid WebSocket object pointer.
 pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let obj_ptr = ptr_from_bits(obj_bits);
@@ -2562,11 +2567,12 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         if payload_len >= 3 {
             // SAFETY: payload length check guarantees index 2 exists.
             let deadline_obj = obj_from_bits(unsafe { *payload_ptr.add(2) });
-            if let Some(deadline) = to_f64(deadline_obj) {
-                if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
-                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
-                }
+            if let Some(deadline) = to_f64(deadline_obj)
+                && deadline.is_finite()
+                && monotonic_now_secs(_py) >= deadline
+            {
+                runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                return raise_exception::<i64>(_py, "TimeoutError", "timed out");
             }
         }
         pending_bits_i64()
@@ -2626,7 +2632,7 @@ fn db_query_impl(
     };
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) };
+        unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -2664,7 +2670,7 @@ fn db_exec_impl(
     };
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) };
+        unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

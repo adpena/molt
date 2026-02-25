@@ -1527,6 +1527,64 @@ fn path_join_many_text(mut base: String, parts: &[String], sep: char) -> String 
     base
 }
 
+/// Join two raw byte paths using the given separator byte (posixpath-style).
+fn path_join_raw(base: &[u8], part: &[u8], sep: u8) -> Vec<u8> {
+    if part.first() == Some(&sep) {
+        return part.to_vec();
+    }
+    let mut out = base.to_vec();
+    if !out.is_empty() && out.last() != Some(&sep) {
+        out.push(sep);
+    }
+    out.extend_from_slice(part);
+    out
+}
+
+/// Extract raw byte slice from a bytes object bits value.  Returns `None` if not bytes.
+fn bytes_slice_from_bits(bits: u64) -> Option<Vec<u8>> {
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    if unsafe { object_type_id(ptr) } != TYPE_ID_BYTES {
+        return None;
+    }
+    let len = unsafe { bytes_len(ptr) };
+    let data = unsafe { std::slice::from_raw_parts(bytes_data(ptr), len) };
+    Some(data.to_vec())
+}
+
+/// Extract a sequence of raw byte vecs from a tuple/list of bytes objects.
+fn bytes_sequence_from_bits(
+    _py: &PyToken<'_>,
+    bits: u64,
+    label: &str,
+) -> Result<Vec<Vec<u8>>, u64> {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        let msg = format!("{label} must be tuple or list, not NoneType");
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
+        let type_name = class_name_for_error(type_of_bits(_py, bits));
+        let msg = format!("{label} must be tuple or list, not {type_name}");
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    }
+    let elems = unsafe { seq_vec_ref(ptr) };
+    let mut out = Vec::with_capacity(elems.len());
+    for item_bits in elems {
+        match bytes_slice_from_bits(*item_bits) {
+            Some(raw) => out.push(raw),
+            None => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "join: expected bytes for path component",
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {
     let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
@@ -4745,6 +4803,30 @@ pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_join(base_bits: u64, part_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Detect bytes inputs — CPython returns bytes when given bytes.
+        if let Some(base_ptr) = obj_from_bits(base_bits).as_ptr()
+            && unsafe { object_type_id(base_ptr) } == TYPE_ID_BYTES
+        {
+            let base_len = unsafe { bytes_len(base_ptr) };
+            let base_raw = unsafe { std::slice::from_raw_parts(bytes_data(base_ptr), base_len) };
+            let part_raw = match bytes_slice_from_bits(part_bits) {
+                Some(s) => s,
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "join: expected bytes for path component",
+                    );
+                }
+            };
+            let out = path_join_raw(base_raw, &part_raw, b'/');
+            let ptr = alloc_bytes(_py, &out);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
         let sep = path_sep_char();
         let base = match path_string_from_bits(_py, base_bits) {
             Ok(path) => path,
@@ -4767,6 +4849,27 @@ pub extern "C" fn molt_path_join(base_bits: u64, part_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Detect bytes inputs — CPython returns bytes when given bytes.
+        if let Some(base_ptr) = obj_from_bits(base_bits).as_ptr()
+            && unsafe { object_type_id(base_ptr) } == TYPE_ID_BYTES
+        {
+            let base_len = unsafe { bytes_len(base_ptr) };
+            let base_raw = unsafe { std::slice::from_raw_parts(bytes_data(base_ptr), base_len) };
+            let raw_parts = match bytes_sequence_from_bits(_py, parts_bits, "parts") {
+                Ok(parts) => parts,
+                Err(bits) => return bits,
+            };
+            let mut out = base_raw.to_vec();
+            for part in &raw_parts {
+                out = path_join_raw(&out, part, b'/');
+            }
+            let ptr = alloc_bytes(_py, &out);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
         let sep = path_sep_char();
         let base = match path_string_from_bits(_py, base_bits) {
             Ok(path) => path,
@@ -5868,17 +5971,16 @@ pub extern "C" fn molt_glob(
             let root_dir_is_absolute = root_dir
                 .as_ref()
                 .is_some_and(|(path, _)| path_isabs_text(path, sep));
-            if let GlobDirFdArg::Int(fd) = dir_fd {
-                if glob_dir_fd_root_text(fd, bytes_mode).is_none()
-                    && !path_isabs_text(&pathname, sep)
-                    && !root_dir_is_absolute
-                {
-                    return raise_exception::<_>(
-                        _py,
-                        "NotImplementedError",
-                        "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
-                    );
-                }
+            if let GlobDirFdArg::Int(fd) = dir_fd
+                && glob_dir_fd_root_text(fd, bytes_mode).is_none()
+                && !path_isabs_text(&pathname, sep)
+                && !root_dir_is_absolute
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
+                );
             }
         }
 
@@ -5980,11 +6082,11 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = mode;
-            return raise_exception::<_>(
+            raise_exception::<_>(
                 _py,
                 "NotImplementedError",
                 "chmod is unsupported on this platform",
-            );
+            )
         }
     })
 }
@@ -6285,6 +6387,96 @@ pub extern "C" fn molt_sys_getfilesystemencodeerrors() -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_os_open_flags() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let flags: &[i64] = &[
+            libc::O_RDONLY as i64,
+            libc::O_WRONLY as i64,
+            libc::O_RDWR as i64,
+            libc::O_APPEND as i64,
+            libc::O_CREAT as i64,
+            libc::O_TRUNC as i64,
+            libc::O_EXCL as i64,
+            libc::O_NONBLOCK as i64,
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                libc::O_CLOEXEC as i64
+            },
+            #[cfg(target_arch = "wasm32")]
+            {
+                0i64
+            },
+        ];
+        let mut bits = Vec::with_capacity(flags.len());
+        for &f in flags {
+            bits.push(int_bits_from_i64(_py, f));
+        }
+        let ptr = alloc_tuple(_py, &bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be an integer");
+        };
+        let Some(mode) = to_i64(obj_from_bits(mode_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "mode must be an integer");
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "open")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[cfg(unix)]
+            let rc = unsafe {
+                use std::os::unix::ffi::OsStrExt;
+                let c_path = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "embedded null byte in path",
+                        );
+                    }
+                };
+                libc::open(c_path.as_ptr(), flags as libc::c_int, mode as libc::c_uint)
+            };
+            #[cfg(windows)]
+            let rc = unsafe {
+                let wide: Vec<u16> = path
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                libc::_wopen(wide.as_ptr(), flags as libc::c_int, mode as libc::c_int)
+            };
+            #[cfg(not(any(unix, windows)))]
+            let rc = -1i32;
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "open");
+                }
+                return raise_os_error::<u64>(_py, err, "open");
+            }
+            int_bits_from_i64(_py, rc as i64)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -6301,7 +6493,7 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
             if rc < 0 {
                 return raise_os_error_errno::<u64>(_py, (-rc) as i64, "close");
             }
-            return MoltObject::none().bits();
+            MoltObject::none().bits()
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6363,7 +6555,7 @@ pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
         let mut buf = vec![0u8; len as usize];
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "read");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "read")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6419,7 +6611,7 @@ pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
         };
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "write");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "write")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6458,7 +6650,7 @@ pub extern "C" fn molt_os_pipe() -> u64 {
     crate::with_gil_entry!(_py, {
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "pipe");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "pipe")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6525,7 +6717,7 @@ pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "dup");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "dup")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6555,7 +6747,7 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_inheritable");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_inheritable")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -6616,7 +6808,7 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
         let inheritable = is_truthy(_py, obj_from_bits(inheritable_bits));
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "set_inheritable");
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "set_inheritable")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -10063,11 +10255,11 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
                     }
                     #[cfg(not(any(unix, windows)))]
                     {
-                        return raise_exception::<_>(
+                        raise_exception::<_>(
                             _py,
                             "OSError",
                             "fileno is unsupported on this platform",
-                        );
+                        )
                     }
                 }
                 MoltFileBackend::Memory(_) | MoltFileBackend::Text(_) => {

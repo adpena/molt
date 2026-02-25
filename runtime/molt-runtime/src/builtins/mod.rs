@@ -15,6 +15,7 @@ pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
 pub(crate) mod collections_ext;
 pub(crate) mod colorsys;
+pub(crate) mod compression_common;
 pub(crate) mod concurrent;
 pub(crate) mod configparser;
 pub(crate) mod containers;
@@ -23,6 +24,7 @@ pub(crate) mod context;
 pub(crate) mod contextlib;
 pub(crate) mod csv;
 pub(crate) mod datetime;
+pub(crate) mod dbm_dumb;
 pub(crate) mod decimal;
 pub(crate) mod difflib;
 pub(crate) mod enum_ext;
@@ -41,6 +43,10 @@ pub(crate) mod io;
 pub(crate) mod ipaddress;
 pub(crate) mod itertools;
 pub(crate) mod json;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod lzma;
+#[cfg(target_arch = "wasm32")]
+#[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
 pub(crate) mod math;
 pub(crate) mod methods;
@@ -60,6 +66,7 @@ pub(crate) mod ssl;
 pub(crate) mod strings;
 pub(crate) mod structs;
 pub(crate) mod subprocess_ext;
+pub(crate) mod sys_ext;
 pub(crate) mod tarfile;
 pub(crate) mod type_ops;
 pub(crate) mod types;

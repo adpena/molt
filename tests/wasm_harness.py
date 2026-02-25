@@ -4134,35 +4134,117 @@ const exceptionPop = () => {
   activeExceptionStack.pop();
   return boxNone();
 };
-const frameStackPush = (codeBits) => {
-  let line = 0;
+const FILE_NAME_BITS = boxPtr({ type: 'str', value: '__file__' });
+const frameLineFromCode = (codeBits) => {
   const codeObj = getCode(codeBits);
-  if (codeObj) {
-    const rawLine = Number(codeObj.firstlineno);
-    line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+  if (!codeObj) return 0;
+  const rawLine = Number(codeObj.firstlineno);
+  if (!Number.isFinite(rawLine)) return 0;
+  return Math.trunc(rawLine);
+};
+const frameLineFromEntry = (entry) => {
+  const rawLine = Number(entry.line);
+  let line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+  if (!line) {
+    line = frameLineFromCode(entry.codeBits);
   }
-  frameStack.push({ codeBits, line });
+  if (!Number.isFinite(line)) return 0;
+  return Math.trunc(line);
+};
+const frameLastiFromEntry = (entry) => {
+  const rawLasti = Number(entry.lasti);
+  if (!Number.isFinite(rawLasti)) return -1;
+  return Math.trunc(rawLasti);
+};
+const codeIsModule = (codeBits) => {
+  const codeObj = getCode(codeBits);
+  if (!codeObj) return false;
+  const name = getStrObj(codeObj.nameBits);
+  return name === '<module>';
+};
+const frameGlobalsBitsForCode = (codeBits) => {
+  const codeObj = getCode(codeBits);
+  const filename = codeObj ? getStrObj(codeObj.filenameBits) : null;
+  if (filename !== null) {
+    for (const moduleBits of moduleCache.values()) {
+      const moduleObj = getModule(moduleBits);
+      if (!moduleObj) continue;
+      const dict = getDict(moduleObj.dictBits);
+      if (!dict) continue;
+      const fileBits = dictGetValue(dict, FILE_NAME_BITS);
+      if (fileBits === null) continue;
+      const moduleFile = getStrObj(fileBits);
+      if (moduleFile !== null && moduleFile === filename) {
+        return moduleObj.dictBits;
+      }
+    }
+  }
+  const mainBits = moduleCache.get('__main__');
+  if (mainBits !== undefined) {
+    const mainObj = getModule(mainBits);
+    if (mainObj && getDict(mainObj.dictBits)) {
+      return mainObj.dictBits;
+    }
+  }
+  return boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+};
+const frameLocalsBitsForEntry = (entry, globalsBits) => {
+  if (!isNone(entry.localsBits) && getDict(entry.localsBits)) {
+    return entry.localsBits;
+  }
+  if (codeIsModule(entry.codeBits)) {
+    return globalsBits;
+  }
+  return boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+};
+const frameStackPush = (codeBits) => {
+  frameStack.push({
+    codeBits,
+    line: frameLineFromCode(codeBits),
+    lasti: -1,
+    traceEvents: 0,
+    localsBits: boxNone(),
+  });
 };
 const frameStackSetLine = (line) => {
   if (!frameStack.length) return;
-  frameStack[frameStack.length - 1].line = line;
+  const entry = frameStack[frameStack.length - 1];
+  const rawLine = Number(line);
+  entry.line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+  entry.traceEvents = Math.min(entry.traceEvents + 1, Number.MAX_SAFE_INTEGER);
+  entry.lasti = (entry.traceEvents - 1) * 2;
+};
+const frameStackSetLocals = (dictBits) => {
+  if (!frameStack.length) return;
+  const entry = frameStack[frameStack.length - 1];
+  if (!isNone(dictBits) && getDict(dictBits)) {
+    entry.localsBits = dictBits;
+    return;
+  }
+  entry.localsBits = boxNone();
 };
 const frameStackPop = () => {
   if (frameStack.length) {
     frameStack.pop();
   }
 };
-const frameObjectBits = (codeBits, line) => {
-  // TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame fields (f_back, f_globals, f_locals) and keep f_lasti/f_lineno updated.
+const frameObjectBits = (entry, backBits) => {
   if (!memory) return boxNone();
   const classBits = getFrameType();
   const frameBits = allocInstanceForClass(classBits);
   if (isNone(frameBits)) return boxNone();
   const attrs = getInstanceAttrMap(frameBits);
   if (attrs) {
-    attrs.set('f_code', codeBits);
+    const line = frameLineFromEntry(entry);
+    const lasti = frameLastiFromEntry(entry);
+    const globalsBits = frameGlobalsBitsForCode(entry.codeBits);
+    const localsBits = frameLocalsBitsForEntry(entry, globalsBits);
+    attrs.set('f_code', entry.codeBits);
     attrs.set('f_lineno', boxInt(BigInt(line)));
-    attrs.set('f_lasti', boxInt(-1n));
+    attrs.set('f_lasti', boxInt(BigInt(lasti)));
+    attrs.set('f_back', backBits);
+    attrs.set('f_globals', globalsBits);
+    attrs.set('f_locals', localsBits);
   }
   return frameBits;
 };
@@ -4181,23 +4263,24 @@ const tracebackObjectBits = (frameBits, line, nextBits) => {
 };
 const frameStackTraceBits = () => {
   if (!frameStack.length) return null;
-  let nextBits = boxNone();
-  let built = false;
-  for (let idx = frameStack.length - 1; idx >= 0; idx -= 1) {
+  const frames = [];
+  let backBits = boxNone();
+  for (let idx = 0; idx < frameStack.length; idx += 1) {
     const entry = frameStack[idx];
     const codeObj = getCode(entry.codeBits);
     if (!codeObj) continue;
-    let line = entry.line || 0;
-    if (!line) {
-      const rawLine = Number(codeObj.firstlineno);
-      line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
-    }
-    if (!Number.isFinite(line)) {
-      line = 0;
-    }
-    const frameBits = frameObjectBits(entry.codeBits, line);
+    const line = frameLineFromEntry(entry);
+    const frameBits = frameObjectBits(entry, backBits);
     if (isNone(frameBits)) continue;
-    const tbBits = tracebackObjectBits(frameBits, line, nextBits);
+    frames.push({ frameBits, line });
+    backBits = frameBits;
+  }
+  if (!frames.length) return null;
+  let nextBits = boxNone();
+  let built = false;
+  for (let idx = frames.length - 1; idx >= 0; idx -= 1) {
+    const frame = frames[idx];
+    const tbBits = tracebackObjectBits(frame.frameBits, frame.line, nextBits);
     if (isNone(tbBits)) continue;
     nextBits = tbBits;
     built = true;
@@ -12564,9 +12647,13 @@ BASE_IMPORTS = """\
   },
   trace_set_line: (lineBits) => {
     const lineRaw = isIntLike(lineBits) ? Number(unboxIntLike(lineBits)) : 0;
-    const line = Number.isFinite(lineRaw) ? lineRaw : 0;
+    const line = Number.isFinite(lineRaw) ? Math.trunc(lineRaw) : 0;
     frameStackSetLine(line);
     return boxNone();
+  },
+  frame_locals_set: (dictBits) => {
+    frameStackSetLocals(dictBits);
+    return boxBool(true);
   },
   trace_exit: () => {
     frameStackPop();

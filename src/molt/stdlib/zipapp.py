@@ -10,9 +10,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_ZIPAPP_RUNTIME_READY = _require_intrinsic("molt_zipapp_runtime_ready", globals())
 
-# TODO(stdlib, owner:runtime, milestone:TL3, priority:P2, status:planned):
-# Extend `zipapp` coverage to full CPython semantics (interpreter shebangs,
-# custom entry-points, and in-memory target handling) via Rust intrinsics.
+# TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend `zipapp` coverage to full CPython semantics (interpreter shebangs, custom entry-points, and in-memory target handling) via Rust intrinsics.
 
 
 def create_archive(

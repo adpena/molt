@@ -11,9 +11,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_XMLRPC_RUNTIME_READY = _require_intrinsic("molt_xmlrpc_runtime_ready", globals())
 
-# TODO(stdlib, owner:runtime, milestone:TL3, priority:P2, status:planned):
-# Extend XML-RPC coverage to support full marshalling/fault handling and
-# introspection APIs with Rust-backed parsing/serialization.
+# TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend XML-RPC coverage to support full marshalling/fault handling and introspection APIs with Rust-backed parsing/serialization.
 
 
 def _decode_value(payload: str) -> Any:

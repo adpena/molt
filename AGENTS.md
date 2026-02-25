@@ -70,6 +70,7 @@ module path, intrinsic names used, and confirmation that no host-Python fallback
 - Preserve Tier-0 constraints from `docs/spec/areas/core/0000-vision.md`: no `eval`/`exec`, no implicit dynamic module execution expansion, no reflection-heavy fallback lanes in compiled binaries.
 - Preserve `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`: breaking maximal Python dynamism is intentional. Do not reintroduce dynamism that undermines AOT size/perf/determinism.
 - Any proposal to widen compile/exec/eval or unrestricted source-execution behavior requires explicit performance evidence, spec updates, and user approval before implementation.
+- Treat dynamic execution (`eval`/`exec`/unrestricted code-object execution), runtime monkeypatching, and unrestricted reflection as policy-deferred work, not active burndown targets, unless the user explicitly re-prioritizes them.
 
 ## Rules Of Thumb For New Work (Non-Negotiable)
 - Add or extend a runtime/compiler primitive when the behavior is a reusable low-level hot semantic.
@@ -213,6 +214,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
+- `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
 - `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.
 - `python3 tools/gen_stdlib_module_union.py`: regenerate the stdlib module union list used by stub syncing and checks.
 - `python3 tools/gen_compat_platform_availability.py --write`: regenerate CPython 3.12/3.13/3.14 stdlib Availability matrix at `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`.
@@ -423,8 +425,8 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - `TODO(area, owner:<team>, milestone:<tag>, priority:<P0-3>, status:<missing|partial|planned|divergent>): <action>`
 
 **Required fields**
-- `area`: short, stable domain (`type-coverage`, `stdlib-compat`, `frontend`, `compiler`, `runtime`, `opcode-matrix`, `semantics`, `syntax`, `async-runtime`, `introspection`, `import-system`, `runtime-provenance`, `tooling`, `perf`, `wasm-parity`, `wasm-db-parity`, `wasm-link`, `wasm-host`, `db`, `offload`, `http-runtime`, `observability`, `dataframe`, `tests`, `docs`, `security`, `packaging`, `c-api`).
-- `owner`: `runtime`, `frontend`, `compiler`, `stdlib`, `tooling`, `release`, `docs`, or `security`.
+- `area`: short, stable domain (`type-coverage`, `stdlib-compat`, `stdlib-parity`, `frontend`, `compiler`, `runtime`, `opcode-matrix`, `semantics`, `syntax`, `async-runtime`, `introspection`, `import-system`, `runtime-provenance`, `tooling`, `perf`, `wasm-parity`, `wasm-db-parity`, `wasm-link`, `wasm-host`, `db`, `offload`, `http-runtime`, `observability`, `dataframe`, `tests`, `docs`, `security`, `packaging`, `c-api`).
+- `owner`: `runtime`, `frontend`, `compiler`, `stdlib`, `tooling`, `release`, `docs`, `security`, or `tests`.
 - `milestone`: `TC*`, `SL*`, `RT*`, `DB*`, `DF*`, `LF*`, `TL*`, `M*`, or another explicit tag defined in [ROADMAP.md](ROADMAP.md).
 - `priority`: `P0` (blocker) to `P3` (low).
 - `status`: `missing`, `partial`, `planned`, or `divergent`.

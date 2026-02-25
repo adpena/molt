@@ -266,13 +266,38 @@ def test_resolve_output_path_uses_out_dir(tmp_path: Path) -> None:
     assert resolved == out_dir / "obj"
 
 
+def test_default_molt_home_uses_cache_root_when_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_root = tmp_path / "cache_root"
+    monkeypatch.delenv("MOLT_HOME", raising=False)
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    assert cli._default_molt_home() == cache_root / "home"
+
+
+def test_default_molt_home_prefers_explicit_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_root = tmp_path / "cache_root"
+    explicit_home = tmp_path / "custom_home"
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("MOLT_HOME", str(explicit_home))
+    assert cli._default_molt_home() == explicit_home
+
+
 def test_cli_doctor_json() -> None:
     res = _run_cli(["doctor", "--json"])
     assert res.returncode == 0
     payload = json.loads(res.stdout)
     assert payload["schema_version"]
     assert payload["status"] in {"ok", "error"}
-    assert isinstance(payload["data"].get("checks"), list)
+    checks = payload["data"].get("checks")
+    assert isinstance(checks, list)
+    names = {entry.get("name") for entry in checks if isinstance(entry, dict)}
+    assert "sccache" in names
+    assert "backend-daemon" in names
+    assert "cargo-target-dir" in names
+    assert "molt-cache-dir" in names
 
 
 def test_cli_run_json(tmp_path: Path) -> None:
@@ -283,6 +308,28 @@ def test_cli_run_json(tmp_path: Path) -> None:
     payload = json.loads(res.stdout)
     assert payload["data"]["returncode"] == 0
     assert "ok" in payload["data"].get("stdout", "")
+
+
+def test_cli_parity_run_json(tmp_path: Path) -> None:
+    script = tmp_path / "hello.py"
+    script.write_text("print('ok')\n")
+    res = _run_cli(["parity-run", "--json", str(script)])
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "parity-run"
+    assert payload["data"]["returncode"] == 0
+    assert "ok" in payload["data"].get("stdout", "")
+
+
+def test_cli_parity_run_timing_json(tmp_path: Path) -> None:
+    script = tmp_path / "hello.py"
+    script.write_text("print('ok')\n")
+    res = _run_cli(["parity-run", "--timing", "--json", str(script)])
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "parity-run"
+    assert payload["data"]["returncode"] == 0
+    assert payload["data"]["timing"]["cpython_run_s"] >= 0
 
 
 @pytest.mark.parametrize(
@@ -1103,6 +1150,7 @@ def test_cli_completion_includes_build_flags() -> None:
     assert res.returncode == 0
     payload = json.loads(res.stdout)
     script = payload["data"]["script"]
+    assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script
     assert "--trusted" in script

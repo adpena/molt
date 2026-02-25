@@ -4,13 +4,12 @@ use crate::builtins::numbers::{index_bigint_from_obj, index_i64_from_obj, int_bi
 use crate::object::ops::{format_obj, type_name};
 use crate::{
     MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    alloc_list, alloc_tuple, bytes_like_slice,
-    attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits,
-    bigint_ref, bigint_to_inline, call_callable0, call_callable2, class_name_for_error, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, exception_pending, inc_ref_bits, intern_static_name, is_truthy, maybe_ptr_from_bits,
-    molt_iter, molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id,
-    raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64,
-    type_of_bits,
+    alloc_list, alloc_tuple, attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc,
+    bigint_ptr_from_bits, bigint_ref, bigint_to_inline, bytes_like_slice, call_callable0,
+    call_callable2, class_name_for_error, dec_ref_bits, dict_get_in_place, dict_set_in_place,
+    exception_pending, inc_ref_bits, intern_static_name, is_truthy, maybe_ptr_from_bits, molt_iter,
+    molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id, raise_exception,
+    raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64, type_of_bits,
 };
 use digest::Digest;
 use num_bigint::{BigInt, BigUint};
@@ -2917,6 +2916,13 @@ const STATISTICS_RANDOM_MATRIX_A: u32 = 0x9908_B0DF;
 const STATISTICS_RANDOM_UPPER_MASK: u32 = 0x8000_0000;
 const STATISTICS_RANDOM_LOWER_MASK: u32 = 0x7FFF_FFFF;
 const STATISTICS_RANDOM_RECIP_BPF: f64 = 1.0 / 9_007_199_254_740_992.0;
+const STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER: &[u8] = b"__statistics_inv_cdf_mode__";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum StatisticsNormalDistSamplesMode {
+    Gauss,
+    InvCdf,
+}
 
 #[derive(Clone)]
 struct StatisticsRandomRng {
@@ -2957,8 +2963,7 @@ impl StatisticsRandomRng {
 
         for _ in 0..k {
             let prev = self.mt[i - 1];
-            let mixed =
-                self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_664_525));
+            let mixed = self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_664_525));
             self.mt[i] = mixed.wrapping_add(init_key[j]).wrapping_add(j as u32);
 
             i += 1;
@@ -2974,8 +2979,7 @@ impl StatisticsRandomRng {
 
         for _ in 0..(STATISTICS_RANDOM_N - 1) {
             let prev = self.mt[i - 1];
-            let mixed =
-                self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_566_083_941));
+            let mixed = self.mt[i] ^ ((prev ^ (prev >> 30)).wrapping_mul(1_566_083_941));
             self.mt[i] = mixed.wrapping_sub(i as u32);
             i += 1;
             if i >= STATISTICS_RANDOM_N {
@@ -3102,7 +3106,10 @@ fn statistics_seed_bigint(_py: &PyToken<'_>, seed_bits: u64) -> Option<BigInt> {
 }
 
 fn statistics_seed_key(seed: &BigInt) -> Vec<u32> {
-    let mut key = seed.abs().to_biguint().map_or_else(Vec::new, |v| v.to_u32_digits());
+    let mut key = seed
+        .abs()
+        .to_biguint()
+        .map_or_else(Vec::new, |v| v.to_u32_digits());
     if key.is_empty() {
         key.push(0);
     }
@@ -3126,6 +3133,48 @@ fn statistics_normal_dist_sample_count(_py: &PyToken<'_>, n_bits: u64) -> Option
     )
 }
 
+fn statistics_normal_dist_samples_mode(
+    _py: &PyToken<'_>,
+    seed_bits: u64,
+) -> Option<(StatisticsNormalDistSamplesMode, u64)> {
+    let seed_obj = obj_from_bits(seed_bits);
+    let Some(seed_ptr) = seed_obj.as_ptr() else {
+        return Some((StatisticsNormalDistSamplesMode::Gauss, seed_bits));
+    };
+    let pair = unsafe {
+        if object_type_id(seed_ptr) != TYPE_ID_TUPLE {
+            None
+        } else {
+            let elems = seq_vec_ref(seed_ptr);
+            if elems.len() == 2 {
+                Some((elems[0], elems[1]))
+            } else {
+                None
+            }
+        }
+    };
+    let Some((marker_bits, inner_seed_bits)) = pair else {
+        return Some((StatisticsNormalDistSamplesMode::Gauss, seed_bits));
+    };
+    let marker_obj = obj_from_bits(marker_bits);
+    let Some(marker_ptr) = marker_obj.as_ptr() else {
+        return Some((StatisticsNormalDistSamplesMode::Gauss, seed_bits));
+    };
+    let is_inv_cdf_mode = unsafe {
+        if object_type_id(marker_ptr) != TYPE_ID_STRING {
+            false
+        } else {
+            let marker_bytes =
+                std::slice::from_raw_parts(string_bytes(marker_ptr), string_len(marker_ptr));
+            marker_bytes == STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER
+        }
+    };
+    if !is_inv_cdf_mode {
+        return Some((StatisticsNormalDistSamplesMode::Gauss, seed_bits));
+    }
+    Some((StatisticsNormalDistSamplesMode::InvCdf, inner_seed_bits))
+}
+
 fn statistics_normal_dist_samples_value(
     _py: &PyToken<'_>,
     mu_bits: u64,
@@ -3135,43 +3184,87 @@ fn statistics_normal_dist_samples_value(
     random_fn_bits: u64,
 ) -> Option<u64> {
     let (mu, sigma) = statistics_normal_dist_params(_py, mu_bits, sigma_bits)?;
+    let (mode, effective_seed_bits) = statistics_normal_dist_samples_mode(_py, seed_bits)?;
     let count = statistics_normal_dist_sample_count(_py, n_bits)?;
     let mut out_bits: Vec<u64> = Vec::with_capacity(count);
-    let mu_arg_bits = MoltObject::from_float(mu).bits();
-    let sigma_arg_bits = MoltObject::from_float(sigma).bits();
+    let gauss_mu_bits = MoltObject::from_float(mu).bits();
+    let gauss_sigma_bits = MoltObject::from_float(sigma).bits();
 
-    let mut seeded_rng = if obj_from_bits(seed_bits).is_none() {
+    let mut seeded_rng = if obj_from_bits(effective_seed_bits).is_none() {
         None
     } else {
-        let seed_big = statistics_seed_bigint(_py, seed_bits)?;
-        Some(StatisticsRandomRng::from_seed_key(&statistics_seed_key(&seed_big)))
+        let seed_big = statistics_seed_bigint(_py, effective_seed_bits)?;
+        Some(StatisticsRandomRng::from_seed_key(&statistics_seed_key(
+            &seed_big,
+        )))
     };
 
     for _ in 0..count {
-        let sample = if let Some(rng) = seeded_rng.as_mut() {
-            rng.gauss(mu, sigma)
-        } else {
-            let sample_bits = unsafe { call_callable2(_py, random_fn_bits, mu_arg_bits, sigma_arg_bits) };
-            if exception_pending(_py) {
-                return None;
-            }
-            let sample_obj = obj_from_bits(sample_bits);
-            let Some(sample_real) = coerce_real_named(_py, sample_bits, "sample") else {
-                if sample_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, sample_bits);
+        let sample = match mode {
+            StatisticsNormalDistSamplesMode::Gauss => {
+                if let Some(rng) = seeded_rng.as_mut() {
+                    rng.gauss(mu, sigma)
+                } else {
+                    let sample_bits = unsafe {
+                        call_callable2(_py, random_fn_bits, gauss_mu_bits, gauss_sigma_bits)
+                    };
+                    if exception_pending(_py) {
+                        return None;
+                    }
+                    let sample_obj = obj_from_bits(sample_bits);
+                    let Some(sample_real) = coerce_real_named(_py, sample_bits, "sample") else {
+                        if sample_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, sample_bits);
+                        }
+                        return None;
+                    };
+                    let Some(sample_float) = coerce_to_f64(_py, sample_real) else {
+                        if sample_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, sample_bits);
+                        }
+                        return None;
+                    };
+                    if sample_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, sample_bits);
+                    }
+                    sample_float
                 }
-                return None;
-            };
-            let Some(sample_float) = coerce_to_f64(_py, sample_real) else {
-                if sample_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, sample_bits);
-                }
-                return None;
-            };
-            if sample_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, sample_bits);
             }
-            sample_float
+            StatisticsNormalDistSamplesMode::InvCdf => {
+                let probability = if let Some(rng) = seeded_rng.as_mut() {
+                    rng.random()
+                } else {
+                    let p_bits = unsafe { call_callable0(_py, random_fn_bits) };
+                    if exception_pending(_py) {
+                        return None;
+                    }
+                    let p_obj = obj_from_bits(p_bits);
+                    let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
+                        if p_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, p_bits);
+                        }
+                        return None;
+                    };
+                    let Some(p_float) = coerce_to_f64(_py, p_real) else {
+                        if p_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, p_bits);
+                        }
+                        return None;
+                    };
+                    if p_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, p_bits);
+                    }
+                    p_float
+                };
+                if probability <= 0.0 || probability >= 1.0 {
+                    return raise_exception::<Option<u64>>(
+                        _py,
+                        "ValueError",
+                        "inv_cdf undefined for these parameters",
+                    );
+                }
+                statistics_normal_dist_inv_cdf_raw(probability, mu, sigma)
+            }
         };
         out_bits.push(MoltObject::from_float(sample).bits());
     }

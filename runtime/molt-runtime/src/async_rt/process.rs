@@ -304,15 +304,15 @@ fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<St
                     dec_ref_bits(_py, res_bits);
                     return Ok(text);
                 }
-                if let Some(res_ptr) = res_obj.as_ptr() {
-                    if object_type_id(res_ptr) == TYPE_ID_BYTES {
-                        let len = bytes_len(res_ptr);
-                        let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                        let text = std::str::from_utf8(bytes)
-                            .map_err(|_| format!("{label} bytes must be utf-8"))?;
-                        dec_ref_bits(_py, res_bits);
-                        return Ok(text.to_string());
-                    }
+                if let Some(res_ptr) = res_obj.as_ptr()
+                    && object_type_id(res_ptr) == TYPE_ID_BYTES
+                {
+                    let len = bytes_len(res_ptr);
+                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
+                    let text = std::str::from_utf8(bytes)
+                        .map_err(|_| format!("{label} bytes must be utf-8"))?;
+                    dec_ref_bits(_py, res_bits);
+                    return Ok(text.to_string());
                 }
                 dec_ref_bits(_py, res_bits);
             }
@@ -343,6 +343,7 @@ fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(clippy::type_complexity)]
 fn env_from_bits_wasm(
     _py: &PyToken<'_>,
     env_bits: u64,
@@ -882,6 +883,398 @@ pub unsafe extern "C" fn molt_process_spawn(
 
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
+/// All arguments must be valid runtime-encoded objects.
+/// `start_new_session_bits` should be a bool (truthy → setsid).
+/// `process_group_bits` should be int or None (None → ignore, int → setpgid(0, pgid)).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_process_spawn_ex(
+    args_bits: u64,
+    env_bits: u64,
+    cwd_bits: u64,
+    stdin_bits: u64,
+    stdout_bits: u64,
+    stderr_bits: u64,
+    start_new_session_bits: u64,
+    process_group_bits: u64,
+) -> u64 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            ignore_sigpipe();
+            if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
+                return MoltObject::none().bits();
+            }
+            let args = match argv_from_bits(_py, args_bits) {
+                Ok(val) => val,
+                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            };
+            if args.is_empty() {
+                return raise_exception::<_>(_py, "ValueError", "args must not be empty");
+            }
+            if trace_process_spawn() {
+                let head = args
+                    .iter()
+                    .take(3)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                eprintln!("molt_process_spawn_ex args_head={head:?}");
+            }
+            let mut cmd = std::process::Command::new(&args[0]);
+            if args.len() > 1 {
+                cmd.args(&args[1..]);
+            }
+            let mut env_entries = match env_from_bits(_py, env_bits) {
+                Ok(val) => val,
+                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            };
+            let mut overlay_env = false;
+            if let Some(entries) = env_entries.as_mut() {
+                entries.retain(|(key, value)| {
+                    if key == "MOLT_ENV_OVERLAY" && value == "1" {
+                        overlay_env = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            if let Some(env_entries) = env_entries {
+                if !overlay_env {
+                    cmd.env_clear();
+                }
+                for (key, value) in env_entries {
+                    cmd.env(key, value);
+                }
+            }
+            if !obj_from_bits(cwd_bits).is_none() {
+                let cwd = match path_from_bits(_py, cwd_bits) {
+                    Ok(path) => path,
+                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                };
+                cmd.current_dir(cwd);
+            }
+            let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
+            let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
+            let stderr_mode = process_stdio_mode(_py, stderr_bits, "stderr");
+
+            // Apply start_new_session and process_group via pre_exec on Unix.
+            let new_session = is_truthy(_py, obj_from_bits(start_new_session_bits));
+            let pg_obj = obj_from_bits(process_group_bits);
+            let process_group_val: Option<i64> = if pg_obj.is_none() {
+                None
+            } else {
+                match to_i64(pg_obj) {
+                    Some(v) => Some(v),
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "process_group must be an integer or None",
+                        );
+                    }
+                }
+            };
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                if new_session || process_group_val.is_some() {
+                    let pgid = process_group_val;
+                    let do_setsid = new_session;
+                    cmd.pre_exec(move || {
+                        if do_setsid && libc::setsid() < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        if let Some(pg) = pgid
+                            && libc::setpgid(0, pg as libc::pid_t) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+
+            let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
+                molt_stream_new(0)
+            } else {
+                0
+            };
+            let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
+                molt_stream_new(0)
+            } else {
+                0
+            };
+            let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
+                molt_stream_new(0)
+            } else {
+                0
+            };
+            if stderr_mode == PROCESS_STDIO_STDOUT {
+                stderr_stream = 0;
+            }
+
+            let mut merged_stdout_reader = None;
+
+            match stdin_mode {
+                PROCESS_STDIO_PIPE => {
+                    cmd.stdin(Stdio::piped());
+                }
+                PROCESS_STDIO_DEVNULL => {
+                    cmd.stdin(Stdio::null());
+                }
+                val if val >= PROCESS_STDIO_FD_BASE => {
+                    let fd = val - PROCESS_STDIO_FD_BASE;
+                    let Some(stdio) = stdio_from_fd(fd) else {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid stdin file descriptor",
+                        );
+                    };
+                    cmd.stdin(stdio);
+                }
+                _ => {
+                    cmd.stdin(Stdio::inherit());
+                }
+            };
+
+            if stderr_mode == PROCESS_STDIO_STDOUT {
+                if stdout_mode == PROCESS_STDIO_PIPE {
+                    let (reader, writer) = match os_pipe::pipe() {
+                        Ok(val) => val,
+                        Err(err) => {
+                            if stdin_stream != 0 {
+                                molt_stream_drop(stdin_stream);
+                            }
+                            if stdout_stream != 0 {
+                                molt_stream_drop(stdout_stream);
+                            }
+                            if stderr_stream != 0 {
+                                molt_stream_drop(stderr_stream);
+                            }
+                            return raise_os_error::<u64>(_py, err, "pipe");
+                        }
+                    };
+                    let writer_err = match writer.try_clone() {
+                        Ok(val) => val,
+                        Err(err) => {
+                            if stdin_stream != 0 {
+                                molt_stream_drop(stdin_stream);
+                            }
+                            if stdout_stream != 0 {
+                                molt_stream_drop(stdout_stream);
+                            }
+                            if stderr_stream != 0 {
+                                molt_stream_drop(stderr_stream);
+                            }
+                            return raise_os_error::<u64>(_py, err, "pipe");
+                        }
+                    };
+                    cmd.stdout(writer);
+                    cmd.stderr(writer_err);
+                    merged_stdout_reader = Some(reader);
+                } else if stdout_mode == PROCESS_STDIO_DEVNULL {
+                    cmd.stdout(Stdio::null());
+                    cmd.stderr(Stdio::null());
+                } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
+                    let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
+                    let Some(stdout_stdio) = stdio_from_fd(fd) else {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid stdout file descriptor",
+                        );
+                    };
+                    let Some(stderr_stdio) = stdio_from_fd(fd) else {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid stderr file descriptor",
+                        );
+                    };
+                    cmd.stdout(stdout_stdio);
+                    cmd.stderr(stderr_stdio);
+                } else {
+                    cmd.stdout(Stdio::inherit());
+                    cmd.stderr(Stdio::inherit());
+                }
+            } else {
+                match stdout_mode {
+                    PROCESS_STDIO_PIPE => {
+                        cmd.stdout(Stdio::piped());
+                    }
+                    PROCESS_STDIO_DEVNULL => {
+                        cmd.stdout(Stdio::null());
+                    }
+                    val if val >= PROCESS_STDIO_FD_BASE => {
+                        let fd = val - PROCESS_STDIO_FD_BASE;
+                        let Some(stdio) = stdio_from_fd(fd) else {
+                            if stdin_stream != 0 {
+                                molt_stream_drop(stdin_stream);
+                            }
+                            if stdout_stream != 0 {
+                                molt_stream_drop(stdout_stream);
+                            }
+                            if stderr_stream != 0 {
+                                molt_stream_drop(stderr_stream);
+                            }
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "invalid stdout file descriptor",
+                            );
+                        };
+                        cmd.stdout(stdio);
+                    }
+                    _ => {
+                        cmd.stdout(Stdio::inherit());
+                    }
+                };
+                match stderr_mode {
+                    PROCESS_STDIO_PIPE => {
+                        cmd.stderr(Stdio::piped());
+                    }
+                    PROCESS_STDIO_DEVNULL => {
+                        cmd.stderr(Stdio::null());
+                    }
+                    val if val >= PROCESS_STDIO_FD_BASE => {
+                        let fd = val - PROCESS_STDIO_FD_BASE;
+                        let Some(stdio) = stdio_from_fd(fd) else {
+                            if stdin_stream != 0 {
+                                molt_stream_drop(stdin_stream);
+                            }
+                            if stdout_stream != 0 {
+                                molt_stream_drop(stdout_stream);
+                            }
+                            if stderr_stream != 0 {
+                                molt_stream_drop(stderr_stream);
+                            }
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "invalid stderr file descriptor",
+                            );
+                        };
+                        cmd.stderr(stdio);
+                    }
+                    _ => {
+                        cmd.stderr(Stdio::inherit());
+                    }
+                };
+            }
+
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    if stdin_stream != 0 {
+                        molt_stream_drop(stdin_stream);
+                    }
+                    if stdout_stream != 0 {
+                        molt_stream_drop(stdout_stream);
+                    }
+                    if stderr_stream != 0 {
+                        molt_stream_drop(stderr_stream);
+                    }
+                    return raise_os_error::<u64>(_py, err, "spawn");
+                }
+            };
+
+            if stdin_stream != 0
+                && let Some(stdin) = child.stdin.take()
+            {
+                spawn_process_writer(stdin, stdin_stream);
+            }
+            if stdout_stream != 0 {
+                if let Some(reader) = merged_stdout_reader.take() {
+                    spawn_process_reader(reader, stdout_stream);
+                } else if let Some(stdout) = child.stdout.take() {
+                    spawn_process_reader(stdout, stdout_stream);
+                }
+            }
+            if stderr_stream != 0
+                && let Some(stderr) = child.stderr.take()
+            {
+                spawn_process_reader(stderr, stderr_stream);
+            }
+
+            let pid = child.id();
+            let state = Arc::new(ProcessState {
+                child: Mutex::new(child),
+                pid,
+                exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+                wait_future: Mutex::new(None),
+                stdin_stream,
+                stdout_stream,
+                stderr_stream,
+                wait_lock: Mutex::new(()),
+                condvar: Condvar::new(),
+            });
+            let worker_state = Arc::clone(&state);
+            thread::spawn(move || process_wait_worker(worker_state));
+            let handle = Box::new(MoltProcessHandle { state });
+            bits_from_ptr(Box::into_raw(handle) as *mut u8)
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+/// # Safety
+/// All arguments must be valid runtime-encoded objects.
+/// WASM target ignores start_new_session and process_group (no Unix process model).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_process_spawn_ex(
+    args_bits: u64,
+    env_bits: u64,
+    cwd_bits: u64,
+    stdin_bits: u64,
+    stdout_bits: u64,
+    stderr_bits: u64,
+    _start_new_session_bits: u64,
+    _process_group_bits: u64,
+) -> u64 {
+    // On WASM, start_new_session and process_group are not applicable.
+    // Delegate to the base spawn implementation.
+    unsafe {
+        molt_process_spawn(
+            args_bits,
+            env_bits,
+            cwd_bits,
+            stdin_bits,
+            stdout_bits,
+            stderr_bits,
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
@@ -954,7 +1347,7 @@ extern "C" fn process_stdin_send_host_hook(ctx: *mut u8, data_ptr: *const u8, le
     let rc = unsafe { crate::molt_process_write_host(handle, data_ptr, len as u64) };
     if rc == 0 {
         0
-    } else if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+    } else if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
         pending_bits_i64()
     } else {
         MoltObject::none().bits() as i64
@@ -1081,8 +1474,8 @@ pub unsafe extern "C" fn molt_process_spawn(
         let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
             let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
             let stream_ptr = molt_stream_new_with_hooks(
-                process_stdin_send_host_hook as usize,
-                process_stdin_close_host_hook as usize,
+                process_stdin_send_host_hook as *const () as usize,
+                process_stdin_close_host_hook as *const () as usize,
                 ctx_ptr,
             );
             if stream_ptr.is_null() {
@@ -1163,34 +1556,36 @@ pub unsafe extern "C" fn molt_process_spawn(
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        let state = Arc::clone(&handle.state);
-        if let Some(existing) = *state.wait_future.lock().unwrap() {
-            let bits = MoltObject::from_ptr(existing.0).bits();
-            inc_ref_bits(_py, bits);
-            return bits;
-        }
-        let future_bits = molt_future_new(process_poll_fn_addr(), 0);
-        let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
-            return MoltObject::none().bits();
-        };
-        let task_state = Arc::new(ProcessTaskState {
-            process: state,
-            cancelled: AtomicBool::new(false),
-        });
-        runtime_state(_py)
-            .process_tasks
-            .lock()
-            .unwrap()
-            .insert(PtrSlot(future_ptr), Arc::clone(&task_state));
-        *task_state.process.wait_future.lock().unwrap() = Some(PtrSlot(future_ptr));
-        future_bits
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            let state = Arc::clone(&handle.state);
+            if let Some(existing) = *state.wait_future.lock().unwrap() {
+                let bits = MoltObject::from_ptr(existing.0).bits();
+                inc_ref_bits(_py, bits);
+                return bits;
+            }
+            let future_bits = molt_future_new(process_poll_fn_addr(), 0);
+            let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
+                return MoltObject::none().bits();
+            };
+            let task_state = Arc::new(ProcessTaskState {
+                process: state,
+                cancelled: AtomicBool::new(false),
+            });
+            runtime_state(_py)
+                .process_tasks
+                .lock()
+                .unwrap()
+                .insert(PtrSlot(future_ptr), Arc::clone(&task_state));
+            *task_state.process.wait_future.lock().unwrap() = Some(PtrSlot(future_ptr));
+            future_bits
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1226,7 +1621,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
                 .store(out_code, AtomicOrdering::Release);
             return MoltObject::from_int(out_code as i64).bits() as i64;
         }
-        if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+        if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
             return pending_bits_i64();
         }
         raise_exception::<i64>(_py, "RuntimeError", "process wait failed")
@@ -1255,14 +1650,16 @@ pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::from_int(0).bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        MoltObject::from_int(handle.state.handle as i64).bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::from_int(0).bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            MoltObject::from_int(handle.state.handle as i64).bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1292,19 +1689,21 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        let code = handle.state.exit_code.load(AtomicOrdering::Acquire);
-        if code == PROCESS_EXIT_PENDING {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_int(code as i64).bits()
-        }
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            let code = handle.state.exit_code.load(AtomicOrdering::Acquire);
+            if code == PROCESS_EXIT_PENDING {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_int(code as i64).bits()
+            }
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1336,21 +1735,23 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
-            return MoltObject::none().bits();
-        }
-        let rc = unsafe { crate::molt_process_kill_host(handle.state.handle) };
-        if rc != 0 {
-            return raise_exception::<_>(_py, "OSError", "process kill failed");
-        }
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+                return MoltObject::none().bits();
+            }
+            let rc = unsafe { crate::molt_process_kill_host(handle.state.handle) };
+            if rc != 0 {
+                return raise_exception::<_>(_py, "OSError", "process kill failed");
+            }
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1398,21 +1799,23 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
-            return MoltObject::none().bits();
-        }
-        let rc = unsafe { crate::molt_process_terminate_host(handle.state.handle) };
-        if rc != 0 {
-            return raise_exception::<_>(_py, "OSError", "process terminate failed");
-        }
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+                return MoltObject::none().bits();
+            }
+            let rc = unsafe { crate::molt_process_terminate_host(handle.state.handle) };
+            if rc != 0 {
+                return raise_exception::<_>(_py, "OSError", "process terminate failed");
+            }
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1440,17 +1843,19 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle.state.stdin_stream == 0 {
-            return MoltObject::none().bits();
-        }
-        molt_stream_clone(handle.state.stdin_stream)
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle.state.stdin_stream == 0 {
+                return MoltObject::none().bits();
+            }
+            molt_stream_clone(handle.state.stdin_stream)
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1478,17 +1883,19 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle.state.stdout_stream == 0 {
-            return MoltObject::none().bits();
-        }
-        molt_stream_clone(handle.state.stdout_stream)
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle.state.stdout_stream == 0 {
+                return MoltObject::none().bits();
+            }
+            molt_stream_clone(handle.state.stdout_stream)
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1516,17 +1923,19 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle.state.stderr_stream == 0 {
-            return MoltObject::none().bits();
-        }
-        molt_stream_clone(handle.state.stderr_stream)
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle.state.stderr_stream == 0 {
+                return MoltObject::none().bits();
+            }
+            molt_stream_clone(handle.state.stderr_stream)
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1551,19 +1960,21 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
 /// `proc_bits` must reference a live process handle from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
-    crate::with_gil_entry!(_py, {
-        let proc_ptr = ptr_from_bits(proc_bits);
-        if proc_ptr.is_null() {
-            return;
-        }
-        let handle = &*(proc_ptr as *mut MoltProcessHandle);
-        wasm_process_handles()
-            .lock()
-            .unwrap()
-            .remove(&handle.state.handle);
-        release_ptr(proc_ptr);
-        drop(Box::from_raw(proc_ptr as *mut MoltProcessHandle));
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let proc_ptr = ptr_from_bits(proc_bits);
+            if proc_ptr.is_null() {
+                return;
+            }
+            let handle = &*(proc_ptr as *mut MoltProcessHandle);
+            wasm_process_handles()
+                .lock()
+                .unwrap()
+                .remove(&handle.state.handle);
+            release_ptr(proc_ptr);
+            drop(Box::from_raw(proc_ptr as *mut MoltProcessHandle));
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1571,30 +1982,32 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
 /// `handle` must be a valid wasm process handle owned by this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
-    crate::with_gil_entry!(_py, {
-        let entry = wasm_process_handles().lock().unwrap().get(&handle).cloned();
-        let Some(slot) = entry else {
-            return;
-        };
-        let proc_ptr = slot.0;
-        if proc_ptr.is_null() {
-            return;
-        }
-        let handle_obj = &*(proc_ptr as *mut MoltProcessHandle);
-        if handle_obj.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
-            return;
-        }
-        handle_obj
-            .state
-            .exit_code
-            .store(exit_code, AtomicOrdering::Release);
-        if let Some(future) = handle_obj.state.wait_future.lock().unwrap().take() {
-            let waiters = await_waiters_take(_py, future.0);
-            for waiter in waiters {
-                wake_task_ptr(_py, waiter.0);
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let entry = wasm_process_handles().lock().unwrap().get(&handle).cloned();
+            let Some(slot) = entry else {
+                return;
+            };
+            let proc_ptr = slot.0;
+            if proc_ptr.is_null() {
+                return;
             }
-        }
-    })
+            let handle_obj = &*(proc_ptr as *mut MoltProcessHandle);
+            if handle_obj.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+                return;
+            }
+            handle_obj
+                .state
+                .exit_code
+                .store(exit_code, AtomicOrdering::Release);
+            if let Some(future) = handle_obj.state.wait_future.lock().unwrap().take() {
+                let waiters = await_waiters_take(_py, future.0);
+                for waiter in waiters {
+                    wake_task_ptr(_py, waiter.0);
+                }
+            }
+        })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

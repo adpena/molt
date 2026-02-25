@@ -1,11 +1,13 @@
 import argparse
 import ast
 import base64
+import contextlib
 from concurrent.futures import ProcessPoolExecutor
 import errno
 import datetime as dt
 import hashlib
 import http.client
+import io
 import tempfile
 import json
 import os
@@ -26,7 +28,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, MutableMapping, NamedTuple, cast
@@ -64,6 +66,8 @@ _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
+_BACKEND_DAEMON_DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+_BACKEND_DAEMON_DEFAULT_MAX_JOBS = 8
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -3239,10 +3243,13 @@ def _runtime_fingerprint(
     cargo_profile: str,
     target_triple: str | None,
     rustflags: str,
+    runtime_features: tuple[str, ...] = (),
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
+    feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += f"rustflags:{rustflags}\n"
+    meta += f"features:{','.join(feature_list)}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
     try:
@@ -3256,6 +3263,16 @@ def _runtime_fingerprint(
     except OSError:
         return None
     return {"hash": hasher.hexdigest(), "rustc": rustc_info}
+
+
+def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
+    if target_triple is not None and target_triple.startswith("wasm32"):
+        return ()
+    raw = os.environ.get("MOLT_RUNTIME_TK_NATIVE")
+    enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
+    if not enabled:
+        return ()
+    return ("molt_tk_native",)
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, str | None] | None:
@@ -4298,6 +4315,43 @@ def _backend_daemon_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _backend_daemon_max_request_bytes() -> int:
+    raw = os.environ.get("MOLT_BACKEND_DAEMON_MAX_REQUEST_BYTES", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+    return _BACKEND_DAEMON_DEFAULT_MAX_REQUEST_BYTES
+
+
+def _backend_daemon_max_jobs() -> int:
+    raw = os.environ.get("MOLT_BACKEND_DAEMON_MAX_JOBS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+    return _BACKEND_DAEMON_DEFAULT_MAX_JOBS
+
+
+def _backend_daemon_start_timeout(default: float = 5.0) -> float:
+    raw = os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = float(raw)
+        if parsed > 0:
+            return parsed
+    except ValueError:
+        pass
+    return default
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
     # Keep sockets on a local socket-capable path by default.
@@ -4423,12 +4477,15 @@ def _backend_daemon_request(
     *,
     timeout: float | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    data, encode_err = _backend_daemon_request_payload_bytes(payload)
+    if encode_err is not None:
+        return None, encode_err
+    assert data is not None
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             if timeout is not None:
                 sock.settimeout(timeout)
             sock.connect(str(socket_path))
-            data = json.dumps(payload, default=_json_ir_default).encode("utf-8") + b"\n"
             sock.sendall(data)
             sock.shutdown(socket.SHUT_WR)
             chunks: list[bytes] = []
@@ -4451,12 +4508,82 @@ def _backend_daemon_request(
     return response, None
 
 
-def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
+def _backend_daemon_request_payload_bytes(
+    payload: dict[str, Any],
+) -> tuple[bytes | None, str | None]:
+    try:
+        encoded = json.dumps(payload, default=_json_ir_default).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return None, f"backend daemon request encode failed: {exc}"
+    request_limit = _backend_daemon_max_request_bytes()
+    if len(encoded) > request_limit:
+        return (
+            None,
+            (
+                "backend daemon request too large: "
+                f"{len(encoded)} bytes > limit {request_limit}"
+            ),
+        )
+    return encoded + b"\n", None
+
+
+def _backend_daemon_health_from_response(
+    response: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = response.get("health")
+    if not isinstance(raw, dict):
+        return None
+    health: dict[str, Any] = {}
+    int_fields = {
+        "protocol_version",
+        "pid",
+        "uptime_ms",
+        "cache_entries",
+        "cache_bytes",
+        "cache_max_bytes",
+        "request_limit_bytes",
+        "max_jobs",
+        "requests_total",
+        "jobs_total",
+        "cache_hits",
+        "cache_misses",
+    }
+    for field in int_fields:
+        value = raw.get(field)
+        if isinstance(value, int):
+            health[field] = value
+    return health or None
+
+
+def _backend_daemon_ping_health(
+    socket_path: Path, *, timeout: float | None
+) -> tuple[bool, dict[str, Any] | None]:
     payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "ping": True}
     response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
     if err is not None or response is None:
-        return False
-    return bool(response.get("ok")) and bool(response.get("pong"))
+        return False, None
+    health = _backend_daemon_health_from_response(response)
+    return bool(response.get("ok")) and bool(response.get("pong")), health
+
+
+def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
+    ready, _ = _backend_daemon_ping_health(socket_path, timeout=timeout)
+    return ready
+
+
+def _backend_daemon_wait_until_ready(
+    socket_path: Path,
+    *,
+    ready_timeout: float,
+    probe_timeout: float = 1.0,
+) -> tuple[bool, dict[str, Any] | None]:
+    deadline = time.monotonic() + max(0.05, ready_timeout)
+    while time.monotonic() < deadline:
+        ready, health = _backend_daemon_ping_health(socket_path, timeout=probe_timeout)
+        if ready:
+            return True, health
+        time.sleep(0.05)
+    return False, None
 
 
 def _backend_daemon_retryable_error(error: str | None) -> bool:
@@ -4482,6 +4609,9 @@ def _start_backend_daemon(
     startup_timeout: float | None,
     json_output: bool,
 ) -> bool:
+    startup_wait = (
+        startup_timeout if startup_timeout else _backend_daemon_start_timeout()
+    )
     pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
@@ -4497,12 +4627,17 @@ def _start_backend_daemon(
                 existing_pid = None
             else:
                 if socket_path.exists():
-                    if _backend_daemon_ping(socket_path, timeout=1.5):
+                    ready, _ = _backend_daemon_wait_until_ready(
+                        socket_path,
+                        ready_timeout=max(0.25, min(2.0, startup_wait)),
+                        probe_timeout=1.0,
+                    )
+                    if ready:
                         return True
                     if not json_output:
                         print(
-                            "Backend daemon is running but not responsive; "
-                            "skipping daemon restart for this build.",
+                            "Backend daemon is running but did not become ready "
+                            "within the startup probe window; skipping restart.",
                             file=sys.stderr,
                         )
                     return False
@@ -4511,7 +4646,12 @@ def _start_backend_daemon(
             _remove_backend_daemon_pid(pid_path)
     try:
         if socket_path.exists():
-            if _backend_daemon_ping(socket_path, timeout=1.5):
+            ready, _ = _backend_daemon_wait_until_ready(
+                socket_path,
+                ready_timeout=max(0.25, min(1.5, startup_wait)),
+                probe_timeout=1.0,
+            )
+            if ready:
                 return True
             socket_path.unlink()
     except OSError:
@@ -4536,11 +4676,13 @@ def _start_backend_daemon(
         if not json_output:
             print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
         return False
-    deadline = time.monotonic() + (startup_timeout if startup_timeout else 5.0)
-    while time.monotonic() < deadline:
-        if _backend_daemon_ping(socket_path, timeout=1.5):
-            return True
-        time.sleep(0.05)
+    ready, _ = _backend_daemon_wait_until_ready(
+        socket_path,
+        ready_timeout=startup_wait,
+        probe_timeout=1.0,
+    )
+    if ready:
+        return True
     if daemon_pid is not None:
         _terminate_backend_daemon_pid(daemon_pid, grace=1.0)
     _remove_backend_daemon_pid(pid_path)
@@ -4557,45 +4699,51 @@ def _compile_with_backend_daemon(
     is_wasm: bool,
     target_triple: str | None,
     cache_key: str | None,
+    function_cache_key: str | None,
     timeout: float | None,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    jobs: list[dict[str, Any]] = [
+        {
+            "id": "job0",
+            "is_wasm": is_wasm,
+            "target_triple": target_triple,
+            "output": str(backend_output),
+            "cache_key": cache_key or "",
+            "function_cache_key": function_cache_key or "",
+            "ir": ir,
+        }
+    ]
+    if len(jobs) > _backend_daemon_max_jobs():
+        return False, "backend daemon request exceeds max jobs limit", None
     payload: dict[str, Any] = {
         "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
-        "jobs": [
-            {
-                "id": "job0",
-                "is_wasm": is_wasm,
-                "target_triple": target_triple,
-                "output": str(backend_output),
-                "cache_key": cache_key or "",
-                "ir": ir,
-            }
-        ],
+        "jobs": jobs,
     }
     response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
     if err is not None:
-        return False, err
+        return False, err, None
     if response is None:
-        return False, "backend daemon returned no response"
+        return False, "backend daemon returned no response", None
+    health = _backend_daemon_health_from_response(response)
     if not bool(response.get("ok")):
         error = response.get("error")
         if isinstance(error, str) and error:
-            return False, error
-        return False, "backend daemon compile request failed"
-    jobs = response.get("jobs")
-    if not isinstance(jobs, list) or not jobs:
-        return False, "backend daemon response missing job results"
-    first = jobs[0]
+            return False, error, health
+        return False, "backend daemon compile request failed", health
+    response_jobs = response.get("jobs")
+    if not isinstance(response_jobs, list) or not response_jobs:
+        return False, "backend daemon response missing job results", health
+    first = response_jobs[0]
     if not isinstance(first, dict):
-        return False, "backend daemon response had malformed job payload"
+        return False, "backend daemon response had malformed job payload", health
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
-            return False, message
-        return False, "backend daemon failed to compile job"
+            return False, message, health
+        return False, "backend daemon failed to compile job", health
     if not backend_output.exists():
-        return False, "backend daemon reported success but output is missing"
-    return True, None
+        return False, "backend daemon reported success but output is missing", health
+    return True, None, health
 
 
 def _backend_fingerprint_path(
@@ -4718,11 +4866,13 @@ def _ensure_runtime_lib(
     cargo_timeout: float | None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
+    runtime_features = _runtime_cargo_features(target_triple)
     fingerprint = _runtime_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         target_triple=target_triple,
         rustflags=rustflags,
+        runtime_features=runtime_features,
     )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
@@ -4740,6 +4890,8 @@ def _ensure_runtime_lib(
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
+        if runtime_features:
+            cmd.extend(["--features", ",".join(runtime_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
@@ -4897,6 +5049,7 @@ def _ensure_runtime_wasm(
         cargo_profile=cargo_profile,
         target_triple="wasm32-wasip1",
         rustflags=rustflags,
+        runtime_features=(),
     )
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
@@ -5356,7 +5509,12 @@ def _safe_output_base(name: str) -> str:
 
 
 def _default_molt_home() -> Path:
-    return _resolve_env_path("MOLT_HOME", Path.home() / ".molt")
+    home_override = os.environ.get("MOLT_HOME")
+    if home_override:
+        return _resolve_env_path("MOLT_HOME", Path())
+    # Keep the default home colocated with cache roots so build/clean workflows
+    # no longer depend on the legacy ~/.molt path.
+    return _default_molt_cache() / "home"
 
 
 def _default_molt_bin() -> Path:
@@ -5740,7 +5898,7 @@ def _resolve_output_roots(
 ) -> tuple[Path, Path, Path]:
     if out_dir is not None:
         # Keep `--out-dir` builds self-contained so ephemeral/benchmark runs do
-        # not depend on global ~/.molt state.
+        # not depend on global MOLT_HOME state.
         artifacts_root = out_dir / ".molt_build" / _safe_output_base(output_base)
         bin_root = out_dir
         output_root = out_dir
@@ -5805,6 +5963,7 @@ def _resolve_output_path(
 _CACHE_FINGERPRINT: str | None = None
 _CACHE_TOOLING_FINGERPRINT: str | None = None
 _CACHE_KEY_SCHEMA_VERSION = "v2"
+_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v1"
 
 
 def _cache_fingerprint() -> str:
@@ -5909,6 +6068,52 @@ def _cache_key(
         + _CACHE_KEY_SCHEMA_VERSION.encode("utf-8")
     ).hexdigest()
     return digest
+
+
+def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
+    functions = ir.get("functions")
+    profile = ir.get("profile")
+    normalized: dict[str, Any] = {"functions": [], "profile": None}
+    if isinstance(functions, list):
+
+        def _func_sort_key(entry: Any) -> str:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str):
+                    return name
+            return ""
+
+        normalized["functions"] = sorted(functions, key=_func_sort_key)
+    if profile is not None:
+        normalized["profile"] = profile
+    return json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+    ).encode("utf-8")
+
+
+def _function_cache_key(
+    ir: dict[str, Any],
+    target: str,
+    target_triple: str | None,
+    variant: str = "",
+) -> str:
+    payload = _cache_backend_ir_payload(ir)
+    suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
+    fingerprint = _cache_fingerprint().encode("utf-8")
+    tooling_fingerprint = _cache_tooling_fingerprint().encode("utf-8")
+    return hashlib.sha256(
+        payload
+        + b"|"
+        + suffix.encode("utf-8")
+        + b"|"
+        + fingerprint
+        + b"|"
+        + tooling_fingerprint
+        + b"|"
+        + _FUNCTION_CACHE_KEY_SCHEMA_VERSION.encode("utf-8")
+    ).hexdigest()
 
 
 def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
@@ -6217,6 +6422,7 @@ def build(
     }
     diagnostics_start = time.perf_counter()
     phase_starts: dict[str, float] = {}
+    backend_daemon_health: dict[str, Any] | None = None
     module_reasons: dict[str, set[str]] = {}
     if diagnostics_enabled:
         phase_starts["resolve_entry"] = diagnostics_start
@@ -6635,6 +6841,8 @@ def build(
         )
         if midend_payload is not None:
             payload["midend"] = midend_payload
+        if backend_daemon_health is not None:
+            payload["backend_daemon"] = backend_daemon_health
         out_path: Path | None = None
         if diagnostics_path_spec:
             out_path = _resolve_build_diagnostics_path(
@@ -8144,8 +8352,12 @@ def build(
         return True
 
     cache_hit = False
+    cache_hit_tier: str | None = None
     cache_key = None
+    function_cache_key = None
     cache_path: Path | None = None
+    function_cache_path: Path | None = None
+    cache_candidates: list[tuple[str, Path]] = []
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     if cache:
@@ -8159,6 +8371,9 @@ def build(
             cache_variant_parts.append("linked=1")
         cache_variant = ";".join(cache_variant_parts)
         cache_key = _cache_key(ir, target, target_triple, cache_variant)
+        function_cache_key = _function_cache_key(
+            ir, target, target_triple, cache_variant
+        )
         cache_root = _resolve_cache_root(project_root, cache_dir)
         try:
             cache_root.mkdir(parents=True, exist_ok=True)
@@ -8168,19 +8383,63 @@ def build(
         else:
             ext = "wasm" if is_wasm else "o"
             cache_path = cache_root / f"{cache_key}.{ext}"
-            if cache_path.exists():
-                try:
-                    shutil.copy2(cache_path, output_artifact)
-                    cache_hit = True
-                except OSError as exc:
-                    warnings.append(f"Cache copy failed: {exc}")
-                    cache_hit = False
+
+            if function_cache_key and function_cache_key != cache_key:
+                function_cache_path = cache_root / f"{function_cache_key}.{ext}"
+
+            if cache_path is not None:
+                cache_candidates.append(("module", cache_path))
+            if function_cache_path is not None and function_cache_path != cache_path:
+                cache_candidates.append(("function", function_cache_path))
+
+            def _try_cache_candidates() -> tuple[bool, str | None]:
+                for tier, candidate in cache_candidates:
+                    if not candidate.exists():
+                        continue
+                    try:
+                        shutil.copy2(candidate, output_artifact)
+                        if (
+                            tier == "function"
+                            and cache_path is not None
+                            and candidate != cache_path
+                            and not cache_path.exists()
+                        ):
+                            with contextlib.suppress(OSError):
+                                _atomic_copy_file(candidate, cache_path)
+                        return True, tier
+                    except OSError as exc:
+                        warnings.append(f"Cache copy failed: {exc}")
+                return False, None
+
+            cache_hit, cache_hit_tier = _try_cache_candidates()
+
+    def _try_cache_candidates_locked() -> tuple[bool, str | None]:
+        for tier, candidate in cache_candidates:
+            if not candidate.exists():
+                continue
+            try:
+                shutil.copy2(candidate, output_artifact)
+                if (
+                    tier == "function"
+                    and cache_path is not None
+                    and candidate != cache_path
+                    and not cache_path.exists()
+                ):
+                    with contextlib.suppress(OSError):
+                        _atomic_copy_file(candidate, cache_path)
+                return True, tier
+            except OSError as exc:
+                warnings.append(f"Cache copy failed: {exc}")
+        return False, None
+
     if (verbose or cache_report) and not json_output:
         if not cache:
             print("Cache: disabled")
         elif cache_key:
             cache_state = "hit" if cache_hit else "miss"
             cache_detail = f" ({cache_key})" if cache_key else ""
+            if cache_hit and cache_hit_tier:
+                cache_detail = f"{cache_detail} [{cache_hit_tier}]"
             print(f"Cache: {cache_state}{cache_detail}")
 
     compile_lock = (
@@ -8189,13 +8448,8 @@ def build(
         else nullcontext()
     )
     with compile_lock:
-        if not cache_hit and cache and cache_path is not None and cache_path.exists():
-            try:
-                shutil.copy2(cache_path, output_artifact)
-                cache_hit = True
-            except OSError as exc:
-                warnings.append(f"Cache copy failed: {exc}")
-                cache_hit = False
+        if not cache_hit and cache:
+            cache_hit, cache_hit_tier = _try_cache_candidates_locked()
 
         # 2. Backend: JSON IR -> output.o / output.wasm
         if not cache_hit:
@@ -8277,17 +8531,7 @@ def build(
                 daemon_socket = _backend_daemon_socket_path(
                     molt_root, backend_cargo_profile
                 )
-                startup_timeout_raw = os.environ.get(
-                    "MOLT_BACKEND_DAEMON_START_TIMEOUT", ""
-                ).strip()
-                startup_timeout = 5.0
-                if startup_timeout_raw:
-                    try:
-                        parsed = float(startup_timeout_raw)
-                        if parsed > 0:
-                            startup_timeout = parsed
-                    except ValueError:
-                        pass
+                startup_timeout = _backend_daemon_start_timeout()
                 with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
                     pid_path = _backend_daemon_pid_path(
                         molt_root, backend_cargo_profile
@@ -8305,7 +8549,13 @@ def build(
                                 daemon_socket.unlink()
                         except OSError:
                             pass
-                    daemon_ready = _backend_daemon_ping(daemon_socket, timeout=1.5)
+                    daemon_ready, daemon_health = _backend_daemon_wait_until_ready(
+                        daemon_socket,
+                        ready_timeout=max(0.25, min(1.5, startup_timeout)),
+                        probe_timeout=1.0,
+                    )
+                    if daemon_health is not None:
+                        backend_daemon_health = daemon_health
                     if not daemon_ready:
                         daemon_ready = _start_backend_daemon(
                             backend_bin,
@@ -8333,15 +8583,22 @@ def build(
                         and "backend_daemon_compile" not in phase_starts
                     ):
                         phase_starts["backend_daemon_compile"] = time.perf_counter()
-                    backend_compiled, daemon_error = _compile_with_backend_daemon(
+                    (
+                        backend_compiled,
+                        daemon_error,
+                        daemon_health,
+                    ) = _compile_with_backend_daemon(
                         daemon_socket,
                         ir=ir,
                         backend_output=backend_output,
                         is_wasm=is_wasm,
                         target_triple=target_triple,
                         cache_key=cache_key,
+                        function_cache_key=function_cache_key,
                         timeout=backend_timeout,
                     )
+                    if daemon_health is not None:
+                        backend_daemon_health = daemon_health
                     if not backend_compiled and _backend_daemon_retryable_error(
                         daemon_error
                     ):
@@ -8350,23 +8607,19 @@ def build(
                             and "backend_daemon_restart" not in phase_starts
                         ):
                             phase_starts["backend_daemon_restart"] = time.perf_counter()
-                        startup_timeout_raw = os.environ.get(
-                            "MOLT_BACKEND_DAEMON_START_TIMEOUT", ""
-                        ).strip()
-                        restart_timeout = 5.0
-                        if startup_timeout_raw:
-                            try:
-                                parsed = float(startup_timeout_raw)
-                                if parsed > 0:
-                                    restart_timeout = parsed
-                            except ValueError:
-                                pass
+                        restart_timeout = _backend_daemon_start_timeout()
                         with _build_lock(
                             molt_root, f"backend-daemon.{backend_cargo_profile}"
                         ):
-                            daemon_ready = _backend_daemon_ping(
-                                daemon_socket, timeout=1.5
+                            daemon_ready, daemon_health = (
+                                _backend_daemon_wait_until_ready(
+                                    daemon_socket,
+                                    ready_timeout=max(0.25, min(1.5, restart_timeout)),
+                                    probe_timeout=1.0,
+                                )
                             )
+                            if daemon_health is not None:
+                                backend_daemon_health = daemon_health
                             if not daemon_ready:
                                 daemon_ready = _start_backend_daemon(
                                     backend_bin,
@@ -8377,17 +8630,22 @@ def build(
                                     json_output=json_output,
                                 )
                         if daemon_ready:
-                            backend_compiled, daemon_error = (
-                                _compile_with_backend_daemon(
-                                    daemon_socket,
-                                    ir=ir,
-                                    backend_output=backend_output,
-                                    is_wasm=is_wasm,
-                                    target_triple=target_triple,
-                                    cache_key=cache_key,
-                                    timeout=backend_timeout,
-                                )
+                            (
+                                backend_compiled,
+                                daemon_error,
+                                daemon_health,
+                            ) = _compile_with_backend_daemon(
+                                daemon_socket,
+                                ir=ir,
+                                backend_output=backend_output,
+                                is_wasm=is_wasm,
+                                target_triple=target_triple,
+                                cache_key=cache_key,
+                                function_cache_key=function_cache_key,
+                                timeout=backend_timeout,
                             )
+                            if daemon_health is not None:
+                                backend_daemon_health = daemon_health
                     if (
                         not backend_compiled
                         and verbose
@@ -8477,6 +8735,14 @@ def build(
                         _atomic_copy_file(output_artifact, cache_path)
                     except OSError as exc:
                         warnings.append(f"Cache write failed: {exc}")
+                    if (
+                        function_cache_path is not None
+                        and function_cache_path != cache_path
+                    ):
+                        try:
+                            _atomic_copy_file(output_artifact, function_cache_path)
+                        except OSError as exc:
+                            warnings.append(f"Function cache write failed: {exc}")
 
     if is_wasm:
         output_wasm = output_artifact
@@ -8537,8 +8803,14 @@ def build(
             cache_info: dict[str, Any] = {"enabled": cache, "hit": cache_hit}
             if cache_key:
                 cache_info["key"] = cache_key
+            if function_cache_key:
+                cache_info["function_key"] = function_cache_key
             if cache_path is not None:
                 cache_info["path"] = str(cache_path)
+            if function_cache_path is not None:
+                cache_info["function_path"] = str(function_cache_path)
+            if cache_hit_tier:
+                cache_info["hit_tier"] = cache_hit_tier
             data = {
                 "target": target,
                 "target_triple": target_triple,
@@ -8593,8 +8865,14 @@ def build(
             cache_info = {"enabled": cache, "hit": cache_hit}
             if cache_key:
                 cache_info["key"] = cache_key
+            if function_cache_key:
+                cache_info["function_key"] = function_cache_key
             if cache_path is not None:
                 cache_info["path"] = str(cache_path)
+            if function_cache_path is not None:
+                cache_info["function_path"] = str(function_cache_path)
+            if cache_hit_tier:
+                cache_info["hit_tier"] = cache_hit_tier
             data = {
                 "target": target,
                 "target_triple": target_triple,
@@ -8968,8 +9246,14 @@ int main(int argc, char** argv) {
             cache_info = {"enabled": cache, "hit": cache_hit}
             if cache_key:
                 cache_info["key"] = cache_key
+            if function_cache_key:
+                cache_info["function_key"] = function_cache_key
             if cache_path is not None:
                 cache_info["path"] = str(cache_path)
+            if function_cache_path is not None:
+                cache_info["function_path"] = str(function_cache_path)
+            if cache_hit_tier:
+                cache_info["hit_tier"] = cache_hit_tier
             data: dict[str, Any] = {
                 "target": target,
                 "target_triple": target_triple,
@@ -9535,6 +9819,94 @@ def compare(
     return 0 if compare_ok else 1
 
 
+def parity_run(
+    file_path: str | None,
+    module: str | None,
+    python_exe: str | None,
+    script_args: list[str],
+    json_output: bool = False,
+    verbose: bool = False,
+    timing: bool = False,
+) -> int:
+    if file_path and module:
+        return _fail(
+            "Use a file path or --module, not both.",
+            json_output,
+            command="parity-run",
+        )
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="parity-run")
+
+    source_path: Path | None = None
+    if file_path:
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return _fail(
+                f"File not found: {source_path}",
+                json_output,
+                command="parity-run",
+            )
+
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, source_path, molt_root=molt_root)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+
+    python_exe = _resolve_python_exe(python_exe)
+    if module:
+        command = [python_exe, "-m", module, *script_args]
+    else:
+        command = [python_exe, str(source_path), *script_args]
+
+    if timing:
+        run_res = _run_command_timed(
+            command,
+            env=env,
+            cwd=project_root,
+            verbose=verbose,
+            capture_output=json_output,
+        )
+        if json_output:
+            data: dict[str, Any] = {
+                "python": python_exe,
+                "entry": module if module is not None else str(source_path),
+                "returncode": run_res.returncode,
+                "timing": {"cpython_run_s": run_res.duration_s},
+            }
+            if run_res.stdout:
+                data["stdout"] = run_res.stdout
+            if run_res.stderr:
+                data["stderr"] = run_res.stderr
+            payload = _json_payload(
+                "parity-run",
+                "ok" if run_res.returncode == 0 else "error",
+                data=data,
+            )
+            _emit_json(payload, json_output=True)
+        else:
+            print("Timing (CPython parity-run):", file=sys.stderr)
+            print(
+                f"- run: {_format_duration(run_res.duration_s)} "
+                f"(rc={run_res.returncode})",
+                file=sys.stderr,
+            )
+        return run_res.returncode
+
+    return _run_command(
+        command,
+        env=env,
+        cwd=project_root,
+        json_output=json_output,
+        verbose=verbose,
+        label="parity-run",
+    )
+
+
 def diff(
     file_path: str | None,
     python_version: str | None,
@@ -9565,6 +9937,166 @@ def diff(
         verbose=verbose,
         label="diff",
     )
+
+
+@contextmanager
+def _temporary_env_overrides(overrides: dict[str, str]):
+    previous: dict[str, str] = {}
+    missing: list[str] = []
+    for key, value in overrides.items():
+        if key in os.environ:
+            previous[key] = os.environ[key]
+        else:
+            missing.append(key)
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key in missing:
+            os.environ.pop(key, None)
+        for key, value in previous.items():
+            os.environ[key] = value
+
+
+def _internal_batch_build_server(
+    *, json_output: bool = False, verbose: bool = False
+) -> int:
+    del json_output
+    del verbose
+    request_limit = _backend_daemon_max_request_bytes()
+
+    def _emit_response(payload: dict[str, Any]) -> None:
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        sys.stdout.flush()
+
+    for raw_line in sys.stdin:
+        if not raw_line.strip():
+            continue
+        req_id: Any = None
+        raw_len = len(raw_line.encode("utf-8", "replace"))
+        if raw_len > request_limit:
+            _emit_response(
+                {
+                    "id": None,
+                    "ok": False,
+                    "error": (
+                        "batch build request too large: "
+                        f"{raw_len} bytes > limit {request_limit}"
+                    ),
+                }
+            )
+            continue
+        try:
+            request = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            _emit_response(
+                {
+                    "id": None,
+                    "ok": False,
+                    "error": f"invalid request JSON: {exc}",
+                }
+            )
+            continue
+        if not isinstance(request, dict):
+            _emit_response(
+                {"id": None, "ok": False, "error": "request must be an object"}
+            )
+            continue
+        req_id = request.get("id")
+        op = request.get("op")
+        if op == "ping":
+            _emit_response({"id": req_id, "ok": True, "pong": True})
+            continue
+        if op == "shutdown":
+            _emit_response({"id": req_id, "ok": True, "shutdown": True})
+            return 0
+        if op != "build":
+            _emit_response(
+                {"id": req_id, "ok": False, "error": f"unsupported op: {op!r}"}
+            )
+            continue
+
+        params = request.get("params")
+        if not isinstance(params, dict):
+            _emit_response({"id": req_id, "ok": False, "error": "missing build params"})
+            continue
+        env_overrides_raw = params.get("env_overrides", {})
+        if not isinstance(env_overrides_raw, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in env_overrides_raw.items()
+        ):
+            _emit_response(
+                {
+                    "id": req_id,
+                    "ok": False,
+                    "error": "env_overrides must be a string->string object",
+                }
+            )
+            continue
+        env_overrides: dict[str, str] = dict(env_overrides_raw)
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        try:
+            with _temporary_env_overrides(env_overrides):
+                with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+                    rc = build(
+                        file_path=params.get("file_path"),
+                        target=cast(Target, params.get("target", "native")),
+                        parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
+                        type_hint_policy=cast(
+                            TypeHintPolicy, params.get("type_hints", "ignore")
+                        ),
+                        fallback_policy=cast(
+                            FallbackPolicy, params.get("fallback", "error")
+                        ),
+                        type_facts_path=params.get("type_facts"),
+                        pgo_profile=params.get("pgo_profile"),
+                        output=params.get("output"),
+                        json_output=False,
+                        verbose=bool(params.get("verbose", False)),
+                        deterministic=bool(params.get("deterministic", True)),
+                        deterministic_warn=bool(
+                            params.get("deterministic_warn", False)
+                        ),
+                        trusted=bool(params.get("trusted", False)),
+                        capabilities=params.get("capabilities"),
+                        cache=bool(params.get("cache", True)),
+                        cache_dir=params.get("cache_dir"),
+                        cache_report=bool(params.get("cache_report", False)),
+                        sysroot=params.get("sysroot"),
+                        emit_ir=params.get("emit_ir"),
+                        emit=cast(EmitMode | None, params.get("emit")),
+                        out_dir=params.get("out_dir"),
+                        profile=cast(BuildProfile, params.get("profile", "dev")),
+                        linked=bool(params.get("linked", False)),
+                        linked_output=params.get("linked_output"),
+                        require_linked=bool(params.get("require_linked", False)),
+                        respect_pythonpath=bool(
+                            params.get("respect_pythonpath", False)
+                        ),
+                        module=params.get("module"),
+                    )
+        except Exception as exc:  # pragma: no cover - defensive server hardening
+            _emit_response(
+                {
+                    "id": req_id,
+                    "ok": False,
+                    "error": f"batch build server exception: {exc}",
+                    "stdout": stdout_buf.getvalue(),
+                    "stderr": stderr_buf.getvalue(),
+                }
+            )
+            continue
+        _emit_response(
+            {
+                "id": req_id,
+                "ok": rc == 0,
+                "returncode": rc,
+                "stdout": stdout_buf.getvalue(),
+                "stderr": stderr_buf.getvalue(),
+            }
+        )
+    return 0
 
 
 def lint(json_output: bool = False, verbose: bool = False) -> int:
@@ -9733,6 +10265,22 @@ def doctor(
             return ["winget install LLVM.LLVM", "set CC=clang"]
         return ["sudo apt-get update", "sudo apt-get install -y clang lld"]
 
+    def _resolved_env_dir(var: str) -> Path | None:
+        raw = os.environ.get(var, "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (root / path).absolute()
+        return path
+
+    def _is_within(path: Path, container: Path) -> bool:
+        try:
+            path.resolve().relative_to(container.resolve())
+        except ValueError:
+            return False
+        return True
+
     python_ok = sys.version_info >= (3, 12)
     record(
         "python",
@@ -9787,6 +10335,145 @@ def doctor(
         level="warning",
         advice=["Install zig if you need wasm linking"] if not zig_path else None,
     )
+
+    rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
+    sccache_mode = os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
+    sccache_path = shutil.which("sccache")
+    if rustc_wrapper:
+        wrapper_name = Path(rustc_wrapper).name
+        sccache_ok = wrapper_name == "sccache"
+        sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
+        sccache_advice = (
+            [
+                "Use RUSTC_WRAPPER=sccache for compile throughput",
+                "or unset RUSTC_WRAPPER and set MOLT_USE_SCCACHE=auto",
+            ]
+            if not sccache_ok
+            else None
+        )
+    elif sccache_mode in {"0", "false", "no", "off"}:
+        sccache_ok = False
+        sccache_detail = "disabled via MOLT_USE_SCCACHE"
+        sccache_advice = ["Set MOLT_USE_SCCACHE=auto or 1 for faster rebuilds"]
+    elif sccache_path is None:
+        sccache_ok = False
+        sccache_detail = "not found on PATH"
+        sccache_advice = [
+            "Install sccache and keep MOLT_USE_SCCACHE=auto (or set to 1)"
+        ]
+    else:
+        sccache_ok = True
+        sccache_detail = f"{sccache_path} (mode={sccache_mode})"
+        sccache_advice = None
+    record(
+        "sccache",
+        sccache_ok,
+        sccache_detail,
+        level="warning",
+        advice=sccache_advice,
+    )
+
+    if os.name == "posix":
+        daemon_enabled = _backend_daemon_enabled()
+        daemon_raw = os.environ.get("MOLT_BACKEND_DAEMON", "1").strip() or "1"
+        record(
+            "backend-daemon",
+            daemon_enabled,
+            f"MOLT_BACKEND_DAEMON={daemon_raw}",
+            level="warning",
+            advice=["Set MOLT_BACKEND_DAEMON=1 for faster native compile loops"]
+            if not daemon_enabled
+            else None,
+        )
+    else:
+        record("backend-daemon", True, "unsupported on non-posix hosts")
+
+    cargo_target_dir = _resolved_env_dir("CARGO_TARGET_DIR")
+    if cargo_target_dir is None:
+        record(
+            "cargo-target-dir",
+            False,
+            f"defaulting to {root / 'target'}",
+            level="warning",
+            advice=[
+                "export CARGO_TARGET_DIR=<external>/cargo-target",
+                "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
+            ],
+        )
+    else:
+        record("cargo-target-dir", True, str(cargo_target_dir))
+
+    molt_cache_dir = _resolved_env_dir("MOLT_CACHE")
+    if molt_cache_dir is None:
+        record(
+            "molt-cache-dir",
+            False,
+            f"defaulting to {_default_molt_cache()}",
+            level="warning",
+            advice=["export MOLT_CACHE=<external>/molt_cache"],
+        )
+    else:
+        record("molt-cache-dir", True, str(molt_cache_dir))
+
+    diff_target_dir = _resolved_env_dir("MOLT_DIFF_CARGO_TARGET_DIR")
+    if diff_target_dir is None:
+        record(
+            "molt-diff-target-dir",
+            False,
+            "not set",
+            level="warning",
+            advice=["export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+        )
+    elif cargo_target_dir is not None and diff_target_dir != cargo_target_dir:
+        record(
+            "molt-diff-target-dir",
+            False,
+            f"{diff_target_dir} (CARGO_TARGET_DIR={cargo_target_dir})",
+            level="warning",
+            advice=["Set MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+        )
+    else:
+        record("molt-diff-target-dir", True, str(diff_target_dir))
+
+    ext_root = Path("/Volumes/APDataStore/Molt")
+    if ext_root.is_dir():
+        routed_paths: list[Path] = []
+        if cargo_target_dir is not None:
+            routed_paths.append(cargo_target_dir)
+        if molt_cache_dir is not None:
+            routed_paths.append(molt_cache_dir)
+        ext_ok = bool(routed_paths) and all(
+            _is_within(path, ext_root) for path in routed_paths
+        )
+        detail = (
+            "CARGO_TARGET_DIR and MOLT_CACHE routed to external volume"
+            if ext_ok
+            else "Set CARGO_TARGET_DIR and MOLT_CACHE under /Volumes/APDataStore/Molt"
+        )
+        record(
+            "external-volume-routing",
+            ext_ok,
+            detail,
+            level="warning",
+            advice=[
+                "export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt",
+                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target",
+                "export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache",
+            ]
+            if not ext_ok
+            else None,
+        )
+    else:
+        record(
+            "external-volume",
+            False,
+            "/Volumes/APDataStore/Molt not mounted",
+            level="warning",
+            advice=[
+                "Mount /Volumes/APDataStore/Molt for heavy workflows",
+                "or configure equivalent external paths via env vars",
+            ],
+        )
 
     pyproject = root / "pyproject.toml"
     lock_path = root / "uv.lock"
@@ -11525,6 +12212,7 @@ def _completion_script(shell: str) -> str:
         "check",
         "run",
         "compare",
+        "parity-run",
         "test",
         "diff",
         "bench",
@@ -11607,6 +12295,14 @@ def _completion_script(shell: str) -> str:
             "--capabilities",
             "--trusted",
             "--no-trusted",
+            "--json",
+            "--verbose",
+        ],
+        "parity-run": [
+            "--python",
+            "--python-version",
+            "--module",
+            "--timing",
             "--json",
             "--verbose",
         ],
@@ -12058,6 +12754,17 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    internal_batch_parser = subparsers.add_parser(
+        "internal-batch-build-server",
+        help=argparse.SUPPRESS,
+    )
+    internal_batch_parser.add_argument(
+        "--json", action="store_true", help=argparse.SUPPRESS
+    )
+    internal_batch_parser.add_argument(
+        "--verbose", action="store_true", help=argparse.SUPPRESS
+    )
+
     check_parser = subparsers.add_parser(
         "check", help="Generate a type facts artifact (ty-backed when available)"
     )
@@ -12195,6 +12902,39 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
     compare_parser.add_argument(
+        "script_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed to the script (use -- to separate).",
+    )
+
+    parity_run_parser = subparsers.add_parser(
+        "parity-run", help="Run the entrypoint with CPython (no Molt compilation)"
+    )
+    parity_run_parser.add_argument("file", nargs="?", help="Path to Python source")
+    parity_run_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
+    parity_run_parser.add_argument(
+        "--python",
+        help="Python interpreter (path) or version (e.g. 3.12).",
+    )
+    parity_run_parser.add_argument(
+        "--python-version",
+        help="Python version alias (e.g. 3.12).",
+    )
+    parity_run_parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Emit timing summary for the CPython run.",
+    )
+    parity_run_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    parity_run_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+    parity_run_parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments passed to the script (use -- to separate).",
@@ -12695,6 +13435,12 @@ def main() -> int:
     publish_cfg = _resolve_command_config(config, "publish")
     cfg_capabilities = _resolve_capabilities_config(config)
 
+    if args.command == "internal-batch-build-server":
+        return _internal_batch_build_server(
+            json_output=args.json,
+            verbose=args.verbose,
+        )
+
     if args.command == "build":
         target = args.target or build_cfg.get("target") or "native"
         codec = args.codec or build_cfg.get("codec") or "msgpack"
@@ -12908,6 +13654,17 @@ def main() -> int:
             build_args,
             args.rebuild,
             cast(BuildProfile | None, compare_profile),
+        )
+    if args.command == "parity-run":
+        python_exe = args.python or args.python_version
+        return parity_run(
+            args.file,
+            args.module,
+            python_exe,
+            _strip_leading_double_dash(args.script_args),
+            args.json,
+            args.verbose,
+            args.timing,
         )
     if args.command == "test":
         pytest_args = _strip_leading_double_dash(args.pytest_args)

@@ -96,6 +96,14 @@ def test_repo_manifest_covers_all_exec_eval_cases() -> None:
     assert not missing
 
 
+def test_repo_manifest_has_no_policy_deferred_runpy_dynamic_cases() -> None:
+    module = _load_diff_module()
+    module._too_dynamic_expected_failure_tests.cache_clear()
+    declared = module._too_dynamic_expected_failure_tests()
+    deferred_runpy = sorted(path for path in declared if "/stdlib/runpy_" in path)
+    assert not deferred_runpy
+
+
 def test_repo_manifest_dynamic_policy_docs_exist() -> None:
     manifest_path = REPO_ROOT / "tools" / "stdlib_full_coverage_manifest.py"
     namespace = {}
@@ -103,6 +111,13 @@ def test_repo_manifest_dynamic_policy_docs_exist() -> None:
     docs = namespace.get("TOO_DYNAMIC_POLICY_DOC_REFERENCES", ())
     assert isinstance(docs, tuple)
     assert docs
+    required = {
+        "docs/spec/areas/core/0000-vision.md",
+        "docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md",
+        "docs/spec/areas/testing/0007-testing.md",
+        "docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md",
+    }
+    assert required.issubset(set(docs))
     missing = [doc for doc in docs if not (REPO_ROOT / doc).exists()]
     assert not missing
 
@@ -222,3 +237,25 @@ def test_stderr_exact_mode_keeps_full_string_match() -> None:
         "RuntimeError: boom\n"
     )
     assert not module._stderr_matches(cp_err, molt_err, "exact")
+
+
+def test_diff_batch_compile_server_env_flags(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT", raising=False)
+    assert module._diff_batch_compile_server_enabled() is False
+    assert module._diff_batch_compile_server_strict() is False
+
+    monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER", "1")
+    monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT", "true")
+    assert module._diff_batch_compile_server_enabled() is True
+    assert module._diff_batch_compile_server_strict() is True
+
+
+def test_diff_batch_compile_server_timeout_env(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.delenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", raising=False)
+    assert module._diff_batch_compile_server_request_timeout() == 60.0
+
+    monkeypatch.setenv("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", "15.5")
+    assert module._diff_batch_compile_server_request_timeout() == 15.5

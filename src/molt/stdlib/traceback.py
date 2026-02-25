@@ -296,7 +296,9 @@ class TracebackException:
             current_exc.__suppress_context__ = suppress_context
             nodes.append(current_exc)
             links.append((cause_index, context_index))
-        for current_exc, (cause_index, context_index) in zip(nodes, links):
+        for _i in range(len(nodes)):
+            current_exc = nodes[_i]
+            cause_index, context_index = links[_i]
             if cause_index is not None:
                 current_exc.__cause__ = nodes[cause_index]
             if context_index is not None:
