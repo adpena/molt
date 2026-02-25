@@ -70,7 +70,7 @@ Implemented foundation:
 - Dev workflow profile routing now defaults `--profile dev` to Cargo `dev-fast`.
 - Native backend codegen uses a persistent daemon by default to amortize Cranelift startup.
 - Runtime/backend rebuilds and daemon lifecycle are lock-coordinated under shared build state (`<CARGO_TARGET_DIR>/.molt_state/`).
-- Throughput tooling/playbook exists (`tools/throughput_env.sh`, `tools/throughput_matrix.py`, `tools/molt_cache_prune.py`) with external-volume-first defaults.
+- Throughput tooling/playbook exists (`tools/throughput_env.sh`, `tools/throughput_matrix.py`, `tools/molt_cache_prune.py`) with enforced external-volume defaults and explicit emergency override paths.
 
 Planned acceleration lanes:
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane (multi-job compile API, richer health telemetry, and deterministic restart semantics under high contention).

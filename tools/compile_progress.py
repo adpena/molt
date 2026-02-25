@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
+
+
 @dataclass(frozen=True)
 class CaseSpec:
     name: str
@@ -136,12 +139,31 @@ DEFAULT_CASES = tuple(
 )
 
 
-def _default_output_root(repo_root: Path) -> Path:
-    external_root = Path("/Volumes/APDataStore/Molt")
+def _resolved_external_root(*, fallback: Path | None = None) -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT")
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if root.is_dir():
+            return root
+        raise SystemExit(
+            f"MOLT_EXT_ROOT is not a mounted directory: {root}. "
+            "Mount the external volume or pass --output-root explicitly."
+        )
+    if DEFAULT_EXTERNAL_ROOT.is_dir():
+        return DEFAULT_EXTERNAL_ROOT
+    if fallback is not None:
+        return fallback
+    raise SystemExit(
+        "External volume is required for compile progress defaults: "
+        f"{DEFAULT_EXTERNAL_ROOT} is not mounted. "
+        "Mount it or pass --output-root explicitly for an approved override."
+    )
+
+
+def _default_output_root() -> Path:
+    external_root = _resolved_external_root()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if external_root.is_dir():
-        return external_root / f"compile_progress_{stamp}"
-    return repo_root / "bench" / "results" / "compile_progress" / stamp
+    return external_root / f"compile_progress_{stamp}"
 
 
 def _tail(text: str, lines: int = 20) -> str:
@@ -178,6 +200,9 @@ def _base_env(
     *,
     cache_root: Path,
     target_root: Path,
+    external_root: Path,
+    diff_root: Path,
+    diff_tmp: Path,
     sccache_mode: str,
     cargo_incremental: str,
 ) -> dict[str, str]:
@@ -186,8 +211,14 @@ def _base_env(
     env["UV_NO_SYNC"] = "1"
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_HASH_SEED"] = "0"
+    env["MOLT_EXT_ROOT"] = str(external_root)
     env["MOLT_CACHE"] = str(cache_root)
     env["CARGO_TARGET_DIR"] = str(target_root)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_root)
+    env["MOLT_DIFF_ROOT"] = str(diff_root)
+    env["MOLT_DIFF_TMPDIR"] = str(diff_tmp)
+    env["TMPDIR"] = str(diff_tmp)
+    env.setdefault("UV_CACHE_DIR", str(external_root / "uv-cache"))
     env["MOLT_USE_SCCACHE"] = sccache_mode
     env["CARGO_INCREMENTAL"] = cargo_incremental
     return env
@@ -345,8 +376,7 @@ def _run_case(
     if diagnostics:
         diagnostics_path = out_root / "diagnostics" / f"{case.name}.json"
         diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        env["MOLT_BUILD_DIAGNOSTICS"] = "1"
-        env["MOLT_BUILD_DIAGNOSTICS_FILE"] = str(diagnostics_path)
+        cmd.extend(["--diagnostics", "--diagnostics-file", str(diagnostics_path)])
 
     def _execute(label: str) -> tuple[int, bool, str, str, float]:
         started = time.perf_counter()
@@ -551,9 +581,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output directory for logs/results. Defaults to "
-            "/Volumes/APDataStore/Molt/... when available, else "
-            "bench/results/compile_progress/..."
+            "Output directory for logs/results. Defaults under mounted "
+            "MOLT_EXT_ROOT (or /Volumes/APDataStore/Molt)."
         ),
     )
     parser.add_argument(
@@ -625,7 +654,7 @@ def _parse_args() -> argparse.Namespace:
         "--diagnostics",
         action="store_true",
         help=(
-            "Enable MOLT_BUILD_DIAGNOSTICS for each case and capture "
+            "Enable `molt build --diagnostics` for each case and capture "
             "per-case diagnostics JSON files."
         ),
     )
@@ -752,30 +781,40 @@ def _write_snapshot(
 
 def main() -> int:
     args = _parse_args()
-    repo_root = Path(__file__).resolve().parent.parent
     output_root = (
         Path(args.output_root).expanduser().resolve()
         if args.output_root
-        else _default_output_root(repo_root)
+        else _default_output_root()
     )
+    external_root = _resolved_external_root(
+        fallback=output_root if args.output_root else None
+    )
+    repo_root = Path(__file__).resolve().parent.parent
     output_root.mkdir(parents=True, exist_ok=True)
 
     target_root = output_root / "target"
     cache_root = output_root / "cache"
+    diff_root = output_root / "diff_root"
+    diff_tmp = output_root / "tmp"
     logs_root = output_root / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
 
     if args.clean_state:
-        for path in (target_root, cache_root):
+        for path in (target_root, cache_root, diff_root, diff_tmp):
             if path.exists():
                 shutil.rmtree(path)
 
     target_root.mkdir(parents=True, exist_ok=True)
     cache_root.mkdir(parents=True, exist_ok=True)
+    diff_root.mkdir(parents=True, exist_ok=True)
+    diff_tmp.mkdir(parents=True, exist_ok=True)
 
     env_base = _base_env(
         cache_root=cache_root,
         target_root=target_root,
+        external_root=external_root,
+        diff_root=diff_root,
+        diff_tmp=diff_tmp,
         sccache_mode=args.sccache_mode,
         cargo_incremental=args.cargo_incremental,
     )
