@@ -77,9 +77,21 @@ MidendTier = Literal["A", "B", "C"]
 
 
 @dataclass(frozen=True)
+class MidendTierClassification:
+    tier: MidendTier
+    source: str
+    allow_hot_promotion: bool
+
+
+@dataclass(frozen=True)
 class MidendFunctionPolicy:
     profile: MidendProfile
     tier: MidendTier
+    tier_base: MidendTier
+    tier_source: str
+    promoted: bool
+    promotion_source: str
+    promotion_signal: str
     max_rounds: int
     sccp_iter_cap: int
     cse_iter_cap: int
@@ -874,6 +886,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
+        pgo_hot_functions: set[str] | None = None,
     ) -> None:
         self.funcs_map: dict[str, FuncInfo] = {"molt_main": {"params": [], "ops": []}}
         self.current_func_name: str = "molt_main"
@@ -974,6 +987,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if optimization_profile not in {"dev", "release"}:
             optimization_profile = "release"
         self.optimization_profile: MidendProfile = optimization_profile
+        self.midend_hot_functions: set[str] = {
+            symbol.strip()
+            for symbol in (pgo_hot_functions or set())
+            if isinstance(symbol, str) and symbol.strip()
+        }
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
@@ -29460,12 +29478,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         except ValueError:
             return default
 
+    @staticmethod
+    def _midend_positive_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+        floor = max(1, minimum)
+        fallback = max(floor, int(default))
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return fallback
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return fallback
+        if parsed < floor:
+            return fallback
+        return parsed
+
+    def _midend_hot_function_match(self, function_name: str) -> str | None:
+        if not self.midend_hot_functions:
+            return None
+        module_name = self.module_name or ""
+        aliases: set[str] = {function_name}
+        if module_name:
+            aliases.add(f"{module_name}::{function_name}")
+            aliases.add(f"{module_name}.{function_name}")
+        if function_name == "molt_main":
+            init_symbol = self.module_init_symbol(module_name or "__main__")
+            aliases.add(init_symbol)
+            if module_name:
+                aliases.add(f"{module_name}::{init_symbol}")
+                aliases.add(f"{module_name}.{init_symbol}")
+        for alias in sorted(aliases):
+            if alias in self.midend_hot_functions:
+                return alias
+        return None
+
+    @staticmethod
+    def _promote_midend_tier_one_step(tier: MidendTier) -> MidendTier:
+        if tier == "C":
+            return "B"
+        if tier == "B":
+            return "A"
+        return tier
+
     def _classify_midend_tier(
         self, function_name: str, ops: list[MoltOp]
-    ) -> MidendTier:
+    ) -> MidendTierClassification:
         forced_tier = os.getenv("MOLT_MIDEND_TIER_FORCE", "").strip().upper()
         if forced_tier in {"A", "B", "C"}:
-            return cast(MidendTier, forced_tier)
+            return MidendTierClassification(
+                tier=cast(MidendTier, forced_tier),
+                source="forced_env",
+                allow_hot_promotion=False,
+            )
 
         tier_a_functions = self._midend_csv_tokens(
             os.getenv("MOLT_MIDEND_TIER_A_FUNCTIONS", "")
@@ -29477,11 +29541,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             os.getenv("MOLT_MIDEND_TIER_C_FUNCTIONS", "")
         )
         if function_name in tier_a_functions:
-            return "A"
+            return MidendTierClassification(
+                tier="A",
+                source="function_override",
+                allow_hot_promotion=False,
+            )
         if function_name in tier_c_functions:
-            return "C"
+            return MidendTierClassification(
+                tier="C",
+                source="function_override",
+                allow_hot_promotion=False,
+            )
         if function_name in tier_b_functions:
-            return "B"
+            return MidendTierClassification(
+                tier="B",
+                source="function_override",
+                allow_hot_promotion=False,
+            )
 
         module_name = self.module_name or ""
         tier_a_prefixes = self._midend_csv_tokens(
@@ -29495,18 +29571,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         for prefix in sorted(tier_a_prefixes):
             if module_name == prefix or module_name.startswith(f"{prefix}."):
-                return "A"
+                return MidendTierClassification(
+                    tier="A",
+                    source="module_prefix_override",
+                    allow_hot_promotion=False,
+                )
         for prefix in sorted(tier_c_prefixes):
             if module_name == prefix or module_name.startswith(f"{prefix}."):
-                return "C"
+                return MidendTierClassification(
+                    tier="C",
+                    source="module_prefix_override",
+                    allow_hot_promotion=False,
+                )
         for prefix in sorted(tier_b_prefixes):
             if module_name == prefix or module_name.startswith(f"{prefix}."):
-                return "B"
+                return MidendTierClassification(
+                    tier="B",
+                    source="module_prefix_override",
+                    allow_hot_promotion=False,
+                )
 
         if module_name == "__main__":
-            return "A"
+            return MidendTierClassification(
+                tier="A",
+                source="entry_module_default",
+                allow_hot_promotion=True,
+            )
         if function_name == "molt_main":
-            return "A"
+            return MidendTierClassification(
+                tier="A",
+                source="module_entry_default",
+                allow_hot_promotion=True,
+            )
 
         op_count = len(ops)
         chunk_prefix = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"
@@ -29514,11 +29610,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # Stdlib defaults to the lightest tier unless explicitly elevated
             # via A/B overrides above.
             if function_name.startswith(chunk_prefix):
-                return "C"
-            return "C"
+                return MidendTierClassification(
+                    tier="C",
+                    source="stdlib_chunk_default",
+                    allow_hot_promotion=True,
+                )
+            return MidendTierClassification(
+                tier="C",
+                source="stdlib_default",
+                allow_hot_promotion=True,
+            )
         if op_count >= 1800:
-            return "C"
-        return "B"
+            return MidendTierClassification(
+                tier="C",
+                source="op_count_threshold",
+                allow_hot_promotion=True,
+            )
+        return MidendTierClassification(
+            tier="B",
+            source="default",
+            allow_hot_promotion=True,
+        )
 
     def _resolve_midend_function_policy(
         self,
@@ -29533,7 +29645,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             profile = cast(MidendProfile, profile_override)
 
         resolved_function = function_name or self._active_midend_function_name
-        tier = self._classify_midend_tier(resolved_function, ops)
+        tier_classification = self._classify_midend_tier(resolved_function, ops)
+        tier_base = tier_classification.tier
+        tier = tier_base
+        promoted = False
+        promotion_source = ""
+        promotion_signal = ""
+        hot_promotion_enabled = os.getenv(
+            "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if hot_promotion_enabled and tier_classification.allow_hot_promotion:
+            hot_signal = self._midend_hot_function_match(resolved_function)
+            if hot_signal and tier_base in {"B", "C"}:
+                promoted_tier = self._promote_midend_tier_one_step(tier_base)
+                if promoted_tier != tier_base:
+                    tier = promoted_tier
+                    promoted = True
+                    promotion_source = "pgo_hot_functions"
+                    promotion_signal = hot_signal
         defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
             ("dev", "A"): {
                 "max_rounds": 2,
@@ -29615,6 +29744,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return MidendFunctionPolicy(
             profile=profile,
             tier=tier,
+            tier_base=tier_base,
+            tier_source=tier_classification.source,
+            promoted=promoted,
+            promotion_source=promotion_source,
+            promotion_signal=promotion_signal,
             max_rounds=int(selected["max_rounds"]),
             sccp_iter_cap=int(selected["sccp_iter_cap"]),
             cse_iter_cap=int(selected["cse_iter_cap"]),
@@ -29670,6 +29804,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.midend_policy_outcomes_by_function[self._active_midend_function_name] = {
             "profile": policy.profile,
             "tier": policy.tier,
+            "tier_base": policy.tier_base,
+            "tier_source": policy.tier_source,
+            "tier_effective": policy.tier,
+            "promoted": policy.promoted,
+            "promotion_source": policy.promotion_source,
+            "promotion_signal": policy.promotion_signal,
             "budget_ms": round(policy.budget_ms, 3),
             "spent_ms": round(max(0.0, spent_ms), 3),
             "degraded": degraded,
@@ -34001,17 +34141,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         changed = True
         iterations = 0
-        max_cse_iterations_env = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
         if max_cse_iterations_override is not None and max_cse_iterations_override > 0:
             max_cse_iterations = max_cse_iterations_override
-        elif max_cse_iterations_env:
-            try:
-                parsed = int(max_cse_iterations_env)
-            except ValueError:
-                parsed = 0
-            max_cse_iterations = parsed if parsed > 0 else 20
         else:
-            max_cse_iterations = 20
+            max_cse_iterations = self._midend_positive_int_env(
+                "MOLT_CSE_MAX_ITERS", 20, minimum=1
+            )
         while changed and iterations < max_cse_iterations:
             iterations += 1
             changed = False
@@ -34125,32 +34260,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
-        max_rounds_env = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
-        if max_rounds_env:
-            try:
-                parsed = int(max_rounds_env)
-            except ValueError:
-                parsed = 0
-            if parsed > 0:
-                max_rounds = parsed
-
-        sccp_cap_env = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
-        if sccp_cap_env:
-            try:
-                parsed = int(sccp_cap_env)
-            except ValueError:
-                parsed = 0
-            if parsed > 0:
-                sccp_iter_cap = parsed
-
-        cse_cap_env = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
-        if cse_cap_env:
-            try:
-                parsed = int(cse_cap_env)
-            except ValueError:
-                parsed = 0
-            if parsed > 0:
-                cse_iter_cap = parsed
+        max_rounds = self._midend_positive_int_env(
+            "MOLT_MIDEND_MAX_ROUNDS", max_rounds, minimum=1
+        )
+        sccp_iter_cap = self._midend_positive_int_env(
+            "MOLT_SCCP_MAX_ITERS", sccp_iter_cap, minimum=1
+        )
+        cse_iter_cap = self._midend_positive_int_env(
+            "MOLT_CSE_MAX_ITERS", cse_iter_cap, minimum=1
+        )
         enable_idempotence_probe = (
             os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0"
         )
@@ -34270,7 +34388,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if not over_budget and not preemptive:
                     break
                 action: str | None = None
-                if enable_cse:
+                if max_rounds > (round_index + 1):
+                    max_rounds = round_index + 1
+                    action = f"cap_rounds_to_{max_rounds}"
+                elif sccp_iter_cap > 8:
+                    sccp_iter_cap = max(8, sccp_iter_cap // 2)
+                    action = f"shrink_sccp_iter_cap_to_{sccp_iter_cap}"
+                elif cse_iter_cap > 4:
+                    cse_iter_cap = max(4, cse_iter_cap // 2)
+                    action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
+                elif enable_idempotence_probe:
+                    enable_idempotence_probe = False
+                    action = "disable_idempotence_probe"
+                elif enable_cse:
                     enable_cse = False
                     action = "disable_cse"
                 elif enable_deep_edge_thread:
@@ -34282,18 +34412,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 elif enable_licm:
                     enable_licm = False
                     action = "disable_licm"
-                elif enable_idempotence_probe:
-                    enable_idempotence_probe = False
-                    action = "disable_idempotence_probe"
-                elif max_rounds > (round_index + 1):
-                    max_rounds = round_index + 1
-                    action = f"cap_rounds_to_{max_rounds}"
-                elif sccp_iter_cap > 8:
-                    sccp_iter_cap = max(8, sccp_iter_cap // 2)
-                    action = f"shrink_sccp_iter_cap_to_{sccp_iter_cap}"
-                elif cse_iter_cap > 4:
-                    cse_iter_cap = max(4, cse_iter_cap // 2)
-                    action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
                 if action is None:
                     break
                 degraded = True

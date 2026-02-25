@@ -109,6 +109,8 @@ Notes:
 - Use `--metrics` to constrain analysis (for example `--metrics molt_time_s molt_codon_ratio`).
 - Use `--fail-regression-count`, `--fail-regression-pct`, and
   `--fail-regression-abs` to make regressions fail with exit code `2` in CI/swarms.
+- CI perf-smoke lane runs this gate against `bench/baseline.json` for
+  `molt_cpython_ratio`, `molt_time_s`, and `molt_build_s`.
 
 ## Friend-Owned Suite Benchmarking
 
@@ -300,6 +302,9 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
 ```
 
 - Results are written to `matrix_results.json` under the chosen output root.
+- Results include a machine-readable `gate_status` block (thresholds, observed
+  counts, violations, pass/fail).
+- Use `--fail-on-gate` to return exit code `2` when `gate_status.passed=false`.
 - Default output root uses `MOLT_EXT_ROOT` (`/Volumes/APDataStore/Molt` if unset).
 - If external root is unavailable, pass `--output-root` explicitly only for an
   approved emergency override.
@@ -331,6 +336,11 @@ payloads automatically.
   - `--diagnostics-file <path>`
   - Example:
     `uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+  - Midend payloads include tiering telemetry (`tier_base_summary`,
+    `promoted_functions`, `promotion_source_summary`,
+    `promotion_hotspots_top`) for PGO-guided tier promotion audits.
+  - Disable hot-function tier promotion explicitly with
+    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` when doing controlled A/B pass studies.
 - Queue lanes (daemon warm queue, opt-in):
   - `--cases dev_queue_daemon_on dev_queue_daemon_off`
   - each queue case performs warmup runs before the measured attempt

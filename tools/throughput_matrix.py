@@ -354,6 +354,162 @@ def _run_diff_matrix(
     return cases
 
 
+def _is_nonzero_returncode(payload: dict[str, Any]) -> bool:
+    rc = payload.get("returncode")
+    return isinstance(rc, int) and rc != 0
+
+
+def _is_timed_out(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("timed_out", False))
+
+
+def _evaluate_gate_status(
+    args: argparse.Namespace,
+    *,
+    build_matrix: list[dict[str, Any]],
+    diff_matrix: list[dict[str, Any]],
+) -> dict[str, Any]:
+    build_error_count = 0
+    build_timeout_count = 0
+    diff_command_error_count = 0
+    diff_timeout_count = 0
+    diff_failed_tests = 0
+    ratio_violations: list[dict[str, Any]] = []
+    build_error_cases: list[str] = []
+    build_timeout_cases: list[str] = []
+    diff_error_cases: list[str] = []
+    diff_timeout_cases: list[str] = []
+    diff_failed_cases: list[dict[str, Any]] = []
+
+    for case in build_matrix:
+        case_name = str(case.get("case", "unknown"))
+        single = case.get("single")
+        if isinstance(single, dict):
+            if _is_nonzero_returncode(single):
+                build_error_count += 1
+                build_error_cases.append(f"{case_name}:single")
+            if _is_timed_out(single):
+                build_timeout_count += 1
+                build_timeout_cases.append(f"{case_name}:single")
+            single_elapsed = single.get("elapsed_sec")
+        else:
+            single_elapsed = None
+
+        workers = case.get("concurrent_workers", [])
+        if isinstance(workers, list):
+            for index, worker in enumerate(workers):
+                if not isinstance(worker, dict):
+                    continue
+                if _is_nonzero_returncode(worker):
+                    build_error_count += 1
+                    build_error_cases.append(f"{case_name}:worker_{index}")
+                if _is_timed_out(worker):
+                    build_timeout_count += 1
+                    build_timeout_cases.append(f"{case_name}:worker_{index}")
+
+        ratio_threshold = args.gate_max_concurrent_vs_single_ratio
+        conc_wall = case.get("concurrent_wall_sec")
+        if (
+            ratio_threshold is not None
+            and isinstance(single_elapsed, (int, float))
+            and float(single_elapsed) > 0
+            and isinstance(conc_wall, (int, float))
+        ):
+            ratio = float(conc_wall) / float(single_elapsed)
+            if ratio > ratio_threshold:
+                ratio_violations.append(
+                    {
+                        "case": case_name,
+                        "single_elapsed_sec": round(float(single_elapsed), 6),
+                        "concurrent_wall_sec": round(float(conc_wall), 6),
+                        "ratio": round(ratio, 6),
+                        "max_ratio": ratio_threshold,
+                    }
+                )
+
+    for case in diff_matrix:
+        case_name = str(case.get("case", "unknown"))
+        if _is_nonzero_returncode(case):
+            diff_command_error_count += 1
+            diff_error_cases.append(case_name)
+        if _is_timed_out(case):
+            diff_timeout_count += 1
+            diff_timeout_cases.append(case_name)
+        summary = case.get("summary")
+        if isinstance(summary, dict):
+            failed = summary.get("failed")
+            if isinstance(failed, int) and failed > 0:
+                diff_failed_tests += failed
+                diff_failed_cases.append(
+                    {
+                        "case": case_name,
+                        "failed": failed,
+                        "passed": summary.get("passed"),
+                        "total": summary.get("total"),
+                    }
+                )
+
+    thresholds: dict[str, Any] = {
+        "max_build_errors": args.gate_max_build_errors,
+        "max_build_timeouts": args.gate_max_build_timeouts,
+        "max_diff_command_errors": args.gate_max_diff_command_errors,
+        "max_diff_timeouts": args.gate_max_diff_timeouts,
+        "max_diff_failed_tests": args.gate_max_diff_failed_tests,
+        "max_concurrent_vs_single_ratio": args.gate_max_concurrent_vs_single_ratio,
+    }
+    observed: dict[str, Any] = {
+        "build_errors": build_error_count,
+        "build_timeouts": build_timeout_count,
+        "diff_command_errors": diff_command_error_count,
+        "diff_timeouts": diff_timeout_count,
+        "diff_failed_tests": diff_failed_tests,
+        "ratio_violations": len(ratio_violations),
+    }
+
+    failed_reasons: list[str] = []
+    if build_error_count > args.gate_max_build_errors:
+        failed_reasons.append(
+            f"build command errors {build_error_count} > {args.gate_max_build_errors}"
+        )
+    if build_timeout_count > args.gate_max_build_timeouts:
+        failed_reasons.append(
+            f"build timeouts {build_timeout_count} > {args.gate_max_build_timeouts}"
+        )
+    if diff_command_error_count > args.gate_max_diff_command_errors:
+        failed_reasons.append(
+            "diff command errors "
+            f"{diff_command_error_count} > {args.gate_max_diff_command_errors}"
+        )
+    if diff_timeout_count > args.gate_max_diff_timeouts:
+        failed_reasons.append(
+            f"diff timeouts {diff_timeout_count} > {args.gate_max_diff_timeouts}"
+        )
+    if diff_failed_tests > args.gate_max_diff_failed_tests:
+        failed_reasons.append(
+            f"diff failed tests {diff_failed_tests} > {args.gate_max_diff_failed_tests}"
+        )
+    if ratio_violations:
+        failed_reasons.append(
+            "build concurrency ratio violations detected: "
+            f"{len(ratio_violations)} over threshold"
+        )
+
+    return {
+        "passed": not failed_reasons,
+        "thresholds": thresholds,
+        "observed": observed,
+        "failed_reasons": failed_reasons,
+        "violations": {
+            "build_error_cases": build_error_cases,
+            "build_timeout_cases": build_timeout_cases,
+            "diff_error_cases": diff_error_cases,
+            "diff_timeout_cases": diff_timeout_cases,
+            "diff_failed_cases": diff_failed_cases,
+            "concurrency_ratio_cases": ratio_violations,
+        },
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -435,6 +591,53 @@ def parse_args() -> argparse.Namespace:
         default=180.0,
         help="Per-diff command timeout in seconds (default: 180).",
     )
+    parser.add_argument(
+        "--gate-max-build-errors",
+        type=int,
+        default=0,
+        help="Gate threshold for non-zero build command return codes (default: 0).",
+    )
+    parser.add_argument(
+        "--gate-max-build-timeouts",
+        type=int,
+        default=0,
+        help="Gate threshold for build command timeouts (default: 0).",
+    )
+    parser.add_argument(
+        "--gate-max-diff-command-errors",
+        type=int,
+        default=0,
+        help=("Gate threshold for non-zero diff command return codes (default: 0)."),
+    )
+    parser.add_argument(
+        "--gate-max-diff-timeouts",
+        type=int,
+        default=0,
+        help="Gate threshold for diff command timeouts (default: 0).",
+    )
+    parser.add_argument(
+        "--gate-max-diff-failed-tests",
+        type=int,
+        default=0,
+        help=(
+            "Gate threshold for summed failed diff tests from per-case summaries "
+            "(default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--gate-max-concurrent-vs-single-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional gate threshold for `concurrent_wall_sec / single_elapsed_sec` "
+            "per build case."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-gate",
+        action="store_true",
+        help="Exit with code 2 when gate status fails.",
+    )
     return parser.parse_args()
 
 
@@ -465,16 +668,40 @@ def main() -> int:
             "diff_scripts": args.diff_scripts if args.run_diff else [],
             "diff_jobs": args.diff_jobs if args.run_diff else 0,
             "diff_timeout_sec": args.diff_timeout_sec if args.run_diff else 0,
+            "gate_max_build_errors": args.gate_max_build_errors,
+            "gate_max_build_timeouts": args.gate_max_build_timeouts,
+            "gate_max_diff_command_errors": args.gate_max_diff_command_errors,
+            "gate_max_diff_timeouts": args.gate_max_diff_timeouts,
+            "gate_max_diff_failed_tests": args.gate_max_diff_failed_tests,
+            "gate_max_concurrent_vs_single_ratio": (
+                args.gate_max_concurrent_vs_single_ratio
+            ),
+            "fail_on_gate": args.fail_on_gate,
         }
     }
     results["build_matrix"] = _run_build_matrix(args, repo_root, output_root)
     results["diff_matrix"] = (
         _run_diff_matrix(args, repo_root, output_root) if args.run_diff else []
     )
+    results["gate_status"] = _evaluate_gate_status(
+        args,
+        build_matrix=results["build_matrix"],
+        diff_matrix=results["diff_matrix"],
+    )
 
     out_path = output_root / "matrix_results.json"
     out_path.write_text(json.dumps(results, indent=2) + "\n")
     print(f"wrote {out_path}", flush=True)
+    if bool(results["gate_status"].get("passed", False)):
+        print("gate_status=pass", flush=True)
+        return 0
+    print("gate_status=fail", flush=True)
+    reasons = results["gate_status"].get("failed_reasons", [])
+    if isinstance(reasons, list):
+        for reason in reasons:
+            print(f"gate_failure: {reason}", flush=True)
+    if args.fail_on_gate:
+        return 2
     return 0
 
 
