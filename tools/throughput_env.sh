@@ -2,49 +2,71 @@
 set -euo pipefail
 
 # throughput_env.sh
-# External-volume-first build throughput bootstrap.
+# External-volume-only build throughput bootstrap.
 #
 # Usage:
 #   eval "$(tools/throughput_env.sh --print)"
 #   tools/throughput_env.sh --apply
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXTERNAL_ROOT="/Volumes/APDataStore/Molt"
+DEFAULT_EXTERNAL_ROOT="/Volumes/APDataStore/Molt"
+
+_resolve_external_root() {
+  local candidate="${MOLT_EXT_ROOT:-$DEFAULT_EXTERNAL_ROOT}"
+  if [[ ! -d "$candidate" ]]; then
+    cat >&2 <<EOF
+error: external artifact root is unavailable: $candidate
+mount $DEFAULT_EXTERNAL_ROOT or export MOLT_EXT_ROOT to another mounted external path.
+EOF
+    exit 2
+  fi
+  RESOLVED_EXTERNAL_ROOT="$candidate"
+}
 
 _choose_defaults() {
-  if [[ -d "$EXTERNAL_ROOT" ]]; then
-    DEFAULT_MOLT_CACHE="$EXTERNAL_ROOT/molt_cache"
-    DEFAULT_SCCACHE_DIR="$EXTERNAL_ROOT/sccache"
-    DEFAULT_SCCACHE_SIZE="20G"
-    DEFAULT_CACHE_MAX_GB="200"
-  else
-    DEFAULT_MOLT_CACHE="${HOME}/Library/Caches/molt"
-    DEFAULT_SCCACHE_DIR="${HOME}/Library/Caches/Mozilla.sccache"
-    DEFAULT_SCCACHE_SIZE="10G"
-    DEFAULT_CACHE_MAX_GB="30"
-  fi
-  # Keep Rust incremental artifacts on local APFS/ext4 for hard-link behavior.
-  DEFAULT_CARGO_TARGET_DIR="${HOME}/.molt/throughput_target"
+  DEFAULT_MOLT_EXT_ROOT="$RESOLVED_EXTERNAL_ROOT"
+  DEFAULT_CARGO_TARGET_DIR="$DEFAULT_MOLT_EXT_ROOT/cargo-target"
+  DEFAULT_MOLT_DIFF_CARGO_TARGET_DIR="$DEFAULT_CARGO_TARGET_DIR"
+  DEFAULT_MOLT_CACHE="$DEFAULT_MOLT_EXT_ROOT/molt_cache"
+  DEFAULT_MOLT_DIFF_ROOT="$DEFAULT_MOLT_EXT_ROOT/diff"
+  DEFAULT_MOLT_DIFF_TMPDIR="$DEFAULT_MOLT_EXT_ROOT/tmp"
+  DEFAULT_UV_CACHE_DIR="$DEFAULT_MOLT_EXT_ROOT/uv-cache"
+  DEFAULT_TMPDIR="$DEFAULT_MOLT_EXT_ROOT/tmp"
+  DEFAULT_SCCACHE_DIR="$DEFAULT_MOLT_EXT_ROOT/sccache"
+  DEFAULT_SCCACHE_SIZE="20G"
+  DEFAULT_CACHE_MAX_GB="200"
 }
 
 _emit_exports() {
   cat <<EOF
-export MOLT_CACHE="${MOLT_CACHE:-$DEFAULT_MOLT_CACHE}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$DEFAULT_CARGO_TARGET_DIR}"
-export MOLT_DIFF_CARGO_TARGET_DIR="${MOLT_DIFF_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-$DEFAULT_CARGO_TARGET_DIR}}"
+export MOLT_EXT_ROOT="$DEFAULT_MOLT_EXT_ROOT"
+export MOLT_CACHE="$DEFAULT_MOLT_CACHE"
+export CARGO_TARGET_DIR="$DEFAULT_CARGO_TARGET_DIR"
+export MOLT_DIFF_CARGO_TARGET_DIR="$DEFAULT_MOLT_DIFF_CARGO_TARGET_DIR"
+export MOLT_DIFF_ROOT="$DEFAULT_MOLT_DIFF_ROOT"
+export MOLT_DIFF_TMPDIR="$DEFAULT_MOLT_DIFF_TMPDIR"
+export UV_CACHE_DIR="$DEFAULT_UV_CACHE_DIR"
+export TMPDIR="$DEFAULT_TMPDIR"
 export MOLT_USE_SCCACHE="${MOLT_USE_SCCACHE:-1}"
 export MOLT_DIFF_ALLOW_RUSTC_WRAPPER="${MOLT_DIFF_ALLOW_RUSTC_WRAPPER:-1}"
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
-export SCCACHE_DIR="${SCCACHE_DIR:-$DEFAULT_SCCACHE_DIR}"
-export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$DEFAULT_SCCACHE_SIZE}"
-export MOLT_CACHE_MAX_GB="${MOLT_CACHE_MAX_GB:-$DEFAULT_CACHE_MAX_GB}"
+export SCCACHE_DIR="$DEFAULT_SCCACHE_DIR"
+export SCCACHE_CACHE_SIZE="$DEFAULT_SCCACHE_SIZE"
+export MOLT_CACHE_MAX_GB="$DEFAULT_CACHE_MAX_GB"
 export MOLT_CACHE_MAX_AGE_DAYS="${MOLT_CACHE_MAX_AGE_DAYS:-30}"
 EOF
 }
 
 _apply() {
   eval "$(_emit_exports)"
-  mkdir -p "$MOLT_CACHE" "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
+  mkdir -p \
+    "$MOLT_CACHE" \
+    "$CARGO_TARGET_DIR" \
+    "$MOLT_DIFF_ROOT" \
+    "$MOLT_DIFF_TMPDIR" \
+    "$UV_CACHE_DIR" \
+    "$TMPDIR" \
+    "$SCCACHE_DIR"
 
   if command -v sccache >/dev/null 2>&1; then
     SCCACHE_DIR="$SCCACHE_DIR" sccache --stop-server >/dev/null 2>&1 || true
@@ -61,14 +83,20 @@ _apply() {
   fi
 
   echo "Configured throughput env:"
+  echo "  MOLT_EXT_ROOT=$MOLT_EXT_ROOT"
   echo "  MOLT_CACHE=$MOLT_CACHE"
   echo "  CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
   echo "  MOLT_DIFF_CARGO_TARGET_DIR=$MOLT_DIFF_CARGO_TARGET_DIR"
+  echo "  MOLT_DIFF_ROOT=$MOLT_DIFF_ROOT"
+  echo "  MOLT_DIFF_TMPDIR=$MOLT_DIFF_TMPDIR"
+  echo "  UV_CACHE_DIR=$UV_CACHE_DIR"
+  echo "  TMPDIR=$TMPDIR"
   echo "  SCCACHE_DIR=$SCCACHE_DIR"
   echo "  SCCACHE_CACHE_SIZE=$SCCACHE_CACHE_SIZE"
 }
 
 main() {
+  _resolve_external_root
   _choose_defaults
   case "${1:---apply}" in
     --print)

@@ -33,6 +33,9 @@ uv run --python 3.12 python3 tools/bench_wasm.py \
 
 This emits `molt_wasm_failure_*` fields and `molt_wasm_control_*` fields per
 failed benchmark in JSON outputs for quick node-vs-wasmtime classification.
+It also records wasm import-surface metrics per benchmark
+(`molt_wasm_import_count`, `molt_wasm_function_import_count`,
+`molt_wasm_function_imports_per_kb`) to track call-surface density over time.
 
 ```bash
 # Basic run
@@ -104,6 +107,8 @@ Notes:
 - By default, it diffs all shared numeric metrics.
 - It skips all-zero metrics unless `--include-zero-only-metrics` is passed.
 - Use `--metrics` to constrain analysis (for example `--metrics molt_time_s molt_codon_ratio`).
+- Use `--fail-regression-count`, `--fail-regression-pct`, and
+  `--fail-regression-abs` to make regressions fail with exit code `2` in CI/swarms.
 
 ## Friend-Owned Suite Benchmarking
 
@@ -208,6 +213,8 @@ gate bundle (no exceptions):
 - **Super Bench (`--super`)**: Runs 10 samples and calculates variance. Use this for final release validation or when results are noisy.
 - **Molt build vs run time**: `molt_build_s` captures compile time; `molt_time_s` is run time only for fair runtime comparisons.
 - **WASM build vs run time**: `molt_wasm_build_s` captures wasm compile time; `molt_wasm_time_s` is run time only.
+- **WASM import density**: use `molt_wasm_function_imports_per_kb` and related
+  import-count fields to monitor runtime call-surface pressure.
 
 ## Profiles
 
@@ -249,6 +256,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Bootstrap a consistent throughput environment first:
   - `eval "$(tools/throughput_env.sh --print)"`
   - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
+- Defaults require a mounted external artifact root (`MOLT_EXT_ROOT`,
+  default `/Volumes/APDataStore/Molt`).
 - Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
 - Prefer `--profile dev` for iteration loops (`molt build/run/compare/diff/test --suite diff`); reserve `--profile release` for release gates and perf publication.
 - `--profile dev` routes to Cargo `dev-fast` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
@@ -258,8 +267,9 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - `sccache -s` to inspect hit rates
 - Keep backend daemon enabled for native compile loops (`MOLT_BACKEND_DAEMON=1`; default) so Cranelift initialization is amortized across builds.
 - In multi-agent runs, share cache/target roots on the external volume to improve reuse:
+  - `MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`
   - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache`
-  - `CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target`
+  - `CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target`
 - Keep diff runs on the same shared target:
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by `tools/throughput_env.sh --apply`)
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
@@ -269,7 +279,7 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 
 ```bash
 MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache \
-CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target \
+CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target \
 MOLT_USE_SCCACHE=1 \
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py --profile dev --cache-report
 ```
@@ -283,14 +293,16 @@ across profile and wrapper modes:
 uv run --python 3.12 python3 tools/throughput_matrix.py \
   --concurrency 2 \
   --timeout-sec 75 \
-  --shared-target-dir /Users/$USER/.molt/throughput_target \
+  --shared-target-dir /Volumes/APDataStore/Molt/cargo-target \
   --run-diff \
   --diff-jobs 2 \
   --diff-timeout-sec 180
 ```
 
 - Results are written to `matrix_results.json` under the chosen output root.
-- When `/Volumes/APDataStore/Molt` exists, outputs default there automatically.
+- Default output root uses `MOLT_EXT_ROOT` (`/Volumes/APDataStore/Molt` if unset).
+- If external root is unavailable, pass `--output-root` explicitly only for an
+  approved emergency override.
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and enforce `MOLT_DIFF_RLIMIT_GB=10`.
 - Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
 
@@ -315,10 +327,10 @@ payloads automatically.
   - snapshots are refreshed after every completed case to preserve partial
     progress if a long run is interrupted
 - Optional compiler diagnostics (phase timings + module inclusion reasons):
-  - `MOLT_BUILD_DIAGNOSTICS=1`
-  - `MOLT_BUILD_DIAGNOSTICS_FILE=build_diagnostics.json`
+  - `--diagnostics`
+  - `--diagnostics-file <path>`
   - Example:
-    `MOLT_BUILD_DIAGNOSTICS=1 MOLT_BUILD_DIAGNOSTICS_FILE=build_diag.json uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache examples/hello.py`
+    `uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
 - Queue lanes (daemon warm queue, opt-in):
   - `--cases dev_queue_daemon_on dev_queue_daemon_off`
   - each queue case performs warmup runs before the measured attempt
@@ -333,8 +345,8 @@ payloads automatically.
   - add `--resume` for persistent-shell reruns so interrupted sweeps continue
     from already completed cases
 - Default output root:
-  - `/Volumes/APDataStore/Molt/compile_progress_<timestamp>` when available
-  - `bench/results/compile_progress/<timestamp>` otherwise
+  - `$MOLT_EXT_ROOT/compile_progress_<timestamp>` (default `MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`)
+  - if external root is unavailable, pass `--output-root` explicitly for an approved emergency override
 - Progress board and KPI targets live in
   `docs/benchmarks/compile_progress.md`.
 
@@ -342,8 +354,7 @@ payloads automatically.
 
 - `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` by default.
 - Defaults:
-  - External `MOLT_CACHE`: `200G` max + `30` day age pruning.
-  - Local fallback: `30G` max + `30` day age pruning.
+  - `MOLT_CACHE`: `200G` max + `30` day age pruning.
 - Override with env vars before running the script:
   - `MOLT_CACHE_MAX_GB=<n>`
   - `MOLT_CACHE_MAX_AGE_DAYS=<n>`

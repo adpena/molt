@@ -107,6 +107,9 @@ class WasmBinary:
     build_s: float
     size_kb: float
     linked_used: bool
+    import_count_total: int | None
+    import_count_functions: int | None
+    import_count_tables: int | None
 
 
 @dataclass(frozen=True)
@@ -264,6 +267,73 @@ def _read_wasm_table_min(path: Path) -> int | None:
     except ValueError:
         return None
     return None
+
+
+def _read_wasm_import_metrics(path: Path) -> dict[str, int] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    total_imports = 0
+    function_imports = 0
+    table_imports = 0
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 2:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                _, cursor = _read_wasm_string(payload, cursor)
+                _, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                total_imports += 1
+                if kind == 0:
+                    function_imports += 1
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    table_imports += 1
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                else:
+                    raise ValueError("Unknown import kind")
+            break
+    except ValueError:
+        return None
+    return {
+        "total": total_imports,
+        "functions": function_imports,
+        "tables": table_imports,
+    }
 
 
 def _parse_node_major(version_text: str) -> int | None:
@@ -1177,6 +1247,7 @@ def prepare_wasm_binary(
     else:
         wasm_path = output_path
     wasm_size = wasm_path.stat().st_size / 1024
+    import_metrics = _read_wasm_import_metrics(wasm_path)
     run_env = env.copy()
     # Runtime executions should not inherit host-Python import environment knobs.
     # Keep run-time behavior aligned with standalone compiled binaries.
@@ -1191,7 +1262,22 @@ def prepare_wasm_binary(
         run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
     else:
         run_env["MOLT_WASM_PREFER_LINKED"] = "0"
-    return WasmBinary(run_env, temp_dir, build_s, wasm_size, linked_used)
+    return WasmBinary(
+        run_env=run_env,
+        temp_dir=temp_dir,
+        build_s=build_s,
+        size_kb=wasm_size,
+        linked_used=linked_used,
+        import_count_total=(
+            import_metrics["total"] if import_metrics is not None else None
+        ),
+        import_count_functions=(
+            import_metrics["functions"] if import_metrics is not None else None
+        ),
+        import_count_tables=(
+            import_metrics["tables"] if import_metrics is not None else None
+        ),
+    )
 
 
 def measure_wasm_run(
@@ -1441,6 +1527,25 @@ def bench_results(
             "molt_wasm_ok": ok,
             "molt_wasm_linked": linked_used,
         }
+        if wasm_binary is not None:
+            if wasm_binary.import_count_total is not None:
+                data[name]["molt_wasm_import_count"] = wasm_binary.import_count_total
+            if wasm_binary.import_count_functions is not None:
+                data[name]["molt_wasm_function_import_count"] = (
+                    wasm_binary.import_count_functions
+                )
+            if wasm_binary.import_count_tables is not None:
+                data[name]["molt_wasm_table_import_count"] = (
+                    wasm_binary.import_count_tables
+                )
+            if (
+                wasm_binary.import_count_functions is not None
+                and wasm_binary.size_kb > 0
+            ):
+                data[name]["molt_wasm_function_imports_per_kb"] = round(
+                    wasm_binary.import_count_functions / wasm_binary.size_kb,
+                    6,
+                )
         if failed_sample is not None:
             data[name]["molt_wasm_failure_class"] = failed_sample.error_class
             data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
