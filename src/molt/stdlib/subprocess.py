@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping as _Mapping
 import os as _os
 import time as _time
 from typing import Any
@@ -26,6 +27,9 @@ _MOLT_STREAM_CLOSE = _require_intrinsic("molt_stream_close", globals())
 _MOLT_STREAM_DROP = _require_intrinsic("molt_stream_drop", globals())
 _MOLT_STREAM_READER_NEW = _require_intrinsic("molt_stream_reader_new", globals())
 _MOLT_STREAM_READER_READ = _require_intrinsic("molt_stream_reader_read", globals())
+_MOLT_STREAM_READER_READLINE = _require_intrinsic(
+    "molt_stream_reader_readline", globals()
+)
 _MOLT_STREAM_READER_DROP = _require_intrinsic("molt_stream_reader_drop", globals())
 _MOLT_PENDING = _require_intrinsic("molt_pending", globals())
 _MOLT_SUBPROCESS_PIPE_CONST = _require_intrinsic(
@@ -46,6 +50,7 @@ _MODE_DEVNULL = 2
 _MODE_STDOUT = -2
 _INHERIT = 0
 _FD_BASE = 1 << 30
+_FD_MAX = (1 << 30) - 1
 _POLL_SLEEP = 0.001
 _PENDING_SENTINEL: Any | None = None
 
@@ -67,15 +72,35 @@ class SubprocessError(Exception):
 
 
 class TimeoutExpired(SubprocessError):
-    def __init__(self, cmd: Any, timeout: float) -> None:
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "output" or name == "stdout":
+            object.__setattr__(self, "output", value)
+            object.__setattr__(self, "stdout", value)
+            return
+        object.__setattr__(self, name, value)
+
+    def __init__(
+        self,
+        cmd: Any,
+        timeout: float,
+        output: Any | None = None,
+        stderr: Any | None = None,
+    ) -> None:
         super().__init__(f"Command {cmd!r} timed out after {timeout} seconds")
         self.cmd = cmd
         self.timeout = timeout
-        self.output: Any | None = None
-        self.stderr: Any | None = None
+        self.output = output
+        self.stderr = stderr
 
 
 class CalledProcessError(SubprocessError):
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "output" or name == "stdout":
+            object.__setattr__(self, "output", value)
+            object.__setattr__(self, "stdout", value)
+            return
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         returncode: int,
@@ -148,10 +173,10 @@ def _coerce_argv(args: Any, shell: bool) -> list[str]:
         raise TypeError("args must be str, bytes, os.PathLike, or a sequence")
 
 
-def _coerce_env(env: dict[Any, Any] | None) -> dict[str, str] | None:
+def _coerce_env(env: _Mapping[Any, Any] | None) -> dict[str, str] | None:
     if env is None:
         return None
-    if not isinstance(env, dict):
+    if not isinstance(env, _Mapping):
         raise TypeError("env must be a mapping")
     out: dict[str, str] = {}
     for key, value in env.items():
@@ -168,6 +193,15 @@ def _normalize_timeout(timeout: float | None) -> float | None:
     return value
 
 
+def _encode_fd(value: int) -> int:
+    fd = int(value)
+    if fd < 0:
+        raise ValueError("file descriptor must be >= 0")
+    if fd > _FD_MAX:
+        raise ValueError("file descriptor is too large")
+    return _FD_BASE + fd
+
+
 def _stdio_mode(value: Any, name: str) -> int:
     if value is None:
         return _INHERIT
@@ -177,9 +211,135 @@ def _stdio_mode(value: Any, name: str) -> int:
         return _MODE_DEVNULL
     if name == "stderr" and value == STDOUT:
         return _MODE_STDOUT
-    if isinstance(value, int) and value >= 0:
-        return _FD_BASE + int(value)
+    if isinstance(value, int):
+        return _encode_fd(value)
+    fileno = getattr(value, "fileno", None)
+    if callable(fileno):
+        return _encode_fd(fileno())
     raise ValueError(f"unsupported {name} redirection value")
+
+
+class _PopenPipeWriter:
+    def __init__(
+        self,
+        stream: Any,
+        *,
+        text: bool,
+        encoding: str,
+        errors: str,
+        sleeper: Any,
+    ) -> None:
+        self._stream = stream
+        self._text = text
+        self._encoding = encoding
+        self._errors = errors
+        self._sleep = sleeper
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def write(self, data: Any) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._text:
+            if isinstance(data, str):
+                payload = data.encode(self._encoding, self._errors)
+                written = len(data)
+            elif isinstance(data, (bytes, bytearray, memoryview)):
+                payload = bytes(data)
+                written = len(payload)
+            else:
+                raise TypeError("input must be str or bytes-like")
+        else:
+            if isinstance(data, str):
+                raise TypeError("input must be bytes-like when text=False")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("input must be bytes-like")
+            payload = bytes(data)
+            written = len(payload)
+        while True:
+            out = _MOLT_STREAM_SEND_OBJ(self._stream, payload)
+            if _is_pending(out):
+                self._sleep()
+                continue
+            break
+        return written
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        _MOLT_STREAM_CLOSE(self._stream)
+
+
+class _PopenPipeReader:
+    def __init__(
+        self,
+        stream: Any,
+        reader: Any,
+        *,
+        text: bool,
+        encoding: str,
+        errors: str,
+        sleeper: Any,
+    ) -> None:
+        self._stream = stream
+        self._reader = reader
+        self._text = text
+        self._encoding = encoding
+        self._errors = errors
+        self._sleep = sleeper
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _decode(self, payload: bytes) -> Any:
+        if self._text:
+            return payload.decode(self._encoding, self._errors)
+        return payload
+
+    def read(self, size: int | None = -1) -> Any:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if size is None:
+            size = -1
+        while True:
+            out = _MOLT_STREAM_READER_READ(self._reader, int(size))
+            if _is_pending(out):
+                self._sleep()
+                continue
+            if out is None:
+                return self._decode(b"")
+            return self._decode(bytes(out))
+
+    def readline(self, size: int | None = -1) -> Any:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if size == 0:
+            return self._decode(b"")
+        if size is not None and int(size) >= 0:
+            return self.read(int(size))
+        while True:
+            out = _MOLT_STREAM_READER_READLINE(self._reader)
+            if _is_pending(out):
+                self._sleep()
+                continue
+            if out is None:
+                return self._decode(b"")
+            return self._decode(bytes(out))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        _MOLT_STREAM_CLOSE(self._stream)
 
 
 class Popen:
@@ -266,9 +426,41 @@ class Popen:
         )
 
         # Keep API-compatible attributes.
-        self.stdin = self._stdin_stream
-        self.stdout = self._stdout_stream
-        self.stderr = self._stderr_stream
+        self.stdin = (
+            _PopenPipeWriter(
+                self._stdin_stream,
+                text=self._text,
+                encoding=self._encoding,
+                errors=self._errors,
+                sleeper=self._sleep,
+            )
+            if self._stdin_stream is not None
+            else None
+        )
+        self.stdout = (
+            _PopenPipeReader(
+                self._stdout_stream,
+                self._stdout_reader,
+                text=self._text,
+                encoding=self._encoding,
+                errors=self._errors,
+                sleeper=self._sleep,
+            )
+            if self._stdout_stream is not None
+            else None
+        )
+        self.stderr = (
+            _PopenPipeReader(
+                self._stderr_stream,
+                self._stderr_reader,
+                text=self._text,
+                encoding=self._encoding,
+                errors=self._errors,
+                sleeper=self._sleep,
+            )
+            if self._stderr_stream is not None
+            else None
+        )
 
     @property
     def pid(self) -> int:
@@ -283,29 +475,11 @@ class Popen:
         _time.sleep(_POLL_SLEEP)
 
     def _write_input(self, data: Any) -> None:
-        if self._stdin_stream is None:
+        if self.stdin is None:
             raise ValueError("stdin was not set to PIPE")
         if data is None:
             return
-        if self._text:
-            if isinstance(data, str):
-                payload = data.encode(self._encoding, self._errors)
-            elif isinstance(data, (bytes, bytearray, memoryview)):
-                payload = bytes(data)
-            else:
-                raise TypeError("input must be str or bytes-like")
-        else:
-            if isinstance(data, str):
-                raise TypeError("input must be bytes-like when text=False")
-            if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("input must be bytes-like")
-            payload = bytes(data)
-        while True:
-            out = _MOLT_STREAM_SEND_OBJ(self._stdin_stream, payload)
-            if _is_pending(out):
-                self._sleep()
-                continue
-            break
+        self.stdin.write(data)
 
     def _read_stream(self, reader: Any | None) -> bytes | None:
         if reader is None:
@@ -353,8 +527,8 @@ class Popen:
         limit = _normalize_timeout(timeout)
         if input is not None:
             self._write_input(input)
-        if self._stdin_stream is not None:
-            _MOLT_STREAM_CLOSE(self._stdin_stream)
+        if self.stdin is not None:
+            self.stdin.close()
         self.wait(limit)
         out = self._read_stream(self._stdout_reader)
         err = self._read_stream(self._stderr_reader)
@@ -365,6 +539,19 @@ class Popen:
 
     def terminate(self) -> None:
         _MOLT_PROCESS_TERMINATE(self._handle)
+
+    def __enter__(self) -> Popen:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self.stdin is not None:
+            self.stdin.close()
+        if self.stdout is not None:
+            self.stdout.close()
+        if self.stderr is not None and self.stderr is not self.stdout:
+            self.stderr.close()
+        self.wait()
+        return None
 
     def __del__(self) -> None:
         handle = getattr(self, "_handle", None)
@@ -407,11 +594,13 @@ def run(
 ) -> CompletedProcess:
     if capture_output:
         if stdout is not None or stderr is not None:
-            raise ValueError("stdout and stderr may not be used with capture_output")
+            raise ValueError(
+                "stdout and stderr arguments may not be used with capture_output."
+            )
         stdout = PIPE
         stderr = PIPE
     if input is not None and stdin is not None:
-        raise ValueError("stdin and input arguments may not both be used")
+        raise ValueError("stdin and input arguments may not both be used.")
     if input is not None and stdin is None:
         stdin = PIPE
 
@@ -437,8 +626,8 @@ def run(
             proc.wait(None)
         except Exception:
             pass
-        exc.output = proc._finalize_text(proc._read_stream(proc._stdout_reader))
-        exc.stderr = proc._finalize_text(proc._read_stream(proc._stderr_reader))
+        exc.output = proc._read_stream(proc._stdout_reader)
+        exc.stderr = proc._read_stream(proc._stderr_reader)
         raise
 
     code = proc.returncode if proc.returncode is not None else proc.wait(None)
@@ -451,8 +640,15 @@ def run(
 def check_output(args: Any, *, timeout: float | None = None, **kwargs: Any) -> Any:
     if "stdout" in kwargs:
         raise ValueError("stdout argument not allowed, it will be overridden.")
+    if "check" in kwargs:
+        raise ValueError("check argument not allowed, it will be overridden.")
+    if "input" in kwargs and kwargs["input"] is None:
+        if kwargs.get("text") or kwargs.get("encoding") or kwargs.get("errors"):
+            kwargs["input"] = ""
+        else:
+            kwargs["input"] = b""
     kwargs["stdout"] = PIPE
-    kwargs.setdefault("check", True)
+    kwargs["check"] = True
     result = run(args, timeout=timeout, **kwargs)
     return result.stdout
 
@@ -462,6 +658,11 @@ def check_call(args: Any, *, timeout: float | None = None, **kwargs: Any) -> int
 
     Equivalent to ``run(..., check=True).returncode``.
     """
+    for key in ("input", "capture_output", "check"):
+        if key in kwargs:
+            raise TypeError(
+                f"Popen.__init__() got an unexpected keyword argument '{key}'"
+            )
     result = run(args, timeout=timeout, check=True, **kwargs)
     return result.returncode
 
@@ -478,20 +679,23 @@ def getstatusoutput(
     from *output*.  The combined stdout and stderr is returned.
     """
     try:
-        result = run(
+        data = check_output(
             cmd,
             shell=True,
-            capture_output=True,
+            stderr=STDOUT,
             text=True,
             encoding=encoding,
             errors=errors,
         )
-        data = (result.stdout or "") + (result.stderr or "")
-        if data and data[-1] == "\n":
-            data = data[:-1]
-        return result.returncode, data
-    except SubprocessError:
-        return 1, ""
+        status = 0
+    except CalledProcessError as exc:
+        data = exc.output
+        status = int(exc.returncode)
+    if isinstance(data, bytes):
+        data = data.decode(encoding or "utf-8", errors or "strict")
+    if data and data[-1] == "\n":
+        data = data[:-1]
+    return status, data
 
 
 def getoutput(cmd: str) -> str:
