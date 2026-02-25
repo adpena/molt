@@ -1,5 +1,7 @@
 """Intrinsic-backed pickle registry helpers."""
 
+from __future__ import annotations
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 from collections.abc import Callable
 from types import BuiltinFunctionType as _new_type

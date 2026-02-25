@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from molt.frontend import compile_to_tir
+import ast
+
+from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
 
 
 def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
@@ -21,6 +23,30 @@ def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
     raise AssertionError(f"Did not find call for builtin {runtime_name}")
 
 
+def _module_import_targets(main_ops: list[dict[str, object]]) -> set[str]:
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    targets: set[str] = set()
+    for op in main_ops:
+        if op.get("kind") != "module_import":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) != 1:
+            continue
+        name_var = args[0]
+        if not isinstance(name_var, str):
+            continue
+        target = const_str.get(name_var)
+        if isinstance(target, str):
+            targets.add(target)
+    return targets
+
+
 def test_zip_lowering_uses_call_bind() -> None:
     source = "print(list(zip([1, 2], [3, 4])))\n"
     assert _first_builtin_call_kind(source, "molt_zip_builtin") == "call_bind"
@@ -29,3 +55,87 @@ def test_zip_lowering_uses_call_bind() -> None:
 def test_map_lowering_uses_call_bind() -> None:
     source = "print(list(map(lambda x: x + 1, [1, 2, 3])))\n"
     assert _first_builtin_call_kind(source, "molt_map_builtin") == "call_bind"
+
+
+def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
+    # Model the collision lane explicitly: compiler metadata says "Path" points
+    # at zipfile._path.Path.__init__, while source imports Path from pathlib.
+    known_classes = {
+        "Path": {
+            "fields": {},
+            "size": 24,
+            "dynamic": False,
+            "static": True,
+            "methods": {
+                "__init__": {
+                    "func": MoltValue(
+                        "Path___init__", type_hint="Func:zipfile__path__Path___init__"
+                    ),
+                    "attr": MoltValue("__init__", type_hint="str"),
+                    "descriptor": "function",
+                    "return_hint": None,
+                    "param_count": 2,
+                    "defaults": [],
+                    "posonly_count": 0,
+                    "kwonly_count": 0,
+                    "has_vararg": False,
+                    "has_varkw": False,
+                    "has_closure": False,
+                    "property_field": None,
+                    "property_update": None,
+                }
+            },
+            "mro": ["Path", "object"],
+        }
+    }
+    gen = SimpleTIRGenerator(known_classes=known_classes)
+    gen.visit(ast.parse("from pathlib import Path\nPath('x')\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    const_str: dict[str, str] = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str" and isinstance(op.get("out"), str)
+    }
+    pathlib_module_vars = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_cache_get"
+        and len(op.get("args") or []) == 1
+        and const_str.get(op["args"][0]) == "pathlib"
+    }
+    path_class_vars = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_attr"
+        and len(op.get("args") or []) == 2
+        and op["args"][0] in pathlib_module_vars
+        and const_str.get(op["args"][1]) == "Path"
+    }
+    assert path_class_vars, "expected pathlib.Path lookup in lowered main ops"
+    assert any(
+        op.get("kind") == "call_bind"
+        and len(op.get("args") or []) >= 1
+        and op["args"][0] in path_class_vars
+        for op in main_ops
+    ), "expected imported pathlib.Path constructor to lower via call_bind"
+    assert all(
+        op.get("s_value") != "zipfile__path__Path___init__"
+        for op in main_ops
+        if op.get("kind") == "call"
+    ), "main lowering should not hardwire zipfile._path.Path.__init__ for pathlib.Path"
+
+
+def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted() -> (
+    None
+):
+    gen = SimpleTIRGenerator(known_modules={"__main__"}, stdlib_allowlist={"os"})
+    gen.visit(ast.parse("import os.path\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    targets = _module_import_targets(main_ops)
+    assert "os.path" in targets

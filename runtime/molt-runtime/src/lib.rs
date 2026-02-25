@@ -38,6 +38,7 @@ mod builtins;
 mod call;
 mod concurrency;
 mod constants;
+mod gui;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
@@ -139,6 +140,7 @@ pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::collections_ext::*;
 pub use crate::builtins::colorsys::*;
+pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
 pub use crate::builtins::configparser::*;
 pub(crate) use crate::builtins::containers::{
@@ -164,6 +166,7 @@ pub(crate) use crate::builtins::contextlib::{
 };
 pub use crate::builtins::csv::*;
 pub use crate::builtins::datetime::*;
+pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::decimal::*;
 pub use crate::builtins::difflib::*;
 pub use crate::builtins::enum_ext::*;
@@ -246,6 +249,7 @@ pub(crate) use crate::builtins::strings::{
 };
 pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
+pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
@@ -274,6 +278,7 @@ pub(crate) use crate::call::function::{
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
+pub use crate::gui::tk::*;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,

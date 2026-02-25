@@ -75,7 +75,8 @@ print("imul", operator.imul(2, 4))
 
 box = Box("a")
 print("matmul", operator.matmul(Box("x"), Box("y")))
-print("imatmul", operator.imatmul(box, Box("b")))
+result = operator.imatmul(box, Box("b"))
+print("imatmul", result is box, box.value)
 
 print("itruediv", operator.itruediv(9, 3))
 print("ifloordiv", operator.ifloordiv(9, 2))

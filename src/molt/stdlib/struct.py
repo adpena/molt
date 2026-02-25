@@ -36,13 +36,23 @@ class Struct:
         self.size = calcsize(normalized)
 
     def pack(self, *values: object) -> bytes:
-        return pack(self.format, *values)
+        try:
+            return _MOLT_STRUCT_PACK(self.format, values)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise error(str(exc)) from None
 
     def unpack(self, buffer: object) -> tuple[object, ...]:
         return unpack(self.format, buffer)
 
     def pack_into(self, buffer: object, offset: int, *values: object) -> None:
-        pack_into(self.format, buffer, offset, *values)
+        try:
+            data = _MOLT_STRUCT_PACK(self.format, values)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise error(str(exc)) from None
+        try:
+            _MOLT_STRUCT_PACK_INTO(buffer, offset, data)
+        except (ValueError, OverflowError) as exc:
+            raise error(str(exc)) from None
 
     def unpack_from(self, buffer: object, offset: int = 0) -> tuple[object, ...]:
         return unpack_from(self.format, buffer, offset)
@@ -95,7 +105,11 @@ def calcsize(format: object) -> int:
 
 
 def pack_into(format: object, buffer: object, offset: object, *values: object) -> None:
-    data = pack(format, *values)
+    fmt = _normalize_format(format)
+    try:
+        data = _MOLT_STRUCT_PACK(fmt, values)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise error(str(exc)) from None
     try:
         _MOLT_STRUCT_PACK_INTO(buffer, offset, data)
     except (ValueError, OverflowError) as exc:

@@ -2293,10 +2293,10 @@ impl MoltQueue {
                     return Ok(true);
                 }
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    return Ok(false);
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                return Ok(false);
             }
             std::hint::spin_loop();
         }
@@ -2326,10 +2326,10 @@ impl MoltQueue {
                     return None;
                 }
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    return None;
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                return None;
             }
             std::hint::spin_loop();
         }
@@ -2738,7 +2738,7 @@ where
     F: FnMut() -> bool,
 {
     match timeout {
-        Some(val) if val == 0.0 => false,
+        Some(0.0) => false,
         Some(val) => {
             let start = WasmInstant::now();
             loop {
@@ -2825,15 +2825,17 @@ pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltLock);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltLock);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2944,15 +2946,17 @@ pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltRLock);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltRLock);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2982,10 +2986,10 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
             if condition.notify_seq.get() != seq {
                 return MoltObject::from_bool(true).bits();
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    return MoltObject::from_bool(false).bits();
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                return MoltObject::from_bool(false).bits();
             }
             std::hint::spin_loop();
         }
@@ -2999,91 +3003,93 @@ pub unsafe extern "C" fn molt_condition_wait_for(
     predicate_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !is_truthy(_py, obj_from_bits(molt_is_callable(predicate_bits))) {
-            return raise_exception::<_>(_py, "TypeError", "predicate must be callable");
-        }
-        let timeout = if obj_from_bits(timeout_bits).is_none() {
-            None
-        } else {
-            let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
-            };
-            Some(value)
-        };
-        let Some(wait_name_bits) = attr_name_bits_from_bytes(_py, b"wait") else {
-            return MoltObject::none().bits();
-        };
-        let missing = missing_bits(_py);
-        let wait_bits = molt_getattr_builtin(condition_bits, wait_name_bits, missing);
-        dec_ref_bits(_py, wait_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if wait_bits == missing {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "condition wait method is unavailable",
-            );
-        }
-        if !is_truthy(_py, obj_from_bits(molt_is_callable(wait_bits))) {
-            if obj_from_bits(wait_bits).as_ptr().is_some() {
-                dec_ref_bits(_py, wait_bits);
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(predicate_bits))) {
+                return raise_exception::<_>(_py, "TypeError", "predicate must be callable");
             }
-            return raise_exception::<_>(_py, "TypeError", "condition.wait must be callable");
-        }
-        let mut waittime = timeout;
-        let mut deadline: Option<f64> = None;
-        loop {
-            let predicate_out = call_callable0(_py, predicate_bits);
-            if exception_pending(_py) {
-                if obj_from_bits(wait_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let ok = is_truthy(_py, obj_from_bits(predicate_out));
-            if obj_from_bits(predicate_out).as_ptr().is_some() {
-                dec_ref_bits(_py, predicate_out);
-            }
-            if ok {
-                if obj_from_bits(wait_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_bits);
-                }
-                return MoltObject::from_bool(true).bits();
-            }
-            if let Some(current_wait) = waittime {
-                if let Some(endtime) = deadline {
-                    let remaining = endtime - monotonic_now_secs(_py);
-                    waittime = Some(remaining);
-                    if remaining <= 0.0 {
-                        if obj_from_bits(wait_bits).as_ptr().is_some() {
-                            dec_ref_bits(_py, wait_bits);
-                        }
-                        return MoltObject::from_bool(false).bits();
-                    }
-                } else {
-                    deadline = Some(monotonic_now_secs(_py) + current_wait);
-                }
-            }
-            let wait_arg = if let Some(current_wait) = waittime {
-                MoltObject::from_float(current_wait).bits()
+            let timeout = if obj_from_bits(timeout_bits).is_none() {
+                None
             } else {
-                MoltObject::none().bits()
+                let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
+                    return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+                };
+                Some(value)
             };
-            let wait_out = call_callable1(_py, wait_bits, wait_arg);
+            let Some(wait_name_bits) = attr_name_bits_from_bytes(_py, b"wait") else {
+                return MoltObject::none().bits();
+            };
+            let missing = missing_bits(_py);
+            let wait_bits = molt_getattr_builtin(condition_bits, wait_name_bits, missing);
+            dec_ref_bits(_py, wait_name_bits);
             if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if wait_bits == missing {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "condition wait method is unavailable",
+                );
+            }
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(wait_bits))) {
                 if obj_from_bits(wait_bits).as_ptr().is_some() {
                     dec_ref_bits(_py, wait_bits);
                 }
-                return MoltObject::none().bits();
+                return raise_exception::<_>(_py, "TypeError", "condition.wait must be callable");
             }
-            if obj_from_bits(wait_out).as_ptr().is_some() {
-                dec_ref_bits(_py, wait_out);
+            let mut waittime = timeout;
+            let mut deadline: Option<f64> = None;
+            loop {
+                let predicate_out = call_callable0(_py, predicate_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let ok = is_truthy(_py, obj_from_bits(predicate_out));
+                if obj_from_bits(predicate_out).as_ptr().is_some() {
+                    dec_ref_bits(_py, predicate_out);
+                }
+                if ok {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::from_bool(true).bits();
+                }
+                if let Some(current_wait) = waittime {
+                    if let Some(endtime) = deadline {
+                        let remaining = endtime - monotonic_now_secs(_py);
+                        waittime = Some(remaining);
+                        if remaining <= 0.0 {
+                            if obj_from_bits(wait_bits).as_ptr().is_some() {
+                                dec_ref_bits(_py, wait_bits);
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
+                    } else {
+                        deadline = Some(monotonic_now_secs(_py) + current_wait);
+                    }
+                }
+                let wait_arg = if let Some(current_wait) = waittime {
+                    MoltObject::from_float(current_wait).bits()
+                } else {
+                    MoltObject::none().bits()
+                };
+                let wait_out = call_callable1(_py, wait_bits, wait_arg);
+                if exception_pending(_py) {
+                    if obj_from_bits(wait_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, wait_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if obj_from_bits(wait_out).as_ptr().is_some() {
+                    dec_ref_bits(_py, wait_out);
+                }
             }
-        }
-    })
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3106,15 +3112,17 @@ pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltCondition);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltCondition);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3178,10 +3186,10 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
             if event.flag.get() {
                 return MoltObject::from_bool(true).bits();
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    return MoltObject::from_bool(false).bits();
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                return MoltObject::from_bool(false).bits();
             }
             std::hint::spin_loop();
         }
@@ -3191,15 +3199,17 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltEvent);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltEvent);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3250,10 +3260,10 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
             if sem.try_acquire() {
                 return MoltObject::from_bool(true).bits();
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    return MoltObject::from_bool(false).bits();
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                return MoltObject::from_bool(false).bits();
             }
             std::hint::spin_loop();
         }
@@ -3283,15 +3293,17 @@ pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u6
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltSemaphore);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltSemaphore);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3348,15 +3360,15 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
             if barrier.generation.get() != generation {
                 return MoltObject::from_int(index as i64).bits();
             }
-            if let Some(limit) = timeout {
-                if start.elapsed().as_secs_f64() >= limit {
-                    barrier.broken.set(true);
-                    barrier.waiting.set(0);
-                    barrier
-                        .generation
-                        .set(barrier.generation.get().saturating_add(1));
-                    return raise_exception::<_>(_py, "RuntimeError", "broken barrier");
-                }
+            if let Some(limit) = timeout
+                && start.elapsed().as_secs_f64() >= limit
+            {
+                barrier.broken.set(true);
+                barrier.waiting.set(0);
+                barrier
+                    .generation
+                    .set(barrier.generation.get().saturating_add(1));
+                return raise_exception::<_>(_py, "RuntimeError", "broken barrier");
             }
             std::hint::spin_loop();
         }
@@ -3433,15 +3445,17 @@ pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let _ = Rc::from_raw(ptr as *const MoltBarrier);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let _ = Rc::from_raw(ptr as *const MoltBarrier);
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3476,19 +3490,21 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let local = Rc::from_raw(ptr as *const MoltLocal);
-        for bits in local.storage.borrow().values().copied() {
-            dec_ref_bits(_py, bits);
-        }
-        local.storage.borrow_mut().clear();
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let local = Rc::from_raw(ptr as *const MoltLocal);
+            for bits in local.storage.borrow().values().copied() {
+                dec_ref_bits(_py, bits);
+            }
+            local.storage.borrow_mut().clear();
+            MoltObject::none().bits()
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3672,14 +3688,16 @@ pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let queue = Rc::from_raw(ptr as *const MoltQueue);
-        queue.drop_items(_py);
-        MoltObject::none().bits()
-    })
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let ptr = ptr_from_bits(handle_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            release_ptr(ptr);
+            let queue = Rc::from_raw(ptr as *const MoltQueue);
+            queue.drop_items(_py);
+            MoltObject::none().bits()
+        })
+    }
 }

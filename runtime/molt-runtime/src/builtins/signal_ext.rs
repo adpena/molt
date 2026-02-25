@@ -30,8 +30,12 @@ pub const SIG_IGN_INT: i64 = 1;
 const HANDLER_SIG_DFL: u64 = 0;
 const HANDLER_SIG_IGN: u64 = 1;
 
-/// Maximum supported signal number (Linux/macOS NSIG is 32 or 65).
-const MAX_SIGNAL: usize = 64;
+/// Maximum signal slot count reserved by the runtime table.
+///
+/// We keep this slightly above common platform NSIG ranges so we can index
+/// fixed-size atomics without heap allocations, while still validating user
+/// signal numbers against platform NSIG at API boundaries.
+const MAX_SIGNAL: usize = 128;
 
 // ── Handler table ─────────────────────────────────────────────────────────
 
@@ -82,10 +86,35 @@ static PENDING_SIGNALS: [AtomicU64; MAX_SIGNAL] = {
 
 // ── Internal helpers ──────────────────────────────────────────────────────
 
+#[inline]
+fn effective_nsig() -> i64 {
+    #[cfg(target_os = "macos")]
+    {
+        32_i64.min(MAX_SIGNAL as i64)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        32_i64.min(MAX_SIGNAL as i64)
+    }
+    #[cfg(all(
+        unix,
+        not(target_arch = "wasm32"),
+        not(any(target_os = "macos", target_os = "ios"))
+    ))]
+    {
+        65_i64.min(MAX_SIGNAL as i64)
+    }
+    #[cfg(any(not(unix), target_arch = "wasm32"))]
+    {
+        MAX_SIGNAL as i64
+    }
+}
+
 fn sig_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i32, u64> {
     let obj = obj_from_bits(bits);
+    let nsig = effective_nsig();
     match to_i64(obj) {
-        Some(v) if v > 0 && v < MAX_SIGNAL as i64 => Ok(v as i32),
+        Some(v) if v > 0 && v < nsig => Ok(v as i32),
         Some(v) if v <= 0 => Err(raise_exception::<u64>(
             _py,
             "ValueError",
@@ -94,7 +123,7 @@ fn sig_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i32, u64> {
         Some(_) => Err(raise_exception::<u64>(
             _py,
             "ValueError",
-            &format!("signal number out of range (max {})", MAX_SIGNAL - 1),
+            &format!("signal number out of range (max {})", nsig - 1),
         )),
         None => Err(raise_exception::<u64>(
             _py,
@@ -105,8 +134,9 @@ fn sig_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i32, u64> {
 }
 
 /// Convert a handler bits value to the int sentinel visible from Python.
-fn handler_bits_to_py(_py: &PyToken<'_>, bits: u64) -> u64 {
+fn handler_bits_to_py(_py: &PyToken<'_>, signum: i32, bits: u64) -> u64 {
     if bits == HANDLER_SIG_DFL {
+        let _ = signum;
         return int_bits_from_i64(_py, SIG_DFL_INT);
     }
     if bits == HANDLER_SIG_IGN {
@@ -174,7 +204,7 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
             }
         }
 
-        handler_bits_to_py(_py, old_bits)
+        handler_bits_to_py(_py, signum, old_bits)
     })
 }
 
@@ -186,7 +216,7 @@ pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
             Err(e) => return e,
         };
         let bits = HANDLER_TABLE[signum as usize].load(Ordering::SeqCst);
-        handler_bits_to_py(_py, bits)
+        handler_bits_to_py(_py, signum, bits)
     })
 }
 
@@ -396,7 +426,464 @@ pub extern "C" fn molt_signal_sig_ign() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_nsig() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, MAX_SIGNAL as i64) })
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, effective_nsig()) })
+}
+
+// ── Extended signal number constants ────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sig_block() -> u64 {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_BLOCK as i64) })
+    }
+    #[cfg(any(not(unix), target_arch = "wasm32"))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 0_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sig_unblock() -> u64 {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_UNBLOCK as i64) })
+    }
+    #[cfg(any(not(unix), target_arch = "wasm32"))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 1_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sig_setmask() -> u64 {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_SETMASK as i64) })
+    }
+    #[cfg(any(not(unix), target_arch = "wasm32"))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 2_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigbus() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGBUS as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 7_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigcont() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGCONT as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 18_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigstop() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGSTOP as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 19_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigtstp() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTSTP as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 20_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigttin() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTTIN as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 21_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigttou() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTTOU as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 22_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigxcpu() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGXCPU as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 24_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigxfsz() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGXFSZ as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 25_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigvtalrm() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGVTALRM as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 26_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigprof() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGPROF as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 27_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigwinch() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGWINCH as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 28_i64) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigsys() -> u64 {
+    #[cfg(unix)]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGSYS as i64) })
+    }
+    #[cfg(not(unix))]
+    {
+        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 31_i64) })
+    }
+}
+
+// ── POSIX signal functions ─────────────────────────────────────────────────
+
+/// Convert a list of signal ints (u64 bits) into a `sigset_t`.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+unsafe fn bits_to_sigset(_py: &PyToken<'_>, list_ptr: *mut u8) -> Result<libc::sigset_t, u64> {
+    unsafe {
+        let nsig = effective_nsig();
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        let len = crate::builtins::containers::list_len(list_ptr);
+        for i in 0..len {
+            let elem_bits = seq_vec_ref(list_ptr).get(i).copied().unwrap_or(0);
+            let elem_obj = obj_from_bits(elem_bits);
+            match to_i64(elem_obj) {
+                Some(v) if v > 0 && v < nsig => {
+                    libc::sigaddset(&mut set, v as libc::c_int);
+                }
+                _ => {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "invalid signal number in set",
+                    ));
+                }
+            }
+        }
+        Ok(set)
+    }
+}
+
+/// Convert a `sigset_t` back to a list of signal number bits.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+unsafe fn sigset_to_list_bits(_py: &PyToken<'_>, set: &libc::sigset_t) -> u64 {
+    unsafe {
+        let nsig = effective_nsig() as libc::c_int;
+        let mut elems = Vec::new();
+        for sig in 1..nsig {
+            if libc::sigismember(set, sig) == 1 {
+                elems.push(int_bits_from_i64(_py, sig as i64));
+            }
+        }
+        let list_ptr = alloc_list(_py, &elems);
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_default_int_handler(_signum_bits: u64, _frame_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = (_signum_bits, _frame_bits);
+        raise_exception::<u64>(_py, "KeyboardInterrupt", "")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_strsignal(signum_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let signum = match sig_from_bits(_py, signum_bits) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let cstr = unsafe { libc::strsignal(signum) };
+            if cstr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
+            let bytes = s.to_bytes();
+            let ptr = alloc_string(_py, bytes);
+            MoltObject::from_ptr(ptr).bits()
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            // Static lookup table for common signal descriptions on WASM.
+            let desc: Option<&[u8]> = match signum {
+                1 => Some(b"Hangup"),
+                2 => Some(b"Interrupt"),
+                3 => Some(b"Quit"),
+                4 => Some(b"Illegal instruction"),
+                5 => Some(b"Trace/BPT trap"),
+                6 => Some(b"Aborted"),
+                7 => Some(b"Bus error"),
+                8 => Some(b"Floating point exception"),
+                9 => Some(b"Killed"),
+                10 => Some(b"User defined signal 1"),
+                11 => Some(b"Segmentation fault"),
+                12 => Some(b"User defined signal 2"),
+                13 => Some(b"Broken pipe"),
+                14 => Some(b"Alarm clock"),
+                15 => Some(b"Terminated"),
+                17 => Some(b"Child exited"),
+                18 => Some(b"Continued"),
+                19 => Some(b"Stopped (signal)"),
+                20 => Some(b"Stopped"),
+                21 => Some(b"Stopped (tty input)"),
+                22 => Some(b"Stopped (tty output)"),
+                24 => Some(b"CPU time limit exceeded"),
+                25 => Some(b"File size limit exceeded"),
+                26 => Some(b"Virtual timer expired"),
+                27 => Some(b"Profiling timer expired"),
+                28 => Some(b"Window changed"),
+                31 => Some(b"Bad system call"),
+                _ => None,
+            };
+            match desc {
+                Some(bytes) => {
+                    let ptr = alloc_string(_py, bytes);
+                    MoltObject::from_ptr(ptr).bits()
+                }
+                None => MoltObject::none().bits(),
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let how_obj = obj_from_bits(how_bits);
+            let how = match to_i64(how_obj) {
+                Some(v) => v as libc::c_int,
+                None => {
+                    return raise_exception::<u64>(_py, "TypeError", "how must be an integer");
+                }
+            };
+            // Validate how value against platform constants.
+            if how != libc::SIG_BLOCK && how != libc::SIG_UNBLOCK && how != libc::SIG_SETMASK {
+                return raise_exception::<u64>(_py, "ValueError", "invalid value for how");
+            }
+
+            let mask_obj = obj_from_bits(mask_bits);
+            let mask_ptr = match mask_obj.as_ptr() {
+                Some(p) => p,
+                None => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "mask must be a list of signal numbers",
+                    );
+                }
+            };
+            let new_set = match unsafe { bits_to_sigset(_py, mask_ptr) } {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            let mut old_set: libc::sigset_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe { libc::pthread_sigmask(how, &new_set, &mut old_set) };
+            if rc != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::last_os_error().to_string(),
+                );
+            }
+            unsafe { sigset_to_list_bits(_py, &old_set) }
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            let _ = (how_bits, mask_bits);
+            raise_exception::<u64>(
+                _py,
+                "OSError",
+                "pthread_sigmask not available on this platform",
+            )
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let tid_obj = obj_from_bits(thread_id_bits);
+            let tid = match to_i64(tid_obj) {
+                Some(v) => v as libc::pthread_t,
+                None => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "thread_id must be an integer",
+                    );
+                }
+            };
+            let signum = match sig_from_bits(_py, signum_bits) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let rc = unsafe { libc::pthread_kill(tid, signum) };
+            if rc != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::from_raw_os_error(rc).to_string(),
+                );
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            let _ = (thread_id_bits, signum_bits);
+            raise_exception::<u64>(
+                _py,
+                "OSError",
+                "pthread_kill not available on this platform",
+            )
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigpending() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe { libc::sigpending(&mut set) };
+            if rc != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::last_os_error().to_string(),
+                );
+            }
+            unsafe { sigset_to_list_bits(_py, &set) }
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            raise_exception::<u64>(_py, "OSError", "sigpending not available on this platform")
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let sigset_obj = obj_from_bits(sigset_bits);
+            let sigset_ptr = match sigset_obj.as_ptr() {
+                Some(p) => p,
+                None => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "sigset must be a list of signal numbers",
+                    );
+                }
+            };
+            let wait_set = match unsafe { bits_to_sigset(_py, sigset_ptr) } {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            let mut sig: libc::c_int = 0;
+            let rc = unsafe { libc::sigwait(&wait_set, &mut sig) };
+            if rc != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::from_raw_os_error(rc).to_string(),
+                );
+            }
+            int_bits_from_i64(_py, sig as i64)
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            let _ = sigset_bits;
+            raise_exception::<u64>(_py, "OSError", "sigwait not available on this platform")
+        }
+    })
 }
 
 // ── Valid signals set ──────────────────────────────────────────────────────
@@ -427,6 +914,14 @@ pub extern "C" fn molt_signal_valid_signals() -> u64 {
                     libc::SIGTSTP as i64,
                     libc::SIGCONT as i64,
                     libc::SIGWINCH as i64,
+                    libc::SIGSTOP as i64,
+                    libc::SIGTTIN as i64,
+                    libc::SIGTTOU as i64,
+                    libc::SIGXCPU as i64,
+                    libc::SIGXFSZ as i64,
+                    libc::SIGVTALRM as i64,
+                    libc::SIGPROF as i64,
+                    libc::SIGSYS as i64,
                 ];
                 candidates.to_vec()
             }

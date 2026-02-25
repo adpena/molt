@@ -2,6 +2,11 @@
 
 ## 1. Core Principles
 The Molt runtime is a minimal, high-performance library written in Rust. It provides the essential primitives for Python semantics while minimizing overhead.
+- Dynamic execution policy: compiled binaries intentionally avoid unrestricted
+  `eval`/`exec`, runtime monkeypatching, and unrestricted reflection lanes by
+  default. Any future widening must be capability-gated and justified with
+  reproducible performance evidence (see
+  `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`).
 
 ## 2. Object Representation: NaN-Boxing
 Molt uses 64-bit NaN-boxing for all objects. This allows small primitives to be stored inline without heap allocation.

@@ -181,6 +181,26 @@ suite. Prioritize workloads that stress attribute access/descriptor dispatch,
 struct/shape access, container ops, deep loops, and channel throughput.
 Validate native + WASM parity for the same cases.
 
+## Optimization Swarm Gate Bundle
+
+For optimization swarm execution, each landing must attach one reproducible
+gate bundle (no exceptions):
+
+- perf delta evidence:
+  - benchmark JSON + `tools/bench_diff.py` output for touched lanes
+  - compile throughput evidence from `tools/compile_progress.py` and/or
+    `tools/throughput_matrix.py`
+- correctness evidence:
+  - differential parity run with `MOLT_DIFF_MEASURE_RSS=1`
+  - memory cap enforcement (`MOLT_DIFF_RLIMIT_GB=10` unless explicitly tuned)
+- lowering evidence:
+  - `python3 tools/check_stdlib_intrinsics.py`
+  - `python3 tools/check_core_lane_lowering.py`
+- documentation sync evidence:
+  - same-change updates for optimization status docs
+    (`docs/spec/STATUS.md`, `ROADMAP.md`,
+    `OPTIMIZATIONS_PLAN.md`, `docs/benchmarks/optimization_progress.md`)
+
 ## How to Interpret Results
 
 - **Speedup (x.xx)**: Molt is X times faster than CPython. (e.g., 10.0x = Molt is 10x faster).

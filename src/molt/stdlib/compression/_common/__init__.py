@@ -1,12 +1,9 @@
-"""Intrinsic-first stdlib package stub for `compression._common`."""
+"""``compression._common`` — shared utilities for compression modules."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
+from compression._common._streams import BUFFER_SIZE, BaseStream, DecompressReader
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `compression._common` package stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib package "compression._common" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+__all__ = ["BUFFER_SIZE", "BaseStream", "DecompressReader"]

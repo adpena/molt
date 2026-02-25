@@ -390,6 +390,16 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
             dec_ref_bits(_py, bits);
         }
     }
+    let current_task_bits = {
+        let mut guard = state.asyncio_current_tasks.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        old.into_values().collect::<Vec<_>>()
+    };
+    for bits in current_task_bits {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
     let event_waiter_bits = {
         let mut guard = state.asyncio_event_waiters.lock().unwrap();
         let old = std::mem::take(&mut *guard);

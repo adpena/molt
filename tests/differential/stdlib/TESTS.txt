@@ -184,6 +184,7 @@ tests/differential/stdlib/asyncio_condition_fairness.py
 tests/differential/stdlib/asyncio_condition_wait_for.py
 tests/differential/stdlib/asyncio_contextvars_callback_propagation.py
 tests/differential/stdlib/asyncio_contextvars_task_propagation.py
+tests/differential/stdlib/asyncio_current_task_enter_leave.py
 tests/differential/stdlib/asyncio_current_task_loop_filter_intrinsic.py
 tests/differential/stdlib/asyncio_ensure_future_passthrough.py
 tests/differential/stdlib/asyncio_event_basic.py
@@ -1516,6 +1517,8 @@ tests/differential/stdlib/operator_itemgetter_error.py
 tests/differential/stdlib/operator_methodcaller_basic.py
 tests/differential/stdlib/operator_methodcaller_kwargs.py
 tests/differential/stdlib/operator_truth_length_hint.py
+tests/differential/stdlib/os_access_chdir_cpu_count.py
+tests/differential/stdlib/os_dup2_lseek_isatty.py
 tests/differential/stdlib/os_environ_basic.py
 tests/differential/stdlib/os_environ_intrinsic_ops.py
 tests/differential/stdlib/os_environ_snapshot_sync.py
@@ -1523,6 +1526,7 @@ tests/differential/stdlib/os_fsencode_basic.py
 tests/differential/stdlib/os_mkdir_makedirs_mode_intrinsic.py
 tests/differential/stdlib/os_path_basic.py
 tests/differential/stdlib/os_path_expandvars_normpath.py
+tests/differential/stdlib/os_path_extended.py
 tests/differential/stdlib/os_path_isabs_intrinsic.py
 tests/differential/stdlib/os_path_more.py
 tests/differential/stdlib/os_pipe_basic.py
@@ -1530,6 +1534,7 @@ tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
 tests/differential/stdlib/os_stat_rename_replace_intrinsic.py
 tests/differential/stdlib/os_urandom_basic.py
+tests/differential/stdlib/os_walk_scandir.py
 tests/differential/stdlib/pathlib_basic_ops.py
 tests/differential/stdlib/pathlib_basic_str_and_parts.py
 tests/differential/stdlib/pathlib_compare_intrinsic.py
@@ -1579,6 +1584,7 @@ tests/differential/stdlib/queue_queue_block_false_timeout.py
 tests/differential/stdlib/queue_shutdown_version_gate.py
 tests/differential/stdlib/queue_simplequeue_block_false_timeout.py
 tests/differential/stdlib/queue_timeout_basic.py
+tests/differential/stdlib/queue_timeout_invalid_type.py
 tests/differential/stdlib/quopri_basic.py
 tests/differential/stdlib/random_basic.py
 tests/differential/stdlib/random_distributions_basic.py
@@ -1640,7 +1646,9 @@ tests/differential/stdlib/shlex_basic.py
 tests/differential/stdlib/shlex_intrinsic_runtime.py
 tests/differential/stdlib/shutil_basic.py
 tests/differential/stdlib/signal_basic.py
+tests/differential/stdlib/signal_constants_extended.py
 tests/differential/stdlib/signal_keyboardinterrupt.py
+tests/differential/stdlib/signal_strsignal_valid.py
 tests/differential/stdlib/smtplib_basic.py
 tests/differential/stdlib/smtplib_sendmail_basic.py
 tests/differential/stdlib/socket_backpressure_large_send.py
@@ -1785,6 +1793,7 @@ tests/differential/stdlib/struct_layout_mutation.py
 tests/differential/stdlib/struct_memoryview_nested.py
 tests/differential/stdlib/struct_offsets_basic.py
 tests/differential/stdlib/struct_pack_into_basic.py
+tests/differential/stdlib/subprocess_basic_run.py
 tests/differential/stdlib/subprocess_bytes_pipes.py
 tests/differential/stdlib/subprocess_check_error.py
 tests/differential/stdlib/subprocess_check_output.py
@@ -1801,13 +1810,18 @@ tests/differential/stdlib/sys_basic.py
 tests/differential/stdlib/sys_bootstrap_env.py
 tests/differential/stdlib/sys_encoding_basic.py
 tests/differential/stdlib/sys_exc_info_nested.py
+tests/differential/stdlib/sys_float_info.py
 tests/differential/stdlib/sys_flags_intrinsic.py
 tests/differential/stdlib/sys_getframe_fields.py
+tests/differential/stdlib/sys_int_info_hash_info.py
+tests/differential/stdlib/sys_intern_getsizeof.py
+tests/differential/stdlib/sys_maxsize_byteorder.py
 tests/differential/stdlib/sys_metadata_intrinsics.py
 tests/differential/stdlib/sys_modules_main.py
 tests/differential/stdlib/sys_setrecursionlimit.py
 tests/differential/stdlib/sys_stat_version_gate.py
 tests/differential/stdlib/sys_stdio_build_mode.py
+tests/differential/stdlib/sys_stdlib_module_names.py
 tests/differential/stdlib/tabnanny_basic.py
 tests/differential/stdlib/tarfile_basic.py
 tests/differential/stdlib/tempfile_basic.py
@@ -1818,6 +1832,7 @@ tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
 tests/differential/stdlib/textwrap_basic.py
 tests/differential/stdlib/this_basic.py
+tests/differential/stdlib/thread_lock_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py
 tests/differential/stdlib/threading_barrier_basic.py
 tests/differential/stdlib/threading_basic.py
@@ -1849,6 +1864,7 @@ tests/differential/stdlib/time_basic.py
 tests/differential/stdlib/time_daylight_altzone_mktime.py
 tests/differential/stdlib/time_localtime_strftime.py
 tests/differential/stdlib/time_timegm.py
+tests/differential/stdlib/tkinter_phase0_core_semantics.py
 tests/differential/stdlib/token_core_api.py
 tests/differential/stdlib/tokenize_basic.py
 tests/differential/stdlib/tokenize_edge_cases.py

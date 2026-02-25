@@ -63,8 +63,8 @@ STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
 STATUS_PROBE_ONLY = "probe-only"
 STATUS_PYTHON_ONLY = "python-only"
 
-STDLIB_TODO_RE = re.compile(
-    r"TODO\(stdlib[^,]*,[^)]*status:(?:missing|partial|planned|divergent)\)"
+STDLIB_PROGRESS_MARKER_RE = re.compile(
+    r"(?:TODO|STDLIB_GAP)\(stdlib[^,]*,[^)]*status:(?:missing|partial|planned|divergent)\)"
 )
 
 BOOTSTRAP_MODULES = {
@@ -815,7 +815,7 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
             errors.append("Intrinsic loader usage requires importing from _intrinsics.")
 
     intrinsic_names = _extract_intrinsic_names(text)
-    has_stdlib_todo = bool(STDLIB_TODO_RE.search(text))
+    has_stdlib_progress_marker = bool(STDLIB_PROGRESS_MARKER_RE.search(text))
     if is_registry_file:
         status = STATUS_INTRINSIC
     elif not intrinsic_names:
@@ -825,7 +825,7 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
     else:
         status = STATUS_INTRINSIC
 
-    return errors, intrinsic_names, status, has_stdlib_todo
+    return errors, intrinsic_names, status, has_stdlib_progress_marker
 
 
 def _load_manifest_intrinsics() -> set[str]:
@@ -959,8 +959,8 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).",
             "- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).",
             "",
-            "## TODO",
-            "- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.",
+            "## Backlog Focus",
+            "- Replace remaining `python-only` stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.",
             "",
         ]
     )
@@ -1083,10 +1083,10 @@ def main() -> int:
     for path in sorted(STDLIB_ROOT.rglob("*.py")):
         if path.name.startswith("."):
             continue
-        errors, intrinsic_names, status, has_stdlib_todo = _scan_file(path)
+        errors, intrinsic_names, status, has_stdlib_progress_marker = _scan_file(path)
         errors.extend(_scan_host_fallback_module_patterns(path))
         module = _module_name(path)
-        if status == STATUS_INTRINSIC and has_stdlib_todo:
+        if status == STATUS_INTRINSIC and has_stdlib_progress_marker:
             status = STATUS_INTRINSIC_PARTIAL
         if status == STATUS_INTRINSIC and module not in fully_covered_modules:
             status = STATUS_INTRINSIC_PARTIAL

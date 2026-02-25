@@ -6,6 +6,7 @@ import json
 import os
 import re
 import runpy
+import select
 import signal
 import socket
 import shutil
@@ -23,6 +24,9 @@ _SIGNAL_HANDLERS_INSTALLED = False
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
+_BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
+_BATCH_COMPILE_SERVER_CLIENT_PID = 0
+_BATCH_COMPILE_SERVER_DISABLED = False
 
 try:
     import fcntl  # type: ignore
@@ -1104,6 +1108,32 @@ def _diff_backend_daemon_default() -> bool:
     return sys.platform != "darwin"
 
 
+def _diff_batch_compile_server_enabled() -> bool:
+    explicit = _bool_env("MOLT_DIFF_BATCH_COMPILE_SERVER")
+    if explicit is not None:
+        return explicit
+    return False
+
+
+def _diff_batch_compile_server_strict() -> bool:
+    explicit = _bool_env("MOLT_DIFF_BATCH_COMPILE_SERVER_STRICT")
+    if explicit is not None:
+        return explicit
+    return False
+
+
+def _diff_batch_compile_server_request_timeout() -> float:
+    raw = os.environ.get("MOLT_DIFF_BATCH_COMPILE_SERVER_TIMEOUT_SEC", "").strip()
+    if raw:
+        try:
+            parsed = float(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+    return 60.0
+
+
 def _diff_disable_daemon_on_dyld() -> bool:
     raw = os.environ.get("MOLT_DIFF_DISABLE_DAEMON_ON_DYLD", "").strip().lower()
     if raw:
@@ -1942,6 +1972,187 @@ def _record_rss_metrics(
         return
 
 
+class _BatchCompileServerClient:
+    def __init__(self, env: dict[str, str]) -> None:
+        cmd = [
+            _resolve_molt_cli_python(),
+            "-m",
+            "molt.cli",
+            "internal-batch-build-server",
+        ]
+        self._proc = subprocess.Popen(
+            cmd,
+            cwd=_repo_root(),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            errors="replace",
+            **_popen_group_kwargs(),
+        )
+        self._next_id = 1
+
+    def _readline(self, timeout: float) -> str:
+        if self._proc.stdout is None:
+            raise RuntimeError("batch compile server stdout pipe unavailable")
+        if os.name == "posix":
+            ready, _write_ready, _err_ready = select.select(
+                [self._proc.stdout], [], [], max(0.01, timeout)
+            )
+            if not ready:
+                raise TimeoutError("batch compile server response timed out")
+        line = self._proc.stdout.readline()
+        if line:
+            return line
+        error_detail = ""
+        if self._proc.stderr is not None:
+            with contextlib.suppress(Exception):
+                error_detail = self._proc.stderr.read().strip()
+        raise RuntimeError(
+            "batch compile server closed response pipe"
+            + (f": {error_detail}" if error_detail else "")
+        )
+
+    def request(
+        self,
+        op: str,
+        *,
+        params: dict[str, object] | None = None,
+        timeout: float,
+    ) -> dict[str, object]:
+        if self._proc.poll() is not None:
+            raise RuntimeError("batch compile server process is not running")
+        if self._proc.stdin is None:
+            raise RuntimeError("batch compile server stdin pipe unavailable")
+        req_id = self._next_id
+        self._next_id += 1
+        request: dict[str, object] = {"id": req_id, "op": op}
+        if params is not None:
+            request["params"] = params
+        payload = json.dumps(request, sort_keys=True) + "\n"
+        try:
+            self._proc.stdin.write(payload)
+            self._proc.stdin.flush()
+        except OSError as exc:
+            raise RuntimeError(f"failed to write batch compile request: {exc}") from exc
+        raw = self._readline(timeout)
+        try:
+            response = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid batch compile response JSON: {exc}") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError("batch compile response must be an object")
+        if response.get("id") != req_id:
+            raise RuntimeError("batch compile response id mismatch")
+        return response
+
+    def close(self) -> None:
+        if self._proc.poll() is None:
+            with contextlib.suppress(Exception):
+                self.request(
+                    "shutdown",
+                    timeout=_diff_batch_compile_server_request_timeout(),
+                )
+        _terminate_process_tree(self._proc, grace=0.35)
+
+
+def _shutdown_batch_compile_server() -> None:
+    global _BATCH_COMPILE_SERVER_CLIENT
+    global _BATCH_COMPILE_SERVER_CLIENT_PID
+    if _BATCH_COMPILE_SERVER_CLIENT is None:
+        return
+    _BATCH_COMPILE_SERVER_CLIENT.close()
+    _BATCH_COMPILE_SERVER_CLIENT = None
+    _BATCH_COMPILE_SERVER_CLIENT_PID = 0
+
+
+def _batch_compile_server_client(
+    env: dict[str, str],
+) -> tuple[_BatchCompileServerClient | None, str | None]:
+    global _BATCH_COMPILE_SERVER_CLIENT
+    global _BATCH_COMPILE_SERVER_CLIENT_PID
+    global _BATCH_COMPILE_SERVER_DISABLED
+    if _BATCH_COMPILE_SERVER_DISABLED:
+        return None, "batch compile server disabled for this worker"
+    pid = os.getpid()
+    if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
+        _shutdown_batch_compile_server()
+    if _BATCH_COMPILE_SERVER_CLIENT is not None:
+        return _BATCH_COMPILE_SERVER_CLIENT, None
+    try:
+        client = _BatchCompileServerClient(env)
+        response = client.request(
+            "ping",
+            timeout=_diff_batch_compile_server_request_timeout(),
+        )
+        if not bool(response.get("ok")) or not bool(response.get("pong")):
+            raise RuntimeError("batch compile server ping failed")
+    except Exception as exc:
+        _BATCH_COMPILE_SERVER_DISABLED = True
+        return None, str(exc)
+    _BATCH_COMPILE_SERVER_CLIENT = client
+    _BATCH_COMPILE_SERVER_CLIENT_PID = pid
+    atexit.register(_shutdown_batch_compile_server)
+    return client, None
+
+
+def _run_batch_compile_build(
+    *,
+    env: dict[str, str],
+    file_path: str,
+    output_root: Path,
+    output_binary: Path,
+    build_profile: str,
+    no_cache: bool,
+    rebuild: bool,
+    extra_params: dict[str, object] | None = None,
+) -> tuple[int, str, str, str | None]:
+    global _BATCH_COMPILE_SERVER_DISABLED
+    client, start_error = _batch_compile_server_client(env)
+    if client is None:
+        return 0, "", "", start_error
+    params: dict[str, object] = {
+        "file_path": file_path,
+        "profile": build_profile,
+        "output": str(output_binary),
+        "out_dir": str(output_root),
+        "target": "native",
+        "emit": "bin",
+        "cache": not no_cache and not rebuild,
+        "respect_pythonpath": True,
+        "env_overrides": env,
+        "codec": env.get("MOLT_CODEC", "msgpack"),
+    }
+    if extra_params:
+        params.update(extra_params)
+    try:
+        response = client.request(
+            "build",
+            params=params,
+            timeout=_diff_batch_compile_server_request_timeout(),
+        )
+    except Exception as exc:
+        _BATCH_COMPILE_SERVER_DISABLED = True
+        _shutdown_batch_compile_server()
+        return 0, "", "", str(exc)
+    stdout = response.get("stdout")
+    stderr = response.get("stderr")
+    error = response.get("error")
+    returncode = response.get("returncode")
+    if not isinstance(returncode, int):
+        returncode = 1 if not bool(response.get("ok")) else 0
+    out_text = stdout if isinstance(stdout, str) else ""
+    err_text = stderr if isinstance(stderr, str) else ""
+    if isinstance(error, str) and error:
+        if err_text:
+            err_text = f"{err_text}\n{error}"
+        else:
+            err_text = error
+    return returncode, out_text, err_text, None
+
+
 def run_cpython(file_path, python_exe=sys.executable):
     python_exe = _resolve_python_exe(python_exe)
     _apply_memory_limit()
@@ -2211,6 +2422,46 @@ def _run_molt(
     build_timeout = _diff_build_timeout(timeout)
     rss_limit_kb = _diff_fail_rss_kb()
     try:
+        build_stdout = ""
+        build_stderr = ""
+        build_rc = 0
+        build_via_batch_server = False
+        batch_requested = _diff_batch_compile_server_enabled()
+        batch_strict = _diff_batch_compile_server_strict()
+        if batch_requested:
+            (
+                build_rc,
+                build_stdout,
+                build_stderr,
+                batch_error,
+            ) = _run_batch_compile_build(
+                env=env,
+                file_path=file_path,
+                output_root=output_root,
+                output_binary=output_binary,
+                build_profile=build_profile,
+                no_cache=no_cache,
+                rebuild=rebuild,
+            )
+            if batch_error is None:
+                build_via_batch_server = True
+            elif batch_strict:
+                message = f"Batch compile server strict mode failed: {batch_error}"
+                _record_rss_metrics(
+                    file_path,
+                    build_metrics=None,
+                    run_metrics=None,
+                    build_rc=127,
+                    run_rc=None,
+                    status="build_batch_server_error",
+                )
+                return None, message, 127
+            else:
+                print(
+                    "[WARN] Batch compile server unavailable; falling back to subprocess build: "
+                    f"{batch_error}"
+                )
+
         build_cmd = [
             _resolve_molt_cli_python(),
             "-m",
@@ -2232,30 +2483,34 @@ def _run_molt(
         codec = env.get("MOLT_CODEC")
         if codec:
             build_cmd.extend(["--codec", codec])
-        try:
-            build_res = _run_with_optional_time(
-                build_cmd,
-                env=env,
-                timeout=build_timeout,
-                time_path=build_time_path,
-            )
-        except subprocess.TimeoutExpired:
-            build_metrics = (
-                _parse_time_metrics(build_time_path)
-                if build_time_path is not None
-                else None
-            )
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=124,
-                run_rc=None,
-                status="build_timeout",
-            )
-            return None, f"Timeout after {build_timeout}s", 124
-        if build_time_path is not None:
-            build_metrics = _parse_time_metrics(build_time_path)
+        if not build_via_batch_server:
+            try:
+                build_res = _run_with_optional_time(
+                    build_cmd,
+                    env=env,
+                    timeout=build_timeout,
+                    time_path=build_time_path,
+                )
+            except subprocess.TimeoutExpired:
+                build_metrics = (
+                    _parse_time_metrics(build_time_path)
+                    if build_time_path is not None
+                    else None
+                )
+                _record_rss_metrics(
+                    file_path,
+                    build_metrics=build_metrics,
+                    run_metrics=None,
+                    build_rc=124,
+                    run_rc=None,
+                    status="build_timeout",
+                )
+                return None, f"Timeout after {build_timeout}s", 124
+            if build_time_path is not None:
+                build_metrics = _parse_time_metrics(build_time_path)
+            build_rc = build_res.returncode
+            build_stdout = build_res.stdout
+            build_stderr = build_res.stderr
         exceeded, detail = _rss_exceeded(build_metrics, rss_limit_kb)
         if exceeded:
             message = f"Build RSS limit exceeded: {detail}"
@@ -2268,16 +2523,16 @@ def _run_molt(
                 status="build_rss_exceeded",
             )
             return None, message, 125
-        if build_res.returncode != 0:
+        if build_rc != 0:
             _record_rss_metrics(
                 file_path,
                 build_metrics=build_metrics,
                 run_metrics=None,
-                build_rc=build_res.returncode,
+                build_rc=build_rc,
                 run_rc=None,
                 status="build_failed",
             )
-            return None, build_res.stderr, build_res.returncode
+            return None, build_stderr or build_stdout, build_rc
 
         preflight_err = _dyld_preflight_error(output_binary)
         if preflight_err is not None:
@@ -2296,7 +2551,7 @@ def _run_molt(
                 file_path,
                 build_metrics=build_metrics,
                 run_metrics=None,
-                build_rc=build_res.returncode,
+                build_rc=build_rc,
                 run_rc=None,
                 status="build_only_ok",
             )
@@ -2320,7 +2575,7 @@ def _run_molt(
                 file_path,
                 build_metrics=build_metrics,
                 run_metrics=run_metrics,
-                build_rc=build_res.returncode,
+                build_rc=build_rc,
                 run_rc=124,
                 status="run_timeout",
             )
@@ -2334,7 +2589,7 @@ def _run_molt(
                 file_path,
                 build_metrics=build_metrics,
                 run_metrics=run_metrics,
-                build_rc=build_res.returncode,
+                build_rc=build_rc,
                 run_rc=125,
                 status="run_rss_exceeded",
             )
@@ -2344,7 +2599,7 @@ def _run_molt(
             file_path,
             build_metrics=build_metrics,
             run_metrics=run_metrics,
-            build_rc=build_res.returncode,
+            build_rc=build_rc,
             run_rc=run_res.returncode,
             status=run_status,
         )
@@ -3200,6 +3455,8 @@ def run_diff(
             "build_profile": build_profile,
             "warm_cache": warm_cache,
             "retry_oom": retry_oom,
+            "batch_compile_server": _diff_batch_compile_server_enabled(),
+            "batch_compile_server_strict": _diff_batch_compile_server_strict(),
         },
         "rss": {
             **_aggregate_rss_metrics(run_id),

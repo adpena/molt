@@ -147,6 +147,39 @@ fn unsupported_stmt(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     )
 }
 
+fn stmt_kind_name(stmt: &pyast::Stmt) -> &'static str {
+    match stmt {
+        pyast::Stmt::FunctionDef(_) => "FunctionDef",
+        pyast::Stmt::AsyncFunctionDef(_) => "AsyncFunctionDef",
+        pyast::Stmt::ClassDef(_) => "ClassDef",
+        pyast::Stmt::Return(_) => "Return",
+        pyast::Stmt::Delete(_) => "Delete",
+        pyast::Stmt::Assign(_) => "Assign",
+        pyast::Stmt::TypeAlias(_) => "TypeAlias",
+        pyast::Stmt::AugAssign(_) => "AugAssign",
+        pyast::Stmt::AnnAssign(_) => "AnnAssign",
+        pyast::Stmt::For(_) => "For",
+        pyast::Stmt::AsyncFor(_) => "AsyncFor",
+        pyast::Stmt::While(_) => "While",
+        pyast::Stmt::If(_) => "If",
+        pyast::Stmt::With(_) => "With",
+        pyast::Stmt::AsyncWith(_) => "AsyncWith",
+        pyast::Stmt::Match(_) => "Match",
+        pyast::Stmt::Raise(_) => "Raise",
+        pyast::Stmt::Try(_) => "Try",
+        pyast::Stmt::TryStar(_) => "TryStar",
+        pyast::Stmt::Assert(_) => "Assert",
+        pyast::Stmt::Import(_) => "Import",
+        pyast::Stmt::ImportFrom(_) => "ImportFrom",
+        pyast::Stmt::Global(_) => "Global",
+        pyast::Stmt::Nonlocal(_) => "Nonlocal",
+        pyast::Stmt::Expr(_) => "Expr",
+        pyast::Stmt::Pass(_) => "Pass",
+        pyast::Stmt::Break(_) => "Break",
+        pyast::Stmt::Continue(_) => "Continue",
+    }
+}
+
 fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> Result<u64, u64> {
     match value {
         pyast::Constant::None => Ok(MoltObject::none().bits()),
@@ -260,7 +293,7 @@ fn convert_expr(
             dec_if_heap(_py, right_bits);
             out
         }
-        _ => Err(unsupported_expr(_py, "unsupported")),
+        _ => Err(unsupported_expr(_py, expr.python_name())),
     }
 }
 
@@ -451,7 +484,7 @@ fn convert_stmt(
             dec_if_heap(_py, value_bits);
             out
         }
-        _ => Err(unsupported_stmt(_py, "unsupported")),
+        _ => Err(unsupported_stmt(_py, stmt_kind_name(stmt))),
     }
 }
 
@@ -542,8 +575,19 @@ fn collect_child_nodes(_py: &crate::PyToken<'_>, node_bits: u64) -> Result<Vec<u
         Some("FunctionDef") => {
             push_attr_child(_py, node_bits, b"args", &mut children)?;
             push_attr_children_from_seq(_py, node_bits, b"body", &mut children)?;
+            push_attr_children_from_seq(_py, node_bits, b"decorator_list", &mut children)?;
+            push_attr_child(_py, node_bits, b"returns", &mut children)?;
         }
-        Some("arguments") => push_attr_children_from_seq(_py, node_bits, b"args", &mut children)?,
+        Some("arguments") => {
+            push_attr_children_from_seq(_py, node_bits, b"posonlyargs", &mut children)?;
+            push_attr_children_from_seq(_py, node_bits, b"args", &mut children)?;
+            push_attr_child(_py, node_bits, b"vararg", &mut children)?;
+            push_attr_children_from_seq(_py, node_bits, b"kwonlyargs", &mut children)?;
+            push_attr_children_from_seq(_py, node_bits, b"kw_defaults", &mut children)?;
+            push_attr_child(_py, node_bits, b"kwarg", &mut children)?;
+            push_attr_children_from_seq(_py, node_bits, b"defaults", &mut children)?;
+        }
+        Some("arg") => push_attr_child(_py, node_bits, b"annotation", &mut children)?,
         Some("Return") => push_attr_child(_py, node_bits, b"value", &mut children)?,
         Some("Expr") => push_attr_child(_py, node_bits, b"value", &mut children)?,
         Some("Assign") => {
@@ -603,9 +647,9 @@ pub extern "C" fn molt_ast_parse(
             }
         };
 
-        // TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial):
-        // extend Rust ast lowering to additional stmt/expr variants and full argument
-        // shape parity; unsupported nodes currently raise RuntimeError immediately.
+        // NOTE(stdlib-compat): The intrinsic lowers only the constructor surface
+        // provided by `_AST_PARSE_CTORS`; unsupported parse nodes fail fast with
+        // deterministic `RuntimeError` instead of host-runtime fallbacks.
         match parsed {
             pyast::Mod::Module(module) => {
                 let mut body_nodes: Vec<u64> = Vec::with_capacity(module.body.len());
@@ -672,10 +716,13 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
                 | "Expression"
                 | "FunctionDef"
                 | "arguments"
+                | "arg"
+                | "Assign"
                 | "Return"
                 | "Expr"
                 | "Name"
                 | "Load"
+                | "Store"
                 | "Constant"
                 | "Add"
                 | "BinOp"

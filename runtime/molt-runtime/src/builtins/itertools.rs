@@ -252,6 +252,16 @@ unsafe fn islice_set_has_stop(ptr: *mut u8, val: i64) {
     }
 }
 
+#[inline]
+fn islice_advance_idx(idx: i64) -> i64 {
+    idx.saturating_add(1)
+}
+
+#[inline]
+fn islice_advance_next_idx(next_idx: i64, step: i64) -> i64 {
+    next_idx.saturating_add(step)
+}
+
 unsafe fn repeat_obj_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
@@ -1232,15 +1242,19 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "StopIteration", "");
             }
             if idx == next_idx {
-                idx += 1;
-                next_idx += step;
+                idx = islice_advance_idx(idx);
+                // CPython's islice_next (Modules/itertoolsmodule.c) keeps bounded
+                // Py_ssize_t counters and clamps on overflow; we mirror that bounded
+                // arithmetic model with saturation so release-mode signed overflow can
+                // never wrap negative.
+                next_idx = islice_advance_next_idx(next_idx, step);
                 unsafe {
                     islice_set_idx(self_ptr, idx);
                     islice_set_next_idx(self_ptr, next_idx);
                 }
                 return val_bits;
             }
-            idx += 1;
+            idx = islice_advance_idx(idx);
         }
     })
 }
@@ -3130,4 +3144,41 @@ pub(crate) fn itertools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{islice_advance_idx, islice_advance_next_idx};
+
+    #[test]
+    fn islice_idx_increment_saturates_at_i64_max() {
+        assert_eq!(islice_advance_idx(i64::MAX - 1), i64::MAX);
+        assert_eq!(islice_advance_idx(i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn islice_next_increment_saturates_instead_of_wrapping_negative() {
+        let near_max = i64::MAX - 1;
+        let step = 4;
+        let wrapped = near_max.wrapping_add(step);
+        assert!(
+            wrapped < 0,
+            "control check: wrapping add should go negative"
+        );
+        assert_eq!(islice_advance_next_idx(near_max, step), i64::MAX);
+    }
+
+    #[test]
+    fn islice_next_increment_is_monotonic_near_upper_bound() {
+        let mut next_idx = i64::MAX - 3;
+        for _ in 0..8 {
+            let previous = next_idx;
+            next_idx = islice_advance_next_idx(next_idx, 2);
+            assert!(
+                next_idx >= previous,
+                "next index must not decrease near i64::MAX"
+            );
+        }
+        assert_eq!(next_idx, i64::MAX);
+    }
 }

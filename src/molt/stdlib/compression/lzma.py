@@ -1,12 +1,9 @@
-"""Intrinsic-first stdlib module stub for `compression.lzma`."""
+"""``compression.lzma`` — re-export from top-level ``lzma`` module."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
 
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `compression.lzma` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "compression.lzma" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+from lzma import *  # noqa: F401, F403
+from lzma import __all__ as __all__  # noqa: F811
+from lzma import LZMACompressor, LZMADecompressor, LZMAError  # noqa: F401

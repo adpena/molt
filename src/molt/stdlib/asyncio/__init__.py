@@ -1290,6 +1290,7 @@ molt_asyncio_sock_sendto_new = _intrinsic_require(
 )
 molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
+molt_asyncio_to_thread = _intrinsic_require("molt_asyncio_to_thread", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
@@ -4079,13 +4080,9 @@ async def open_unix_connection(
 
 
 async def to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
-    loop = get_running_loop()
-    ctx = _contextvars.copy_context()
-
-    def _runner() -> Any:
-        return ctx.run(func, *args, **kwargs)
-
-    return await loop.run_in_executor(None, _runner)
+    args_tuple = args if args else None
+    kwargs_dict = kwargs if kwargs else None
+    return await molt_asyncio_to_thread(func, args_tuple, kwargs_dict)
 
 
 async def start_server(
@@ -4304,19 +4301,6 @@ async def shield(awaitable: Any) -> Any:
         raise
 
 
-def create_eager_task_factory() -> Callable[[EventLoop, Any], Task]:
-    def _factory(
-        loop: EventLoop,
-        coro: Any,
-        *,
-        name: str | None = None,
-        context: Any | None = None,
-    ) -> Task:
-        return Task(coro, loop=loop, name=name, context=context)
-
-    return _factory
-
-
 def eager_task_factory(
     loop: EventLoop,
     coro: Any,
@@ -4324,7 +4308,39 @@ def eager_task_factory(
     name: str | None = None,
     context: Any | None = None,
 ) -> Task:
+    """Task factory that eagerly starts coroutine execution.
+
+    Molt's scheduler already runs the coroutine until its first suspension
+    point during task creation, so this is semantically equivalent to the
+    CPython eager_start=True behaviour.
+    """
     return Task(coro, loop=loop, name=name, context=context)
+
+
+def create_eager_task_factory(
+    custom_task_constructor: Callable[..., Task] | None = None,
+) -> Callable[[EventLoop, Any], Task]:
+    """Create a task factory for eager task execution.
+
+    If *custom_task_constructor* is not ``None``, it must be a callable with
+    the signature ``(coro, *, loop, name, context, eager_start)`` and is used
+    instead of the default :class:`Task` constructor.
+    """
+    if custom_task_constructor is None:
+        return eager_task_factory
+
+    def _factory(
+        loop: EventLoop,
+        coro: Any,
+        *,
+        name: str | None = None,
+        context: Any | None = None,
+    ) -> Task:
+        return custom_task_constructor(
+            coro, loop=loop, name=name, context=context, eager_start=True
+        )
+
+    return _factory
 
 
 def create_task(

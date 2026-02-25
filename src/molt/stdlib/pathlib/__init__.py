@@ -1,9 +1,6 @@
 """Capability-gated pathlib implementation for Molt."""
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P2, status:planned):
-# continue broadening pathlib parity (glob recursion corner cases, Windows
-# drive/anchor flavor nuances, and symlink edge semantics) while keeping path
-# shaping in runtime intrinsics.
+# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P2, status:planned): continue broadening pathlib parity (glob recursion corner cases, Windows drive/anchor flavor nuances, and symlink edge semantics) while keeping path shaping in runtime intrinsics.
 
 from __future__ import annotations
 

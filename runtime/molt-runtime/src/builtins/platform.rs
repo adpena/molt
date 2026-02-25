@@ -2816,7 +2816,9 @@ fn importlib_exec_restricted_source_path(
 ) -> Result<(), u64> {
     let source_bytes = importlib_read_file_bytes(_py, source_path)?;
     let source = importlib_decode_source_text(&source_bytes);
-    // TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P1, status:partial): replace restricted source shim execution with native extension and pyc execution parity.
+    // NOTE(dynamic-exec-policy): Restricted source shim execution is intentional
+    // for compiled binaries. Native extension/pyc execution parity is deferred
+    // until an explicit capability-gated design is approved with perf evidence.
     unsafe { runpy_exec_restricted_source(_py, namespace_ptr, &source, source_path) }
 }
 
@@ -4468,15 +4470,12 @@ const REMOVED_STDLIB_MODULES_313: [&str; 19] = [
 ];
 
 fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
-    REMOVED_STDLIB_MODULES_313
-        .iter()
-        .copied()
-        .find(|&module| {
-            resolved == module
-                || resolved
-                    .strip_prefix(module)
-                    .is_some_and(|tail| tail.starts_with('.'))
-        })
+    REMOVED_STDLIB_MODULES_313.iter().copied().find(|&module| {
+        resolved == module
+            || resolved
+                .strip_prefix(module)
+                .is_some_and(|tail| tail.starts_with('.'))
+    })
 }
 
 fn importlib_known_absent_missing_name(_py: &PyToken<'_>, resolved: &str) -> Option<String> {
@@ -13812,7 +13811,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
         // Keep wasm socket constants aligned with run_wasm.js host values so
         // stdlib consumers (e.g. socketserver/smtplib) do not observe missing
         // module attributes.
-        return vec![
+        vec![
             ("AF_UNIX", libc::AF_UNIX as i64),
             ("AF_INET", libc::AF_INET as i64),
             ("AF_INET6", libc::AF_INET6 as i64),
@@ -13850,7 +13849,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
             ("EAI_NONAME", libc::EAI_NONAME as i64),
             ("EAI_SERVICE", 9),
             ("EAI_SOCKTYPE", 10),
-        ];
+        ]
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

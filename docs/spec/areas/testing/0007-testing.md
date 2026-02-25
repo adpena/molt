@@ -65,7 +65,8 @@ python3 tools/check_differential_suite_layout.py
 
 ### 1.5 Expected-Failure Policy For Too-Dynamic Cases
 - Use this only for intentionally unsupported semantics called out by the
-  vision/break-policy docs (for example `exec`/`eval` heavy behavior).
+  vision/break-policy docs and the dynamic execution policy contract
+  (for example `exec`/`eval` heavy behavior).
 - Canonical registry:
   `tools/stdlib_full_coverage_manifest.py` ->
   `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`.

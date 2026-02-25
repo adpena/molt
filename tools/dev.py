@@ -126,6 +126,11 @@ def main() -> None:
             tty=use_tty,
         )
         run_uv(
+            ["python3", "tools/check_dynamic_policy.py"],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
+        run_uv(
             [
                 "python3",
                 "tools/check_core_lane_lowering.py",

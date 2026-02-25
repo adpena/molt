@@ -47,10 +47,12 @@ Long-form topic docs live under `docs/spec/areas/`.
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
+- Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
 - 0016 Args/kwargs call binding contract: [docs/spec/areas/compat/contracts/call_argument_binding_contract.md](docs/spec/areas/compat/contracts/call_argument_binding_contract.md)
 - 0018 Package ABI contract: [docs/spec/areas/compat/contracts/package_abi_contract.md](docs/spec/areas/compat/contracts/package_abi_contract.md)
 - 0210 CPython bridge policy: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](docs/spec/areas/compat/contracts/cpython_bridge_policy.md)
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
+- 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - 0213 Import system contract: [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 

@@ -7,8 +7,11 @@ _MOLT_IMPORTLIB_RESOURCES_NORMALIZE_PATH = _require_intrinsic(
     "molt_importlib_resources_normalize_path", globals()
 )
 
+import functools  # noqa: F401
+import os  # noqa: F401
 import pathlib
 import types
+import warnings  # noqa: F401
 from typing import Any, BinaryIO, ContextManager, Iterable, TextIO, Union
 
 from . import contents as _resources_contents

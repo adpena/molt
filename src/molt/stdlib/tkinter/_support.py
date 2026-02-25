@@ -1,0 +1,46 @@
+"""Shared Phase-0 tkinter capability/runtime gating helpers."""
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error", globals())
+
+
+def has_gui_capability():
+    return bool(_MOLT_CAPABILITIES_HAS("gui.window")) or bool(
+        _MOLT_CAPABILITIES_HAS("gui")
+    )
+
+
+def has_process_spawn_capability():
+    return bool(_MOLT_CAPABILITIES_HAS("process.spawn")) or bool(
+        _MOLT_CAPABILITIES_HAS("process")
+    )
+
+
+def require_gui_capability():
+    if not has_gui_capability():
+        raise PermissionError("missing gui.window capability")
+
+
+def require_process_spawn_capability():
+    if not has_process_spawn_capability():
+        raise PermissionError("missing process.spawn capability")
+
+
+def tk_available():
+    return bool(_MOLT_TK_AVAILABLE())
+
+
+def tk_unavailable_message(operation):
+    reason = _MOLT_TK_LAST_ERROR(None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return f"tkinter runtime unavailable ({operation})"
+
+
+def require_tk_runtime(operation):
+    if tk_available():
+        return
+    raise RuntimeError(tk_unavailable_message(operation))
