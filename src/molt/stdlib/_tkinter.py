@@ -17,6 +17,7 @@ _MOLT_TK_DO_ONE_EVENT = _require_intrinsic("molt_tk_do_one_event", globals())
 _MOLT_TK_AFTER = _require_intrinsic("molt_tk_after", globals())
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
 _MOLT_TK_BIND_COMMAND = _require_intrinsic("molt_tk_bind_command", globals())
+_MOLT_TK_UNBIND_COMMAND = _require_intrinsic("molt_tk_unbind_command", globals())
 _MOLT_TK_FILEHANDLER_CREATE = _require_intrinsic(
     "molt_tk_filehandler_create", globals()
 )
@@ -320,17 +321,13 @@ def createcommand(app, name, callback):
     if not isinstance(name, str):
         name = str(name)
     bind_command(app, name, callback)
-    if isinstance(app, TkappType):
-        app._commands[name] = callback
 
 
 def deletecommand(app, name):
-    if isinstance(app, TkappType):
-        app.deletecommand(name)
-        return
-    raise NotImplementedError(
-        "deletecommand is only supported for TkappType in Phase-0"
-    )
+    if not isinstance(name, str):
+        name = str(name)
+    _MOLT_TK_UNBIND_COMMAND(_unwrap_app(app), name)
+    return None
 
 
 def getboolean(value):
@@ -424,7 +421,6 @@ class TkappType:
 
     def __init__(self, handle):
         self._handle = handle
-        self._commands = {}
         self._trace = None
         self._dispatching = False
 
@@ -475,12 +471,7 @@ class TkappType:
         createcommand(self, name, callback)
 
     def deletecommand(self, name):
-        if not isinstance(name, str):
-            name = str(name)
-        if name not in self._commands:
-            raise TclError(f'invalid command name "{name}"')
-        call(self, "rename", name, "")
-        self._commands.pop(name, None)
+        deletecommand(self, name)
 
     def destroy_widget(self, widget_path):
         destroy_widget(self, widget_path)

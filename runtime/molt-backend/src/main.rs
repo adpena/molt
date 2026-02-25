@@ -29,6 +29,7 @@ struct DaemonJobRequest {
 struct DaemonRequest {
     version: Option<u32>,
     ping: Option<bool>,
+    config_digest: Option<String>,
     jobs: Option<Vec<DaemonJobRequest>>,
 }
 
@@ -128,6 +129,12 @@ impl DaemonCache {
                 self.bytes = self.bytes.saturating_sub(old_val.len());
             }
         }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
     }
 }
 
@@ -336,6 +343,7 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
     let listener = UnixListener::bind(socket)?;
     let mut cache = DaemonCache::new(daemon_cache_limit_bytes());
     let mut stats = DaemonStats::default();
+    let mut active_config_digest: Option<String> = None;
     let request_limit_bytes = daemon_request_limit_bytes();
     let max_jobs = daemon_max_jobs();
     let started_at = Instant::now();
@@ -346,6 +354,7 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
                     &mut conn,
                     &mut cache,
                     &mut stats,
+                    &mut active_config_digest,
                     started_at,
                     request_limit_bytes,
                     max_jobs,
@@ -366,6 +375,7 @@ fn handle_daemon_connection(
     stream: &mut std::os::unix::net::UnixStream,
     cache: &mut DaemonCache,
     stats: &mut DaemonStats,
+    active_config_digest: &mut Option<String>,
     started_at: Instant,
     request_limit_bytes: usize,
     max_jobs: usize,
@@ -468,6 +478,18 @@ fn handle_daemon_connection(
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
+    }
+    let request_config_digest = req
+        .config_digest
+        .as_deref()
+        .map(str::trim)
+        .filter(|digest| !digest.is_empty())
+        .map(|digest| digest.to_string());
+    if let Some(ref digest) = request_config_digest
+        && active_config_digest.as_deref() != Some(digest.as_str())
+    {
+        cache.clear();
+        *active_config_digest = Some(digest.clone());
     }
     let Some(jobs) = req.jobs else {
         let response = DaemonResponse {
