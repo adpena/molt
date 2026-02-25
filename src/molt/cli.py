@@ -2571,6 +2571,27 @@ def _emit_build_diagnostics(
                 value = tier_summary[tier]
                 if isinstance(value, int):
                     print(f"- midend.tier.{tier}: {value}", file=sys.stderr)
+        tier_base_summary = midend.get("tier_base_summary")
+        if isinstance(tier_base_summary, dict):
+            for tier in sorted(tier_base_summary):
+                value = tier_base_summary[tier]
+                if isinstance(value, int):
+                    print(f"- midend.tier_base.{tier}: {value}", file=sys.stderr)
+        promoted_functions = midend.get("promoted_functions")
+        if isinstance(promoted_functions, int):
+            print(
+                f"- midend.promoted_functions: {promoted_functions}",
+                file=sys.stderr,
+            )
+        promotion_source_summary = midend.get("promotion_source_summary")
+        if isinstance(promotion_source_summary, dict):
+            for source in sorted(promotion_source_summary):
+                value = promotion_source_summary[source]
+                if isinstance(value, int):
+                    print(
+                        f"- midend.promotion_source.{source}: {value}",
+                        file=sys.stderr,
+                    )
         reason_counts = midend.get("degrade_reason_summary")
         if isinstance(reason_counts, dict):
             for reason in sorted(reason_counts):
@@ -2608,6 +2629,25 @@ def _emit_build_diagnostics(
                     f"{idx}: {module_name}::{function_name} "
                     f"spent_ms={spent_ms:.3f} budget_ms={budget_ms:.3f} "
                     f"degraded={degraded}",
+                    file=sys.stderr,
+                )
+        promotion_hotspots = midend.get("promotion_hotspots_top")
+        if isinstance(promotion_hotspots, list):
+            for idx, item in enumerate(promotion_hotspots[:10], start=1):
+                if not isinstance(item, dict):
+                    continue
+                module_name = str(item.get("module", ""))
+                function_name = str(item.get("function", ""))
+                tier_base = str(item.get("tier_base", ""))
+                tier_effective = str(item.get("tier_effective", ""))
+                source = str(item.get("source", ""))
+                signal = str(item.get("signal", ""))
+                spent_ms = float(item.get("spent_ms", 0.0))
+                print(
+                    "- midend.promotion_hotspot."
+                    f"{idx}: {module_name}::{function_name} "
+                    f"{tier_base}->{tier_effective} source={source} "
+                    f"signal={signal} spent_ms={spent_ms:.3f}",
                     file=sys.stderr,
                 )
         degrade_hotspots = midend.get("degrade_event_hotspots_top")
@@ -2680,11 +2720,15 @@ def _build_midend_diagnostics_payload(
 
     normalized_policy: dict[str, dict[str, Any]] = {}
     tier_summary: dict[str, int] = {}
+    tier_base_summary: dict[str, int] = {}
     reason_summary: dict[str, int] = {}
+    promotion_source_summary: dict[str, int] = {}
     effective_profiles: set[str] = set()
     degraded_functions = 0
+    promoted_functions = 0
     function_hotspots: list[dict[str, Any]] = []
     degrade_event_hotspots: list[dict[str, Any]] = []
+    promotion_hotspots: list[dict[str, Any]] = []
 
     for function_key in sorted(policy_outcomes_by_function):
         module_name, _, function_name = function_key.partition("::")
@@ -2719,14 +2763,32 @@ def _build_midend_diagnostics_payload(
             if reason:
                 reason_summary[reason] = reason_summary.get(reason, 0) + 1
         profile = str(raw_outcome.get("profile", ""))
-        tier = str(raw_outcome.get("tier", ""))
+        tier = str(
+            raw_outcome.get(
+                "tier_effective",
+                raw_outcome.get("tier", ""),
+            )
+        )
+        tier_base = str(raw_outcome.get("tier_base", tier))
+        tier_source = str(raw_outcome.get("tier_source", ""))
+        promoted = bool(raw_outcome.get("promoted", False))
+        promotion_source = str(raw_outcome.get("promotion_source", ""))
+        promotion_signal = str(raw_outcome.get("promotion_signal", ""))
         if profile:
             effective_profiles.add(profile)
         if tier:
             tier_summary[tier] = tier_summary.get(tier, 0) + 1
+        if tier_base:
+            tier_base_summary[tier_base] = tier_base_summary.get(tier_base, 0) + 1
         degraded = bool(raw_outcome.get("degraded", False))
         if degraded:
             degraded_functions += 1
+        if promoted:
+            promoted_functions += 1
+            if promotion_source:
+                promotion_source_summary[promotion_source] = (
+                    promotion_source_summary.get(promotion_source, 0) + 1
+                )
         spent_ms = float(raw_outcome.get("spent_ms", 0.0))
         budget_ms = float(raw_outcome.get("budget_ms", 0.0))
         function_hotspots.append(
@@ -2735,14 +2797,34 @@ def _build_midend_diagnostics_payload(
                 "function": function_name or module_name,
                 "profile": profile,
                 "tier": tier,
+                "tier_base": tier_base,
                 "spent_ms": round(max(0.0, spent_ms), 6),
                 "budget_ms": round(max(0.0, budget_ms), 6),
                 "degraded": degraded,
+                "promoted": promoted,
             }
         )
+        if promoted:
+            promotion_hotspots.append(
+                {
+                    "module": module_name,
+                    "function": function_name or module_name,
+                    "tier_base": tier_base,
+                    "tier_effective": tier,
+                    "source": promotion_source,
+                    "signal": promotion_signal,
+                    "spent_ms": round(max(0.0, spent_ms), 6),
+                }
+            )
         normalized_policy[function_key] = {
             "profile": profile,
             "tier": tier,
+            "tier_effective": tier,
+            "tier_base": tier_base,
+            "tier_source": tier_source,
+            "promoted": promoted,
+            "promotion_source": promotion_source,
+            "promotion_signal": promotion_signal,
             "budget_ms": budget_ms,
             "spent_ms": spent_ms,
             "degraded": degraded,
@@ -2805,6 +2887,15 @@ def _build_midend_diagnostics_payload(
             item["action"],
         )
     )
+    promotion_hotspots.sort(
+        key=lambda item: (
+            -float(item["spent_ms"]),
+            item["module"],
+            item["function"],
+            item["tier_base"],
+            item["tier_effective"],
+        )
+    )
     return {
         "requested_profile": requested_profile,
         "effective_profiles": sorted(effective_profiles),
@@ -2813,13 +2904,22 @@ def _build_midend_diagnostics_payload(
             len(normalized_pass_stats),
         ),
         "degraded_functions": degraded_functions,
+        "promoted_functions": promoted_functions,
         "tier_summary": {name: tier_summary[name] for name in sorted(tier_summary)},
+        "tier_base_summary": {
+            name: tier_base_summary[name] for name in sorted(tier_base_summary)
+        },
+        "promotion_source_summary": {
+            name: promotion_source_summary[name]
+            for name in sorted(promotion_source_summary)
+        },
         "degrade_reason_summary": {
             name: reason_summary[name] for name in sorted(reason_summary)
         },
         "policy_outcomes_by_function": normalized_policy,
         "pass_stats_by_function": normalized_pass_stats,
         "function_hotspots_top": function_hotspots[:10],
+        "promotion_hotspots_top": promotion_hotspots[:10],
         "degrade_event_hotspots_top": degrade_event_hotspots[:10],
         "pass_hotspots_top": hotspots[:10],
         "pass_hotspots_p95_top": p95_hotspots[:10],
@@ -3042,6 +3142,11 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
+    pgo_hot_functions = {
+        symbol.strip()
+        for symbol in cast(list[str], payload.get("pgo_hot_functions", []))
+        if isinstance(symbol, str) and symbol.strip()
+    }
 
     module_frontend_start = time.perf_counter()
     visit_s = 0.0
@@ -3080,6 +3185,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
+        pgo_hot_functions=pgo_hot_functions,
     )
     try:
         visit_start = time.perf_counter()
@@ -6649,6 +6755,7 @@ def build(
         )
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
+    pgo_hot_function_names: set[str] = set()
     if pgo_profile:
         summary, resolved, err = _load_pgo_profile(
             project_root,
@@ -6661,6 +6768,12 @@ def build(
             return err
         pgo_profile_summary = summary
         pgo_profile_path = resolved
+    if pgo_profile_summary is not None:
+        pgo_hot_function_names = {
+            symbol.strip()
+            for symbol in pgo_profile_summary.hot_functions
+            if isinstance(symbol, str) and symbol.strip()
+        }
     pgo_profile_payload: dict[str, Any] | None = None
     if pgo_profile_summary is not None and pgo_profile_path is not None:
         pgo_profile_payload = {
@@ -7359,8 +7472,14 @@ def build(
         policy_outcomes_by_func: dict[str, dict[str, Any]],
         pass_stats_by_func: dict[str, dict[str, dict[str, Any]]],
     ) -> None:
+        def normalize_function_name(function_name: str) -> str:
+            if function_name == "molt_main":
+                return SimpleTIRGenerator.module_init_symbol(module_name)
+            return function_name
+
         for function_name in sorted(policy_outcomes_by_func):
-            combined_name = f"{module_name}::{function_name}"
+            normalized_name = normalize_function_name(function_name)
+            combined_name = f"{module_name}::{normalized_name}"
             outcome = policy_outcomes_by_func[function_name]
             copied_events: list[dict[str, Any]] = []
             for event in outcome.get("degrade_events", []):
@@ -7370,7 +7489,8 @@ def build(
             copied_outcome["degrade_events"] = copied_events
             midend_policy_outcomes_by_function[combined_name] = copied_outcome
         for function_name in sorted(pass_stats_by_func):
-            combined_name = f"{module_name}::{function_name}"
+            normalized_name = normalize_function_name(function_name)
+            combined_name = f"{module_name}::{normalized_name}"
             per_pass = pass_stats_by_func[function_name]
             copied_per_pass: dict[str, dict[str, Any]] = {}
             for pass_name in sorted(per_pass):
@@ -7458,6 +7578,7 @@ def build(
             module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
+            pgo_hot_functions=pgo_hot_function_names,
         )
         module_frontend_start = time.perf_counter()
         visit_s = 0.0
@@ -7659,6 +7780,7 @@ def build(
                                 "module_chunking": is_wasm and module_chunk_max_ops > 0,
                                 "module_chunk_max_ops": module_chunk_max_ops,
                                 "optimization_profile": profile,
+                                "pgo_hot_functions": sorted(pgo_hot_function_names),
                             }
                             submit_ns_by_module[module_name] = time.time_ns()
                             future_by_module[module_name] = executor.submit(
@@ -8077,6 +8199,7 @@ def build(
             module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
+            pgo_hot_functions=pgo_hot_function_names,
         )
         main_frontend_start = time.perf_counter()
         main_visit_s = 0.0

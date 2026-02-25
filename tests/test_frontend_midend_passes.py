@@ -1748,6 +1748,8 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     )
     assert dev_policy.profile == "dev"
     assert dev_policy.tier == "A"
+    assert dev_policy.tier_base == "A"
+    assert dev_policy.promoted is False
     assert dev_policy.max_rounds == 2
 
     stdlib_gen = SimpleTIRGenerator(
@@ -1766,7 +1768,67 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     )
     assert stdlib_policy.profile == "release"
     assert stdlib_policy.tier == "C"
+    assert stdlib_policy.tier_base == "C"
+    assert stdlib_policy.promoted is False
     assert stdlib_policy.enable_deep_edge_thread is False
+
+
+def test_midend_hot_function_promotion_applies_one_step_only() -> None:
+    gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="pkg.mod",
+        pgo_hot_functions={"pkg.mod::heavy_hot", "pkg.mod::light_hot"},
+    )
+    heavy_ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"h{idx}"))
+        for idx in range(2000)
+    ]
+    heavy_policy = gen._resolve_midend_function_policy(
+        heavy_ops,
+        function_name="heavy_hot",
+        block_count=8,
+    )
+    assert heavy_policy.tier_base == "C"
+    assert heavy_policy.tier == "B"
+    assert heavy_policy.promoted is True
+    assert heavy_policy.promotion_source == "pgo_hot_functions"
+    assert heavy_policy.promotion_signal == "pkg.mod::heavy_hot"
+
+    light_ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"l{idx}"))
+        for idx in range(32)
+    ]
+    light_policy = gen._resolve_midend_function_policy(
+        light_ops,
+        function_name="light_hot",
+        block_count=2,
+    )
+    assert light_policy.tier_base == "B"
+    assert light_policy.tier == "A"
+    assert light_policy.promoted is True
+    assert light_policy.promotion_source == "pgo_hot_functions"
+    assert light_policy.promotion_signal == "pkg.mod::light_hot"
+
+
+def test_midend_hot_function_promotion_respects_explicit_tier_overrides() -> None:
+    with _temp_env("MOLT_MIDEND_TIER_C_FUNCTIONS", "pinned_hot"):
+        gen = SimpleTIRGenerator(
+            optimization_profile="release",
+            module_name="pkg.mod",
+            pgo_hot_functions={"pkg.mod::pinned_hot"},
+        )
+        ops = [
+            MoltOp(kind="CONST", args=[idx], result=MoltValue(f"p{idx}"))
+            for idx in range(64)
+        ]
+        policy = gen._resolve_midend_function_policy(
+            ops,
+            function_name="pinned_hot",
+            block_count=3,
+        )
+    assert policy.tier_base == "C"
+    assert policy.tier == "C"
+    assert policy.promoted is False
 
 
 def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
@@ -1793,6 +1855,8 @@ def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
     outcome = gen.midend_policy_outcomes_by_function["<direct>"]
     assert outcome["profile"] == "dev"
     assert outcome["tier"] in {"A", "B", "C"}
+    assert outcome["tier_base"] in {"A", "B", "C"}
+    assert isinstance(outcome["promoted"], bool)
     assert float(outcome["spent_ms"]) >= 0.0
 
 

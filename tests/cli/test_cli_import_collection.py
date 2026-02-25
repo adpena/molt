@@ -296,6 +296,12 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
             "pkg.mod::fn_a": {
                 "profile": "release",
                 "tier": "A",
+                "tier_base": "B",
+                "tier_effective": "A",
+                "tier_source": "default",
+                "promoted": True,
+                "promotion_source": "pgo_hot_functions",
+                "promotion_signal": "pkg.mod::fn_a",
                 "budget_ms": 120.0,
                 "spent_ms": 140.0,
                 "degraded": True,
@@ -336,6 +342,9 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
     assert payload["requested_profile"] == "release"
     assert payload["degraded_functions"] == 1
     assert payload["tier_summary"] == {"A": 1}
+    assert payload["tier_base_summary"] == {"B": 1}
+    assert payload["promoted_functions"] == 1
+    assert payload["promotion_source_summary"] == {"pgo_hot_functions": 1}
     assert payload["degrade_reason_summary"] == {"budget_exceeded": 1}
     assert payload["function_count"] == 1
     hotspots = payload["pass_hotspots_top"]
@@ -350,6 +359,12 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
     degrade_hotspots = payload["degrade_event_hotspots_top"]
     assert degrade_hotspots
     assert degrade_hotspots[0]["reason"] == "budget_exceeded"
+    promotion_hotspots = payload["promotion_hotspots_top"]
+    assert promotion_hotspots
+    assert promotion_hotspots[0]["module"] == "pkg.mod"
+    assert promotion_hotspots[0]["function"] == "fn_a"
+    assert promotion_hotspots[0]["tier_base"] == "B"
+    assert promotion_hotspots[0]["tier_effective"] == "A"
 
 
 def test_resolve_frontend_parallel_module_workers_from_env(
@@ -451,6 +466,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
+        "pgo_hot_functions": ["worker_module::molt_main"],
     }
     result = cli._frontend_lower_module_worker(payload)
     assert result["ok"] is True
@@ -508,6 +524,21 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                     "exec_ms_max": 4.0,
                 },
             },
+            "midend": {
+                "promoted_functions": 2,
+                "promotion_source_summary": {"pgo_hot_functions": 2},
+                "promotion_hotspots_top": [
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "tier_base": "B",
+                        "tier_effective": "A",
+                        "source": "pgo_hot_functions",
+                        "signal": "pkg.mod::hot_fn",
+                        "spent_ms": 12.5,
+                    }
+                ],
+            },
         },
         diagnostics_path=None,
         json_output=False,
@@ -517,6 +548,9 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- frontend_parallel.layers: 1" in stderr
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
+    assert "- midend.promoted_functions: 2" in stderr
+    assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
+    assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
 
 
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:

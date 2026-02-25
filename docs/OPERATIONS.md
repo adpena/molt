@@ -382,6 +382,8 @@ MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u t
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
   - Example: `uv run --python 3.12 python3 tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
   - Output: `matrix_results.json` under the output root (`$MOLT_EXT_ROOT/...` by default).
+  - `matrix_results.json` now includes `gate_status` (thresholds, observed counts, violation details, pass/fail).
+  - Use `--fail-on-gate` to return exit code `2` on gate failure.
   - If external root is unavailable, pass `--output-root` explicitly only for an approved emergency override.
   - If rustc prints incremental hard-link fallback warnings, move `--shared-target-dir` to a local APFS/ext4 path.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
@@ -413,6 +415,11 @@ MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u t
     resolved under the build artifacts directory).
   - Example:
     `uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+  - Midend diagnostics now carry tier-promotion telemetry (`tier_base_summary`,
+    `promoted_functions`, `promotion_source_summary`,
+    `promotion_hotspots_top`) to verify PGO-guided promotion decisions.
+  - For deterministic control experiments, set
+    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` to disable hot-function tier promotion.
 
 ## Weekly Stdlib Scoreboard
 Update this table at least weekly during lowering burn-down.
