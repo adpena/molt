@@ -75,12 +75,26 @@ jobs:
       - name: Perf smoke (microbench)
         if: matrix.python-version == '3.12'
         run: uv run python tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.10 --json-out bench/results/ci_smoke.json
+      - name: Perf lane gate (bench diff thresholds)
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run python tools/bench_diff.py \
+            bench/baseline.json \
+            bench/results/ci_smoke.json \
+            --metrics molt_cpython_ratio molt_time_s molt_build_s \
+            --top 20 \
+            --fail-regression-count "${MOLT_CI_PERF_MAX_REGRESSION_COUNT:-0}" \
+            --fail-regression-pct "${MOLT_CI_PERF_MAX_REGRESSION_PCT:-10}" \
+            --fail-regression-abs "${MOLT_CI_PERF_MAX_REGRESSION_ABS:-0.02}" \
+            --json-out bench/results/ci_smoke_diff.json
       - name: Upload benchmark artifact
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
         with:
           name: bench-smoke
-          path: bench/results/ci_smoke.json
+          path: |
+            bench/results/ci_smoke.json
+            bench/results/ci_smoke_diff.json
       - name: Install k6
         if: matrix.python-version == '3.12'
         run: |
