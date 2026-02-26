@@ -6,9 +6,6 @@ from ._support import require_gui_capability as _require_gui_capability
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
-    "molt_tk_bind_script_remove_command", globals()
-)
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
@@ -32,6 +29,21 @@ _SUBST_FORMAT = (
     "%D",
 )
 _SUBST_FORMAT_STR = " ".join(_SUBST_FORMAT)
+
+
+def _require_tkinter_callable(attr):
+    value = getattr(_tkinter, attr, None)
+    if callable(value):
+        return value
+    raise RuntimeError(
+        f"tkinter.ttk requires callable _tkinter.{attr} in the Phase-0 intrinsic surface"
+    )
+
+
+_TK_TREEVIEW_TAG_BIND_REGISTER = _require_tkinter_callable("treeview_tag_bind_register")
+_TK_TREEVIEW_TAG_BIND_UNREGISTER = _require_tkinter_callable(
+    "treeview_tag_bind_unregister"
+)
 
 
 def _normalize_option_name(name):
@@ -744,13 +756,16 @@ class Treeview(Widget):
             event.widget = self
             return callback(event)
 
-        command_name = self._register_command("ttk_tag_bind", wrapped)
-        script = f'if {{"[{command_name} {_SUBST_FORMAT_STR}]" == "break"}} break\n'
-        try:
-            self.tk.call(self._w, "tag", "bind", tagname, sequence, script)
-        except Exception:
-            self._release_command(command_name)
-            raise
+        command_name = _TK_TREEVIEW_TAG_BIND_REGISTER(
+            self._tk_app,
+            self._w,
+            tagname,
+            sequence,
+            wrapped,
+        )
+        root = getattr(self, "tk", None)
+        if root is not None and hasattr(root, "_registered_commands"):
+            root._registered_commands.add(str(command_name))
         return command_name
 
     def tag_unbind(self, tagname, sequence, funcid=None):
@@ -758,18 +773,16 @@ class Treeview(Widget):
         if funcid is None:
             return self.tk.call(self._w, "tag", "bind", tagname, sequence, "")
         command_name = str(funcid)
-        try:
-            self.tk.call(self._w, "tag", "bind", tagname, sequence, "", command_name)
-        except Exception:  # noqa: BLE001
-            script = self.tk.call(self._w, "tag", "bind", tagname, sequence)
-            if isinstance(script, str):
-                replacement = _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND(script, command_name)
-                if not isinstance(replacement, str):
-                    replacement = ""
-            else:
-                replacement = ""
-            self.tk.call(self._w, "tag", "bind", tagname, sequence, replacement)
-        self._release_command(command_name)
+        _TK_TREEVIEW_TAG_BIND_UNREGISTER(
+            self._tk_app,
+            self._w,
+            tagname,
+            sequence,
+            command_name,
+        )
+        root = getattr(self, "tk", None)
+        if root is not None and hasattr(root, "_registered_commands"):
+            root._registered_commands.discard(command_name)
         return None
 
     def tag_configure(self, tagname, option=None, cnf=None, **kw):
@@ -921,7 +934,4 @@ __all__ = [
 
 
 def __getattr__(attr):
-    raise AttributeError(
-        f'module "{__name__}" has no attribute "{attr}"; '
-        "only the Phase-0 ttk core surface is implemented."
-    )
+    raise AttributeError(f'module "{__name__}" has no attribute "{attr}"')

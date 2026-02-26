@@ -301,33 +301,55 @@ jobs:
               env_file.write(f"EXT_PROJECT_DIR={workdir.as_posix()}\n")
           PY
       - name: Build extension wheel
+        env:
+          MOLT_EXT_TARGET: ${{ matrix.lane.target }}
         run: |
-          if [ "${{ matrix.lane.target }}" = "native" ]; then
-            uv run python -m molt.cli extension build \
-              --project "$EXT_PROJECT_DIR" \
-              --out-dir "$EXT_PROJECT_DIR/dist" \
-              --json >"$EXT_PROJECT_DIR/build.json"
-          else
-            uv run python -m molt.cli extension build \
-              --project "$EXT_PROJECT_DIR" \
-              --out-dir "$EXT_PROJECT_DIR/dist" \
-              --target "${{ matrix.lane.target }}" \
-              --json >"$EXT_PROJECT_DIR/build.json"
-          fi
-      - name: Capture extension build metadata
-        run: |
-          uv run python - <<'PY' >> "$GITHUB_ENV"
+          uv run python - <<'PY'
           import json
           import os
           import pathlib
+          import subprocess
+          import sys
 
           root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
-          data = json.loads((root / "build.json").read_text()).get("data", {})
-          print(f"EXT_WHEEL={data.get('wheel', '')}")
-          print(f"EXT_MANIFEST={data.get('manifest', '')}")
-          print(f"EXT_ABI={data.get('molt_c_api_version', '')}")
+          target = os.environ["MOLT_EXT_TARGET"]
+          build_json = root / "build.json"
+
+          cmd = [
+              sys.executable,
+              "-m",
+              "molt.cli",
+              "extension",
+              "build",
+              "--project",
+              str(root),
+              "--out-dir",
+              str(root / "dist"),
+              "--json",
+          ]
+          if target != "native":
+              cmd.extend(["--target", target])
+
+          proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+          build_json.write_text(proc.stdout, encoding="utf-8")
+          if proc.returncode != 0:
+              if proc.stdout:
+                  print(proc.stdout, end="", file=sys.stderr)
+              if proc.stderr:
+                  print(proc.stderr, end="", file=sys.stderr)
+              raise SystemExit(proc.returncode)
+
+          payload_text = proc.stdout.strip()
+          if not payload_text:
+              raise RuntimeError(f"extension build produced empty JSON output: {build_json}")
+
+          data = json.loads(payload_text).get("data", {})
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"EXT_WHEEL={data.get('wheel', '')}\n")
+              env_file.write(f"EXT_MANIFEST={data.get('manifest', '')}\n")
+              env_file.write(f"EXT_ABI={data.get('molt_c_api_version', '')}\n")
+              env_file.write(f"EXT_EXPECTED_TARGET={target}\n")
           PY
-          echo "EXT_EXPECTED_TARGET=${{ matrix.lane.target }}" >> "$GITHUB_ENV"
       - name: Audit extension wheel metadata
         run: |
           uv run python -m molt.cli extension audit \

@@ -13,7 +13,6 @@ _MOLT_TK_FILEDIALOG_SHOW = _require_intrinsic("molt_tk_filedialog_show", globals
 Dialog = _dialog.Dialog
 commondialog = _commondialog
 dialogstates = {}
-test = None
 
 Tk = getattr(_tkinter, "Tk", object)
 Toplevel = getattr(_tkinter, "Toplevel", object)
@@ -242,12 +241,17 @@ class LoadFileDialog(FileDialog):
         )
         if not result:
             return None
-        try:
-            with open(result, "rb"):
-                pass
-        except OSError:
-            return None
         return result
+
+    def ok_command(self):
+        file = self.get_selection()
+        if not file or not os.path.isfile(file):
+            bell = getattr(self.master, "bell", None)
+            if callable(bell):
+                bell()
+            return None
+        self.quit(file)
+        return None
 
 
 class SaveFileDialog(FileDialog):
@@ -255,6 +259,34 @@ class SaveFileDialog(FileDialog):
 
     def _show_filename(self):
         return asksaveasfilename(**self._build_options())
+
+    def ok_command(self):
+        file = self.get_selection()
+        if os.path.exists(file):
+            if os.path.isdir(file):
+                bell = getattr(self.master, "bell", None)
+                if callable(bell):
+                    bell()
+                return None
+            dialog = _dialog.Dialog(
+                master=self.master,
+                title="Overwrite Existing File Question",
+                text=f"Overwrite existing file {file!r}?",
+                bitmap="questhead",
+                default=1,
+                strings=("Yes", "Cancel"),
+            )
+            if dialog.show() != 0:
+                return None
+        else:
+            head, _tail = os.path.split(file)
+            if head and not os.path.isdir(head):
+                bell = getattr(self.master, "bell", None)
+                if callable(bell):
+                    bell()
+                return None
+        self.quit(file)
+        return None
 
 
 def askopenfilename(**options):
@@ -293,6 +325,25 @@ def asksaveasfile(mode="w", **options):
     if not filename:
         return None
     return open(filename, mode)
+
+
+def test():
+    """Simple compatibility smoke helper."""
+
+    root = Tk()
+    if hasattr(root, "withdraw"):
+        root.withdraw()
+
+    fd = LoadFileDialog(root)
+    loadfile = fd.go(key="test")
+    fd = SaveFileDialog(root)
+    savefile = fd.go(key="test")
+    print(loadfile, savefile)
+
+    openfilename = askopenfilename(filetypes=[("all files", "*")])
+    print("open", openfilename)
+    saveasfilename = asksaveasfilename()
+    print("saveas", saveasfilename)
 
 
 __all__ = [

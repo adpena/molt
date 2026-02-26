@@ -564,6 +564,7 @@ impl WasmBackend {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
             let mut const_bools: HashMap<String, bool> = HashMap::new();
+            let mut pending_attrs: Vec<(String, String, String)> = Vec::new();
             for op in &func_ir.ops {
                 match op.kind.as_str() {
                     "const" => {
@@ -597,42 +598,41 @@ impl WasmBackend {
                             func_trampoline_spec.insert(name.clone(), (arity, has_closure));
                         }
                     }
+                    "set_attr_generic_obj" => {
+                        let Some(attr) = op.s_value.as_deref() else {
+                            continue;
+                        };
+                        if attr != "__molt_is_generator__"
+                            && attr != "__molt_is_coroutine__"
+                            && attr != "__molt_is_async_generator__"
+                            && attr != "__molt_closure_size__"
+                        {
+                            continue;
+                        }
+                        let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
+                        pending_attrs.push((args[0].clone(), args[1].clone(), attr.to_string()));
+                    }
                     _ => {}
                 }
             }
-            for op in &func_ir.ops {
-                if op.kind != "set_attr_generic_obj" {
-                    continue;
-                }
-                let Some(attr) = op.s_value.as_deref() else {
+            for (func_obj_name, val_name, attr) in pending_attrs {
+                let Some(func_name) = func_obj_names.get(&func_obj_name) else {
                     continue;
                 };
-                if attr != "__molt_is_generator__"
-                    && attr != "__molt_is_coroutine__"
-                    && attr != "__molt_is_async_generator__"
-                    && attr != "__molt_closure_size__"
-                {
-                    continue;
-                }
-                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
-                let Some(func_name) = func_obj_names.get(&args[0]) else {
-                    continue;
-                };
-                match attr {
+                match attr.as_str() {
                     "__molt_is_generator__"
                     | "__molt_is_coroutine__"
                     | "__molt_is_async_generator__" => {
-                        let val_name = &args[1];
                         let is_true = const_bools
-                            .get(val_name)
+                            .get(&val_name)
                             .copied()
-                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
+                            .or_else(|| const_values.get(&val_name).map(|val| *val != 0))
                             .unwrap_or(false);
                         if is_true {
                             if !func_name.ends_with("_poll") {
                                 continue;
                             }
-                            let kind = match attr {
+                            let kind = match attr.as_str() {
                                 "__molt_is_generator__" => TrampolineKind::Generator,
                                 "__molt_is_coroutine__" => TrampolineKind::Coroutine,
                                 "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
@@ -649,8 +649,7 @@ impl WasmBackend {
                         }
                     }
                     "__molt_closure_size__" => {
-                        let val_name = &args[1];
-                        if let Some(size) = const_values.get(val_name) {
+                        if let Some(size) = const_values.get(&val_name) {
                             task_closure_sizes.insert(func_name.clone(), *size);
                         }
                     }
@@ -1799,8 +1798,10 @@ impl WasmBackend {
             ("molt_weakref_drop", "weakref_drop", 1),
         ];
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
-        let builtin_runtime_names: HashSet<&str> =
-            builtin_table_funcs.iter().map(|(runtime_name, _, _)| *runtime_name).collect();
+        let builtin_runtime_names: HashSet<&str> = builtin_table_funcs
+            .iter()
+            .map(|(runtime_name, _, _)| *runtime_name)
+            .collect();
         for (runtime_name, _, _) in builtin_table_funcs.iter() {
             if let Some(arity) = builtin_trampoline_specs.get(*runtime_name) {
                 builtin_trampoline_funcs.push(((*runtime_name).to_string(), *arity));
@@ -2703,15 +2704,22 @@ impl WasmBackend {
             }
         }
 
-        let mut ensure_local = |name: &str| {
-            if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
-            {
-                entry.insert(local_count);
-                local_types.push(ValType::I64);
-                local_count += 1;
+        let mut ensure_local = |name: &str| -> u32 {
+            if let Some(&idx) = locals.get(name) {
+                return idx;
             }
+            let idx = local_count;
+            locals.insert(name.to_string(), idx);
+            local_types.push(ValType::I64);
+            local_count += 1;
+            idx
         };
 
+        let mut needs_field_fast = false;
+        let mut stateful = false;
+        let mut saw_jump_or_label = false;
+        let mut const_seed_seen: HashSet<String> = HashSet::new();
+        let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
         for op in &func_ir.ops {
             if let Some(args) = &op.args {
                 for arg in args {
@@ -2719,23 +2727,35 @@ impl WasmBackend {
                 }
             }
             if let Some(out) = &op.out {
-                ensure_local(out);
+                let out_local_idx = ensure_local(out);
                 if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint" {
                     ensure_local(&format!("{out}_ptr"));
                     ensure_local(&format!("{out}_len"));
                 }
+                if !const_seed_seen.contains(out) {
+                    let bits = match op.kind.as_str() {
+                        "const" => op.value.map(box_int),
+                        "const_bool" => op.value.map(box_bool),
+                        "const_float" => op.f_value.map(box_float),
+                        "const_none" => Some(box_none()),
+                        _ => None,
+                    };
+                    if let Some(bits) = bits {
+                        const_seed_seen.insert(out.clone());
+                        const_seed_locals_all.push((out_local_idx, bits));
+                    }
+                }
+            }
+            match op.kind.as_str() {
+                "store" | "store_init" | "load" | "guarded_load" | "guarded_field_get"
+                | "guarded_field_set" | "guarded_field_init" => needs_field_fast = true,
+                "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
+                | "chan_recv_yield" => stateful = true,
+                "jump" | "label" => saw_jump_or_label = true,
+                _ => {}
             }
         }
 
-        let needs_field_fast = func_ir.ops.iter().any(|op| {
-            op.kind == "store"
-                || op.kind == "store_init"
-                || op.kind == "load"
-                || op.kind == "guarded_load"
-                || op.kind == "guarded_field_get"
-                || op.kind == "guarded_field_set"
-                || op.kind == "guarded_field_init"
-        });
         if needs_field_fast {
             if let std::collections::hash_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_tmp0".to_string())
@@ -2762,21 +2782,7 @@ impl WasmBackend {
             }
         }
 
-        let stateful = func_ir.ops.iter().any(|op| {
-            matches!(
-                op.kind.as_str(),
-                "state_switch"
-                    | "state_transition"
-                    | "state_yield"
-                    | "chan_send_yield"
-                    | "chan_recv_yield"
-            )
-        });
-        let jumpful = !stateful
-            && func_ir
-                .ops
-                .iter()
-                .any(|op| matches!(op.kind.as_str(), "jump" | "label"));
+        let jumpful = !stateful && saw_jump_or_label;
         if stateful && !locals.contains_key("self_param") {
             let self_param_idx = locals
                 .get("self")
@@ -2846,32 +2852,7 @@ impl WasmBackend {
             None
         };
         let const_seed_locals = if stateful || jumpful {
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut seeds: Vec<(u32, i64)> = Vec::new();
-            for op in &func_ir.ops {
-                let Some(out_name) = op.out.as_ref() else {
-                    continue;
-                };
-                if seen.contains(out_name) {
-                    continue;
-                }
-                let bits = match op.kind.as_str() {
-                    "const" => op.value.map(box_int),
-                    "const_bool" => op.value.map(box_bool),
-                    "const_float" => op.f_value.map(box_float),
-                    "const_none" => Some(box_none()),
-                    _ => None,
-                };
-                let Some(bits) = bits else {
-                    continue;
-                };
-                let Some(&local_idx) = locals.get(out_name) else {
-                    continue;
-                };
-                seen.insert(out_name.clone());
-                seeds.push((local_idx, bits));
-            }
-            seeds
+            const_seed_locals_all
         } else {
             Vec::new()
         };
