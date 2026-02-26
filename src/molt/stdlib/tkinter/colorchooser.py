@@ -1,9 +1,8 @@
 """Phase-0 intrinsic-backed `tkinter.colorchooser` wrappers."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
-_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
+Dialog = _commondialog.Dialog
 
 
 def _hex_to_rgb(color):
@@ -18,30 +17,21 @@ def _hex_to_rgb(color):
 class Chooser(_commondialog.Dialog):
     command = "tk_chooseColor"
 
+    def _fixoptions(self):
+        color = self.options.get("initialcolor")
+        if isinstance(color, tuple) and len(color) == 3:
+            self.options["initialcolor"] = "#%02x%02x%02x" % color
+
     def _fixresult(self, widget, result):
-        del widget
-        if not result:
+        if not result or not str(result):
             return (None, None)
         if isinstance(result, tuple) and len(result) == 2:
             return result
-        if isinstance(result, str):
-            return (_hex_to_rgb(result), result)
-        return (None, result)
-
-    def show(self, **options):
-        if options:
-            self.options.update(options)
-        if not self.command:
-            raise RuntimeError("dialog command is not configured")
-        master = _commondialog._resolve_master(self.master)
-        self._fixoptions()
-        result = _MOLT_TK_COMMONDIALOG_SHOW(
-            _commondialog._app_handle(master),
-            str(master),
-            self.command,
-            _commondialog._normalize_options(self.options),
-        )
-        return self._fixresult(master, result)
+        try:
+            red, green, blue = widget.winfo_rgb(result)
+            return ((red // 256, green // 256, blue // 256), str(result))
+        except Exception:  # noqa: BLE001
+            return (_hex_to_rgb(str(result)), str(result))
 
 
 def askcolor(color=None, **options):
@@ -50,4 +40,4 @@ def askcolor(color=None, **options):
     return Chooser(**options).show()
 
 
-__all__ = ["Chooser", "askcolor"]
+__all__ = ["Chooser", "Dialog", "askcolor"]

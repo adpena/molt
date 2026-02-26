@@ -72,7 +72,20 @@ def _canonical_codecs_file(path: object) -> object:
 
 
 def import_module(name: str, package: str | None = None):
+    # CPython parity: importlib.import_module('.x', non_str_package) raises
+    # TypeError("__package__ not set to a string").
+    if (
+        isinstance(name, str)
+        and name.startswith(".")
+        and package is not None
+        and not isinstance(package, str)
+    ):
+        raise TypeError("__package__ not set to a string")
+
     resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
+    # CPython removed tkinter.tix in 3.13 (deprecated since 3.6).
+    if resolved == "tkinter.tix" and _sys.version_info >= (3, 13):
+        raise ModuleNotFoundError("No module named 'tkinter.tix'")
     # `encodings.oem` is intentionally unavailable on non-Windows when codecs
     # does not expose OEM helpers; raise at the importlib boundary so callers
     # see CPython-shaped ImportError semantics.

@@ -113,6 +113,7 @@ _MOLT_OS_PATH_GETCTIME = _require_intrinsic("molt_os_path_getctime", globals())
 _MOLT_OS_PATH_GETMTIME = _require_intrinsic("molt_os_path_getmtime", globals())
 _MOLT_OS_PATH_GETSIZE = _require_intrinsic("molt_os_path_getsize", globals())
 _MOLT_OS_PATH_SAMEFILE = _require_intrinsic("molt_os_path_samefile", globals())
+_MOLT_OS_FDOPEN = _require_intrinsic("molt_os_fdopen", globals())
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
@@ -225,6 +226,7 @@ __all__ = [
     "PathLike",
     "fspath",
     "fsencode",
+    "fdopen",
 ]
 
 name = _resolve_os_name()
@@ -1086,6 +1088,11 @@ def open(path: Any, flags: int, mode: int = 0o777) -> int:
     if isinstance(result, int):
         return result
     raise RuntimeError("os open intrinsic returned invalid value")
+
+
+def fdopen(fd: int, mode: str = "r", closefd: bool = True) -> Any:
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_FDOPEN, "molt_os_fdopen")
+    return intrinsic(int(fd), str(mode), bool(closefd))
 
 
 def close(fd: int) -> None:

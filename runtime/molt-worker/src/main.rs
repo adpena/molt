@@ -1682,13 +1682,14 @@ fn sqlite_value_to_row(value: ValueRef<'_>) -> Result<DbRowValue, ExecError> {
 }
 
 fn db_query_arrow_ipc_bytes(response: &DbQueryResponse) -> Result<Vec<u8>, ExecError> {
+    let column_types = infer_arrow_column_types(response)?;
     let mut fields = Vec::with_capacity(response.columns.len());
     let mut arrays = Vec::with_capacity(response.columns.len());
     for (idx, name) in response.columns.iter().enumerate() {
-        let column_type = infer_arrow_column_type(&response.rows, idx, name)?;
-        let data_type = arrow_data_type(&column_type);
+        let column_type = &column_types[idx];
+        let data_type = arrow_data_type(column_type);
         fields.push(Field::new(name, data_type.clone(), true));
-        arrays.push(build_arrow_array(&response.rows, idx, &column_type)?);
+        arrays.push(build_arrow_array(&response.rows, idx, column_type)?);
     }
     let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(|err| ExecError {
@@ -1714,23 +1715,28 @@ fn db_query_arrow_ipc_bytes(response: &DbQueryResponse) -> Result<Vec<u8>, ExecE
     Ok(buffer)
 }
 
-fn infer_arrow_column_type(
-    rows: &[Vec<DbRowValue>],
-    idx: usize,
-    name: &str,
-) -> Result<ArrowColumnType, ExecError> {
-    let mut current: Option<ArrowColumnType> = None;
-    for row in rows {
-        let value = row.get(idx).ok_or_else(|| ExecError {
-            status: "InternalError",
-            message: format!("Row length mismatch for column '{name}'"),
-        })?;
-        let next = infer_arrow_value_type(value, name)?;
-        if let Some(next) = next {
-            current = Some(merge_arrow_types(current, next, name)?);
+fn infer_arrow_column_types(response: &DbQueryResponse) -> Result<Vec<ArrowColumnType>, ExecError> {
+    let column_count = response.columns.len();
+    let mut inferred: Vec<Option<ArrowColumnType>> = vec![None; column_count];
+    for row in &response.rows {
+        if row.len() != column_count {
+            return Err(ExecError {
+                status: "InternalError",
+                message: "Row length mismatch while inferring Arrow schema".to_string(),
+            });
+        }
+        for (idx, value) in row.iter().enumerate() {
+            let name = &response.columns[idx];
+            if let Some(next) = infer_arrow_value_type(value, name)? {
+                let merged = merge_arrow_types(inferred[idx].take(), next, name)?;
+                inferred[idx] = Some(merged);
+            }
         }
     }
-    Ok(current.unwrap_or(ArrowColumnType::Null))
+    Ok(inferred
+        .into_iter()
+        .map(|ty| ty.unwrap_or(ArrowColumnType::Null))
+        .collect())
 }
 
 fn build_arrow_array(

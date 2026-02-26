@@ -2382,17 +2382,29 @@ fn counter_binary_op(
         .unwrap_or_default();
 
     let mut result = CounterState::new();
+    let mut b_exact_index: HashMap<u64, usize> = HashMap::with_capacity(b_entries.len());
+    for (idx, (key, _)) in b_entries.iter().copied().enumerate() {
+        b_exact_index.entry(key).or_insert(idx);
+    }
+    let mut b_matched = vec![false; b_entries.len()];
 
-    // Process keys from a: look up corresponding b count via content-based scan.
+    // Process keys from a: resolve b-count via exact-key fast path with content-equality fallback.
     for &(key, a_count_bits) in &a_entries {
         let a_count = count_to_i64(a_count_bits);
-        let b_count = {
+        let mut matched_idx = b_exact_index.get(&key).copied();
+        if matched_idx.is_none() {
             let target = obj_from_bits(key);
-            b_entries
+            matched_idx = b_entries
                 .iter()
-                .find(|(k, _)| *k == key || obj_eq(_py, obj_from_bits(*k), target))
-                .map(|(_, c)| count_to_i64(*c))
-                .unwrap_or(0)
+                .enumerate()
+                .find(|(_, (k, _))| obj_eq(_py, obj_from_bits(*k), target))
+                .map(|(idx, _)| idx);
+        }
+        let b_count = if let Some(idx) = matched_idx {
+            b_matched[idx] = true;
+            count_to_i64(b_entries[idx].1)
+        } else {
+            0
         };
         let combined = combine(a_count, b_count);
         if combined > 0 {
@@ -2400,9 +2412,10 @@ fn counter_binary_op(
         }
     }
 
-    // Process keys only in b (not already in result).
-    for &(key, b_count_bits) in &b_entries {
-        if result.contains(_py, key) {
+    // Process keys only present in b (keys matched in the a-pass are skipped even if
+    // their combined count became non-positive and was filtered out).
+    for (idx, &(key, b_count_bits)) in b_entries.iter().enumerate() {
+        if b_matched[idx] {
             continue;
         }
         let combined = combine(0, count_to_i64(b_count_bits));

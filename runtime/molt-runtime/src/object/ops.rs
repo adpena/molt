@@ -762,9 +762,14 @@ pub extern "C" fn molt_dataclass_new(
         let eq = (flags & 0x2) != 0;
         let repr = (flags & 0x4) != 0;
         let slots = (flags & 0x8) != 0;
+        let mut field_name_to_index = HashMap::with_capacity(field_names.len());
+        for (idx, field_name) in field_names.iter().enumerate() {
+            field_name_to_index.insert(field_name.clone(), idx);
+        }
         let desc = Box::new(DataclassDesc {
             name,
             field_names,
+            field_name_to_index,
             frozen,
             eq,
             repr,
@@ -41618,14 +41623,22 @@ pub(crate) fn dict_table_capacity(entries: usize) -> usize {
     cap
 }
 
+const TABLE_TOMBSTONE: usize = usize::MAX;
+
 fn dict_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry_idx: usize) {
     let mask = table.len() - 1;
     let key_bits = order[entry_idx * 2];
     let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let mut first_tombstone = None;
     loop {
-        if table[slot] == 0 {
-            table[slot] = entry_idx + 1;
+        let entry = table[slot];
+        if entry == 0 {
+            let target = first_tombstone.unwrap_or(slot);
+            table[target] = entry_idx + 1;
             return;
+        }
+        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
+            first_tombstone = Some(slot);
         }
         slot = (slot + 1) & mask;
     }
@@ -41640,10 +41653,16 @@ fn dict_insert_entry_with_hash(
 ) {
     let mask = table.len() - 1;
     let mut slot = (hash as usize) & mask;
+    let mut first_tombstone = None;
     loop {
-        if table[slot] == 0 {
-            table[slot] = entry_idx + 1;
+        let entry = table[slot];
+        if entry == 0 {
+            let target = first_tombstone.unwrap_or(slot);
+            table[target] = entry_idx + 1;
             return;
+        }
+        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
+            first_tombstone = Some(slot);
         }
         slot = (slot + 1) & mask;
     }
@@ -41673,6 +41692,10 @@ pub(crate) fn dict_find_entry_fast(
         if entry == 0 {
             return None;
         }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
         if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
@@ -41698,6 +41721,10 @@ pub(crate) fn dict_find_entry(
         let entry = table[slot];
         if entry == 0 {
             return None;
+        }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
@@ -41767,6 +41794,10 @@ pub(crate) fn dict_find_entry_with_hash(
         if entry == 0 {
             return None;
         }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
         if let Some(eq) = unsafe { string_bits_eq(entry_key, key_bits) } {
@@ -41794,10 +41825,16 @@ fn set_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry
     let mask = table.len() - 1;
     let key_bits = order[entry_idx];
     let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let mut first_tombstone = None;
     loop {
-        if table[slot] == 0 {
-            table[slot] = entry_idx + 1;
+        let entry = table[slot];
+        if entry == 0 {
+            let target = first_tombstone.unwrap_or(slot);
+            table[target] = entry_idx + 1;
             return;
+        }
+        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
+            first_tombstone = Some(slot);
         }
         slot = (slot + 1) & mask;
     }
@@ -41812,10 +41849,16 @@ fn set_insert_entry_with_hash(
 ) {
     let mask = table.len() - 1;
     let mut slot = (hash as usize) & mask;
+    let mut first_tombstone = None;
     loop {
-        if table[slot] == 0 {
-            table[slot] = entry_idx + 1;
+        let entry = table[slot];
+        if entry == 0 {
+            let target = first_tombstone.unwrap_or(slot);
+            table[target] = entry_idx + 1;
             return;
+        }
+        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
+            first_tombstone = Some(slot);
         }
         slot = (slot + 1) & mask;
     }
@@ -41845,6 +41888,10 @@ pub(crate) fn set_find_entry_fast(
         if entry == 0 {
             return None;
         }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
         if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
@@ -41869,6 +41916,10 @@ pub(crate) fn set_find_entry(
         let entry = table[slot];
         if entry == 0 {
             return None;
+        }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
@@ -41898,6 +41949,10 @@ pub(crate) fn set_find_entry_with_hash(
         let entry = table[slot];
         if entry == 0 {
             return None;
+        }
+        if entry == TABLE_TOMBSTONE {
+            slot = (slot + 1) & mask;
+            continue;
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
@@ -42148,6 +42203,39 @@ pub(crate) unsafe fn dict_get_in_place(
     }
 }
 
+pub(crate) unsafe fn dict_find_entry_kv_in_place(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Option<(u64, u64)> {
+    unsafe {
+        if !ensure_hashable(_py, key_bits) {
+            return None;
+        }
+        let pending_before = exception_pending(_py);
+        let prev_exc_bits = if pending_before {
+            exception_last_bits_noinc(_py).unwrap_or(0)
+        } else {
+            0
+        };
+        let order = dict_order(ptr);
+        let table = dict_table(ptr);
+        let found = dict_find_entry(_py, order, table, key_bits);
+        if exception_pending(_py) {
+            if !pending_before {
+                return None;
+            }
+            let after_exc_bits = exception_last_bits_noinc(_py).unwrap_or(0);
+            if after_exc_bits != prev_exc_bits {
+                return None;
+            }
+        }
+        let idx = found?;
+        let key_idx = idx * 2;
+        Some((order[key_idx], order[key_idx + 1]))
+    }
+}
+
 pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
     unsafe {
         if !ensure_hashable(_py, key_bits) {
@@ -42165,9 +42253,32 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         let key_val = order[entry_idx];
         dec_ref_bits(_py, key_val);
         order.remove(entry_idx);
+        let removed_slot_val = entry_idx + 1;
+        let mut tombstones = 0usize;
+        for slot in table.iter_mut() {
+            if *slot == 0 {
+                continue;
+            }
+            if *slot == TABLE_TOMBSTONE {
+                tombstones = tombstones.saturating_add(1);
+                continue;
+            }
+            if *slot == removed_slot_val {
+                *slot = TABLE_TOMBSTONE;
+                tombstones = tombstones.saturating_add(1);
+                continue;
+            }
+            if *slot > removed_slot_val {
+                *slot -= 1;
+            }
+        }
         let entries = order.len();
-        let capacity = set_table_capacity(entries.max(1));
-        set_rebuild(_py, order, table, capacity);
+        let desired_capacity = set_table_capacity(entries.max(1));
+        if table.len() > desired_capacity.saturating_mul(4)
+            || tombstones.saturating_mul(4) > table.len()
+        {
+            set_rebuild(_py, order, table, desired_capacity);
+        }
         true
     }
 }
@@ -42211,9 +42322,32 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         dec_ref_bits(_py, key_val);
         dec_ref_bits(_py, val_val);
         order.drain(key_idx..=val_idx);
+        let removed_slot_val = entry_idx + 1;
+        let mut tombstones = 0usize;
+        for slot in table.iter_mut() {
+            if *slot == 0 {
+                continue;
+            }
+            if *slot == TABLE_TOMBSTONE {
+                tombstones = tombstones.saturating_add(1);
+                continue;
+            }
+            if *slot == removed_slot_val {
+                *slot = TABLE_TOMBSTONE;
+                tombstones = tombstones.saturating_add(1);
+                continue;
+            }
+            if *slot > removed_slot_val {
+                *slot -= 1;
+            }
+        }
         let entries = order.len() / 2;
-        let capacity = dict_table_capacity(entries.max(1));
-        dict_rebuild(_py, order, table, capacity);
+        let desired_capacity = dict_table_capacity(entries.max(1));
+        if table.len() > desired_capacity.saturating_mul(4)
+            || tombstones.saturating_mul(4) > table.len()
+        {
+            dict_rebuild(_py, order, table, desired_capacity);
+        }
         true
     }
 }

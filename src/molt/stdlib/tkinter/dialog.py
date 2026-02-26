@@ -5,6 +5,12 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_TK_DIALOG_SHOW = _require_intrinsic("molt_tk_dialog_show", globals())
 
+TclError = _tkinter.TclError
+Widget = getattr(_tkinter, "Widget", object)
+Button = getattr(_tkinter, "Button", object)
+Pack = getattr(_tkinter, "Pack", object)
+DIALOG_ICON = "questhead"
+
 
 def _resolve_master(master):
     if master is None:
@@ -34,7 +40,7 @@ class Dialog:
         self.master = master
         self.title = "" if title is None else str(title)
         self.text = "" if text is None else str(text)
-        self.bitmap = "" if bitmap is None else str(bitmap)
+        self.bitmap = DIALOG_ICON if bitmap is None else str(bitmap)
         self.default = int(default)
         self.strings = tuple(str(value) for value in strings)
         self.num = None

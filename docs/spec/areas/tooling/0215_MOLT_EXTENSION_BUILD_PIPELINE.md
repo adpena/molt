@@ -1,6 +1,8 @@
 # Molt Extension Build Pipeline
 **Spec ID:** 0215
-**Status:** Draft
+**Status:** Partial (cross-target + verify/publish policy integration +
+runtime load-time metadata enforcement + CI native/cross-host matrix lanes landed,
+including verify-policy and wasm-rejection contract checks)
 **Owner:** tooling + runtime
 **Goal:** Define the build, packaging, and validation pipeline for C-extensions
 recompiled against `libmolt`.
@@ -15,29 +17,36 @@ recompiled against `libmolt`.
 
 ---
 
-## 2. CLI Surface (Planned)
+## 2. CLI Surface
 ### 2.1 `molt extension build`
 Purpose: compile a C-extension against `libmolt` and emit a Molt-compatible wheel.
 
-Flags:
+Status: Implemented (initial).
+
+Flags (implemented):
 - `--project <path>` (default: cwd)
 - `--out-dir <path>` (default: `dist/`)
-- `--molt-abi <ver>` (default: `MOLT_C_API_VERSION`)
-- `--capabilities <file|list>` (capability manifest or profile list)
+- `--molt-abi <ver>` (default: `[tool.molt.extension].molt_c_api_version` or `MOLT_C_API_VERSION`)
+- `--target <native|triple>` (`wasm` rejected for native shared-library builds)
+- `--capabilities <file|list|profiles>` (override extension capability metadata)
 - `--deterministic/--no-deterministic`
-- `--json` (machine-readable output)
+- `--json` / `--verbose`
 
 Outputs:
-- `.whl` tagged for `molt` + target triple.
-- `extension_manifest.json` sidecar (capabilities + ABI metadata).
+- `.whl` tagged with `py3-molt_abi<major>-<platform_tag>`.
+- `extension_manifest.json` sidecar (ABI/capability metadata + checksums).
 
 ### 2.2 `molt extension audit`
 Purpose: verify that an extension declares capabilities and matches the expected ABI.
 
-Flags:
-- `--path <wheel|dir>`
+Status: Implemented (initial).
+
+Flags (implemented):
+- `--path <wheel|manifest|dir>`
 - `--require-capabilities`
 - `--require-abi <ver>`
+- `--require-checksum`
+- `--json` / `--verbose`
 
 ---
 
@@ -81,6 +90,11 @@ Optional:
 - Build pipeline is reproducible when `--deterministic` is enabled.
 - Extensions must declare capabilities and are blocked without explicit approval.
 - `molt verify` checks wheel metadata and capability policies before load.
+- Runtime import/load boundaries enforce extension metadata presence and
+  validation (`molt_c_api_version`/`abi_tag`, declared capabilities, and
+  checksum integrity for extension payloads; wheel checksum is validated for
+  archive-backed loads). Successful checks are cached with path+manifest
+  fingerprints so replaced artifacts are revalidated on the next import/load.
 
 ---
 
@@ -88,10 +102,16 @@ Optional:
 - `molt deps` should classify extensions as Tier B when `libmolt`-compiled.
 - `molt build` rejects extensions with missing or mismatched ABI tags.
 - `molt verify` enforces capability allowlists for extension loads.
+- CI runs an extension publish dry-run matrix (native + cross-target) covering
+  `molt extension build`, `molt extension audit --require-abi`,
+  `molt verify --extension-metadata`, and `molt publish --dry-run`
+  for extension wheels (`linux native`, `linux cross-musl`, `macos native`).
+- CI also asserts the wasm build contract (`molt extension build --target wasm*`
+  must fail with an explicit unsupported-target diagnostic).
 
 ---
 
 ## 8. TODOs
-- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:missing): implement `molt extension build` with `libmolt` headers + ABI tagging.
-- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:missing): implement `molt extension audit` and wire into `molt verify`.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:partial): expand cross-target extension build coverage for additional linker/sysroot variants and publish readiness checks.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:partial): extend `molt verify` extension policy gates with signature/trust policy coupling and richer diagnostics.
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): define canonical wheel tags for `libmolt` extensions.

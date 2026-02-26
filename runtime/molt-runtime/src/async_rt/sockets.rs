@@ -78,6 +78,8 @@ struct MoltSocket {
 struct MoltSocketReader {
     socket_bits: u64,
     buffer: Vec<u8>,
+    buffer_start: usize,
+    scan_cursor: usize,
     eof: bool,
 }
 
@@ -1113,6 +1115,8 @@ enum SocketReaderPull {
     Data,
 }
 
+const SOCKET_READER_COMPACT_PREFIX_MIN: usize = 4096;
+
 unsafe fn socket_reader_pull(
     _py: &PyToken<'_>,
     reader: &mut MoltSocketReader,
@@ -1158,13 +1162,85 @@ unsafe fn socket_reader_pull(
     }
 }
 
+#[inline]
+fn socket_reader_unread_len(reader: &MoltSocketReader) -> usize {
+    reader.buffer.len().saturating_sub(reader.buffer_start)
+}
+
+#[inline]
+fn socket_reader_unread_is_empty(reader: &MoltSocketReader) -> bool {
+    socket_reader_unread_len(reader) == 0
+}
+
+#[inline]
+fn socket_reader_unread_slice(reader: &MoltSocketReader) -> &[u8] {
+    &reader.buffer[reader.buffer_start..]
+}
+
+fn socket_reader_maybe_compact(reader: &mut MoltSocketReader) {
+    let consumed = reader.buffer_start;
+    if consumed == 0 {
+        return;
+    }
+    if consumed >= reader.buffer.len() {
+        reader.buffer.clear();
+        reader.buffer_start = 0;
+        reader.scan_cursor = 0;
+        return;
+    }
+    if consumed < SOCKET_READER_COMPACT_PREFIX_MIN
+        || consumed.saturating_mul(2) < reader.buffer.len()
+    {
+        return;
+    }
+    let remaining = reader.buffer.len() - consumed;
+    reader.buffer.copy_within(consumed.., 0);
+    reader.buffer.truncate(remaining);
+    reader.buffer_start = 0;
+    reader.scan_cursor = reader.scan_cursor.saturating_sub(consumed);
+}
+
+fn socket_reader_find_newline_up_to(
+    reader: &mut MoltSocketReader,
+    max_bytes: Option<usize>,
+) -> Option<usize> {
+    let unread_start = reader.buffer_start;
+    let unread_end = reader.buffer.len();
+    let search_end = match max_bytes {
+        Some(limit) => unread_start.saturating_add(limit).min(unread_end),
+        None => unread_end,
+    };
+    let search_start = reader.scan_cursor.max(unread_start).min(search_end);
+    if search_start == search_end {
+        reader.scan_cursor = reader.scan_cursor.max(search_end);
+        return None;
+    }
+    match reader.buffer[search_start..search_end]
+        .iter()
+        .position(|&b| b == b'\n')
+    {
+        Some(rel_idx) => {
+            let idx = search_start + rel_idx;
+            reader.scan_cursor = idx;
+            Some(idx - unread_start)
+        }
+        None => {
+            reader.scan_cursor = reader.scan_cursor.max(search_end);
+            None
+        }
+    }
+}
+
 fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: usize) -> u64 {
-    let n = count.min(reader.buffer.len());
-    let ptr = alloc_bytes(_py, &reader.buffer[..n]);
+    let n = count.min(socket_reader_unread_len(reader));
+    let unread = socket_reader_unread_slice(reader);
+    let ptr = alloc_bytes(_py, &unread[..n]);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
-    reader.buffer.drain(..n);
+    reader.buffer_start += n;
+    reader.scan_cursor = reader.scan_cursor.max(reader.buffer_start);
+    socket_reader_maybe_compact(reader);
     MoltObject::from_ptr(ptr).bits()
 }
 
@@ -1181,6 +1257,8 @@ pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
             let reader = Box::new(MoltSocketReader {
                 socket_bits: clone_bits,
                 buffer: Vec::new(),
+                buffer_start: 0,
+                scan_cursor: 0,
                 eof: false,
             });
             bits_from_ptr(Box::into_raw(reader) as *mut u8)
@@ -1215,7 +1293,7 @@ pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
                 return MoltObject::from_bool(true).bits();
             }
             let reader = &*(reader_ptr as *mut MoltSocketReader);
-            MoltObject::from_bool(reader.eof && reader.buffer.is_empty()).bits()
+            MoltObject::from_bool(reader.eof && socket_reader_unread_is_empty(reader)).bits()
         })
     }
 }
@@ -1242,7 +1320,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
             if n < 0 {
                 loop {
                     if reader.eof {
-                        return socket_reader_take(_py, reader, reader.buffer.len());
+                        return socket_reader_take(_py, reader, socket_reader_unread_len(reader));
                     }
                     match socket_reader_pull(_py, reader) {
                         Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}
@@ -1250,7 +1328,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
                     }
                 }
             }
-            if !reader.buffer.is_empty() {
+            if !socket_reader_unread_is_empty(reader) {
                 return socket_reader_take(_py, reader, n as usize);
             }
             if reader.eof {
@@ -1263,7 +1341,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
             loop {
                 match socket_reader_pull(_py, reader) {
                     Ok(SocketReaderPull::Eof) => {
-                        if reader.buffer.is_empty() {
+                        if socket_reader_unread_is_empty(reader) {
                             let ptr = alloc_bytes(_py, &[]);
                             if ptr.is_null() {
                                 return MoltObject::none().bits();
@@ -1273,7 +1351,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
                         return socket_reader_take(_py, reader, n as usize);
                     }
                     Ok(SocketReaderPull::Data) => {
-                        if !reader.buffer.is_empty() {
+                        if !socket_reader_unread_is_empty(reader) {
                             return socket_reader_take(_py, reader, n as usize);
                         }
                     }
@@ -1296,11 +1374,11 @@ pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
             }
             let reader = &mut *(reader_ptr as *mut MoltSocketReader);
             loop {
-                if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
+                if let Some(idx) = socket_reader_find_newline_up_to(reader, None) {
                     return socket_reader_take(_py, reader, idx + 1);
                 }
                 if reader.eof {
-                    return socket_reader_take(_py, reader, reader.buffer.len());
+                    return socket_reader_take(_py, reader, socket_reader_unread_len(reader));
                 }
                 match socket_reader_pull(_py, reader) {
                     Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}
@@ -1337,11 +1415,11 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
             }
             if limit_raw < 0 {
                 loop {
-                    if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
+                    if let Some(idx) = socket_reader_find_newline_up_to(reader, None) {
                         return socket_reader_take(_py, reader, idx + 1);
                     }
                     if reader.eof {
-                        return socket_reader_take(_py, reader, reader.buffer.len());
+                        return socket_reader_take(_py, reader, socket_reader_unread_len(reader));
                     }
                     match socket_reader_pull(_py, reader) {
                         Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}
@@ -1351,15 +1429,18 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
             }
             let limit = usize::try_from(limit_raw).unwrap_or(usize::MAX);
             loop {
-                let search_len = reader.buffer.len().min(limit);
-                if let Some(idx) = reader.buffer[..search_len].iter().position(|&b| b == b'\n') {
+                if let Some(idx) = socket_reader_find_newline_up_to(reader, Some(limit)) {
                     return socket_reader_take(_py, reader, idx + 1);
                 }
-                if reader.buffer.len() >= limit {
+                if socket_reader_unread_len(reader) >= limit {
                     return socket_reader_take(_py, reader, limit);
                 }
                 if reader.eof {
-                    return socket_reader_take(_py, reader, reader.buffer.len().min(limit));
+                    return socket_reader_take(
+                        _py,
+                        reader,
+                        socket_reader_unread_len(reader).min(limit),
+                    );
                 }
                 match socket_reader_pull(_py, reader) {
                     Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}

@@ -258,13 +258,20 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   surface (`TkappType`, call/event helpers, variable helpers, conversion
   helpers, and config helpers) directly to `molt_tk_*` intrinsics with no
   host-Python fallback path.
+- Implemented: headless Rust Tk command lowering now covers major `tkinter.ttk`
+  execution lanes (Treeview semantics, `ttk::style` configure/map/lookup/layout/
+  element/theme paths, notebook + panedwindow container operations,
+  `ttk::notebook::enableTraversal`, and common widget subcommands such as
+  `state`/`instate`/`invoke`/`current`/`set`/`get`/`validate`/progress controls).
 - Differential regression coverage now includes
   `tests/differential/stdlib/tkinter_phase0_core_semantics.py` to validate
   `_tkinter`/`tkinter` import + missing-attribute error-shape contracts,
   `_tkinter` Phase-0 core API presence (`create`, Tkapp helpers, conversion and
   var helpers, and exported constants/types), and tkinter wrapper submodule
   import/error-shape/capability-gate contracts (`tkinter.__main__`,
-  dialog/helper stubs, and `tkinter.ttk`) without requiring a real GUI backend.
+  dialog/helper stubs, and `tkinter.ttk`) without requiring a real GUI backend,
+  including a runtime-lowered `ttk` semantics probe
+  (`tkinter.ttk:runtime_semantics`).
 - Implemented: checker-level intrinsic-partial ratchet enforcement
   (`tools/check_stdlib_intrinsics.py`) with budget file
   `tools/stdlib_intrinsics_ratchet.json`.
@@ -611,9 +618,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   Logging core is implemented (Logger/Handler/Formatter/LogRecord + basicConfig) with deterministic formatting and
   capability-gated sinks; `logging.config` and `logging.handlers` remain pending.
   (TODO(async-runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)
-- C API: no `libmolt` C-extension surface yet; [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md) is target-only.
+- C API: bootstrap `libmolt` C-extension surface is landed (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`) for runtime/GIL, errors, scalar constructors/accessors (`none`/bool/int/float), object protocol (including bytes-name attribute helpers + compare/contains bool helpers), numerics, sequence/mapping, array-to-container constructors, buffer/bytes wrappers, plus type/module parity wrappers (`molt_type_ready`, module create/add/get APIs). A CPython-style source-compat shim header is now available at `include/Python.h` / `include/molt/Python.h` (including partial `PyErr_*`, `PySequence_*`/`PyMapping_*`, `PyArg_ParseTuple`, and O(n + k) `PyArg_ParseTupleAndKeywords` coverage for the current core format subset).
+- Tooling/runtime: `molt publish` hard-verifies extension wheels (`.whl`) as extension metadata (`extension_manifest.json`) with required checksums/capabilities before publish, and import/load boundaries now enforce extension metadata ABI/capability/checksum checks in runtime extension loader lanes with fingerprint-aware validation caching for replaced artifacts; CI includes an extension build/audit/verify/publish dry-run matrix (`linux native`, `linux cross-target`, `macos native`, `windows native`) and a wasm-target rejection contract check on the `linux native` lane.
 - Policy: Molt binaries never fall back to CPython; C-extension compatibility is planned via `libmolt` (primary) with an explicit, capability-gated bridge as a non-default escape hatch.
-  (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement the initial C API shim).
+  (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:partial): extend the initial C API shim from bootstrap wrappers to broader source-compat and ABI coverage).
 - Intrinsics registry is runtime-owned and strict; CPython shims have been removed from tooling/tests. `molt_json` and `molt_msgpack` now require runtime intrinsics (no Python-library fallback).
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
   `TypeError`; TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider `__matmul__`/`__rmatmul__` fallback for custom types.
@@ -925,9 +933,11 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm scheduler semantics).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): executor integration).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): native-only tokio host adapter for compiled async tasks with determinism guard + capability gating (no WASM impact).
-- TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:missing): Implement the `libmolt` C-API v0 surface per `0214` and update this matrix with real coverage.
-- TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:planned): define the minimal `libmolt` C-API subset (buffer, numerics, sequence/mapping, errors, GIL mapping) as the primary C-extension compatibility path.
-- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): Implement `PyArg_ParseTuple` for extension argument parsing.
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:partial): Implement the remaining `libmolt` C-API v0 surface per `0214` and keep this matrix aligned with real coverage.
+- Implemented(c-api, owner:runtime, milestone:SL3, priority:P1, status:done): minimal `libmolt` C-API bootstrap subset (buffer, numerics, sequence/mapping, errors, GIL mapping) as the primary C-extension compatibility foundation.
+- Implemented(c-api, owner:runtime, milestone:SL3, priority:P1, status:partial): expanded `libmolt` wrappers with type/module parity entry points (`molt_type_ready`, module create/add/get APIs with bytes-name + constant helpers) and focused C-API conformance tests.
+- Implemented(tooling, owner:tooling, milestone:SL3, priority:P1, status:partial): extension runtime load/import boundaries now enforce manifest ABI/capability/checksum validation, and CI covers extension wheel `build + audit + verify + publish --dry-run` in `linux native`, `linux cross-target`, `macos native`, and `windows native` lanes plus wasm-target rejection checks on the `linux native` lane.
+- Implemented(c-api, owner:runtime, milestone:SL3, priority:P2, status:partial): landed `PyArg_ParseTuple` + `PyArg_ParseTupleAndKeywords` shims for the current fast-path format subset (`O,O!,b,B,h,H,i,I,l,k,L,K,n,c,d,f,p,s,s#,z,z#,y#`, `|`, `$`) with kwlist lookup and duplicate positional/keyword detection.
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define `libmolt` C-extension ABI surface + bridge policy).
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement `libmolt` C API shim + `Py_LIMITED_API` target (see [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)).
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): Define the `Py_LIMITED_API` version Molt targets (3.10?).
@@ -1640,8 +1650,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(tooling, owner:release, milestone:TL2, priority:P2, status:partial): enforce signature verification/trust policy during load.)
 - TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): formalize release tagging (start at `v0.0.001`, increment thousandth) and require super-bench stats for README performance summaries.
 - TODO(tooling, owner:runtime, milestone:TL2, priority:P1, status:partial): remove the temporary dual `fallible-iterator` graph when postgres ecosystem crates support `0.3+`; until then, keep 0.2 usage isolated to postgres-boundary code paths and document the constraint in status/review notes.
-- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:missing): implement `molt extension build` with `libmolt` headers + ABI tagging.
-- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:missing): implement `molt extension audit` and wire into `molt verify`.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:partial): implement `molt extension build` with `libmolt` headers + ABI tagging (cross-target target-triple wiring landed; broader linker/sysroot hardening pending).
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:partial): implement `molt extension audit` and wire into `molt verify` (audit CLI + verify integration landed; richer policy diagnostics pending).
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): define canonical wheel tags for `libmolt` extensions.
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): extension rebuild pipeline (headers, build helpers, audit tooling) for `libmolt`-compiled wheels.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility + worker telemetry/perf tuning).

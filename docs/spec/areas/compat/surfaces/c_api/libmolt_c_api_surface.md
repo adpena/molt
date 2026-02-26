@@ -29,6 +29,11 @@ performance-first C-extension compatibility without embedding CPython.
 - All handles are `u64`-compatible values (opaque to the extension).
 - A versioned C header defines `MOLT_C_API_VERSION` and symbol availability.
 - Symbol availability is tracked in `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`.
+- Current bootstrap implementation:
+  - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
+  - Public header: `include/molt/molt.h`
+  - CPython-compat shim headers: `include/Python.h`, `include/molt/Python.h`
+  - Current version constant: `MOLT_C_API_VERSION = 1`
 
 ---
 
@@ -39,27 +44,54 @@ performance-first C-extension compatibility without embedding CPython.
 - `molt_gil_is_held`
 
 ### 4.2 Error Handling
-- `molt_err_set`, `molt_err_clear`, `molt_err_fetch`
+- `molt_err_set`, `molt_err_clear`, `molt_err_pending`, `molt_err_peek`
+- `molt_err_fetch`, `molt_err_restore`
 - `molt_err_matches`, `molt_err_format`
 
-### 4.3 Object Protocol
+### 4.3 Scalar Constructors/Accessors
+- `molt_none`, `molt_bool_from_i32`
+- `molt_int_from_i64`, `molt_int_as_i64`
+- `molt_float_from_f64`, `molt_float_as_f64`
+
+### 4.4 Object Protocol
 - `molt_object_getattr`, `molt_object_setattr`, `molt_object_hasattr`
+- `molt_object_getattr_bytes`, `molt_object_setattr_bytes`
 - `molt_object_call`
 - `molt_object_repr`, `molt_object_str`, `molt_object_truthy`
+- `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
 
-### 4.4 Numerics
+### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
 - `molt_number_truediv`, `molt_number_floordiv`
 - `molt_number_long`, `molt_number_float`
 
-### 4.5 Sequences + Mappings
+### 4.6 Sequences + Mappings
 - `molt_sequence_length`, `molt_sequence_getitem`, `molt_sequence_setitem`
-- `molt_mapping_getitem`, `molt_mapping_setitem`
+- `molt_mapping_getitem`, `molt_mapping_setitem`, `molt_mapping_length`, `molt_mapping_keys`
+- `molt_tuple_from_array`, `molt_list_from_array`, `molt_dict_from_pairs`
 
-### 4.6 Buffer + Bytes
+### 4.7 Buffer + Bytes
 - `molt_buffer_acquire`, `molt_buffer_release`
 - `molt_bytes_from`, `molt_bytes_as_ptr`
+- `molt_string_from`, `molt_string_as_ptr`
 - `molt_bytearray_from`, `molt_bytearray_as_ptr`
+
+### 4.8 Types + Modules
+- `molt_type_ready`
+- `molt_module_create`, `molt_module_get_dict`
+- `molt_module_add_object`, `molt_module_add_object_bytes`
+- `molt_module_get_object`, `molt_module_get_object_bytes`
+- `molt_module_add_int_constant`, `molt_module_add_string_constant`
+
+### 4.9 CPython Source-Compat Shim (partial)
+- `PyType_Ready`, `PyModule_Create(2)`, `PyModule_AddObject(Ref)`,
+  `PyModule_AddIntConstant`, `PyModule_AddStringConstant`
+- `PyErr_*` core helpers (`Occurred`, `SetString`, `SetObject`, `Clear`,
+  `Fetch`, `Restore`, `Matches`, `Format`)
+- `PySequence_*` / `PyMapping_*` wrappers on top of `libmolt`
+- `PyArg_ParseTuple` / `PyArg_ParseTupleAndKeywords` format coverage for
+  `O,O!,b,B,h,H,i,I,l,k,L,K,n,c,d,f,p,s,s#,z,z#,y#` with `|` optional + `$`
+  keyword-only markers and kwlist-driven keyword lookup in the keywords path
 
 ---
 
@@ -74,6 +106,9 @@ performance-first C-extension compatibility without embedding CPython.
 ### 6.1 Headers and Tooling
 - Provide `molt-config --cflags --libs` for build integration.
 - Ship headers under `include/molt/` with stable symbol naming.
+- Current shipped bootstrap header: `include/molt/molt.h`.
+- CPython-compat include path is also available via `#include <Python.h>`,
+  implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
 
 ### 6.2 Wheel Tags (proposed)
 - Wheels for `libmolt` are tagged distinctly from CPython wheels.
