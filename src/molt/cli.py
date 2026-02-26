@@ -1,6 +1,7 @@
 import argparse
 import ast
 import base64
+from collections import deque
 import contextlib
 from concurrent.futures import ProcessPoolExecutor
 import errno
@@ -1801,14 +1802,28 @@ def _collect_namespace_parents(
     explicit_imports: set[str] | None = None,
 ) -> set[str]:
     namespace_parents: set[str] = set()
+    roots_cache: dict[str, list[Path]] = {}
+    resolve_cache: dict[str, Path | None] = {}
+    namespace_dir_cache: dict[str, bool] = {}
 
     def maybe_add(name: str) -> None:
         if name in module_graph:
             return
-        candidate_roots = _roots_for_module(name, roots, stdlib_root, stdlib_allowlist)
-        if _resolve_module_path(name, candidate_roots) is not None:
+        candidate_roots = roots_cache.get(name)
+        if candidate_roots is None:
+            candidate_roots = _roots_for_module(
+                name, roots, stdlib_root, stdlib_allowlist
+            )
+            roots_cache[name] = candidate_roots
+        if name not in resolve_cache:
+            resolve_cache[name] = _resolve_module_path(name, candidate_roots)
+        if resolve_cache[name] is not None:
             return
-        if _has_namespace_dir(name, candidate_roots):
+        has_namespace_dir = namespace_dir_cache.get(name)
+        if has_namespace_dir is None:
+            has_namespace_dir = _has_namespace_dir(name, candidate_roots)
+            namespace_dir_cache[name] = has_namespace_dir
+        if has_namespace_dir:
             namespace_parents.add(name)
 
     for module_name in module_graph:
@@ -1979,25 +1994,35 @@ def _collect_package_parents(
     stdlib_root: Path,
     stdlib_allowlist: set[str],
 ) -> None:
-    changed = True
-    while changed:
-        changed = False
-        for module_name in list(module_graph):
-            parts = module_name.split(".")
-            for idx in range(1, len(parts)):
-                parent = ".".join(parts[:idx])
-                if parent in module_graph:
-                    continue
-                resolved = _resolve_module_path(
-                    parent,
-                    _roots_for_module(parent, roots, stdlib_root, stdlib_allowlist),
-                )
-                if resolved is None:
-                    continue
-                if resolved.name != "__init__.py":
-                    continue
-                module_graph[parent] = resolved
-                changed = True
+    roots_cache: dict[str, list[Path]] = {}
+    resolve_cache: dict[str, Path | None] = {}
+    pending: set[str] = set()
+    for module_name in list(module_graph):
+        parts = module_name.split(".")
+        for idx in range(1, len(parts)):
+            pending.add(".".join(parts[:idx]))
+
+    while pending:
+        parent = pending.pop()
+        if parent in module_graph:
+            continue
+        candidate_roots = roots_cache.get(parent)
+        if candidate_roots is None:
+            candidate_roots = _roots_for_module(
+                parent, roots, stdlib_root, stdlib_allowlist
+            )
+            roots_cache[parent] = candidate_roots
+        if parent not in resolve_cache:
+            resolve_cache[parent] = _resolve_module_path(parent, candidate_roots)
+        resolved = resolve_cache[parent]
+        if resolved is None or resolved.name != "__init__.py":
+            continue
+        module_graph[parent] = resolved
+        parent_parts = parent.split(".")
+        for idx in range(1, len(parent_parts)):
+            ancestor = ".".join(parent_parts[:idx])
+            if ancestor not in module_graph:
+                pending.add(ancestor)
 
 
 def _resolve_relative_import(
@@ -2204,6 +2229,7 @@ def _collect_imports(
             if not params:
                 continue
             param_set = set(params)
+            param_positions = {name: idx for idx, name in enumerate(params)}
             for node in ast.walk(stmt):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
@@ -2220,7 +2246,7 @@ def _collect_imports(
                 else:
                     helper_entry[1].append(first)
                 if isinstance(first, ast.Name) and first.id in param_set:
-                    pos = params.index(first.id)
+                    pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
         for stmt in tree.body:
@@ -2487,10 +2513,10 @@ def _topo_sort_modules(
         for dep in deps:
             dependents[dep].add(name)
             in_degree[name] += 1
-    ready = sorted(name for name, degree in in_degree.items() if degree == 0)
+    ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
     order: list[str] = []
     while ready:
-        name = ready.pop(0)
+        name = ready.popleft()
         order.append(name)
         for child in sorted(dependents[name]):
             in_degree[child] -= 1
@@ -3571,8 +3597,32 @@ def _discover_module_graph(
     stub_parents = stub_parents or set()
     explicit_imports: set[str] = set()
     queue = [entry_path]
+    queued_paths = {entry_path}
+    roots_cache: dict[str, list[Path]] = {}
+    resolve_cache: dict[str, Path | None] = {}
+
+    def resolve_candidate(candidate: str) -> Path | None:
+        if candidate.startswith("molt.stdlib."):
+            key = f"stdlib:{candidate}"
+            if key not in resolve_cache:
+                stdlib_candidate = candidate[len("molt.stdlib.") :]
+                resolve_cache[key] = _resolve_module_path(
+                    stdlib_candidate, [stdlib_root]
+                )
+            return resolve_cache[key]
+        if candidate not in resolve_cache:
+            candidate_roots = roots_cache.get(candidate)
+            if candidate_roots is None:
+                candidate_roots = _roots_for_module(
+                    candidate, roots, stdlib_root, stdlib_allowlist
+                )
+                roots_cache[candidate] = candidate_roots
+            resolve_cache[candidate] = _resolve_module_path(candidate, candidate_roots)
+        return resolve_cache[candidate]
+
     while queue:
         path = queue.pop()
+        queued_paths.discard(path)
         module_name = _module_name_from_path(path, module_roots, stdlib_root)
         if module_name in graph:
             continue
@@ -3602,18 +3652,9 @@ def _discover_module_graph(
                     continue
                 if candidate.split(".", 1)[0] in skip_modules:
                     continue
-                resolved = None
-                if candidate.startswith("molt.stdlib."):
-                    stdlib_candidate = candidate[len("molt.stdlib.") :]
-                    resolved = _resolve_module_path(stdlib_candidate, [stdlib_root])
-                if resolved is None:
-                    resolved = _resolve_module_path(
-                        candidate,
-                        _roots_for_module(
-                            candidate, roots, stdlib_root, stdlib_allowlist
-                        ),
-                    )
-                if resolved is not None:
+                resolved = resolve_candidate(candidate)
+                if resolved is not None and resolved not in queued_paths:
+                    queued_paths.add(resolved)
                     queue.append(resolved)
     return graph, explicit_imports
 

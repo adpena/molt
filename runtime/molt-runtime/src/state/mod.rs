@@ -22,7 +22,7 @@ pub(crate) use runtime_state::{
 };
 pub(crate) use tls::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK, TRACEBACK_SUPPRESS,
+    RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACEBACK_SUPPRESS,
 };
 pub(crate) use traceback::{
     traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,

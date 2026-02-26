@@ -3945,6 +3945,145 @@ fn parse_bind_script_commands(script: &str) -> Vec<Vec<String>> {
     parse_tcl_script_commands(command)
 }
 
+const TK_EVENT_SUBST_FIELD_COUNT: usize = 19;
+
+fn flatten_event_subst_arg(mut value_bits: u64) -> u64 {
+    for _ in 0..8 {
+        let Some(values) = decode_value_list(obj_from_bits(value_bits)) else {
+            break;
+        };
+        if values.len() != 1 {
+            break;
+        }
+        value_bits = values[0];
+    }
+    value_bits
+}
+
+fn parse_event_subst_i64(value_bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(value) = to_i64(obj) {
+        return Some(value);
+    }
+    if let Some(text) = string_obj_to_owned(obj) {
+        return text.trim().parse::<i64>().ok();
+    }
+    if let Some(value) = to_f64(obj)
+        && value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+    {
+        return Some(value as i64);
+    }
+    None
+}
+
+fn normalize_event_subst_int_field(value_bits: u64) -> u64 {
+    parse_event_subst_i64(value_bits)
+        .map(MoltObject::from_int)
+        .map(MoltObject::bits)
+        .unwrap_or(value_bits)
+}
+
+fn normalize_event_subst_bool_field(value_bits: u64) -> u64 {
+    let obj = obj_from_bits(value_bits);
+    let parsed = if obj.is_bool() {
+        obj.as_bool()
+    } else if let Some(value) = to_i64(obj) {
+        Some(value != 0)
+    } else if let Some(text) = string_obj_to_owned(obj) {
+        parse_bool_text(&text)
+    } else if let Some(value) = to_f64(obj) {
+        Some(value != 0.0)
+    } else {
+        None
+    };
+    parsed
+        .map(MoltObject::from_bool)
+        .map(MoltObject::bits)
+        .unwrap_or_else(|| MoltObject::none().bits())
+}
+
+fn event_subst_value_is_empty(value_bits: u64) -> bool {
+    let obj = obj_from_bits(value_bits);
+    if obj.is_none() {
+        return true;
+    }
+    string_obj_to_owned(obj).is_some_and(|value| value.is_empty())
+}
+
+fn normalize_event_subst_delta_field(value_bits: u64) -> u64 {
+    if let Some(value) = parse_event_subst_i64(value_bits) {
+        return MoltObject::from_int(value).bits();
+    }
+    if event_subst_value_is_empty(value_bits) {
+        return MoltObject::from_int(0).bits();
+    }
+    value_bits
+}
+
+fn bind_script_line_invokes_command(line: &str, command_name: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let normalized = trimmed.trim_start_matches('+').trim_start();
+    if normalized.starts_with(command_name)
+        && normalized[command_name.len()..]
+            .chars()
+            .next()
+            .map_or(true, char::is_whitespace)
+    {
+        return true;
+    }
+
+    let wrapped_prefix = format!("[{command_name} ");
+    let wrapped_exact = format!("[{command_name}]");
+    if normalized.starts_with("if ")
+        && (normalized.contains(&wrapped_prefix) || normalized.contains(&wrapped_exact))
+    {
+        return true;
+    }
+
+    parse_bind_script_commands(normalized).into_iter().any(|words| {
+        let Some(first) = words.first() else {
+            return false;
+        };
+        let first = first.trim_start_matches('+');
+        if first == command_name {
+            return true;
+        }
+        first == "if" && words.iter().any(|word| {
+            word.contains(wrapped_prefix.as_str()) || word.contains(wrapped_exact.as_str())
+        })
+    })
+}
+
+fn remove_bind_script_command_invocations(script: &str, command_name: &str) -> String {
+    if script.is_empty() || command_name.is_empty() {
+        return script.to_string();
+    }
+    let mut out = String::with_capacity(script.len());
+    for segment in script.split_inclusive('\n') {
+        let (line, ending) = match segment.strip_suffix('\n') {
+            Some(content) => (content, "\n"),
+            None => (segment, ""),
+        };
+        let parse_line = line.strip_suffix('\r').unwrap_or(line);
+        if bind_script_line_invokes_command(parse_line, command_name) {
+            continue;
+        }
+        out.push_str(line);
+        out.push_str(ending);
+    }
+    if out.trim().is_empty() {
+        return String::new();
+    }
+    out
+}
+
 fn event_generate_binding_sequences(app: &TkAppState, sequence: &str) -> Vec<String> {
     let mut sequences = vec![sequence.to_string()];
     if !(sequence.starts_with("<<") && sequence.ends_with(">>")) {
@@ -6952,15 +7091,14 @@ fn handle_treeview_widget_path_command(
                         let command_name =
                             get_string_arg(py, handle, args[6], "treeview tag bind callback id")?;
                         if let Some(existing_script) = tag_state.bindings.get(&sequence).cloned() {
-                            let prefix = format!("if {{\"[{command_name} ");
-                            let kept_lines: Vec<&str> = existing_script
-                                .lines()
-                                .filter(|line| !line.starts_with(prefix.as_str()))
-                                .collect();
-                            if kept_lines.is_empty() {
+                            let replacement = remove_bind_script_command_invocations(
+                                &existing_script,
+                                &command_name,
+                            );
+                            if replacement.is_empty() {
                                 tag_state.bindings.remove(&sequence);
                             } else {
-                                tag_state.bindings.insert(sequence, kept_lines.join("\n"));
+                                tag_state.bindings.insert(sequence, replacement);
                             }
                         }
                         app.last_error = None;
@@ -8758,6 +8896,70 @@ pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_event_subst_parse(_widget_path_bits: u64, event_args_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(raw_args) = decode_value_list(obj_from_bits(event_args_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let args: Vec<u64> = raw_args.into_iter().map(flatten_event_subst_arg).collect();
+        if args.len() != TK_EVENT_SUBST_FIELD_COUNT {
+            return MoltObject::none().bits();
+        }
+
+        let payload = [
+            normalize_event_subst_int_field(args[0]),
+            normalize_event_subst_int_field(args[1]),
+            normalize_event_subst_bool_field(args[2]),
+            normalize_event_subst_int_field(args[3]),
+            normalize_event_subst_int_field(args[4]),
+            normalize_event_subst_int_field(args[5]),
+            normalize_event_subst_int_field(args[6]),
+            normalize_event_subst_int_field(args[7]),
+            normalize_event_subst_int_field(args[8]),
+            normalize_event_subst_int_field(args[9]),
+            args[10],
+            normalize_event_subst_bool_field(args[11]),
+            args[12],
+            normalize_event_subst_int_field(args[13]),
+            args[14],
+            args[15],
+            normalize_event_subst_int_field(args[16]),
+            normalize_event_subst_int_field(args[17]),
+            normalize_event_subst_delta_field(args[18]),
+        ];
+
+        match alloc_tuple_bits(
+            _py,
+            &payload,
+            "failed to allocate tkinter event substitution tuple",
+        ) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_bind_script_remove_command(
+    script_bits: u64,
+    command_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(script) = string_obj_to_owned(obj_from_bits(script_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "bind script must be str");
+        };
+        let Some(command_name) = string_obj_to_owned(obj_from_bits(command_name_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "bind command name must be str");
+        };
+        let replacement = remove_bind_script_command_invocations(&script, &command_name);
+        match alloc_string_bits(_py, &replacement) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -9722,6 +9924,39 @@ mod tests {
                 "%x".to_string(),
                 "%y".to_string(),
             ]]
+        );
+    }
+
+    #[test]
+    fn bind_script_remove_command_drops_matching_if_wrapper_lines() {
+        let script = concat!(
+            "if {\"[::__molt_keep %#]\" == \"break\"} break\n",
+            "if {\"[::__molt_drop %#]\" == \"break\"} break\n",
+        );
+        assert_eq!(
+            remove_bind_script_command_invocations(script, "::__molt_drop"),
+            "if {\"[::__molt_keep %#]\" == \"break\"} break\n"
+        );
+    }
+
+    #[test]
+    fn bind_script_remove_command_preserves_non_matching_commands() {
+        let script = "+::__molt_drop %x %y\n+::__molt_keep %x %y";
+        assert_eq!(
+            remove_bind_script_command_invocations(script, "::__molt_drop"),
+            "+::__molt_keep %x %y"
+        );
+    }
+
+    #[test]
+    fn bind_script_remove_command_handles_plus_prefixed_if_wrapper() {
+        let script = concat!(
+            "+if {\"[::__molt_drop %#]\" == \"break\"} break\n",
+            "+if {\"[::__molt_keep %#]\" == \"break\"} break\n",
+        );
+        assert_eq!(
+            remove_bind_script_command_invocations(script, "::__molt_drop"),
+            "+if {\"[::__molt_keep %#]\" == \"break\"} break\n"
         );
     }
 

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
@@ -542,6 +542,12 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
 fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
     let mut result = Vec::new();
     let mut heads = vec![0usize; seqs.len()];
+    let mut tail_counts: HashMap<u64, usize> = HashMap::new();
+    for seq in &seqs {
+        for &value in seq.iter().skip(1) {
+            *tail_counts.entry(value).or_insert(0) += 1;
+        }
+    }
     loop {
         let mut remaining = 0usize;
         for (idx, seq) in seqs.iter().enumerate() {
@@ -559,18 +565,7 @@ fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
                 continue;
             }
             let head = seq[head_idx];
-            let mut in_tail = false;
-            for (other_idx, other) in seqs.iter().enumerate() {
-                let other_head = heads[other_idx];
-                if other_head >= other.len() {
-                    continue;
-                }
-                if other[(other_head + 1)..].iter().any(|val| *val == head) {
-                    in_tail = true;
-                    break;
-                }
-            }
-            if !in_tail {
+            if tail_counts.get(&head).copied().unwrap_or(0) == 0 {
                 candidate = Some(head);
                 break 'outer;
             }
@@ -581,6 +576,17 @@ fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
             let head_idx = heads[idx];
             if head_idx < seq.len() && seq[head_idx] == cand {
                 heads[idx] += 1;
+                let next_head_idx = heads[idx];
+                if next_head_idx < seq.len() {
+                    let next_head = seq[next_head_idx];
+                    if let Some(count) = tail_counts.get_mut(&next_head) {
+                        if *count <= 1 {
+                            tail_counts.remove(&next_head);
+                        } else {
+                            *count -= 1;
+                        }
+                    }
+                }
             }
         }
     }

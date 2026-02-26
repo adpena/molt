@@ -103,6 +103,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_tk_event_subst_parse",
+        symbol: "molt_tk_event_subst_parse",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_bind_script_remove_command",
+        symbol: "molt_tk_bind_script_remove_command",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_tk_errorinfo_append",
         symbol: "molt_tk_errorinfo_append",
         arity: 2,
@@ -9992,6 +10002,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_getboolean" => Some(crate::molt_tk_getboolean as *const () as usize as u64),
         "molt_tk_getdouble" => Some(crate::molt_tk_getdouble as *const () as usize as u64),
         "molt_tk_splitlist" => Some(crate::molt_tk_splitlist as *const () as usize as u64),
+        "molt_tk_event_subst_parse" => {
+            Some(crate::molt_tk_event_subst_parse as *const () as usize as u64)
+        }
+        "molt_tk_bind_script_remove_command" => {
+            Some(crate::molt_tk_bind_script_remove_command as *const () as usize as u64)
+        }
         "molt_tk_errorinfo_append" => {
             Some(crate::molt_tk_errorinfo_append as *const () as usize as u64)
         }
