@@ -1482,17 +1482,50 @@ fn importlib_metadata_normalize_name(name: &str) -> String {
     out
 }
 
+fn importlib_enforce_extension_spec_boundary(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    resolution: &ImportlibPathResolution,
+) -> Result<(), u64> {
+    if resolution.loader_kind != "extension" {
+        return Ok(());
+    }
+    let Some(origin) = resolution.origin.as_deref() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ImportError",
+            "extension module path must point to a file",
+        ));
+    };
+    match importlib_path_is_file(_py, origin) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(raise_exception::<u64>(
+                _py,
+                "ImportError",
+                "extension module path must point to a file",
+            ));
+        }
+        Err(bits) => return Err(bits),
+    }
+    importlib_require_extension_metadata(_py, module_name, origin)
+}
+
 fn importlib_find_spec_payload(
+    _py: &PyToken<'_>,
     fullname: &str,
     search_paths: &[String],
     module_file: Option<String>,
     meta_path_count: i64,
     path_hooks_count: i64,
     package_context: bool,
-) -> Option<ImportlibFindSpecPayload> {
+) -> Result<Option<ImportlibFindSpecPayload>, u64> {
     let resolved = importlib_search_paths(search_paths, module_file);
-    let resolution = importlib_find_in_path(fullname, &resolved, package_context)?;
-    Some(ImportlibFindSpecPayload {
+    let Some(resolution) = importlib_find_in_path(fullname, &resolved, package_context) else {
+        return Ok(None);
+    };
+    importlib_enforce_extension_spec_boundary(_py, fullname, &resolution)?;
+    Ok(Some(ImportlibFindSpecPayload {
         origin: resolution.origin,
         is_package: resolution.is_package,
         submodule_search_locations: resolution.submodule_search_locations,
@@ -1504,7 +1537,7 @@ fn importlib_find_spec_payload(
         zip_inner_path: resolution.zip_inner_path,
         meta_path_count,
         path_hooks_count,
-    })
+    }))
 }
 
 fn pending_exception_kind_name(_py: &PyToken<'_>) -> Option<String> {
@@ -9910,15 +9943,18 @@ fn importlib_find_spec_from_path_hooks_impl(
     // so meta-path participation is logically non-empty even without a
     // Python sentinel object.
     let meta_path_count = 1;
-    let Some(payload) = importlib_find_spec_payload(
+    let payload = match importlib_find_spec_payload(
+        _py,
         ctx.fullname,
         ctx.search_paths,
         ctx.module_file,
         meta_path_count,
         path_hooks_count,
         ctx.package_context,
-    ) else {
-        return MoltObject::none().bits();
+    ) {
+        Ok(Some(payload)) => payload,
+        Ok(None) => return MoltObject::none().bits(),
+        Err(bits) => return bits,
     };
     match importlib_find_spec_object_bits(_py, ctx.fullname, &payload, ctx.machinery_bits) {
         Ok(bits) => bits,
@@ -9971,15 +10007,17 @@ fn importlib_find_spec_with_runtime_state_bits(
             "missing fs.read capability",
         ));
     }
-    let Some(payload) = importlib_find_spec_payload(
+    let payload = match importlib_find_spec_payload(
+        _py,
         ctx.fullname,
         ctx.search_paths,
         ctx.module_file,
         meta_path_count,
         path_hooks_count,
         ctx.package_context,
-    ) else {
-        return Ok(MoltObject::none().bits());
+    )? {
+        Some(payload) => payload,
+        None => return Ok(MoltObject::none().bits()),
     };
     importlib_find_spec_object_bits(_py, ctx.fullname, &payload, ctx.machinery_bits)
 }
@@ -10982,15 +11020,18 @@ pub extern "C" fn molt_importlib_find_spec_payload(
         if fullname != "math" && !has_capability(_py, "fs.read") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
-        let Some(payload) = importlib_find_spec_payload(
+        let payload = match importlib_find_spec_payload(
+            _py,
             &fullname,
             &search_paths,
             module_file,
             meta_path_count,
             path_hooks_count,
             package_context,
-        ) else {
-            return MoltObject::none().bits();
+        ) {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return MoltObject::none().bits(),
+            Err(bits) => return bits,
         };
         let origin_bits = match payload.origin.as_deref() {
             Some(origin) => match alloc_str_bits(_py, origin) {
@@ -15110,6 +15151,14 @@ mod tests {
         }
     }
 
+    fn extension_boundary_module_filename(module_basename: &str) -> String {
+        if sys_platform_str().starts_with("win") {
+            format!("{module_basename}.pyd")
+        } else {
+            format!("{module_basename}.so")
+        }
+    }
+
     fn clear_extension_metadata_validation_cache() {
         let cache = extension_metadata_ok_cache();
         let mut guard = cache
@@ -15630,6 +15679,206 @@ mod tests {
         let second = importlib_manifest_cache_fingerprint(&loaded).expect("second fingerprint");
         assert_ne!(first, second);
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_missing_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let module_name = format!("ext_spec_missing_{}", std::process::id());
+            let filename = extension_boundary_module_filename(&module_name);
+            let extension_path = tmp.join(&filename);
+            std::fs::write(&extension_path, b"spec-boundary-extension")
+                .expect("write extension placeholder");
+            let search_paths = vec![tmp.to_string_lossy().into_owned()];
+
+            crate::with_gil_entry!(_py, {
+                let out = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                );
+                assert!(
+                    out.is_err(),
+                    "expected spec boundary failure for missing manifest"
+                );
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &[
+                        "extension metadata missing",
+                        "extension_manifest.json not found near extension path",
+                    ],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_spec_boundary_rejects_invalid_manifest_payload() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_invalid_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let module_name = format!("ext_spec_invalid_{}", std::process::id());
+            let filename = extension_boundary_module_filename(&module_name);
+            let extension_path = tmp.join(&filename);
+            std::fs::write(&extension_path, b"spec-boundary-extension")
+                .expect("write extension placeholder");
+            std::fs::write(tmp.join("extension_manifest.json"), b"{not-json}\n")
+                .expect("write invalid metadata manifest");
+            let search_paths = vec![tmp.to_string_lossy().into_owned()];
+
+            crate::with_gil_entry!(_py, {
+                let out = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                );
+                assert!(
+                    out.is_err(),
+                    "expected spec boundary failure for invalid manifest"
+                );
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["invalid extension metadata in", "extension_manifest.json"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_spec_boundary_accepts_valid_manifest() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_valid_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let module_name = format!("ext_spec_valid_{}", std::process::id());
+            let filename = extension_boundary_module_filename(&module_name);
+            let extension_path = tmp.join(&filename);
+            std::fs::write(&extension_path, b"spec-boundary-extension")
+                .expect("write extension placeholder");
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                &module_name,
+                &filename,
+                &extension_sha256,
+            );
+            let search_paths = vec![tmp.to_string_lossy().into_owned()];
+
+            crate::with_gil_entry!(_py, {
+                let payload = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                )
+                .expect("spec boundary should pass")
+                .expect("extension spec should resolve");
+                assert_eq!(payload.loader_kind, "extension");
+                assert_eq!(
+                    payload.origin.as_deref(),
+                    Some(extension_path_text.as_str())
+                );
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected pending exception after valid spec boundary check: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_cache_revalidation");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let module_name = format!("ext_spec_cache_{}", std::process::id());
+            let filename = extension_boundary_module_filename(&module_name);
+            let extension_path = tmp.join(&filename);
+            std::fs::write(&extension_path, b"spec-boundary-extension-v1")
+                .expect("write extension placeholder");
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                &module_name,
+                &filename,
+                &extension_sha256,
+            );
+            let search_paths = vec![tmp.to_string_lossy().into_owned()];
+
+            crate::with_gil_entry!(_py, {
+                let payload = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                )
+                .expect("first spec boundary pass should succeed")
+                .expect("first extension spec should resolve");
+                assert_eq!(payload.loader_kind, "extension");
+                assert_eq!(
+                    payload.origin.as_deref(),
+                    Some(extension_path_text.as_str())
+                );
+            });
+
+            std::fs::write(&extension_path, b"spec-boundary-extension-v2-changed")
+                .expect("mutate extension artifact");
+
+            crate::with_gil_entry!(_py, {
+                let out = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                );
+                assert!(
+                    out.is_err(),
+                    "expected spec boundary failure after extension mutation"
+                );
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["extension checksum mismatch"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
     }
 
     #[test]

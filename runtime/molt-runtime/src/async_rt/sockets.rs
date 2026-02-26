@@ -1221,7 +1221,7 @@ fn socket_reader_find_newline_up_to(
     {
         Some(rel_idx) => {
             let idx = search_start + rel_idx;
-            reader.scan_cursor = idx;
+            reader.scan_cursor = idx.saturating_add(1);
             Some(idx - unread_start)
         }
         None => {
@@ -1236,6 +1236,7 @@ fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: u
     let unread = socket_reader_unread_slice(reader);
     let ptr = alloc_bytes(_py, &unread[..n]);
     if ptr.is_null() {
+        reader.scan_cursor = reader.buffer_start;
         return MoltObject::none().bits();
     }
     reader.buffer_start += n;

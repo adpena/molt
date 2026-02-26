@@ -418,51 +418,104 @@ def _live_filehandler_smoke_script(expected_platform: str) -> str:
             raise SystemExit(0)
 
         root.withdraw()
-        events = []
+        status = {{
+            "timer_tick_count": 0,
+            "not_implemented": False,
+            "timeout": False,
+            "callback_count": 0,
+            "callback_mask": None,
+            "callback_fd": None,
+            "callback_identity_ok": False,
+            "post_delete_quiescent": False,
+        }}
         ok = False
         read_fd = None
         write_fd = None
+        read_file = None
+
+        def _drain_events(limit):
+            for _ in range(limit):
+                root.dooneevent(tk.DONT_WAIT)
+
         try:
             if sys.platform == "win32":
+
+                def _timer_tick():
+                    status["timer_tick_count"] += 1
+
+                root.after(1, _timer_tick)
+                for _ in range(300):
+                    if status["timer_tick_count"] == 1:
+                        break
+                    root.dooneevent(tk.DONT_WAIT)
                 try:
                     root.createfilehandler(0, _tkinter.READABLE, lambda *_args: None)
                 except NotImplementedError:
-                    ok = True
+                    status["not_implemented"] = True
                 except Exception:  # noqa: BLE001
-                    ok = False
+                    status["not_implemented"] = False
                 else:
-                    ok = False
+                    status["not_implemented"] = False
+                ok = (
+                    status["timer_tick_count"] == 1
+                    and status["not_implemented"] is True
+                )
             else:
                 read_fd, write_fd = os.pipe()
+                read_file = os.fdopen(read_fd, "rb", buffering=0, closefd=False)
+
+                def _timeout():
+                    status["timeout"] = True
+                    root.quit()
 
                 def _on_ready(fileobj, mask):
+                    status["callback_count"] += 1
                     try:
-                        fd = int(fileobj)
+                        fd = int(fileobj.fileno())
                     except Exception:  # noqa: BLE001
                         try:
-                            fd = int(fileobj.fileno())
+                            fd = int(fileobj)
                         except Exception:  # noqa: BLE001
                             fd = -1
-                    events.append((fd, int(mask)))
+                    status["callback_fd"] = fd
+                    status["callback_mask"] = int(mask)
+                    status["callback_identity_ok"] = fileobj is read_file
                     try:
                         os.read(read_fd, 1)
                     except Exception:  # noqa: BLE001
                         pass
-                    root.deletefilehandler(read_fd)
+                    root.deletefilehandler(read_file)
+                    try:
+                        os.write(write_fd, b"2")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    root.after(5, root.quit)
 
-                root.createfilehandler(read_fd, _tkinter.READABLE, _on_ready)
-                os.write(write_fd, b"x")
-                for _ in range(1000):
-                    if events:
-                        break
-                    root.dooneevent(tk.DONT_WAIT)
-                ok = events == [(read_fd, int(_tkinter.READABLE))]
+                root.createfilehandler(read_file, _tkinter.READABLE, _on_ready)
+                root.after(5, lambda: os.write(write_fd, b"1"))
+                root.after(1200, _timeout)
+                root.mainloop()
+                _drain_events(150)
+                status["post_delete_quiescent"] = status["callback_count"] == 1
+                ok = (
+                    status["timeout"] is False
+                    and status["callback_count"] == 1
+                    and status["callback_mask"] == int(_tkinter.READABLE)
+                    and status["callback_fd"] == read_fd
+                    and status["callback_identity_ok"] is True
+                    and status["post_delete_quiescent"] is True
+                )
         finally:
-            if read_fd is not None:
+            if read_file is not None:
                 try:
-                    root.deletefilehandler(read_fd)
+                    root.deletefilehandler(read_file)
                 except Exception:  # noqa: BLE001
                     pass
+                try:
+                    read_file.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if read_fd is not None:
                 try:
                     os.close(read_fd)
                 except Exception:  # noqa: BLE001
@@ -475,7 +528,7 @@ def _live_filehandler_smoke_script(expected_platform: str) -> str:
             root.destroy()
 
         print("OK" if ok else "FAIL")
-        print(f"DETAIL:platform={{sys.platform}} events={{events!r}}")
+        print(f"DETAIL:platform={{sys.platform}} status={{status!r}}")
         if not ok:
             raise SystemExit(3)
         """
