@@ -101,6 +101,10 @@ _MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
+_C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
+_C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
+_C_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -11288,6 +11292,208 @@ def doctor(
     return 0
 
 
+def _strip_c_like_comments_and_literals(text: str) -> str:
+    without_blocks = _C_BLOCK_COMMENT_RE.sub(" ", text)
+    without_lines = _C_LINE_COMMENT_RE.sub(" ", without_blocks)
+    return _C_STRING_LITERAL_RE.sub(" ", without_lines)
+
+
+def _extract_py_c_api_tokens(text: str) -> set[str]:
+    sanitized = _strip_c_like_comments_and_literals(text)
+    return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
+
+
+def _load_supported_py_c_api_surface(
+    molt_root: Path,
+) -> tuple[set[str], Path, str | None]:
+    header_path = molt_root / "include" / "molt" / "Python.h"
+    supported_tokens: set[str] = set()
+    try:
+        header_text = header_path.read_text()
+    except OSError as exc:
+        return set(), header_path, str(exc)
+    supported_tokens.update(_extract_py_c_api_tokens(header_text))
+    datetime_header = molt_root / "include" / "datetime.h"
+    if datetime_header.exists():
+        try:
+            datetime_text = datetime_header.read_text()
+        except OSError:
+            datetime_text = ""
+        if datetime_text:
+            supported_tokens.update(_extract_py_c_api_tokens(datetime_text))
+    numpy_include_root = molt_root / "include" / "numpy"
+    if numpy_include_root.exists():
+        for numpy_header in sorted(numpy_include_root.rglob("*.h")):
+            try:
+                numpy_text = numpy_header.read_text()
+            except OSError:
+                continue
+            supported_tokens.update(_extract_py_c_api_tokens(numpy_text))
+    return supported_tokens, header_path, None
+
+
+def _resolve_extension_scan_sources(
+    project_root: Path, explicit_sources: list[str] | None
+) -> tuple[list[Path], list[str]]:
+    errors: list[str] = []
+    source_entries: list[str] = []
+    if explicit_sources:
+        source_entries = [
+            entry for entry in explicit_sources if entry and entry.strip()
+        ]
+        if not source_entries:
+            errors.append("--source must include at least one non-empty path")
+    else:
+        pyproject = _load_toml(project_root / "pyproject.toml")
+        extension_meta = _config_value(pyproject, ["tool", "molt", "extension"])
+        if not isinstance(extension_meta, dict):
+            errors.append("pyproject.toml must contain [tool.molt.extension]")
+        else:
+            source_entries = _coerce_str_list(
+                extension_meta.get("sources"),
+                "tool.molt.extension.sources",
+                errors,
+                allow_empty=False,
+            )
+            if not source_entries:
+                errors.append(
+                    "tool.molt.extension.sources must include at least one source"
+                )
+    source_paths: list[Path] = []
+    for entry in source_entries:
+        source_path = Path(entry).expanduser()
+        if not source_path.is_absolute():
+            source_path = (project_root / source_path).absolute()
+        if not source_path.exists() or not source_path.is_file():
+            errors.append(f"source file not found: {source_path}")
+            continue
+        source_paths.append(source_path)
+    return source_paths, errors
+
+
+def extension_scan(
+    project: str | None = None,
+    sources: list[str] | None = None,
+    fail_on_missing: bool = False,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> int:
+    project_root = Path(project).expanduser() if project else Path.cwd()
+    if not project_root.is_absolute():
+        project_root = (Path.cwd() / project_root).absolute()
+    if not project_root.exists() or not project_root.is_dir():
+        return _fail(
+            f"Project directory not found: {project_root}",
+            json_output,
+            command="extension-scan",
+        )
+
+    source_paths, errors = _resolve_extension_scan_sources(project_root, sources)
+    if errors:
+        return _fail(
+            "Extension scan configuration errors: " + "; ".join(errors),
+            json_output,
+            command="extension-scan",
+        )
+
+    cwd_root = _find_project_root(Path.cwd())
+    molt_root = _find_molt_root(project_root, cwd_root)
+    root_error = _require_molt_root(molt_root, json_output, "extension-scan")
+    if root_error is not None:
+        return root_error
+
+    supported_surface, header_path, header_error = _load_supported_py_c_api_surface(
+        molt_root
+    )
+    if header_error is not None:
+        return _fail(
+            f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
+            json_output,
+            command="extension-scan",
+        )
+
+    required_by_file: dict[str, list[str]] = {}
+    missing_by_file: dict[str, list[str]] = {}
+    required_symbols: set[str] = set()
+    for source_path in source_paths:
+        try:
+            source_text = source_path.read_text()
+        except OSError as exc:
+            return _fail(
+                f"Failed to read source file {source_path}: {exc}",
+                json_output,
+                command="extension-scan",
+            )
+        file_required = sorted(_extract_py_c_api_tokens(source_text))
+        required_by_file[str(source_path)] = file_required
+        required_symbols.update(file_required)
+        file_missing = sorted(
+            symbol for symbol in file_required if symbol not in supported_surface
+        )
+        if file_missing:
+            missing_by_file[str(source_path)] = file_missing
+
+    required_sorted = sorted(required_symbols)
+    missing_sorted = sorted(
+        symbol for symbol in required_sorted if symbol not in supported_surface
+    )
+    supported_used_sorted = sorted(
+        symbol for symbol in required_sorted if symbol in supported_surface
+    )
+    warnings: list[str] = []
+    if missing_sorted and not fail_on_missing:
+        warnings.append(
+            "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
+        )
+    status = "ok"
+    if fail_on_missing and missing_sorted:
+        status = "error"
+
+    if json_output:
+        payload = _json_payload(
+            "extension-scan",
+            status,
+            data={
+                "project": str(project_root),
+                "header": str(header_path),
+                "source_count": len(source_paths),
+                "required_symbol_count": len(required_sorted),
+                "supported_symbol_count": len(supported_used_sorted),
+                "missing_symbol_count": len(missing_sorted),
+                "required_symbols": required_sorted,
+                "supported_symbols": supported_used_sorted,
+                "missing_symbols": missing_sorted,
+                "required_by_file": required_by_file,
+                "missing_by_file": missing_by_file,
+                "fail_on_missing": fail_on_missing,
+            },
+            warnings=warnings,
+            errors=["unsupported C-API symbols found"] if status == "error" else None,
+        )
+        _emit_json(payload, json_output=True)
+    else:
+        print(f"Extension C-API scan header: {header_path}")
+        print(f"Scanned source files: {len(source_paths)}")
+        print(f"Required Py* symbols: {len(required_sorted)}")
+        print(f"Supported Py* symbols used: {len(supported_used_sorted)}")
+        print(f"Missing Py* symbols: {len(missing_sorted)}")
+        if missing_sorted:
+            limit = len(missing_sorted) if verbose else min(30, len(missing_sorted))
+            for symbol in missing_sorted[:limit]:
+                print(f"MISSING: {symbol}")
+            if limit < len(missing_sorted):
+                print(f"... {len(missing_sorted) - limit} additional symbols omitted")
+        if verbose and missing_by_file:
+            for file_path in sorted(missing_by_file):
+                print(f"{file_path}: {', '.join(missing_by_file[file_path])}")
+        for warning in warnings:
+            print(f"WARN: {warning}")
+
+    if status == "error":
+        return 1
+    return 0
+
+
 def extension_build(
     project: str | None = None,
     out_dir: str | None = None,
@@ -13811,7 +14017,7 @@ def _completion_script(shell: str) -> str:
         "config",
         "completion",
     ]
-    extension_subcommands = ["build", "audit"]
+    extension_subcommands = ["build", "audit", "scan"]
     extension_options = {
         "build": [
             "--project",
@@ -14502,6 +14708,37 @@ def main() -> int:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     extension_audit_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    extension_scan_parser = extension_subparsers.add_parser(
+        "scan",
+        help=(
+            "Scan extension sources for unsupported Py* C-API usage "
+            "against include/molt/Python.h."
+        ),
+    )
+    extension_scan_parser.add_argument(
+        "--project",
+        help="Project directory containing pyproject.toml (default: cwd).",
+    )
+    extension_scan_parser.add_argument(
+        "--source",
+        action="append",
+        help=(
+            "Source path to scan (repeatable). If omitted, uses "
+            "tool.molt.extension.sources from pyproject.toml."
+        ),
+    )
+    extension_scan_parser.add_argument(
+        "--fail-on-missing",
+        action="store_true",
+        help="Return non-zero if unsupported Py* C-API symbols are detected.",
+    )
+    extension_scan_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    extension_scan_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -15407,8 +15644,23 @@ def main() -> int:
                 json_output=args.json,
                 verbose=args.verbose,
             )
+        if args.extension_command == "scan":
+            fail_on_missing = args.fail_on_missing
+            if not fail_on_missing:
+                fail_on_missing = _coerce_bool(
+                    extension_cfg.get("scan_fail_on_missing")
+                    or extension_cfg.get("scan-fail-on-missing"),
+                    False,
+                )
+            return extension_scan(
+                project=args.project or extension_cfg.get("project"),
+                sources=args.source,
+                fail_on_missing=fail_on_missing,
+                json_output=args.json,
+                verbose=args.verbose,
+            )
         return _fail(
-            "Missing extension subcommand (build|audit).",
+            "Missing extension subcommand (build|audit|scan).",
             args.json,
             command="extension",
         )

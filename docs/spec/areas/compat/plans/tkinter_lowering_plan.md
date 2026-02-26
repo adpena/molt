@@ -78,6 +78,31 @@ Current implementation note:
 - Variable-trace registrations now preserve deterministic insertion ordering in
   Rust (`trace add`/`trace remove`/`trace info`/callback dispatch), avoiding
   hash-order drift across callback-mode combinations.
+- Trace lifecycle cleanup is now Rust-owned end-to-end:
+  `molt_tk_trace_clear` removes all registrations for a variable and releases
+  callback commands, while trace callback dispatch now treats callback strings
+  as Tcl command prefixes (multi-word callback prefixes preserve appended
+  `name/index/op` arguments correctly).
+- `ttk.Treeview` parity tightening now rejects previously silent generic
+  fallback subcommands with explicit Tcl errors, validates `insert`/`move`
+  indices strictly (`int|end`), and raises deterministic errors for unknown
+  item ids in `selection {set,add,remove,toggle}` operations.
+- `ttk.Notebook`/`ttk.Panedwindow` container `insert` now validates index
+  tokens strictly (`int|end`) and raises deterministic Tcl-style errors for
+  invalid index strings instead of silently treating them as `end`.
+- `ttk.Notebook.index()` now enforces numeric bounds for explicit integer
+  indices (`Slave index <n> out of bounds`) while preserving `end` and
+  managed-tab identifier lookup behavior.
+- Core widget command lowering now replaces several prior generic no-op lanes
+  with Rust-owned stateful semantics:
+  `Menu.add/insert/delete/entrycget/entryconfigure/type/post/unpost/invoke/xposition/yposition/tk_popup`,
+  `PanedWindow.add/insert/forget/panes/panecget/paneconfigure`,
+  `Listbox.itemcget/itemconfigure` (with per-item option-state reindexing),
+  and `Text.replace/edit/dump` (including callback-command dispatch for
+  `dump -command` and command-prefix invocation for menu/button `invoke`).
+- Non-native `tk_popup` top-level command dispatch is now explicit in Rust
+  command routing (instead of falling into unknown-command behavior), with
+  deterministic menu-post state updates and optional active-entry targeting.
 - Live smoke coverage now includes OS-specific filehandler readiness behavior
   (`createfilehandler` with real pipe FDs on linux/macos; Windows
   `NotImplementedError` contract) together with runtime checks for `after`,

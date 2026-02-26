@@ -39,6 +39,123 @@ def _write_extension_project(project_root: Path) -> None:
     )
 
 
+def _write_extension_scan_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "demoext.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "static PyObject *scan_probe(PyObject *self, PyObject *args) {",
+                "    PyObject *value = PyLong_FromLong(7);",
+                "    (void)PyType_FromSpec;",
+                "    (void)PyType_FromModuleAndSpec;",
+                "    (void)PyType_GetModule;",
+                "    (void)PyType_GetModuleState;",
+                "    (void)PyType_GetModuleByDef;",
+                "    (void)PyThreadState_Get;",
+                "    (void)PyGILState_Ensure;",
+                "    (void)PyGILState_Release;",
+                "    (void)PyImport_ImportModule;",
+                "    (void)PyCapsule_Import;",
+                "    (void)PyArg_UnpackTuple;",
+                "    (void)PyAnySet_Check;",
+                "    (void)PyComplex_CheckExact;",
+                "    (void)PyDate_Check;",
+                "    (void)PyDateTime_Check;",
+                "    (void)PyDelta_Check;",
+                "    (void)PyDateTime_IMPORT;",
+                "    (void)PyLong_AsLongLongAndOverflow;",
+                "    (void)PyNumber_Long;",
+                "    (void)PyIter_Check;",
+                "    (void)PyIter_Next;",
+                "    (void)PyOS_string_to_double;",
+                "    (void)PyObject_Vectorcall;",
+                "    return value;",
+                "}",
+                "",
+            ]
+        )
+        + "\n"
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "scan-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext"',
+                'sources = ["src/demoext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+
+def _write_extension_numpy_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "demoext.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "",
+                "static int numpy_probe(PyObject *obj) {",
+                "    PyArrayObject *arr = (PyArrayObject *)obj;",
+                "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);",
+                "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
+                "    npy_intp ndim = PyArray_NDIM(arr);",
+                "    npy_intp size = PyArray_SIZE(arr);",
+                "    int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));",
+                "    int scalar_check = PyArray_CheckScalar(obj);",
+                "    int is_datetime = PyArray_ISDATETIME(arr);",
+                "    (void)PyArray_CastScalarToCtype;",
+                "    if (descr != NULL) {",
+                "        PyMem_Free(descr);",
+                "    }",
+                "    if (scalar_descr != NULL) {",
+                "        PyMem_Free(scalar_descr);",
+                "    }",
+                "    return (int)(ndim + size + is_int + scalar_check + is_datetime);",
+                "}",
+                "",
+                "int demoext_numpy_ready(void) {",
+                "    import_array1(-1);",
+                "    return 0;",
+                "}",
+                "",
+                "int demoext_numpy_touch(PyObject *obj) {",
+                "    return numpy_probe(obj);",
+                "}",
+                "",
+            ]
+        )
+        + "\n"
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo-numpy-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext_numpy"',
+                'sources = ["src/demoext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+
 def _write_extension_wheel(
     root: Path,
     *,
@@ -73,6 +190,93 @@ def _write_extension_wheel(
     manifest_path = root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest_path, wheel_path
+
+
+def test_extension_scan_reports_missing_symbols_without_gate(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scanproj"
+    project_root.mkdir()
+    _write_extension_scan_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=False,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    data = payload["data"]
+    assert "PyType_FromSpec" in data["supported_symbols"]
+    assert "PyType_FromModuleAndSpec" in data["supported_symbols"]
+    assert "PyType_GetModule" in data["supported_symbols"]
+    assert "PyType_GetModuleState" in data["supported_symbols"]
+    assert "PyType_GetModuleByDef" in data["supported_symbols"]
+    assert "PyThreadState_Get" in data["supported_symbols"]
+    assert "PyGILState_Ensure" in data["supported_symbols"]
+    assert "PyGILState_Release" in data["supported_symbols"]
+    assert "PyImport_ImportModule" in data["supported_symbols"]
+    assert "PyCapsule_Import" in data["supported_symbols"]
+    assert "PyArg_UnpackTuple" in data["supported_symbols"]
+    assert "PyAnySet_Check" in data["supported_symbols"]
+    assert "PyComplex_CheckExact" in data["supported_symbols"]
+    assert "PyDate_Check" in data["supported_symbols"]
+    assert "PyDateTime_Check" in data["supported_symbols"]
+    assert "PyDelta_Check" in data["supported_symbols"]
+    assert "PyDateTime_IMPORT" in data["supported_symbols"]
+    assert "PyLong_AsLongLongAndOverflow" in data["supported_symbols"]
+    assert "PyNumber_Long" in data["supported_symbols"]
+    assert "PyIter_Check" in data["supported_symbols"]
+    assert "PyIter_Next" in data["supported_symbols"]
+    assert "PyOS_string_to_double" in data["supported_symbols"]
+    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert "PyLong_FromLong" in data["supported_symbols"]
+
+
+def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) -> None:
+    project_root = tmp_path / "scanproj"
+    project_root.mkdir()
+    _write_extension_scan_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert "PyObject_Vectorcall" in payload["data"]["missing_symbols"]
+
+
+def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
+    project_root = tmp_path / "numpy_scanproj"
+    project_root.mkdir()
+    _write_extension_numpy_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    data = payload["data"]
+    assert data["missing_symbols"] == []
+    assert "PyArray_DescrFromType" in data["supported_symbols"]
+    assert "PyArray_NDIM" in data["supported_symbols"]
+    assert "PyArray_SIZE" in data["supported_symbols"]
+    assert "PyArray_TYPE" in data["supported_symbols"]
+    assert "PyTypeNum_ISINTEGER" in data["supported_symbols"]
+    assert "PyArray_CheckScalar" in data["supported_symbols"]
+    assert "PyArray_ISDATETIME" in data["supported_symbols"]
+    assert "PyArray_DescrFromScalar" in data["supported_symbols"]
+    assert "PyArray_CastScalarToCtype" in data["supported_symbols"]
 
 
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -229,6 +433,100 @@ def test_extension_build_rejects_wasm_target(tmp_path: Path) -> None:
         verbose=False,
     )
     assert rc != 0
+
+
+@pytest.mark.parametrize(
+    "target",
+    [None, "aarch64-unknown-linux-gnu"],
+    ids=["native", "cross-aarch64-gnu"],
+)
+def test_extension_numpy_build_audit_publish_dry_run_matrix(
+    tmp_path: Path,
+    monkeypatch,
+    target: str | None,
+) -> None:
+    project_root = tmp_path / "numpy_extproj"
+    project_root.mkdir()
+    _write_extension_numpy_project(project_root)
+    seen: dict[str, object] = {}
+
+    def fake_ensure_runtime_lib(
+        runtime_lib: Path,
+        target_triple: str | None,
+        json_output: bool,
+        cargo_profile: str,
+        project_root: Path,
+        cargo_timeout: float | None,
+    ) -> bool:
+        del json_output, cargo_profile, project_root, cargo_timeout
+        seen["runtime_target"] = target_triple
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output, text, check
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if "-c" in cmd:
+            out_path.write_bytes(b"obj")
+        else:
+            out_path.write_bytes(b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    if target is not None:
+        monkeypatch.setattr(
+            cli, "_ensure_rustup_target", lambda _target, _warnings: True
+        )
+        monkeypatch.setattr(
+            cli.shutil, "which", lambda tool: "/usr/bin/zig" if tool == "zig" else None
+        )
+
+    out_dir = project_root / ("dist-" + (target or "native"))
+    rc = cli.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        target=target,
+        json_output=False,
+        verbose=False,
+    )
+    assert rc == 0
+    assert seen["runtime_target"] == target
+
+    wheel_path = next(out_dir.glob("*.whl"))
+    audit_rc = cli.extension_audit(
+        path=str(wheel_path),
+        require_capabilities=True,
+        require_abi="1",
+        require_checksum=True,
+        json_output=False,
+        verbose=False,
+    )
+    assert audit_rc == 0
+
+    publish_rc = cli.publish(
+        package_path=str(wheel_path),
+        registry=str(out_dir / "registry"),
+        dry_run=True,
+        json_output=False,
+        verbose=False,
+        deterministic=False,
+        capabilities="fs.read",
+    )
+    assert publish_rc == 0
 
 
 def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
@@ -418,6 +716,223 @@ def test_python_header_parse_tuple_and_keywords_smoke(tmp_path: Path) -> None:
                 "int main(void) {",
                 "    (void)parse_pair;",
                 "    (void)parse_positional_only;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for Python.h compatibility smoke test")
+    source = tmp_path / "python_h_type_module_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "static PyObject *demo_ping(PyObject *self, PyObject *args) {",
+                "    (void)self;",
+                "    (void)args;",
+                "    return PyLong_FromLong(1);",
+                "}",
+                "",
+                "static PyObject *demo_get(PyObject *self, void *closure) {",
+                "    (void)self;",
+                "    (void)closure;",
+                "    return PyLong_FromLong(2);",
+                "}",
+                "",
+                "static PyMethodDef demo_methods[] = {",
+                '    {"static_ping", (void *)demo_ping, METH_STATIC | METH_VARARGS, "static ping"},',
+                '    {"cls_ping", (void *)demo_ping, METH_CLASS | METH_VARARGS, "class ping"},',
+                "    {NULL, NULL, 0, NULL},",
+                "};",
+                "",
+                "static PyGetSetDef demo_getset[] = {",
+                '    {"value", (getter)demo_get, NULL, "value getter", NULL},',
+                "    {NULL, NULL, NULL, NULL, NULL},",
+                "};",
+                "",
+                "static PyMemberDef demo_members[] = {",
+                '    {"member_value", T_OBJECT, 0, READONLY, "member field"},',
+                "    {NULL, 0, 0, 0, NULL},",
+                "};",
+                "",
+                "static PyType_Slot demo_slots[] = {",
+                "    {Py_tp_methods, (void *)demo_methods},",
+                "    {Py_tp_getset, (void *)demo_getset},",
+                "    {Py_tp_members, (void *)demo_members},",
+                "    {Py_tp_call, (void *)demo_ping},",
+                "    {Py_tp_repr, (void *)demo_ping},",
+                "    {Py_tp_str, (void *)demo_ping},",
+                "    {Py_nb_add, (void *)demo_ping},",
+                "    {Py_nb_subtract, (void *)demo_ping},",
+                "    {Py_nb_multiply, (void *)demo_ping},",
+                "    {Py_sq_concat, (void *)demo_ping},",
+                "    {0, NULL},",
+                "};",
+                "",
+                "static PyType_Spec demo_spec = {",
+                '    "demo.TypeSmoke",',
+                "    0,",
+                "    0,",
+                "    Py_TPFLAGS_DEFAULT,",
+                "    demo_slots,",
+                "};",
+                "",
+                "int main(void) {",
+                '    PyObject *module = PyModule_New("demo");',
+                "    PyObject *type_obj = PyType_FromModuleAndSpec(module, &demo_spec, NULL);",
+                "    PyObject *module_owner = PyType_GetModule((PyTypeObject *)type_obj);",
+                "    void *module_state = PyType_GetModuleState((PyTypeObject *)type_obj);",
+                "    PyModuleDef *module_def = PyModule_GetDef(module);",
+                "    PyObject *module_by_def = PyType_GetModuleByDef((PyTypeObject *)type_obj, module_def);",
+                "    PyTypeObject *owner_type = Py_TYPE(type_obj);",
+                "    PyGILState_STATE gil = PyGILState_Ensure();",
+                "    PyThreadState *ts = PyThreadState_Get();",
+                "    void *mem = PyMem_Malloc(16);",
+                "    PyObject *dict_obj = PyDict_New();",
+                "    PyObject *tmp_tuple = PyTuple_New(1);",
+                "    PyObject *tmp_value = PyLong_FromLong(3);",
+                "    int cmp = PyObject_RichCompareBool(type_obj, type_obj, Py_EQ);",
+                "    (void)PyErr_NoMemory;",
+                "    (void)PyObject_CallFunctionObjArgs;",
+                "    (void)Py_BuildValue;",
+                "    (void)PyCapsule_New;",
+                "    (void)PyCapsule_GetPointer;",
+                "    PyTuple_SET_ITEM(tmp_tuple, 0, tmp_value);",
+                "    tmp_value = PyTuple_GET_ITEM(tmp_tuple, 0);",
+                "    (void)PyTuple_GET_SIZE(tmp_tuple);",
+                "    (void)module_owner;",
+                "    (void)module_state;",
+                "    (void)module_by_def;",
+                "    (void)owner_type;",
+                "    (void)ts;",
+                "    (void)cmp;",
+                "    (void)dict_obj;",
+                "    (void)tmp_tuple;",
+                "    (void)tmp_value;",
+                "    PyMem_Free(mem);",
+                "    PyGILState_Release(gil);",
+                "    (void)type_obj;",
+                "    (void)module;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy compatibility header smoke test")
+    source = tmp_path / "numpy_h_arrayobject_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "",
+                "static int numpy_smoke(PyObject *obj) {",
+                "    PyArrayObject *arr = (PyArrayObject *)obj;",
+                "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);",
+                "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
+                "    npy_intp nd = PyArray_NDIM(arr);",
+                "    npy_intp size = PyArray_SIZE(arr);",
+                "    int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));",
+                "    int is_scalar = PyArray_CheckScalar(obj);",
+                "    int is_datetime = PyArray_ISDATETIME(arr);",
+                "    import_array1(-1);",
+                "    if (descr != NULL) {",
+                "        PyMem_Free(descr);",
+                "    }",
+                "    if (scalar_descr != NULL) {",
+                "        PyMem_Free(scalar_descr);",
+                "    }",
+                "    return (int)(nd + size + is_int + is_scalar + is_datetime);",
+                "}",
+                "",
+                "int main(void) {",
+                "    (void)numpy_smoke;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_datetime_header_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for datetime.h compatibility smoke test")
+    source = tmp_path / "datetime_h_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <datetime.h>",
+                "",
+                "int main(void) {",
+                "    PyDateTime_IMPORT;",
+                "    (void)PyDateTimeAPI;",
+                "    (void)PyDate_Check;",
+                "    (void)PyDateTime_Check;",
+                "    (void)PyDelta_Check;",
                 "    return 0;",
                 "}",
                 "",
