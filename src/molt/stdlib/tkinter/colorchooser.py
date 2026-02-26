@@ -1,6 +1,9 @@
 """Phase-0 intrinsic-backed `tkinter.colorchooser` wrappers."""
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
+
+_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
 
 Dialog = _commondialog.Dialog
 

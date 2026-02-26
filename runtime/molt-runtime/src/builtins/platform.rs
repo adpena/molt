@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -331,6 +331,15 @@ fn append_unique_path(paths: &mut Vec<String>, entry: &str) {
     paths.push(entry.to_string());
 }
 
+fn append_unique_path_hashed(paths: &mut Vec<String>, seen: &mut HashSet<String>, entry: &str) {
+    if entry.is_empty() {
+        return;
+    }
+    if seen.insert(entry.to_string()) {
+        paths.push(entry.to_string());
+    }
+}
+
 fn split_nonempty_paths(raw: &str, sep: char) -> Vec<String> {
     raw.split(sep)
         .filter_map(|part| {
@@ -367,6 +376,7 @@ fn path_is_dir(path: &str) -> bool {
 
 fn collect_virtual_env_site_packages(virtual_env: &str, windows_paths: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     if virtual_env.trim().is_empty() {
         return out;
     }
@@ -376,12 +386,12 @@ fn collect_virtual_env_site_packages(virtual_env: &str, windows_paths: bool) -> 
         let lib = path_join_text(virtual_env.to_string(), "Lib", sep);
         let site_packages = path_join_text(lib, "site-packages", sep);
         if path_is_dir(&site_packages) {
-            append_unique_path(&mut out, &site_packages);
+            append_unique_path_hashed(&mut out, &mut seen, &site_packages);
         }
         let lib_lower = path_join_text(virtual_env.to_string(), "lib", sep);
         let site_packages_lower = path_join_text(lib_lower, "site-packages", sep);
         if path_is_dir(&site_packages_lower) {
-            append_unique_path(&mut out, &site_packages_lower);
+            append_unique_path_hashed(&mut out, &mut seen, &site_packages_lower);
         }
         return out;
     }
@@ -412,11 +422,11 @@ fn collect_virtual_env_site_packages(virtual_env: &str, windows_paths: bool) -> 
     }
     discovered.sort();
     for candidate in discovered {
-        append_unique_path(&mut out, &candidate);
+        append_unique_path_hashed(&mut out, &mut seen, &candidate);
     }
     let fallback = path_join_text(lib, "site-packages", sep);
     if path_is_dir(&fallback) {
-        append_unique_path(&mut out, &fallback);
+        append_unique_path_hashed(&mut out, &mut seen, &fallback);
     }
     out
 }
@@ -454,11 +464,13 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     let path_sep = if windows_paths { '\\' } else { '/' };
     let pwd = resolve_bootstrap_pwd(&pwd_raw);
     let mut pythonpath_entries: Vec<String> = Vec::new();
+    let mut pythonpath_seen: HashSet<String> = HashSet::new();
     for entry in split_nonempty_paths(&py_path_raw, sep) {
         let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
-        append_unique_path(&mut pythonpath_entries, &resolved);
+        append_unique_path_hashed(&mut pythonpath_entries, &mut pythonpath_seen, &resolved);
     }
     let mut paths: Vec<String> = pythonpath_entries.clone();
+    let mut paths_seen: HashSet<String> = pythonpath_entries.iter().cloned().collect();
 
     let stdlib_root = module_file.and_then(|path| {
         if path.is_empty() {
@@ -472,20 +484,21 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
         }
     });
     if let Some(root) = &stdlib_root {
-        append_unique_path(&mut paths, root);
+        append_unique_path_hashed(&mut paths, &mut paths_seen, root);
     }
 
     let mut module_roots_entries: Vec<String> = Vec::new();
+    let mut module_roots_seen: HashSet<String> = HashSet::new();
     for entry in split_nonempty_paths(&module_roots_raw, sep) {
         let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
-        append_unique_path(&mut module_roots_entries, &resolved);
-        append_unique_path(&mut paths, &resolved);
+        append_unique_path_hashed(&mut module_roots_entries, &mut module_roots_seen, &resolved);
+        append_unique_path_hashed(&mut paths, &mut paths_seen, &resolved);
     }
 
     let venv_site_packages_entries =
         collect_virtual_env_site_packages(&virtual_env_raw, windows_paths);
     for entry in &venv_site_packages_entries {
-        append_unique_path(&mut paths, entry);
+        append_unique_path_hashed(&mut paths, &mut paths_seen, entry);
     }
 
     let dev_trusted = dev_trusted_raw.trim().to_ascii_lowercase();
@@ -859,6 +872,83 @@ fn zip_archive_has_prefix(path: &str, prefix: &str) -> bool {
     false
 }
 
+#[derive(Default)]
+struct ZipArchiveIndex {
+    entries: HashSet<String>,
+    prefixes: HashSet<String>,
+}
+
+fn zip_archive_build_index(path: &str) -> Option<ZipArchiveIndex> {
+    let mut archive = zip_archive_open(path).ok()?;
+    let mut entries: HashSet<String> = HashSet::new();
+    let mut prefixes: HashSet<String> = HashSet::new();
+    for idx in 0..archive.len() {
+        let Ok(file) = archive.by_index(idx) else {
+            continue;
+        };
+        let mut name = file.name().replace('\\', "/");
+        if name.is_empty() {
+            continue;
+        }
+        let is_dir_entry = name.ends_with('/');
+        name = name.trim_matches('/').to_string();
+        if name.is_empty() {
+            continue;
+        }
+        entries.insert(name.clone());
+        if is_dir_entry {
+            prefixes.insert(name.clone());
+        }
+        let mut cursor = name.as_str();
+        while let Some((parent, _)) = cursor.rsplit_once('/') {
+            if parent.is_empty() {
+                break;
+            }
+            prefixes.insert(parent.to_string());
+            cursor = parent;
+        }
+    }
+    Some(ZipArchiveIndex { entries, prefixes })
+}
+
+fn zip_archive_index_cached<'a>(
+    cache: &'a mut HashMap<String, Option<ZipArchiveIndex>>,
+    path: &str,
+) -> Option<&'a ZipArchiveIndex> {
+    cache
+        .entry(path.to_string())
+        .or_insert_with(|| zip_archive_build_index(path))
+        .as_ref()
+}
+
+fn zip_archive_entry_exists_cached(
+    cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
+    path: &str,
+    entry: &str,
+) -> bool {
+    let normalized = entry.replace('\\', "/").trim_matches('/').to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+    zip_archive_index_cached(cache, path)
+        .map(|index| index.entries.contains(&normalized))
+        .unwrap_or(false)
+}
+
+fn zip_archive_has_prefix_cached(
+    cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
+    path: &str,
+    prefix: &str,
+) -> bool {
+    let normalized = prefix.replace('\\', "/").trim_matches('/').to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+    zip_archive_index_cached(cache, path)
+        .map(|index| index.prefixes.contains(&normalized))
+        .unwrap_or(false)
+}
+
 fn zip_archive_read_entry(path: &str, entry: &str) -> Result<Vec<u8>, std::io::Error> {
     let mut archive = zip_archive_open(path)?;
     let mut file = archive
@@ -952,17 +1042,6 @@ fn zip_archive_resources_path_payload(
             && !child.is_empty()
         {
             entries.insert(child.to_string());
-        }
-    }
-
-    if !normalized_inner.is_empty() && !exists {
-        if zip_archive_entry_exists(archive_path, &normalized_inner) {
-            exists = true;
-            is_file = true;
-            is_dir = false;
-        } else if zip_archive_has_prefix(archive_path, &normalized_inner) {
-            exists = true;
-            is_dir = true;
         }
     }
 
@@ -1069,20 +1148,20 @@ fn importlib_find_in_path(
         return None;
     }
     let mut current_paths = search_paths.to_vec();
+    let mut zip_index_cache: HashMap<String, Option<ZipArchiveIndex>> = HashMap::new();
     for (idx, part) in parts.iter().enumerate() {
         let is_last = idx + 1 == parts.len();
         let mut found_pkg = false;
         let mut next_paths: Vec<String> = Vec::new();
         let mut namespace_paths: Vec<String> = Vec::new();
+        let mut namespace_seen: HashSet<String> = HashSet::new();
         for base in &current_paths {
             if let Some((zip_archive, zip_prefix)) = split_zip_archive_path(base) {
-                let archive_is_file = std::fs::metadata(&zip_archive)
-                    .map(|metadata| metadata.is_file())
-                    .unwrap_or(false);
-                if archive_is_file {
+                if zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some() {
                     let pkg_rel = zip_entry_join(&zip_prefix, part);
                     let init_entry = format!("{pkg_rel}/__init__.py");
-                    if zip_archive_entry_exists(&zip_archive, &init_entry) {
+                    if zip_archive_entry_exists_cached(&mut zip_index_cache, &zip_archive, &init_entry)
+                    {
                         if is_last {
                             return Some(ImportlibPathResolution {
                                 origin: Some(format!("{zip_archive}/{init_entry}")),
@@ -1101,15 +1180,21 @@ fn importlib_find_in_path(
                         found_pkg = true;
                         break;
                     }
-                    if zip_archive_has_prefix(&zip_archive, &pkg_rel) {
-                        append_unique_path(
+                    if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel)
+                    {
+                        append_unique_path_hashed(
                             &mut namespace_paths,
+                            &mut namespace_seen,
                             &format!("{zip_archive}/{pkg_rel}"),
                         );
                     }
                     if is_last {
                         let mod_entry = zip_entry_join(&zip_prefix, &format!("{part}.py"));
-                        if zip_archive_entry_exists(&zip_archive, &mod_entry) {
+                        if zip_archive_entry_exists_cached(
+                            &mut zip_index_cache,
+                            &zip_archive,
+                            &mod_entry,
+                        ) {
                             return Some(ImportlibPathResolution {
                                 origin: Some(format!("{zip_archive}/{mod_entry}")),
                                 is_package: false,
@@ -1177,7 +1262,7 @@ fn importlib_find_in_path(
                 .map(|metadata| metadata.is_dir())
                 .unwrap_or(false)
             {
-                append_unique_path(&mut namespace_paths, &pkg_dir);
+                append_unique_path_hashed(&mut namespace_paths, &mut namespace_seen, &pkg_dir);
             }
             if is_last {
                 let mod_file = path_join_text(root.clone(), &format!("{part}.py"), sep);
@@ -1255,23 +1340,24 @@ fn importlib_search_paths(search_paths: &[String], module_file: Option<String>) 
     let sep = bootstrap_path_sep();
     let state = sys_bootstrap_state_from_module_file(module_file);
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for entry in search_paths {
-        append_unique_path(&mut out, entry);
+        append_unique_path_hashed(&mut out, &mut seen, entry);
     }
     if let Some(stdlib_root) = state.stdlib_root.as_deref() {
-        append_unique_path(&mut out, stdlib_root);
+        append_unique_path_hashed(&mut out, &mut seen, stdlib_root);
     }
     for root in &state.module_roots_entries {
-        append_unique_path(&mut out, root);
+        append_unique_path_hashed(&mut out, &mut seen, root);
     }
     for root in &state.venv_site_packages_entries {
-        append_unique_path(&mut out, root);
+        append_unique_path_hashed(&mut out, &mut seen, root);
     }
     for base in search_paths {
         let root = if base.is_empty() { "." } else { base.as_str() };
         let candidate =
             path_join_text(path_join_text(root.to_string(), "molt", sep), "stdlib", sep);
-        append_unique_path(&mut out, &candidate);
+        append_unique_path_hashed(&mut out, &mut seen, &candidate);
     }
     out
 }
@@ -1306,27 +1392,31 @@ fn importlib_namespace_paths(
     if !resolved.iter().any(|entry| entry.is_empty()) {
         resolved.push(String::new());
     }
+    let mut resolved_seen: HashSet<String> = resolved.iter().cloned().collect();
     let state = sys_bootstrap_state_from_module_file(module_file);
     if !state.pwd.is_empty() {
-        append_unique_path(&mut resolved, &state.pwd);
+        append_unique_path_hashed(&mut resolved, &mut resolved_seen, &state.pwd);
     }
     let mut matches: Vec<String> = Vec::new();
+    let mut matches_seen: HashSet<String> = HashSet::new();
+    let mut zip_index_cache: HashMap<String, Option<ZipArchiveIndex>> = HashMap::new();
     let parts: Vec<&str> = package.split('.').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
         return matches;
     }
     for base in resolved {
         if let Some((archive_path, zip_prefix)) = split_zip_archive_path(&base) {
-            let archive_exists = std::fs::metadata(&archive_path)
-                .map(|metadata| metadata.is_file())
-                .unwrap_or(false);
-            if archive_exists {
+            if zip_archive_index_cached(&mut zip_index_cache, &archive_path).is_some() {
                 let mut rel = zip_prefix;
                 for part in &parts {
                     rel = zip_entry_join(&rel, part);
                 }
-                if zip_archive_has_prefix(&archive_path, &rel) {
-                    append_unique_path(&mut matches, &format!("{archive_path}/{rel}"));
+                if zip_archive_has_prefix_cached(&mut zip_index_cache, &archive_path, &rel) {
+                    append_unique_path_hashed(
+                        &mut matches,
+                        &mut matches_seen,
+                        &format!("{archive_path}/{rel}"),
+                    );
                 }
                 continue;
             }
@@ -1343,7 +1433,7 @@ fn importlib_namespace_paths(
             .map(|metadata| metadata.is_dir())
             .unwrap_or(false)
         {
-            append_unique_path(&mut matches, &path);
+            append_unique_path_hashed(&mut matches, &mut matches_seen, &path);
         }
     }
     matches
@@ -1355,6 +1445,7 @@ fn importlib_metadata_dist_paths(
 ) -> Vec<String> {
     let resolved = importlib_search_paths(search_paths, module_file);
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for base in resolved {
         if base.is_empty() {
             continue;
@@ -1378,7 +1469,7 @@ fn importlib_metadata_dist_paths(
             }
             let path = entry.path();
             let path_text = path.to_string_lossy().into_owned();
-            append_unique_path(&mut out, &path_text);
+            append_unique_path_hashed(&mut out, &mut seen, &path_text);
         }
     }
     out
@@ -3673,6 +3764,7 @@ fn importlib_reader_collect_unique_paths(
         return Err(MoltObject::none().bits());
     }
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     loop {
         let pair_bits = molt_iter_next(iter_bits);
         let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
@@ -3706,7 +3798,9 @@ fn importlib_reader_collect_unique_paths(
         if path.is_empty() {
             continue;
         }
-        append_unique_path(&mut out, &path);
+        if seen.insert(path.clone()) {
+            out.push(path);
+        }
     }
     Ok(out)
 }
@@ -4575,23 +4669,24 @@ fn importlib_resources_reader_open_resource_bytes_impl(
 
 fn importlib_extension_shim_candidates(module_name: &str, path: &str) -> Vec<String> {
     let sep = bootstrap_path_sep();
-    let mut out: Vec<String> = Vec::new();
-    append_unique_path(&mut out, &format!("{path}.molt.py"));
-    append_unique_path(&mut out, &format!("{path}.py"));
+    let mut out: Vec<String> = Vec::with_capacity(16);
+    let mut seen: HashSet<String> = HashSet::new();
+    append_unique_path_hashed(&mut out, &mut seen, &format!("{path}.molt.py"));
+    append_unique_path_hashed(&mut out, &mut seen, &format!("{path}.py"));
     if let Some(stripped) = path.rsplit_once('.').map(|(prefix, _)| prefix) {
-        append_unique_path(&mut out, &format!("{stripped}.molt.py"));
-        append_unique_path(&mut out, &format!("{stripped}.py"));
+        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.molt.py"));
+        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.py"));
         if let Some((prefix, _)) = stripped.rsplit_once(".cpython-") {
-            append_unique_path(&mut out, &format!("{prefix}.molt.py"));
-            append_unique_path(&mut out, &format!("{prefix}.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
         }
         if let Some((prefix, _)) = stripped.rsplit_once(".abi") {
-            append_unique_path(&mut out, &format!("{prefix}.molt.py"));
-            append_unique_path(&mut out, &format!("{prefix}.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
         }
         if let Some((prefix, _)) = stripped.rsplit_once(".cp") {
-            append_unique_path(&mut out, &format!("{prefix}.molt.py"));
-            append_unique_path(&mut out, &format!("{prefix}.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
         }
     }
     let dirname = path_dirname_text(path, sep);
@@ -4606,32 +4701,34 @@ fn importlib_extension_shim_candidates(module_name: &str, path: &str) -> Vec<Str
         if !module_stem.is_empty() {
             let molt_candidate =
                 path_join_text(parent.clone(), &format!("{module_stem}.molt.py"), sep);
-            append_unique_path(&mut out, &molt_candidate);
+            append_unique_path_hashed(&mut out, &mut seen, &molt_candidate);
             let py_candidate = path_join_text(parent, &format!("{module_stem}.py"), sep);
-            append_unique_path(&mut out, &py_candidate);
+            append_unique_path_hashed(&mut out, &mut seen, &py_candidate);
         }
     }
     let dirname = path_dirname_text(path, sep);
     let local_name = module_name.rsplit('.').next().unwrap_or(module_name);
     if !local_name.is_empty() {
         let named_molt = path_join_text(dirname.clone(), &format!("{local_name}.molt.py"), sep);
-        append_unique_path(&mut out, &named_molt);
+        append_unique_path_hashed(&mut out, &mut seen, &named_molt);
         let named_py = path_join_text(dirname, &format!("{local_name}.py"), sep);
-        append_unique_path(&mut out, &named_py);
+        append_unique_path_hashed(&mut out, &mut seen, &named_py);
         let package_dir = path_join_text(path_dirname_text(path, sep), local_name, sep);
         let pkg_init_molt = path_join_text(package_dir.clone(), "__init__.molt.py", sep);
-        append_unique_path(&mut out, &pkg_init_molt);
+        append_unique_path_hashed(&mut out, &mut seen, &pkg_init_molt);
         let pkg_init_py = path_join_text(package_dir, "__init__.py", sep);
-        append_unique_path(&mut out, &pkg_init_py);
+        append_unique_path_hashed(&mut out, &mut seen, &pkg_init_py);
     }
     let basename = path_basename_text(path, sep);
     if basename.starts_with("__init__.") {
-        append_unique_path(
+        append_unique_path_hashed(
             &mut out,
+            &mut seen,
             &path_join_text(path_dirname_text(path, sep), "__init__.molt.py", sep),
         );
-        append_unique_path(
+        append_unique_path_hashed(
             &mut out,
+            &mut seen,
             &path_join_text(path_dirname_text(path, sep), "__init__.py", sep),
         );
     }
@@ -4640,17 +4737,18 @@ fn importlib_extension_shim_candidates(module_name: &str, path: &str) -> Vec<Str
 
 fn importlib_sourceless_source_candidates(module_name: &str, path: &str) -> Vec<String> {
     let sep = bootstrap_path_sep();
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::with_capacity(12);
+    let mut seen: HashSet<String> = HashSet::new();
     if let Some(stripped) = path.strip_suffix(".pyc") {
-        append_unique_path(&mut out, &format!("{stripped}.molt.py"));
-        append_unique_path(&mut out, &format!("{stripped}.py"));
+        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.molt.py"));
+        append_unique_path_hashed(&mut out, &mut seen, &format!("{stripped}.py"));
         if let Some((prefix, _)) = stripped.rsplit_once(".cpython-") {
-            append_unique_path(&mut out, &format!("{prefix}.molt.py"));
-            append_unique_path(&mut out, &format!("{prefix}.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
         }
         if let Some((prefix, _)) = stripped.rsplit_once(".pypy-") {
-            append_unique_path(&mut out, &format!("{prefix}.molt.py"));
-            append_unique_path(&mut out, &format!("{prefix}.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.molt.py"));
+            append_unique_path_hashed(&mut out, &mut seen, &format!("{prefix}.py"));
         }
     }
     let dirname = path_dirname_text(path, sep);
@@ -4662,27 +4760,29 @@ fn importlib_sourceless_source_candidates(module_name: &str, path: &str) -> Vec<
         if !module_name.is_empty() {
             let molt_candidate =
                 path_join_text(parent.clone(), &format!("{module_name}.molt.py"), sep);
-            append_unique_path(&mut out, &molt_candidate);
+            append_unique_path_hashed(&mut out, &mut seen, &molt_candidate);
             let candidate = path_join_text(parent, &format!("{module_name}.py"), sep);
-            append_unique_path(&mut out, &candidate);
+            append_unique_path_hashed(&mut out, &mut seen, &candidate);
         }
     }
     let dirname = path_dirname_text(path, sep);
     let local_name = module_name.rsplit('.').next().unwrap_or(module_name);
     if !local_name.is_empty() {
         let named_molt = path_join_text(dirname.clone(), &format!("{local_name}.molt.py"), sep);
-        append_unique_path(&mut out, &named_molt);
+        append_unique_path_hashed(&mut out, &mut seen, &named_molt);
         let named_py = path_join_text(dirname, &format!("{local_name}.py"), sep);
-        append_unique_path(&mut out, &named_py);
+        append_unique_path_hashed(&mut out, &mut seen, &named_py);
     }
     let basename = path_basename_text(path, sep);
     if basename.starts_with("__init__.") && basename.ends_with(".pyc") {
-        append_unique_path(
+        append_unique_path_hashed(
             &mut out,
+            &mut seen,
             &path_join_text(path_dirname_text(path, sep), "__init__.molt.py", sep),
         );
-        append_unique_path(
+        append_unique_path_hashed(
             &mut out,
+            &mut seen,
             &path_join_text(path_dirname_text(path, sep), "__init__.py", sep),
         );
     }

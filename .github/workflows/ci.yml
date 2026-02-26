@@ -204,6 +204,14 @@ jobs:
             fi
           fi
           zig version
+      - name: Install musl toolchain (cross lane)
+        if: matrix.lane.target == 'x86_64-unknown-linux-musl' && runner.os == 'Linux'
+        run: |
+          if ! command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y musl-tools
+          fi
+          x86_64-linux-musl-gcc --version
       - name: Create extension fixture project
         env:
           MOLT_EXT_LANE: ${{ matrix.lane.name }}

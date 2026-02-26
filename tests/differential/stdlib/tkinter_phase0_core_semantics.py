@@ -576,40 +576,104 @@ def _probe_core_runtime_semantics(
         root.protocol("WM_DELETE_WINDOW", "")
         proto_after_clear = root.protocol("WM_DELETE_WINDOW")
 
-        payloads = []
+        key_payload_primary = []
+        key_payload_secondary = []
 
-        def _on_key(event):
-            payloads.append(
-                (
-                    getattr(event, "widget", None) is frame,
-                    getattr(event, "x", None),
-                    getattr(event, "y", None),
-                    getattr(event, "delta", None),
-                    getattr(event, "keysym", None),
-                    getattr(event, "char", None),
-                    getattr(event, "serial", None),
-                    getattr(event, "type", None),
-                    getattr(event, "x_root", None),
-                    getattr(event, "y_root", None),
-                )
+        def _event_payload(event):
+            return (
+                getattr(event, "widget", None) is frame,
+                getattr(event, "x", None),
+                getattr(event, "y", None),
+                getattr(event, "delta", None),
+                getattr(event, "keysym", None),
+                getattr(event, "char", None),
+                getattr(event, "serial", None),
+                getattr(event, "type", None),
+                getattr(event, "x_root", None),
+                getattr(event, "y_root", None),
             )
+
+        def _on_key_primary(event):
+            key_payload_primary.append(_event_payload(event))
             return "break"
 
-        bind_id = frame.bind("<KeyPress>", _on_key)
+        def _on_key_secondary(event):
+            key_payload_secondary.append(_event_payload(event))
+            return "break"
+
+        bind_id_primary = frame.bind("<KeyPress>", _on_key_primary)
+        bind_id_secondary = frame.bind("<KeyPress>", _on_key_secondary, add="+")
         bind_before = frame.bind("<KeyPress>")
-        frame.event_generate(
-            "<KeyPress>",
-            x=7,
-            y=9,
-            delta=120,
-            keysym="A",
-            char="A",
-            serial=55,
-            rootx=17,
-            rooty=19,
+        root.tk.call(
+            bind_id_primary,
+            "55",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "A",
+            "1",
+            "K",
+            "65",
+            frame._w,
+            "KeyPress",
+            "115",
+            "116",
+            "120",
+        )
+        root.tk.call(
+            bind_id_secondary,
+            "56",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "25",
+            "26",
+            "B",
+            "1",
+            "L",
+            "66",
+            frame._w,
+            "KeyPress",
+            "215",
+            "216",
+            "80",
         )
         bind_after = frame.bind("<KeyPress>")
-        frame.unbind("<KeyPress>", bind_id)
+        frame.unbind("<KeyPress>", bind_id_primary)
+        bind_after_primary_unbind = frame.bind("<KeyPress>")
+        root.tk.call(
+            bind_id_secondary,
+            "57",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "35",
+            "36",
+            "C",
+            "1",
+            "M",
+            "67",
+            frame._w,
+            "KeyPress",
+            "315",
+            "316",
+            "40",
+        )
+        frame.unbind("<KeyPress>", bind_id_secondary)
         bind_after_unbind = frame.bind("<KeyPress>")
 
         frame.event_add("<<ProbeVirtual>>", "<KeyPress>")
@@ -697,11 +761,21 @@ def _probe_core_runtime_semantics(
             and isinstance(proto_id, str)
             and proto_before_clear == proto_id
             and proto_after_clear == ""
-            and isinstance(bind_id, str)
-            and bind_id in str(bind_before)
+            and isinstance(bind_id_primary, str)
+            and isinstance(bind_id_secondary, str)
+            and bind_id_primary in str(bind_before)
+            and bind_id_secondary in str(bind_before)
             and bind_after == bind_before
+            and bind_id_primary not in str(bind_after_primary_unbind)
+            and bind_id_secondary in str(bind_after_primary_unbind)
             and bind_after_unbind == ""
-            and payloads == [(True, 7, 9, 120, "A", "A", 55, "KeyPress", 17, 19)]
+            and key_payload_primary == [
+                (True, 15, 16, 120, "K", "A", 55, "KeyPress", 115, 116)
+            ]
+            and key_payload_secondary == [
+                (True, 25, 26, 80, "L", "B", 56, "KeyPress", 215, 216),
+                (True, 35, 36, 40, "M", "C", 57, "KeyPress", 315, 316),
+            ]
             and "<<ProbeVirtual>>" in tuple(str(x) for x in virtuals_before)
             and "<KeyPress>" in tuple(str(x) for x in virtual_probe_before)
             and virtual_probe_after == ()
@@ -844,7 +918,22 @@ def _probe_ttk_treeview_headless_semantics(
                 if len(argv) == 5:
                     return app["tree_tag_bindings"].get(key, "")
                 if len(argv) >= 6:
-                    app["tree_tag_bindings"][key] = str(argv[5])
+                    script = str(argv[5])
+                    if len(argv) >= 7:
+                        command_name = str(argv[6])
+                        if not script:
+                            script = app["tree_tag_bindings"].get(key, "")
+                        prefix = f'if {{"[{command_name} '
+                        kept = []
+                        for line in script.split("\n"):
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith(prefix):
+                                continue
+                            kept.append(stripped)
+                        script = "\n".join(kept)
+                    app["tree_tag_bindings"][key] = script
                     return ""
             return tuple(argv)
 
@@ -896,27 +985,45 @@ def _probe_ttk_treeview_headless_semantics(
         tag_has_all = tree.tag_has("tag1")
         tag_has_row1 = tree.tag_has("tag1", "row1")
 
-        events = []
-        payload = []
+        tag_primary = []
+        tag_secondary = []
 
-        def _on_tag(event):
-            events.append(getattr(event, "widget", None) is tree)
-            payload.append(
-                (
-                    getattr(event, "x", None),
-                    getattr(event, "y", None),
-                    getattr(event, "delta", None),
-                )
+        def _tag_event_payload(event):
+            return (
+                getattr(event, "widget", None) is tree,
+                getattr(event, "x", None),
+                getattr(event, "y", None),
+                getattr(event, "delta", None),
+                getattr(event, "keysym", None),
+                getattr(event, "char", None),
+                getattr(event, "serial", None),
+                getattr(event, "type", None),
+                getattr(event, "x_root", None),
+                getattr(event, "y_root", None),
             )
 
-        funcid = tree.tag_bind("tag1", "<<TreeviewOpen>>", _on_tag)
+        def _on_tag_primary(event):
+            tag_primary.append(_tag_event_payload(event))
+
+        def _on_tag_secondary(event):
+            tag_secondary.append(_tag_event_payload(event))
+
+        funcid_primary = tree.tag_bind("tag1", "<<TreeviewOpen>>", _on_tag_primary)
+        query_primary = tree.tag_bind("tag1", "<<TreeviewOpen>>")
+        funcid_secondary = tree.tag_bind("tag1", "<<TreeviewOpen>>", _on_tag_secondary)
+        query_secondary = tree.tag_bind("tag1", "<<TreeviewOpen>>")
+        combined_script = "\n".join(
+            [line for line in (str(query_primary).strip(), str(query_secondary).strip()) if line]
+        )
+        tree.tag_bind("tag1", "<<TreeviewOpen>>", combined_script)
         query_before = tree.tag_bind("tag1", "<<TreeviewOpen>>")
-        cmd = root._tk_app._handle["commands"].get(funcid)
-        if cmd is None:
+
+        cmd_primary = root._tk_app._handle["commands"].get(funcid_primary)
+        cmd_secondary = root._tk_app._handle["commands"].get(funcid_secondary)
+        if cmd_primary is None or cmd_secondary is None:
             return False
-        cmd()
-        cmd(object())
-        cmd(
+
+        cmd_primary(
             "7",
             "1",
             "1",
@@ -937,7 +1044,51 @@ def _probe_ttk_treeview_headless_semantics(
             "116",
             "120",
         )
-        tree.tag_unbind("tag1", "<<TreeviewOpen>>", funcid)
+        cmd_secondary(
+            "8",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "25",
+            "26",
+            "B",
+            "1",
+            "L",
+            "66",
+            tree._w,
+            "VirtualEvent",
+            "215",
+            "216",
+            "80",
+        )
+        tree.tag_unbind("tag1", "<<TreeviewOpen>>", funcid_primary)
+        query_after_primary_unbind = tree.tag_bind("tag1", "<<TreeviewOpen>>")
+        cmd_secondary(
+            "9",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "35",
+            "36",
+            "C",
+            "1",
+            "M",
+            "67",
+            tree._w,
+            "VirtualEvent",
+            "315",
+            "316",
+            "40",
+        )
+        tree.tag_unbind("tag1", "<<TreeviewOpen>>", funcid_secondary)
         query_after = tree.tag_bind("tag1", "<<TreeviewOpen>>")
 
         calls = root._tk_app._handle["calls"]
@@ -958,13 +1109,24 @@ def _probe_ttk_treeview_headless_semantics(
             and set_single == "row-value"
             and isinstance(tag_has_all, tuple)
             and tag_has_row1 is True
-            and isinstance(funcid, str)
+            and isinstance(funcid_primary, str)
+            and isinstance(funcid_secondary, str)
             and isinstance(query_before, str)
-            and funcid in query_before
+            and funcid_primary in query_before
+            and funcid_secondary in query_before
+            and isinstance(query_after_primary_unbind, str)
+            and funcid_primary not in query_after_primary_unbind
+            and funcid_secondary in query_after_primary_unbind
             and query_after == ""
-            and funcid not in registered_commands
-            and events == [True, False, True]
-            and payload[-1] == (15, 16, 120)
+            and funcid_primary not in registered_commands
+            and funcid_secondary not in registered_commands
+            and tag_primary == [
+                (True, 15, 16, 120, "K", "A", 7, "VirtualEvent", 115, 116)
+            ]
+            and tag_secondary == [
+                (True, 25, 26, 80, "L", "B", 8, "VirtualEvent", 215, 216),
+                (True, 35, 36, 40, "M", "C", 9, "VirtualEvent", 315, 316),
+            ]
             and any(call[:3] == (tree._w, "children", "") for call in calls)
             and any(
                 call[:4] == (tree._w, "children", "row0", ("row1", "row2"))

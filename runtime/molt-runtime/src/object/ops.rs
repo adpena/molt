@@ -38606,12 +38606,15 @@ impl ReprGuard {
             };
         }
         let active = REPR_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            if stack.iter().any(|slot| slot.0 == ptr) {
-                return false;
-            }
-            stack.push(PtrSlot(ptr));
-            true
+            REPR_SET.with(|set| {
+                let mut set = set.borrow_mut();
+                let slot = PtrSlot(ptr);
+                if !set.insert(slot) {
+                    return false;
+                }
+                stack.borrow_mut().push(slot);
+                true
+            })
         });
         if !active {
             repr_depth_exit();
@@ -38631,9 +38634,14 @@ impl ReprGuard {
 impl Drop for ReprGuard {
     fn drop(&mut self) {
         if self.active {
+            REPR_SET.with(|set| {
+                set.borrow_mut().remove(&PtrSlot(self.ptr));
+            });
             REPR_STACK.with(|stack| {
                 let mut stack = stack.borrow_mut();
-                if let Some(pos) = stack.iter().rposition(|slot| slot.0 == self.ptr) {
+                if stack.last().is_some_and(|slot| slot.0 == self.ptr) {
+                    stack.pop();
+                } else if let Some(pos) = stack.iter().rposition(|slot| slot.0 == self.ptr) {
                     stack.remove(pos);
                 }
             });
