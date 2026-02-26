@@ -1160,8 +1160,11 @@ fn importlib_find_in_path(
                 if zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some() {
                     let pkg_rel = zip_entry_join(&zip_prefix, part);
                     let init_entry = format!("{pkg_rel}/__init__.py");
-                    if zip_archive_entry_exists_cached(&mut zip_index_cache, &zip_archive, &init_entry)
-                    {
+                    if zip_archive_entry_exists_cached(
+                        &mut zip_index_cache,
+                        &zip_archive,
+                        &init_entry,
+                    ) {
                         if is_last {
                             return Some(ImportlibPathResolution {
                                 origin: Some(format!("{zip_archive}/{init_entry}")),
@@ -1180,8 +1183,7 @@ fn importlib_find_in_path(
                         found_pkg = true;
                         break;
                     }
-                    if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel)
-                    {
+                    if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel) {
                         append_unique_path_hashed(
                             &mut namespace_paths,
                             &mut namespace_seen,
