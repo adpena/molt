@@ -1,4 +1,4 @@
-"""Shared Phase-0 tkinter capability/runtime gating helpers."""
+"""Shared tkinter capability/runtime gating helpers."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

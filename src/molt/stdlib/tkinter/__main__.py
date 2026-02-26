@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed entrypoint for `tkinter`."""
+"""Intrinsic-backed entrypoint for `tkinter`."""
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic

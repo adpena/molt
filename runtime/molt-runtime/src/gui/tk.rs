@@ -738,8 +738,16 @@ struct TkWidgetState {
     place_options: HashMap<String, u64>,
     grid_columnconfigure: HashMap<String, HashMap<String, u64>>,
     grid_rowconfigure: HashMap<String, HashMap<String, u64>>,
+    tag_bindings: HashMap<String, HashMap<String, String>>,
+    text_tag_ranges: HashMap<String, Vec<(usize, usize)>>,
+    text_marks: HashMap<String, usize>,
+    text_mark_gravity: HashMap<String, String>,
     text_value: String,
     list_items: Vec<u64>,
+    list_selection: HashSet<usize>,
+    selection_anchor: Option<usize>,
+    selection_range: Option<(usize, usize)>,
+    insert_cursor: usize,
     next_item_id: i64,
 }
 
@@ -2059,6 +2067,176 @@ fn parse_treeview_index(value: &str, len: usize) -> usize {
     }
 }
 
+fn clamp_index_i64(value: i64, upper: usize) -> usize {
+    if value <= 0 {
+        0
+    } else {
+        (value as usize).min(upper)
+    }
+}
+
+fn text_char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn char_index_to_byte_index(text: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    text.char_indices()
+        .nth(char_index)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
+}
+
+fn parse_simple_end_or_int_index(spec: &str, upper: usize) -> Option<usize> {
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("end") {
+        return Some(upper);
+    }
+    trimmed
+        .parse::<i64>()
+        .ok()
+        .map(|value| clamp_index_i64(value, upper))
+}
+
+fn parse_simple_end_or_int_index_bits(bits: u64, upper: usize) -> Option<usize> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_i64(obj) {
+        return Some(clamp_index_i64(value, upper));
+    }
+    let spec = string_obj_to_owned(obj)?;
+    parse_simple_end_or_int_index(&spec, upper)
+}
+
+fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) -> Option<usize> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_i64(obj) {
+        let upper = if for_insert {
+            len
+        } else {
+            len.saturating_sub(1)
+        };
+        return Some(clamp_index_i64(value, upper));
+    }
+    let spec = string_obj_to_owned(obj)?;
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("end") {
+        return if for_insert {
+            Some(len)
+        } else if len == 0 {
+            Some(0)
+        } else {
+            Some(len - 1)
+        };
+    }
+    trimmed.parse::<i64>().ok().map(|value| {
+        clamp_index_i64(
+            value,
+            if for_insert {
+                len
+            } else {
+                len.saturating_sub(1)
+            },
+        )
+    })
+}
+
+fn parse_entry_like_index_bits(
+    bits: u64,
+    text_len: usize,
+    insert_cursor: usize,
+    selection_anchor: Option<usize>,
+) -> Option<usize> {
+    if let Some(index) = parse_simple_end_or_int_index_bits(bits, text_len) {
+        return Some(index.min(text_len));
+    }
+    let spec = string_obj_to_owned(obj_from_bits(bits))?;
+    let normalized = spec.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "insert" => Some(insert_cursor.min(text_len)),
+        "anchor" => Some(selection_anchor.unwrap_or(0).min(text_len)),
+        _ => None,
+    }
+}
+
+fn parse_text_end_delta(spec: &str) -> Option<i64> {
+    let compact: String = spec.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Some(0);
+    }
+    let (sign, tail) = if let Some(rest) = compact.strip_prefix('+') {
+        (1, rest)
+    } else if let Some(rest) = compact.strip_prefix('-') {
+        (-1, rest)
+    } else {
+        return None;
+    };
+    let tail = tail
+        .strip_suffix('c')
+        .or_else(|| tail.strip_suffix('C'))
+        .unwrap_or(tail);
+    if tail.is_empty() {
+        return None;
+    }
+    let delta = tail.parse::<i64>().ok()?;
+    Some(sign * delta)
+}
+
+fn parse_text_line_column_index(spec: &str, text: &str) -> Option<usize> {
+    let (line_part, column_part) = spec.split_once('.')?;
+    let line = line_part.trim().parse::<i64>().ok()?;
+    let column = column_part.trim().parse::<i64>().ok()?;
+    let line_number = line.max(1) as usize;
+    let column = column.max(0) as usize;
+
+    let mut line_starts = vec![0usize];
+    for (char_idx, ch) in text.chars().enumerate() {
+        if ch == '\n' {
+            line_starts.push(char_idx + 1);
+        }
+    }
+
+    let total_chars = text_char_count(text);
+    let Some(&line_start) = line_starts.get(line_number.saturating_sub(1)) else {
+        return Some(total_chars);
+    };
+    let line_end = line_starts
+        .get(line_number)
+        .copied()
+        .map(|next_start| next_start.saturating_sub(1))
+        .unwrap_or(total_chars);
+    let line_len = line_end.saturating_sub(line_start);
+    Some((line_start + column).min(line_start + line_len))
+}
+
+fn parse_text_index_spec(spec: &str, text: &str) -> Option<usize> {
+    let trimmed = spec.trim();
+    let total_chars = text_char_count(text);
+    if trimmed.eq_ignore_ascii_case("end") {
+        return Some(total_chars);
+    }
+    if let Some(rest) = trimmed.strip_prefix("end")
+        && let Some(delta) = parse_text_end_delta(rest)
+    {
+        let index = (total_chars as i64).saturating_add(delta);
+        return Some(clamp_index_i64(index, total_chars));
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Some(clamp_index_i64(value, total_chars));
+    }
+    parse_text_line_column_index(trimmed, text)
+}
+
+fn parse_text_index_bits(bits: u64, text: &str) -> Option<usize> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_i64(obj) {
+        return Some(clamp_index_i64(value, text_char_count(text)));
+    }
+    let spec = string_obj_to_owned(obj)?;
+    parse_text_index_spec(&spec, text)
+}
+
 fn parse_treeview_item_list_arg(
     py: &PyToken<'_>,
     handle: i64,
@@ -2749,9 +2927,12 @@ fn validate_commondialog_options(
     Ok(())
 }
 
-fn raise_unsupported_commondialog_command(_py: &PyToken<'_>, handle: i64, _command: &str) -> u64 {
-    clear_last_error(handle);
-    MoltObject::none().bits()
+fn raise_unsupported_commondialog_command(py: &PyToken<'_>, handle: i64, command: &str) -> u64 {
+    raise_tcl_for_handle(
+        py,
+        handle,
+        format!("unsupported commondialog command \"{command}\""),
+    )
 }
 
 fn commondialog_option_text(
@@ -3120,9 +3301,12 @@ fn filedialog_is_supported_command(command: &str) -> bool {
     )
 }
 
-fn raise_unsupported_filedialog_command(_py: &PyToken<'_>, handle: i64, _command: &str) -> u64 {
-    clear_last_error(handle);
-    MoltObject::none().bits()
+fn raise_unsupported_filedialog_command(py: &PyToken<'_>, handle: i64, command: &str) -> u64 {
+    raise_tcl_for_handle(
+        py,
+        handle,
+        format!("unsupported filedialog command \"{command}\""),
+    )
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -4683,10 +4867,11 @@ fn handle_tkwait_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<
         "variable" => handle_tkwait_variable_target(py, handle, &target),
         "window" => handle_tkwait_window_target(py, handle, &target),
         "visibility" => handle_tkwait_visibility_target(py, handle, &target),
-        _ => {
-            clear_last_error(handle);
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(raise_tcl_for_handle(
+            py,
+            handle,
+            format!("bad tkwait kind \"{kind}\": must be variable, window, or visibility"),
+        )),
     }
 }
 
@@ -4751,7 +4936,7 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 return Err(app_tcl_error_locked(
                     py,
                     app,
-                    "trace add currently supports variable/array subject only",
+                    format!("bad trace subject \"{subject}\": must be variable or array"),
                 ));
             }
             let variable_name = get_string_arg(py, handle, args[3], "trace variable name")?;
@@ -4789,7 +4974,7 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 return Err(app_tcl_error_locked(
                     py,
                     app,
-                    "trace remove currently supports variable/array subject only",
+                    format!("bad trace subject \"{subject}\": must be variable or array"),
                 ));
             }
             let variable_name = get_string_arg(py, handle, args[3], "trace variable name")?;
@@ -4826,17 +5011,18 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 return Err(app_tcl_error_locked(
                     py,
                     app,
-                    "trace info currently supports variable/array subject only",
+                    format!("bad trace subject \"{subject}\": must be variable or array"),
                 ));
             }
             let variable_name = get_string_arg(py, handle, args[3], "trace variable name")?;
             app.last_error = None;
             alloc_trace_info(py, app.traces.get(&variable_name))
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad trace subcommand \"{subcommand}\": must be add, remove, or info"),
+        )),
     }
 }
 
@@ -9237,6 +9423,32 @@ fn alloc_widget_view_bits(py: &PyToken<'_>) -> Result<u64, u64> {
     )
 }
 
+fn unknown_widget_subcommand_message(widget_path: &str, subcommand: &str) -> String {
+    format!("unknown subcommand \"{subcommand}\" for widget \"{widget_path}\"")
+}
+
+fn evaluate_index_compare(left: usize, op: &str, right: usize) -> Result<bool, String> {
+    match op {
+        "<" => Ok(left < right),
+        "<=" => Ok(left <= right),
+        "==" => Ok(left == right),
+        ">=" => Ok(left >= right),
+        ">" => Ok(left > right),
+        "!=" => Ok(left != right),
+        _ => Err(format!(
+            "bad comparison operator \"{op}\": must be <, <=, ==, >=, >, or !="
+        )),
+    }
+}
+
+fn clamp_text_widget_indices(widget: &mut TkWidgetState) {
+    let max_index = text_char_count(&widget.text_value);
+    widget.insert_cursor = widget.insert_cursor.min(max_index);
+    for index in widget.text_marks.values_mut() {
+        *index = (*index).min(max_index);
+    }
+}
+
 fn handle_generic_widget_path_command(
     py: &PyToken<'_>,
     handle: i64,
@@ -9262,40 +9474,280 @@ fn handle_generic_widget_path_command(
         }
         "insert" => {
             if widget.widget_command == "listbox" {
-                if args.len() > 3 {
-                    for value_bits in &args[3..] {
-                        inc_ref_bits(py, *value_bits);
-                        widget.list_items.push(*value_bits);
+                if args.len() < 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox insert expects index and one or more elements",
+                    ));
+                }
+                let Some(mut insert_index) =
+                    parse_listbox_index_bits(args[2], widget.list_items.len(), true)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox insert index must be an integer or end",
+                    ));
+                };
+                let original_insert_index = insert_index;
+                let inserted_count = args.len().saturating_sub(3);
+                for value_bits in &args[3..] {
+                    inc_ref_bits(py, *value_bits);
+                    widget.list_items.insert(insert_index, *value_bits);
+                    insert_index += 1;
+                }
+                if inserted_count > 0 && !widget.list_selection.is_empty() {
+                    let mut shifted = HashSet::with_capacity(widget.list_selection.len());
+                    for index in widget.list_selection.drain() {
+                        if index >= original_insert_index {
+                            shifted.insert(index + inserted_count);
+                        } else {
+                            shifted.insert(index);
+                        }
                     }
+                    widget.list_selection = shifted;
                 }
             } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox")
                 && args.len() > 3
             {
+                let insert_index = if widget.widget_command == "text" {
+                    let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "text insert index must be an integer, end, or line.column",
+                        ));
+                    };
+                    index
+                } else {
+                    let Some(index) = parse_entry_like_index_bits(
+                        args[2],
+                        text_char_count(&widget.text_value),
+                        widget.insert_cursor,
+                        widget.selection_anchor,
+                    ) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "entry/spinbox insert index must be an integer, end, insert, or anchor",
+                        ));
+                    };
+                    index
+                };
                 let value = get_text_arg(py, handle, args[3], "widget insert value")?;
-                widget.text_value.push_str(&value);
+                let byte_index = char_index_to_byte_index(&widget.text_value, insert_index);
+                widget.text_value.insert_str(byte_index, &value);
+                widget.insert_cursor = insert_index.saturating_add(text_char_count(&value));
+                clamp_text_widget_indices(widget);
             }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
         }
         "delete" => {
             if widget.widget_command == "listbox" {
-                for bits in widget.list_items.drain(..) {
-                    dec_ref_bits(py, bits);
+                if args.len() != 3 && args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox delete expects first index and optional last index",
+                    ));
+                }
+                let Some(first) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox delete first index must be integer or end",
+                    ));
+                };
+                let last = if args.len() == 4 {
+                    let Some(last) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "listbox delete last index must be integer or end",
+                        ));
+                    };
+                    last
+                } else {
+                    first
+                };
+                if !widget.list_items.is_empty() && first < widget.list_items.len() {
+                    let end = last.min(widget.list_items.len() - 1);
+                    if end >= first {
+                        let removed_count = end - first + 1;
+                        for bits in widget.list_items.drain(first..=end) {
+                            dec_ref_bits(py, bits);
+                        }
+                        if !widget.list_selection.is_empty() {
+                            let mut shifted = HashSet::with_capacity(widget.list_selection.len());
+                            for index in widget.list_selection.drain() {
+                                if index < first {
+                                    shifted.insert(index);
+                                } else if index > end {
+                                    shifted.insert(index - removed_count);
+                                }
+                            }
+                            widget.list_selection = shifted;
+                        }
+                    }
                 }
             } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
-                widget.text_value.clear();
+                if args.len() != 3 && args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "delete expects first index and optional last index",
+                    ));
+                }
+                let start = if widget.widget_command == "text" {
+                    let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "text delete first index must be an integer, end, or line.column",
+                        ));
+                    };
+                    start
+                } else {
+                    let Some(start) = parse_entry_like_index_bits(
+                        args[2],
+                        text_char_count(&widget.text_value),
+                        widget.insert_cursor,
+                        widget.selection_anchor,
+                    ) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "entry/spinbox delete first index must be an integer, end, insert, or anchor",
+                        ));
+                    };
+                    start
+                };
+                let end = if args.len() == 4 {
+                    if widget.widget_command == "text" {
+                        let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "text delete last index must be an integer, end, or line.column",
+                            ));
+                        };
+                        end
+                    } else {
+                        let Some(end) = parse_entry_like_index_bits(
+                            args[3],
+                            text_char_count(&widget.text_value),
+                            widget.insert_cursor,
+                            widget.selection_anchor,
+                        ) else {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "entry/spinbox delete last index must be an integer, end, insert, or anchor",
+                            ));
+                        };
+                        end
+                    }
+                } else {
+                    (start + 1).min(text_char_count(&widget.text_value))
+                };
+                if end > start {
+                    let start_byte = char_index_to_byte_index(&widget.text_value, start);
+                    let end_byte = char_index_to_byte_index(&widget.text_value, end);
+                    widget.text_value.replace_range(start_byte..end_byte, "");
+                }
+                widget.insert_cursor = start;
+                widget.selection_range = None;
+                clamp_text_widget_indices(widget);
             }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
         }
         "get" => {
             if widget.widget_command == "listbox" {
-                if let Some(bits) = widget.list_items.first().copied() {
+                if args.len() != 3 && args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox get expects first index and optional last index",
+                    ));
+                }
+                let Some(first) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox get first index must be integer or end",
+                    ));
+                };
+                if args.len() == 4 {
+                    let Some(last) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "listbox get last index must be integer or end",
+                        ));
+                    };
+                    if widget.list_items.is_empty() || first >= widget.list_items.len() {
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    let end = last.min(widget.list_items.len() - 1);
+                    if end < first {
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    let range = widget.list_items[first..=end].to_vec();
+                    app.last_error = None;
+                    return alloc_tuple_bits(
+                        py,
+                        range.as_slice(),
+                        "failed to allocate listbox get range tuple",
+                    )
+                    .map(Some);
+                }
+                if let Some(bits) = widget.list_items.get(first).copied() {
                     inc_ref_bits(py, bits);
                     app.last_error = None;
                     return Ok(Some(bits));
                 }
             } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
+                if widget.widget_command == "text" && (args.len() == 3 || args.len() == 4) {
+                    let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "text get start index must be an integer, end, or line.column",
+                        ));
+                    };
+                    let end = if args.len() == 4 {
+                        let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "text get end index must be an integer, end, or line.column",
+                            ));
+                        };
+                        end
+                    } else {
+                        text_char_count(&widget.text_value)
+                    };
+                    if end <= start {
+                        app.last_error = None;
+                        return alloc_empty_string_bits(py).map(Some);
+                    }
+                    let start_byte = char_index_to_byte_index(&widget.text_value, start);
+                    let end_byte = char_index_to_byte_index(&widget.text_value, end);
+                    let slice = widget.text_value[start_byte..end_byte].to_string();
+                    app.last_error = None;
+                    return alloc_string_bits(py, &slice).map(Some);
+                }
                 let text = widget.text_value.clone();
                 app.last_error = None;
                 return alloc_string_bits(py, &text).map(Some);
@@ -9333,15 +9785,170 @@ fn handle_generic_widget_path_command(
             app.last_error = None;
             alloc_widget_bbox_bits(py).map(Some)
         }
-        "index" | "nearest" => {
+        "index" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "index expects exactly one index argument",
+                ));
+            }
+            if widget.widget_command == "listbox" {
+                let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox index must be an integer or end",
+                    ));
+                };
+                app.last_error = None;
+                return Ok(Some(MoltObject::from_int(index as i64).bits()));
+            }
+            if matches!(widget.widget_command.as_str(), "entry" | "spinbox") {
+                let Some(index) = parse_entry_like_index_bits(
+                    args[2],
+                    text_char_count(&widget.text_value),
+                    widget.insert_cursor,
+                    widget.selection_anchor,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "entry/spinbox index must be an integer, end, insert, or anchor",
+                    ));
+                };
+                app.last_error = None;
+                return Ok(Some(MoltObject::from_int(index as i64).bits()));
+            }
+            if widget.widget_command == "text" {
+                let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text index must be an integer, end, or line.column",
+                    ));
+                };
+                app.last_error = None;
+                return alloc_string_bits(py, &format!("1.{index}")).map(Some);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::from_int(0).bits()))
+        }
+        "nearest" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "nearest expects exactly one coordinate argument",
+                ));
+            }
+            if widget.widget_command == "listbox" {
+                let y = parse_i64_arg(py, handle, args[2], "listbox nearest coordinate")?;
+                let index = clamp_index_i64(y, widget.list_items.len().saturating_sub(1));
+                app.last_error = None;
+                return Ok(Some(MoltObject::from_int(index as i64).bits()));
+            }
             app.last_error = None;
             Ok(Some(MoltObject::from_int(0).bits()))
         }
         "compare" => {
+            if args.len() != 5 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "compare expects index1, operator, and index2",
+                ));
+            }
+            let op = get_string_arg(py, handle, args[3], "compare operator")?;
+            let (left, right) = if widget.widget_command == "text" {
+                let Some(left) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text compare index1 must be an integer, end, or line.column",
+                    ));
+                };
+                let Some(right) = parse_text_index_bits(args[4], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text compare index2 must be an integer, end, or line.column",
+                    ));
+                };
+                (left, right)
+            } else if widget.widget_command == "listbox" {
+                let Some(left) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox compare index1 must be an integer or end",
+                    ));
+                };
+                let Some(right) = parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox compare index2 must be an integer or end",
+                    ));
+                };
+                (left, right)
+            } else {
+                let Some(left) = parse_entry_like_index_bits(
+                    args[2],
+                    text_char_count(&widget.text_value),
+                    widget.insert_cursor,
+                    widget.selection_anchor,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "compare index1 must be an integer, end, insert, or anchor",
+                    ));
+                };
+                let Some(right) = parse_entry_like_index_bits(
+                    args[4],
+                    text_char_count(&widget.text_value),
+                    widget.insert_cursor,
+                    widget.selection_anchor,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "compare index2 must be an integer, end, insert, or anchor",
+                    ));
+                };
+                (left, right)
+            };
+            let result = evaluate_index_compare(left, &op, right)
+                .map_err(|message| app_tcl_error_locked(py, app, message))?;
             app.last_error = None;
-            Ok(Some(MoltObject::from_bool(false).bits()))
+            Ok(Some(MoltObject::from_bool(result).bits()))
         }
-        "curselection" | "find" | "tabs" | "panes" => {
+        "curselection" => {
+            if widget.widget_command == "listbox" {
+                let mut indices: Vec<String> = widget
+                    .list_selection
+                    .iter()
+                    .copied()
+                    .filter(|idx| *idx < widget.list_items.len())
+                    .map(|idx| idx.to_string())
+                    .collect();
+                indices.sort_unstable_by_key(|value| value.parse::<usize>().unwrap_or(0));
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    indices.as_slice(),
+                    "failed to allocate listbox curselection tuple",
+                )
+                .map(Some);
+            }
+            app.last_error = None;
+            alloc_empty_tuple_bits(py).map(Some)
+        }
+        "find" | "tabs" | "panes" => {
             app.last_error = None;
             alloc_empty_tuple_bits(py).map(Some)
         }
@@ -9363,6 +9970,54 @@ fn handle_generic_widget_path_command(
             app.last_error = None;
             alloc_empty_string_bits(py).map(Some)
         }
+        "bind" => {
+            if args.len() < 3 || args.len() > 6 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "bind expects target, optional sequence, optional script",
+                ));
+            }
+            let target_name = get_string_arg(py, handle, args[2], "bind target")?;
+            let bindings = widget.tag_bindings.entry(target_name).or_default();
+            if args.len() == 3 {
+                let mut sequences: Vec<String> = bindings.keys().cloned().collect();
+                sequences.sort_unstable();
+                app.last_error = None;
+                return alloc_string_bits(py, &sequences.join(" ")).map(Some);
+            }
+            let sequence = get_string_arg(py, handle, args[3], "bind sequence")?;
+            if args.len() == 4 {
+                let script = bindings.get(&sequence).cloned().unwrap_or_default();
+                app.last_error = None;
+                return alloc_string_bits(py, &script).map(Some);
+            }
+            let mut script = get_string_arg(py, handle, args[4], "bind script")?;
+            if args.len() == 6 {
+                let command_name = get_string_arg(py, handle, args[5], "bind callback id")?;
+                if script.is_empty() {
+                    script = bindings.get(&sequence).cloned().unwrap_or_default();
+                }
+                script = remove_bind_script_command_invocations(&script, &command_name);
+            } else if script.starts_with('+') {
+                script = if let Some(previous) = bindings.get(&sequence) {
+                    if previous.trim().is_empty() {
+                        script
+                    } else {
+                        format!("{previous}\n{script}")
+                    }
+                } else {
+                    script
+                };
+            }
+            if script.is_empty() {
+                bindings.remove(&sequence);
+            } else {
+                bindings.insert(sequence, script);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
         "xview" | "yview" => {
             if args.len() == 2 {
                 app.last_error = None;
@@ -9374,6 +10029,450 @@ fn handle_generic_widget_path_command(
         "selection" => {
             if args.len() >= 3 {
                 let op = get_string_arg(py, handle, args[2], "selection subcommand")?;
+                if widget.widget_command == "listbox" {
+                    match op.as_str() {
+                        "anchor" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection anchor expects one index argument",
+                                ));
+                            }
+                            let Some(index) =
+                                parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection anchor index must be an integer or end",
+                                ));
+                            };
+                            widget.selection_anchor = Some(index);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "set" => {
+                            if args.len() != 4 && args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection set expects first and optional last index",
+                                ));
+                            }
+                            let Some(first) =
+                                parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection set first index must be an integer or end",
+                                ));
+                            };
+                            let last = if args.len() == 5 {
+                                let Some(last) = parse_listbox_index_bits(
+                                    args[4],
+                                    widget.list_items.len(),
+                                    false,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection set last index must be an integer or end",
+                                    ));
+                                };
+                                last
+                            } else {
+                                first
+                            };
+                            if !widget.list_items.is_empty() {
+                                let end = last.min(widget.list_items.len() - 1);
+                                if end >= first {
+                                    for idx in first..=end {
+                                        widget.list_selection.insert(idx);
+                                    }
+                                }
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "clear" => {
+                            if args.len() != 4 && args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection clear expects first and optional last index",
+                                ));
+                            }
+                            let Some(first) =
+                                parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection clear first index must be an integer or end",
+                                ));
+                            };
+                            let last = if args.len() == 5 {
+                                let Some(last) = parse_listbox_index_bits(
+                                    args[4],
+                                    widget.list_items.len(),
+                                    false,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection clear last index must be an integer or end",
+                                    ));
+                                };
+                                last
+                            } else {
+                                first
+                            };
+                            let end = last.max(first);
+                            widget
+                                .list_selection
+                                .retain(|index| *index < first || *index > end);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "includes" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection includes expects one index argument",
+                                ));
+                            }
+                            let Some(index) =
+                                parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection includes index must be an integer or end",
+                                ));
+                            };
+                            app.last_error = None;
+                            return Ok(Some(
+                                MoltObject::from_bool(widget.list_selection.contains(&index))
+                                    .bits(),
+                            ));
+                        }
+                        "present" => {
+                            app.last_error = None;
+                            return Ok(Some(
+                                MoltObject::from_bool(!widget.list_selection.is_empty()).bits(),
+                            ));
+                        }
+                        "get" => {
+                            let mut selected: Vec<usize> =
+                                widget.list_selection.iter().copied().collect();
+                            selected.sort_unstable();
+                            if let Some(index) = selected
+                                .into_iter()
+                                .find(|idx| *idx < widget.list_items.len())
+                                && let Some(bits) = widget.list_items.get(index).copied()
+                            {
+                                inc_ref_bits(py, bits);
+                                app.last_error = None;
+                                return Ok(Some(bits));
+                            }
+                            app.last_error = None;
+                            return alloc_empty_string_bits(py).map(Some);
+                        }
+                        _ => {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                unknown_widget_subcommand_message(
+                                    widget_path,
+                                    &format!("selection {op}"),
+                                ),
+                            ));
+                        }
+                    }
+                }
+                if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
+                    match op.as_str() {
+                        "clear" => {
+                            widget.selection_range = None;
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "present" => {
+                            let present = widget
+                                .selection_range
+                                .is_some_and(|(start, end)| end > start);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::from_bool(present).bits()));
+                        }
+                        "get" => {
+                            if let Some((start, end)) = widget.selection_range
+                                && end > start
+                            {
+                                let start_byte =
+                                    char_index_to_byte_index(&widget.text_value, start);
+                                let end_byte = char_index_to_byte_index(&widget.text_value, end);
+                                let slice = widget.text_value[start_byte..end_byte].to_string();
+                                app.last_error = None;
+                                return alloc_string_bits(py, &slice).map(Some);
+                            }
+                            app.last_error = None;
+                            return alloc_empty_string_bits(py).map(Some);
+                        }
+                        "from" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection from expects one index argument",
+                                ));
+                            }
+                            let index = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection from index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[3],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection from index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            widget.selection_anchor = Some(index);
+                            widget.selection_range = Some((index, index));
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "to" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection to expects one index argument",
+                                ));
+                            }
+                            let index = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection to index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[3],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection to index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            let anchor = widget.selection_anchor.unwrap_or(0);
+                            let (start, end) = if index >= anchor {
+                                (anchor, index)
+                            } else {
+                                (index, anchor)
+                            };
+                            widget.selection_range = Some((start, end));
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "range" => {
+                            if args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection range expects start and end indices",
+                                ));
+                            }
+                            let start = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection range start index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[3],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection range start index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            let end = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[4], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection range end index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[4],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection range end index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            widget.selection_range = Some((start.min(end), start.max(end)));
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "includes" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection includes expects one index argument",
+                                ));
+                            }
+                            let index = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection includes index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[3],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection includes index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            let includes = widget
+                                .selection_range
+                                .is_some_and(|(start, end)| index >= start && index < end);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::from_bool(includes).bits()));
+                        }
+                        "adjust" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "selection adjust expects one index argument",
+                                ));
+                            }
+                            let index = if widget.widget_command == "text" {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection adjust index must be an integer, end, or line.column index",
+                                    ));
+                                };
+                                index
+                            } else {
+                                let Some(index) = parse_entry_like_index_bits(
+                                    args[3],
+                                    text_char_count(&widget.text_value),
+                                    widget.insert_cursor,
+                                    widget.selection_anchor,
+                                ) else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "selection adjust index must be an integer, end, insert, or anchor index",
+                                    ));
+                                };
+                                index
+                            };
+                            if let Some((start, end)) = widget.selection_range {
+                                let dist_start = start.abs_diff(index);
+                                let dist_end = end.abs_diff(index);
+                                widget.selection_range = if dist_start <= dist_end {
+                                    Some((index.min(end), index.max(end)))
+                                } else {
+                                    Some((start.min(index), start.max(index)))
+                                };
+                            } else {
+                                widget.selection_anchor = Some(index);
+                                widget.selection_range = Some((index, index));
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "element" => {
+                            app.last_error = None;
+                            return alloc_empty_string_bits(py).map(Some);
+                        }
+                        _ => {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                unknown_widget_subcommand_message(
+                                    widget_path,
+                                    &format!("selection {op}"),
+                                ),
+                            ));
+                        }
+                    }
+                }
                 match op.as_str() {
                     "includes" | "present" => {
                         app.last_error = None;
@@ -9383,7 +10482,16 @@ fn handle_generic_widget_path_command(
                         app.last_error = None;
                         return alloc_empty_string_bits(py).map(Some);
                     }
-                    _ => {}
+                    _ => {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            unknown_widget_subcommand_message(
+                                widget_path,
+                                &format!("selection {op}"),
+                            ),
+                        ));
+                    }
                 }
             }
             app.last_error = None;
@@ -9392,6 +10500,117 @@ fn handle_generic_widget_path_command(
         "mark" => {
             if args.len() >= 3 {
                 let op = get_string_arg(py, handle, args[2], "mark subcommand")?;
+                if widget.widget_command == "text" {
+                    match op.as_str() {
+                        "names" => {
+                            widget
+                                .text_marks
+                                .entry("insert".to_string())
+                                .or_insert(widget.insert_cursor);
+                            widget
+                                .text_marks
+                                .entry("current".to_string())
+                                .or_insert(widget.insert_cursor);
+                            let mut names: Vec<String> =
+                                widget.text_marks.keys().cloned().collect();
+                            names.sort_unstable();
+                            app.last_error = None;
+                            return alloc_tuple_from_strings(
+                                py,
+                                names.as_slice(),
+                                "failed to allocate text mark names tuple",
+                            )
+                            .map(Some);
+                        }
+                        "next" | "previous" => {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "mark next/previous expects one index or mark name",
+                                ));
+                            }
+                            app.last_error = None;
+                            return alloc_empty_string_bits(py).map(Some);
+                        }
+                        "set" => {
+                            if args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "mark set expects mark name and index",
+                                ));
+                            }
+                            let mark_name = get_string_arg(py, handle, args[3], "mark name")?;
+                            let Some(index) = parse_text_index_bits(args[4], &widget.text_value)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "mark set index must be an integer, end, or line.column",
+                                ));
+                            };
+                            if mark_name == "insert" {
+                                widget.insert_cursor = index;
+                            }
+                            widget.text_marks.insert(mark_name, index);
+                            clamp_text_widget_indices(widget);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "unset" => {
+                            for &mark_bits in &args[3..] {
+                                let mark_name = get_string_arg(py, handle, mark_bits, "mark name")?;
+                                widget.text_marks.remove(&mark_name);
+                                widget.text_mark_gravity.remove(&mark_name);
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        "gravity" => {
+                            if args.len() != 4 && args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "mark gravity expects mark name and optional direction",
+                                ));
+                            }
+                            let mark_name = get_string_arg(py, handle, args[3], "mark name")?;
+                            if args.len() == 4 {
+                                let gravity = widget
+                                    .text_mark_gravity
+                                    .get(&mark_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| "right".to_string());
+                                app.last_error = None;
+                                return alloc_string_bits(py, &gravity).map(Some);
+                            }
+                            let gravity =
+                                get_string_arg(py, handle, args[4], "mark gravity direction")?;
+                            let normalized = gravity.to_ascii_lowercase();
+                            if normalized != "left" && normalized != "right" {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "mark gravity must be left or right",
+                                ));
+                            }
+                            widget.text_mark_gravity.insert(mark_name, normalized);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        _ => {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                unknown_widget_subcommand_message(
+                                    widget_path,
+                                    &format!("mark {op}"),
+                                ),
+                            ));
+                        }
+                    }
+                }
                 match op.as_str() {
                     "names" => {
                         app.last_error = None;
@@ -9401,7 +10620,13 @@ fn handle_generic_widget_path_command(
                         app.last_error = None;
                         return alloc_empty_string_bits(py).map(Some);
                     }
-                    _ => {}
+                    _ => {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            unknown_widget_subcommand_message(widget_path, &format!("mark {op}")),
+                        ));
+                    }
                 }
             }
             app.last_error = None;
@@ -9411,7 +10636,180 @@ fn handle_generic_widget_path_command(
             if args.len() >= 3 {
                 let op = get_string_arg(py, handle, args[2], "tag subcommand")?;
                 match op.as_str() {
-                    "names" | "ranges" | "nextrange" | "prevrange" => {
+                    "bind" => {
+                        if args.len() < 4 || args.len() > 7 {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "tag bind expects tagname, optional sequence, optional script",
+                            ));
+                        }
+                        let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                        let bindings = widget.tag_bindings.entry(tag_name).or_default();
+                        if args.len() == 4 {
+                            let mut sequences: Vec<String> = bindings.keys().cloned().collect();
+                            sequences.sort_unstable();
+                            app.last_error = None;
+                            return alloc_string_bits(py, &sequences.join(" ")).map(Some);
+                        }
+                        let sequence = get_string_arg(py, handle, args[4], "tag bind sequence")?;
+                        if args.len() == 5 {
+                            let script = bindings.get(&sequence).cloned().unwrap_or_default();
+                            app.last_error = None;
+                            return alloc_string_bits(py, &script).map(Some);
+                        }
+                        let mut script = get_string_arg(py, handle, args[5], "tag bind script")?;
+                        if args.len() == 7 {
+                            let command_name =
+                                get_string_arg(py, handle, args[6], "tag bind callback id")?;
+                            if script.is_empty() {
+                                script = bindings.get(&sequence).cloned().unwrap_or_default();
+                            }
+                            script = remove_bind_script_command_invocations(&script, &command_name);
+                        } else if script.starts_with('+') {
+                            script = if let Some(previous) = bindings.get(&sequence) {
+                                if previous.trim().is_empty() {
+                                    script
+                                } else {
+                                    format!("{previous}\n{script}")
+                                }
+                            } else {
+                                script
+                            };
+                        }
+                        if script.is_empty() {
+                            bindings.remove(&sequence);
+                        } else {
+                            bindings.insert(sequence, script);
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "names" => {
+                        if widget.widget_command == "text" {
+                            let mut names: HashSet<String> =
+                                widget.text_tag_ranges.keys().cloned().collect();
+                            names.extend(widget.tag_bindings.keys().cloned());
+                            if args.len() == 5 {
+                                let Some(index) =
+                                    parse_text_index_bits(args[4], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "tag names index must be an integer, end, or line.column",
+                                    ));
+                                };
+                                names.retain(|tag_name| {
+                                    widget.text_tag_ranges.get(tag_name).is_some_and(|ranges| {
+                                        ranges
+                                            .iter()
+                                            .any(|(start, end)| index >= *start && index < *end)
+                                    })
+                                });
+                            }
+                            let mut ordered: Vec<String> = names.into_iter().collect();
+                            ordered.sort_unstable();
+                            app.last_error = None;
+                            return alloc_tuple_from_strings(
+                                py,
+                                ordered.as_slice(),
+                                "failed to allocate text tag names tuple",
+                            )
+                            .map(Some);
+                        }
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    "ranges" => {
+                        if widget.widget_command == "text" {
+                            if args.len() != 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag ranges expects a tag name",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            let mut values: Vec<String> = Vec::new();
+                            if let Some(ranges) = widget.text_tag_ranges.get(&tag_name) {
+                                for (start, end) in ranges {
+                                    values.push(format!("1.{start}"));
+                                    values.push(format!("1.{end}"));
+                                }
+                            }
+                            app.last_error = None;
+                            return alloc_tuple_from_strings(
+                                py,
+                                values.as_slice(),
+                                "failed to allocate text tag ranges tuple",
+                            )
+                            .map(Some);
+                        }
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    "nextrange" | "prevrange" => {
+                        if widget.widget_command == "text" {
+                            if args.len() != 5 && args.len() != 6 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag nextrange/prevrange expects tagname, start, and optional stop",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            let Some(start_index) =
+                                parse_text_index_bits(args[4], &widget.text_value)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag range start index must be an integer, end, or line.column",
+                                ));
+                            };
+                            let stop_index = if args.len() == 6 {
+                                let Some(stop) = parse_text_index_bits(args[5], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "tag range stop index must be an integer, end, or line.column",
+                                    ));
+                                };
+                                Some(stop)
+                            } else {
+                                None
+                            };
+                            let mut ranges = widget
+                                .text_tag_ranges
+                                .get(&tag_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            ranges.sort_unstable_by_key(|(start, _end)| *start);
+                            let selected = if op == "nextrange" {
+                                ranges.into_iter().find(|(start, end)| {
+                                    *end > start_index
+                                        && stop_index.is_none_or(|stop| *start < stop)
+                                })
+                            } else {
+                                ranges.into_iter().rev().find(|(start, _end)| {
+                                    *start < start_index
+                                        && stop_index.is_none_or(|stop| *start >= stop)
+                                })
+                            };
+                            if let Some((start, end)) = selected {
+                                app.last_error = None;
+                                return alloc_tuple_from_strings(
+                                    py,
+                                    &[format!("1.{start}"), format!("1.{end}")],
+                                    "failed to allocate text tag range tuple",
+                                )
+                                .map(Some);
+                            }
+                            app.last_error = None;
+                            return alloc_empty_tuple_bits(py).map(Some);
+                        }
                         app.last_error = None;
                         return alloc_empty_tuple_bits(py).map(Some);
                     }
@@ -9419,7 +10817,121 @@ fn handle_generic_widget_path_command(
                         app.last_error = None;
                         return alloc_empty_string_bits(py).map(Some);
                     }
-                    _ => {}
+                    "add" => {
+                        if widget.widget_command == "text" {
+                            if args.len() < 6 || (args.len() - 4) % 2 != 0 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag add expects tagname plus one or more start/end index pairs",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            let ranges = widget.text_tag_ranges.entry(tag_name).or_default();
+                            let mut idx = 4;
+                            while idx + 1 < args.len() {
+                                let Some(start) =
+                                    parse_text_index_bits(args[idx], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "tag add start index must be an integer, end, or line.column",
+                                    ));
+                                };
+                                let Some(end) =
+                                    parse_text_index_bits(args[idx + 1], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "tag add end index must be an integer, end, or line.column",
+                                    ));
+                                };
+                                if end > start {
+                                    ranges.push((start, end));
+                                } else if start > end {
+                                    ranges.push((end, start));
+                                }
+                                idx += 2;
+                            }
+                            ranges.sort_unstable_by_key(|(start, _end)| *start);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "remove" => {
+                        if widget.widget_command == "text" {
+                            if args.len() != 5 && args.len() != 6 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag remove expects tagname, start, and optional end index",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            let Some(start) = parse_text_index_bits(args[4], &widget.text_value)
+                            else {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag remove start index must be an integer, end, or line.column",
+                                ));
+                            };
+                            let end = if args.len() == 6 {
+                                let Some(end) = parse_text_index_bits(args[5], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "tag remove end index must be an integer, end, or line.column",
+                                    ));
+                                };
+                                end
+                            } else {
+                                (start + 1).min(text_char_count(&widget.text_value))
+                            };
+                            let (remove_start, remove_end) = (start.min(end), start.max(end));
+                            if let Some(ranges) = widget.text_tag_ranges.get_mut(&tag_name) {
+                                ranges.retain(|(range_start, range_end)| {
+                                    *range_end <= remove_start || *range_start >= remove_end
+                                });
+                                if ranges.is_empty() {
+                                    widget.text_tag_ranges.remove(&tag_name);
+                                }
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "delete" => {
+                        if widget.widget_command == "text" {
+                            for &tag_bits in &args[3..] {
+                                let tag_name = get_string_arg(py, handle, tag_bits, "tag name")?;
+                                widget.text_tag_ranges.remove(&tag_name);
+                                widget.tag_bindings.remove(&tag_name);
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "configure" | "lower" | "raise" => {
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    _ => {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            unknown_widget_subcommand_message(widget_path, &format!("tag {op}")),
+                        ));
+                    }
                 }
             }
             app.last_error = None;
@@ -9432,6 +10944,11 @@ fn handle_generic_widget_path_command(
                     app.last_error = None;
                     return alloc_widget_coord_bits(py).map(Some);
                 }
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, &format!("proxy {op}")),
+                ));
             }
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
@@ -9443,17 +10960,69 @@ fn handle_generic_widget_path_command(
                     app.last_error = None;
                     return alloc_widget_coord_bits(py).map(Some);
                 }
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, &format!("sash {op}")),
+                ));
             }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "icursor" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "icursor expects exactly one index argument",
+                ));
+            }
+            let index = if widget.widget_command == "text" {
+                let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text icursor index must be an integer, end, or line.column",
+                    ));
+                };
+                index
+            } else if matches!(widget.widget_command.as_str(), "entry" | "spinbox") {
+                let Some(index) = parse_entry_like_index_bits(
+                    args[2],
+                    text_char_count(&widget.text_value),
+                    widget.insert_cursor,
+                    widget.selection_anchor,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "entry/spinbox icursor index must be an integer, end, insert, or anchor",
+                    ));
+                };
+                index
+            } else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "icursor"),
+                ));
+            };
+            widget.insert_cursor = index;
+            clamp_text_widget_indices(widget);
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
         }
         "add" | "addtag" | "dtag" | "scan" | "itemconfigure" | "entryconfigure"
         | "paneconfigure" | "image_configure" | "window_configure" | "activate" | "see"
-        | "icursor" | "tk_popup" | "post" | "unpost" | "invoke" | "edit" | "replace" | "dump" => {
+        | "tk_popup" | "post" | "unpost" | "invoke" | "edit" | "replace" | "dump" => {
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
         }
-        _ => Ok(None),
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            unknown_widget_subcommand_message(widget_path, subcommand),
+        )),
     }
 }
 
@@ -9580,14 +11149,11 @@ fn handle_widget_path_command(
             {
                 return Ok(bits);
             }
-            let mut registry = tk_registry().lock().unwrap();
-            let app = app_mut_from_registry(py, &mut registry, handle)?;
-            if args.len() == 2 {
-                app.last_error = None;
-                return alloc_empty_string_bits(py);
-            }
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
+            Err(raise_tcl_for_handle(
+                py,
+                handle,
+                unknown_widget_subcommand_message(widget_path, &subcommand),
+            ))
         }
     }
 }
@@ -12840,6 +14406,7 @@ mod tests {
         assert_eq!(clamp_dialog_selection(9, 3), 2);
     }
 
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
     #[test]
     fn filehandler_event_name_mapping_is_stable() {
         assert_eq!(

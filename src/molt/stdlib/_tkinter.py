@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `_tkinter` compatibility surface.
+"""Intrinsic-backed `_tkinter` compatibility surface.
 
 This module intentionally keeps behavior minimal while exposing a broad
 CPython-shaped API. Runtime behavior is delegated to Molt Rust intrinsics.
@@ -50,8 +50,11 @@ _MOLT_TK_GETBOOLEAN = _require_intrinsic("molt_tk_getboolean", globals())
 _MOLT_TK_GETDOUBLE = _require_intrinsic("molt_tk_getdouble", globals())
 _MOLT_TK_SPLITLIST = _require_intrinsic("molt_tk_splitlist", globals())
 _MOLT_TK_ERRORINFO_APPEND = _require_intrinsic("molt_tk_errorinfo_append", globals())
+_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
+    "molt_tk_bind_script_remove_command", globals()
+)
 
-# CPython exports these constants from `_tkinter`; phase-0 uses fixed values.
+# CPython exports these constants from `_tkinter`; Molt currently uses fixed values.
 TK_VERSION = "8.6"
 TCL_VERSION = "8.6"
 READABLE = 2
@@ -376,6 +379,14 @@ def bind_unregister(app, target_name, sequence, command_name):
     return None
 
 
+def bind_script_remove_command(script, command_name):
+    if not isinstance(script, str):
+        script = str(script)
+    if not isinstance(command_name, str):
+        command_name = str(command_name)
+    return _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND(script, command_name)
+
+
 def treeview_tag_bind_register(
     app,
     treeview_path,
@@ -482,7 +493,7 @@ def createfilehandler(app, file, mask, callback):
     _require_filehandler_supported("createfilehandler")
     if not isinstance(app, TkappType):
         raise NotImplementedError(
-            "createfilehandler is only supported for TkappType in Phase-0"
+            "createfilehandler is only supported for TkappType handles"
         )
     if not callable(callback):
         raise TypeError("bad argument list")
@@ -496,7 +507,7 @@ def deletefilehandler(app, file):
     _require_filehandler_supported("deletefilehandler")
     if not isinstance(app, TkappType):
         raise NotImplementedError(
-            "deletefilehandler is only supported for TkappType in Phase-0"
+            "deletefilehandler is only supported for TkappType handles"
         )
     fd = _normalize_file_descriptor(file)
     _MOLT_TK_FILEHANDLER_DELETE(_unwrap_app(app), fd)
@@ -504,7 +515,7 @@ def deletefilehandler(app, file):
 
 
 class TkappType:
-    """Phase-0 Python shell for a Tk app handle backed by Rust intrinsics."""
+    """Python shell for a Tk app handle backed by Rust intrinsics."""
 
     def __init__(self, handle):
         self._handle = handle
@@ -659,6 +670,7 @@ __all__ = [
     "after_cancel",
     "after_idle",
     "bind_register",
+    "bind_script_remove_command",
     "bind_unregister",
     "bind_command",
     "call",

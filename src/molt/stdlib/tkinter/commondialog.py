@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.commondialog` wrappers."""
+"""Intrinsic-backed `tkinter.commondialog` wrappers."""
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
