@@ -107,6 +107,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     crate::object::weakref::weakref_clear_container_state(_py);
     trace_shutdown("flush_stdio_post_finalizers");
     flush_stdio_handles(_py, state);
+    trace_shutdown("clear_c_api_module_state");
+    crate::c_api::c_api_module_teardown(_py);
     trace_shutdown("clear_module_cache");
     clear_module_cache(_py, state);
     trace_shutdown("flush_stdio_post_modules");

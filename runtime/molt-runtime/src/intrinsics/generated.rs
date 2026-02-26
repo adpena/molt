@@ -63,6 +63,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_tk_after_info",
+        symbol: "molt_tk_after_info",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_tk_call",
         symbol: "molt_tk_call",
         arity: 2,
@@ -80,6 +85,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_tk_trace_info",
         symbol: "molt_tk_trace_info",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_trace_clear",
+        symbol: "molt_tk_trace_clear",
         arity: 2,
     },
     IntrinsicSpec {
@@ -106,6 +116,26 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_tk_bind_callback_unregister",
         symbol: "molt_tk_bind_callback_unregister",
         arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_widget_bind_callback_register",
+        symbol: "molt_tk_widget_bind_callback_register",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_widget_bind_callback_unregister",
+        symbol: "molt_tk_widget_bind_callback_unregister",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_text_tag_bind_callback_register",
+        symbol: "molt_tk_text_tag_bind_callback_register",
+        arity: 6,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_text_tag_bind_callback_unregister",
+        symbol: "molt_tk_text_tag_bind_callback_unregister",
+        arity: 5,
     },
     IntrinsicSpec {
         name: "molt_tk_treeview_tag_bind_callback_register",
@@ -10076,10 +10106,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_after" => Some(crate::molt_tk_after as *const () as usize as u64),
         "molt_tk_after_idle" => Some(crate::molt_tk_after_idle as *const () as usize as u64),
         "molt_tk_after_cancel" => Some(crate::molt_tk_after_cancel as *const () as usize as u64),
+        "molt_tk_after_info" => Some(crate::molt_tk_after_info as *const () as usize as u64),
         "molt_tk_call" => Some(crate::molt_tk_call as *const () as usize as u64),
         "molt_tk_trace_add" => Some(crate::molt_tk_trace_add as *const () as usize as u64),
         "molt_tk_trace_remove" => Some(crate::molt_tk_trace_remove as *const () as usize as u64),
         "molt_tk_trace_info" => Some(crate::molt_tk_trace_info as *const () as usize as u64),
+        "molt_tk_trace_clear" => Some(crate::molt_tk_trace_clear as *const () as usize as u64),
         "molt_tk_tkwait_variable" => {
             Some(crate::molt_tk_tkwait_variable as *const () as usize as u64)
         }
@@ -10092,6 +10124,18 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_tk_bind_callback_unregister" => {
             Some(crate::molt_tk_bind_callback_unregister as *const () as usize as u64)
+        }
+        "molt_tk_widget_bind_callback_register" => {
+            Some(crate::molt_tk_widget_bind_callback_register as *const () as usize as u64)
+        }
+        "molt_tk_widget_bind_callback_unregister" => {
+            Some(crate::molt_tk_widget_bind_callback_unregister as *const () as usize as u64)
+        }
+        "molt_tk_text_tag_bind_callback_register" => {
+            Some(crate::molt_tk_text_tag_bind_callback_register as *const () as usize as u64)
+        }
+        "molt_tk_text_tag_bind_callback_unregister" => {
+            Some(crate::molt_tk_text_tag_bind_callback_unregister as *const () as usize as u64)
         }
         "molt_tk_treeview_tag_bind_callback_register" => {
             Some(crate::molt_tk_treeview_tag_bind_callback_register as *const () as usize as u64)
