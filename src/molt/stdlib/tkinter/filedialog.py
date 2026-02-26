@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.filedialog` wrappers."""
+"""Intrinsic-backed `tkinter.filedialog` wrappers."""
 
 import fnmatch
 import os

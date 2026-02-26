@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.ttk` wrappers."""
+"""Intrinsic-backed `tkinter.ttk` wrappers."""
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -36,7 +36,7 @@ def _require_tkinter_callable(attr):
     if callable(value):
         return value
     raise RuntimeError(
-        f"tkinter.ttk requires callable _tkinter.{attr} in the Phase-0 intrinsic surface"
+        f"tkinter.ttk requires callable _tkinter.{attr} in the intrinsic runtime surface"
     )
 
 
@@ -90,6 +90,196 @@ def _flatten_items(items):
     if len(items) == 1 and isinstance(items[0], (tuple, list)):
         return tuple(items[0])
     return tuple(items)
+
+
+def _flatten(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, (tuple, list)):
+            out.extend(_flatten(item))
+        elif item is not None:
+            out.append(item)
+    return tuple(out)
+
+
+def _format_optvalue(value, script=False):
+    if script:
+        stringify = getattr(_tkinter, "_stringify", None)
+        if callable(stringify):
+            return stringify(value)
+        if isinstance(value, (list, tuple)):
+            return "{" + " ".join(map(str, value)) + "}"
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        join = getattr(_tkinter, "_join", None)
+        if callable(join):
+            return join(value)
+        return " ".join(map(str, value))
+    return value
+
+
+def _format_optdict(optdict, script=False, ignore=None):
+    opts = []
+    ignored = set(ignore or ())
+    for opt, value in optdict.items():
+        if opt in ignored:
+            continue
+        opts.append(f"-{opt}")
+        if value is not None:
+            opts.append(_format_optvalue(value, script))
+    return _flatten(opts)
+
+
+def _mapdict_values(items):
+    opt_val = []
+    for *state, val in items:
+        if len(state) == 1:
+            state = state[0] or ""
+        else:
+            state = " ".join(state)
+        opt_val.append(state)
+        if val is not None:
+            opt_val.append(val)
+    return opt_val
+
+
+def _format_mapdict(mapdict, script=False):
+    opts = []
+    for opt, value in mapdict.items():
+        opts.extend((f"-{opt}", _format_optvalue(_mapdict_values(value), script)))
+    return _flatten(opts)
+
+
+def _format_elemcreate(etype, script=False, *args, **kw):
+    spec = None
+    opts = ()
+    if etype in ("image", "vsapi"):
+        if etype == "image":
+            image_name = args[0]
+            image_spec = _format_optvalue(_mapdict_values(args[1:]), script=False)
+            spec = f"{image_name} {image_spec}"
+        else:
+            class_name, part_id = args[:2]
+            state_map = _format_optvalue(_mapdict_values(args[2:]), script=False)
+            spec = f"{class_name} {part_id} {state_map}"
+        opts = _format_optdict(kw, script)
+    elif etype == "from":
+        spec = args[0]
+        if len(args) > 1:
+            opts = (_format_optvalue(args[1], script),)
+
+    if script and spec is not None:
+        spec = f"{{{spec}}}"
+        opts = " ".join(opts)
+    return spec, opts
+
+
+def _format_layoutlist(layout, indent=0, indent_size=2):
+    script = []
+    for elem, opts in layout:
+        opts = opts or {}
+        formatted_opts = " ".join(_format_optdict(opts, True, ("children",)))
+        head = f"{' ' * indent}{elem}"
+        if formatted_opts:
+            head = f"{head} {formatted_opts}"
+        if "children" in opts:
+            script.append(f"{head} -children {{")
+            indent += indent_size
+            nested, indent = _format_layoutlist(opts["children"], indent, indent_size)
+            script.append(nested)
+            indent -= indent_size
+            script.append(f"{' ' * indent}}}")
+        else:
+            script.append(head)
+    return "\n".join(script), indent
+
+
+def _script_from_settings(settings):
+    script = []
+    for name, opts in settings.items():
+        if opts.get("configure"):
+            formatted = " ".join(_format_optdict(opts["configure"], True))
+            script.append(f"ttk::style configure {name} {formatted};")
+        if opts.get("map"):
+            formatted = " ".join(_format_mapdict(opts["map"], True))
+            script.append(f"ttk::style map {name} {formatted};")
+        if "layout" in opts:
+            if not opts["layout"]:
+                layout_text = "null"
+            else:
+                layout_text, _ = _format_layoutlist(opts["layout"])
+            script.append(f"ttk::style layout {name} {{\n{layout_text}\n}}")
+        if opts.get("element create"):
+            eopts = opts["element create"]
+            etype = eopts[0]
+            argc = 1
+            while argc < len(eopts) and not hasattr(eopts[argc], "items"):
+                argc += 1
+            elemargs = eopts[1:argc]
+            elemkw = eopts[argc] if argc < len(eopts) and eopts[argc] else {}
+            spec, formatted = _format_elemcreate(etype, True, *elemargs, **elemkw)
+            script.append(
+                f"ttk::style element create {name} {etype} {spec} {formatted}"
+            )
+    return "\n".join(script)
+
+
+def _list_from_statespec(stuple):
+    if isinstance(stuple, str):
+        return stuple
+    result = []
+    it = iter(stuple)
+    for state, val in zip(it, it):
+        if hasattr(state, "typename"):
+            state = str(state).split()
+        elif isinstance(state, str):
+            state = state.split()
+        elif not isinstance(state, (tuple, list)):
+            state = (state,)
+        if hasattr(val, "typename"):
+            val = str(val)
+        result.append((*state, val))
+    return result
+
+
+def _list_from_layouttuple(tk, ltuple):
+    layout_tuple = tk.splitlist(ltuple)
+    res = []
+    index = 0
+    while index < len(layout_tuple):
+        name = layout_tuple[index]
+        opts = {}
+        res.append((name, opts))
+        index += 1
+        while index < len(layout_tuple):
+            opt, val = layout_tuple[index : index + 2]
+            if not opt.startswith("-"):
+                break
+            opt = opt[1:]
+            index += 2
+            if opt == "children":
+                val = _list_from_layouttuple(tk, val)
+            opts[opt] = val
+    return res
+
+
+def _val_or_dict(tk, options, *args):
+    formatted_options = _format_optdict(options)
+    res = tk.call(*(args + formatted_options))
+    if len(formatted_options) % 2:
+        return res
+    splitdict = getattr(_tkinter, "_splitdict", None)
+    if callable(splitdict):
+        return splitdict(tk, res, conv=_tclobj_to_py)
+    return _split_pairs_to_dict(tk, res)
+
+
+def _to_number(x):
+    if isinstance(x, str):
+        if "." in x:
+            return float(x)
+        return int(x)
+    return x
 
 
 def _call_with_options(
@@ -763,9 +953,6 @@ class Treeview(Widget):
             sequence,
             wrapped,
         )
-        root = getattr(self, "tk", None)
-        if root is not None and hasattr(root, "_registered_commands"):
-            root._registered_commands.add(str(command_name))
         return command_name
 
     def tag_unbind(self, tagname, sequence, funcid=None):
@@ -780,9 +967,6 @@ class Treeview(Widget):
             sequence,
             command_name,
         )
-        root = getattr(self, "tk", None)
-        if root is not None and hasattr(root, "_registered_commands"):
-            root._registered_commands.discard(command_name)
         return None
 
     def tag_configure(self, tagname, option=None, cnf=None, **kw):
@@ -818,29 +1002,39 @@ class Style:
 
     def configure(self, style, query_opt=None, cnf=None, **kw):
         _require_gui_capability()
-        return _call_with_options(
-            self.tk,
-            ("ttk::style", "configure", style),
-            option=query_opt,
-            cnf=cnf,
-            option_conflict_message=(
-                "configure() query_opt cannot be combined with update options"
-            ),
-            **kw,
-        )
+        options = {}
+        if isinstance(cnf, dict):
+            options.update(cnf)
+        if kw:
+            options.update(kw)
+        if query_opt is not None:
+            if options:
+                raise TypeError(
+                    "configure() query_opt cannot be combined with update options"
+                )
+            options[query_opt] = None
+        result = _val_or_dict(self.tk, options, "ttk::style", "configure", style)
+        if result or query_opt:
+            return result
+        return None
 
     def map(self, style, query_opt=None, cnf=None, **kw):
         _require_gui_capability()
-        return _call_with_options(
-            self.tk,
-            ("ttk::style", "map", style),
-            option=query_opt,
-            cnf=cnf,
-            option_conflict_message=(
-                "map() query_opt cannot be combined with update options"
-            ),
-            **kw,
-        )
+        options = {}
+        if isinstance(cnf, dict):
+            options.update(cnf)
+        if kw:
+            options.update(kw)
+        if query_opt is not None:
+            if options:
+                raise TypeError(
+                    "map() query_opt cannot be combined with update options"
+                )
+            options[query_opt] = None
+        result = _val_or_dict(self.tk, options, "ttk::style", "map", style)
+        if result or query_opt:
+            return result
+        return None
 
     def lookup(self, style, option, state=None, default=None):
         _require_gui_capability()
@@ -857,18 +1051,22 @@ class Style:
     def layout(self, style, layoutspec=None):
         _require_gui_capability()
         if layoutspec is None:
-            return self.tk.call("ttk::style", "layout", style)
+            return _list_from_layouttuple(
+                self.tk, self.tk.call("ttk::style", "layout", style)
+            )
+        if layoutspec:
+            layoutspec, _ = _format_layoutlist(layoutspec)
         return self.tk.call("ttk::style", "layout", style, layoutspec)
 
     def element_create(self, elementname, etype, *args):
         _require_gui_capability()
+        spec, opts = _format_elemcreate(etype, False, *args)
+        if spec is None:
+            return self.tk.call(
+                "ttk::style", "element", "create", elementname, etype, *args
+            )
         return self.tk.call(
-            "ttk::style",
-            "element",
-            "create",
-            elementname,
-            etype,
-            *args,
+            "ttk::style", "element", "create", elementname, etype, spec, *opts
         )
 
     def element_names(self):
@@ -885,11 +1083,15 @@ class Style:
         if parent is not None:
             argv.extend(["-parent", parent])
         if settings is not None:
+            if hasattr(settings, "items"):
+                settings = _script_from_settings(settings)
             argv.extend(["-settings", settings])
         return self.tk.call(*argv)
 
     def theme_settings(self, themename, settings):
         _require_gui_capability()
+        if hasattr(settings, "items"):
+            settings = _script_from_settings(settings)
         return self.tk.call("ttk::style", "theme", "settings", themename, settings)
 
     def theme_names(self):

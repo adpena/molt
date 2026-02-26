@@ -694,6 +694,29 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_module_add_type(module_bits: MoltHandle, type_bits: MoltHandle) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if require_type_handle(_py, type_bits).is_err() {
+            return -1;
+        }
+        let type_name_bits = unsafe {
+            molt_object_getattr_bytes(type_bits, b"__name__".as_ptr(), b"__name__".len() as u64)
+        };
+        if exception_pending(_py) {
+            if !obj_from_bits(type_name_bits).is_none() {
+                dec_ref_bits(_py, type_name_bits);
+            }
+            return -1;
+        }
+        let rc = module_add_object_impl(_py, module_bits, type_name_bits, type_bits);
+        if !obj_from_bits(type_name_bits).is_none() {
+            dec_ref_bits(_py, type_name_bits);
+        }
+        rc
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_add_int_constant(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
@@ -1560,10 +1583,25 @@ mod tests {
             let label_text = unsafe { std::slice::from_raw_parts(label_ptr, label_len as usize) };
             assert_eq!(label_text, b"ok");
 
+            assert_eq!(molt_module_add_type(module_bits, builtins.type_obj), 0);
+            let type_name_ptr = alloc_string(_py, b"type");
+            assert!(!type_name_ptr.is_null());
+            let type_name_bits = MoltObject::from_ptr(type_name_ptr).bits();
+            let added_type_bits = molt_module_get_object(module_bits, type_name_bits);
+            assert_eq!(molt_object_equal(added_type_bits, builtins.type_obj), 1);
+            assert_eq!(
+                molt_module_add_type(module_bits, MoltObject::from_int(1).bits()),
+                -1
+            );
+            assert_eq!(molt_err_pending(), 1);
+            assert_eq!(molt_err_clear(), 0);
+
             let dict_bits = molt_module_get_dict(module_bits);
             assert!(!obj_from_bits(dict_bits).is_none());
-            assert!(molt_mapping_length(dict_bits) >= 3);
+            assert!(molt_mapping_length(dict_bits) >= 4);
 
+            dec_ref_bits(_py, added_type_bits);
+            dec_ref_bits(_py, type_name_bits);
             dec_ref_bits(_py, dict_bits);
             dec_ref_bits(_py, label_bits);
             dec_ref_bits(_py, label_name_bits);

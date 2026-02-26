@@ -79,6 +79,7 @@ MoltHandle molt_module_get_object(MoltHandle module_bits, MoltHandle name_bits);
 MoltHandle molt_module_get_object_bytes(MoltHandle module_bits,
                                         const uint8_t *name_ptr,
                                         uint64_t name_len);
+int32_t molt_module_add_type(MoltHandle module_bits, MoltHandle type_bits);
 int32_t molt_module_add_int_constant(MoltHandle module_bits, MoltHandle name_bits,
                                      int64_t value);
 int32_t molt_module_add_string_constant(MoltHandle module_bits,

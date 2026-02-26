@@ -1127,6 +1127,162 @@ class Form(TixWidget):
         return self.tk.splitlist(self.tk.call("tixForm", "slaves", self._w))
 
 
+def _init_dummy_subwidget(widget, master, name):
+    TixSubWidget.__init__(widget, master, name)
+
+
+class _dummyButton(_tkinter.Button, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyCheckbutton(_tkinter.Checkbutton, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyEntry(_tkinter.Entry, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyFrame(_tkinter.Frame, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyLabel(_tkinter.Label, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyListbox(_tkinter.Listbox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyMenu(_tkinter.Menu, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyMenubutton(_tkinter.Menubutton, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyScrollbar(_tkinter.Scrollbar, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyText(_tkinter.Text, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyScrolledListBox(ScrolledListBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["listbox"] = _dummyListbox(self, "listbox")
+        self.subwidget_list["vsb"] = _dummyScrollbar(self, "vsb")
+        self.subwidget_list["hsb"] = _dummyScrollbar(self, "hsb")
+
+
+class _dummyHList(HList, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyScrolledHList(ScrolledHList, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["hlist"] = _dummyHList(self, "hlist")
+        self.subwidget_list["vsb"] = _dummyScrollbar(self, "vsb")
+        self.subwidget_list["hsb"] = _dummyScrollbar(self, "hsb")
+
+
+class _dummyTList(TList, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyComboBox(ComboBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["label"] = _dummyLabel(self, "label")
+        self.subwidget_list["entry"] = _dummyEntry(self, "entry")
+        self.subwidget_list["arrow"] = _dummyButton(self, "arrow")
+        self.subwidget_list["slistbox"] = _dummyScrolledListBox(self, "slistbox")
+        try:
+            self.subwidget_list["tick"] = _dummyButton(self, "tick")
+            self.subwidget_list["cross"] = _dummyButton(self, "cross")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class _dummyDirList(DirList, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["hlist"] = _dummyHList(self, "hlist")
+        self.subwidget_list["vsb"] = _dummyScrollbar(self, "vsb")
+        self.subwidget_list["hsb"] = _dummyScrollbar(self, "hsb")
+
+
+class _dummyDirSelectBox(DirSelectBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["dirlist"] = _dummyDirList(self, "dirlist")
+        self.subwidget_list["dircbx"] = _dummyFileComboBox(self, "dircbx")
+
+
+class _dummyExFileSelectBox(ExFileSelectBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["cancel"] = _dummyButton(self, "cancel")
+        self.subwidget_list["ok"] = _dummyButton(self, "ok")
+        self.subwidget_list["hidden"] = _dummyCheckbutton(self, "hidden")
+        self.subwidget_list["types"] = _dummyComboBox(self, "types")
+        self.subwidget_list["dir"] = _dummyComboBox(self, "dir")
+        self.subwidget_list["dirlist"] = _dummyScrolledListBox(self, "dirlist")
+        self.subwidget_list["file"] = _dummyComboBox(self, "file")
+        self.subwidget_list["filelist"] = _dummyScrolledListBox(self, "filelist")
+
+
+class _dummyFileSelectBox(FileSelectBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["dirlist"] = _dummyScrolledListBox(self, "dirlist")
+        self.subwidget_list["filelist"] = _dummyScrolledListBox(self, "filelist")
+        self.subwidget_list["filter"] = _dummyComboBox(self, "filter")
+        self.subwidget_list["selection"] = _dummyComboBox(self, "selection")
+
+
+class _dummyFileComboBox(ComboBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["dircbx"] = _dummyComboBox(self, "dircbx")
+
+
+class _dummyStdButtonBox(StdButtonBox, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+        self.subwidget_list["ok"] = _dummyButton(self, "ok")
+        self.subwidget_list["apply"] = _dummyButton(self, "apply")
+        self.subwidget_list["cancel"] = _dummyButton(self, "cancel")
+        self.subwidget_list["help"] = _dummyButton(self, "help")
+
+
+class _dummyNoteBookFrame(NoteBookFrame, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=0):
+        _init_dummy_subwidget(self, master, name)
+
+
+class _dummyPanedWindow(PanedWindow, TixSubWidget):
+    def __init__(self, master, name, destroy_physically=1):
+        _init_dummy_subwidget(self, master, name)
+
+
 __all__ = [
     "ACROSSTOP",
     "ASCII",

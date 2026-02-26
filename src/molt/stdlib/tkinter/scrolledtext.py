@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.scrolledtext` wrappers."""
+"""Intrinsic-backed `tkinter.scrolledtext` wrappers."""
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -16,7 +16,7 @@ def _widget_call(widget, command, *argv):
 
 
 class ScrolledText(_tkinter.Widget):
-    """Phase-0 text widget shell with `ScrolledText` API shape."""
+    """Text widget shell with `ScrolledText` API shape."""
 
     def __init__(self, master=None, cnf=None, **kw):
         super().__init__(master, "text", cnf, **kw)

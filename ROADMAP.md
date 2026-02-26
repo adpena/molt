@@ -100,14 +100,15 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Tkinter cross-platform execution plan:
   [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md).
 - Implemented: Tkinter runtime now ships dual-path `molt_tk_*` lowering:
-  deterministic headless Phase-0 behavior by default and an opt-in native
-  Tcl/Tk backend (`cargo` feature `molt_tk_native`) that performs interpreter
-  app creation (`useTk` aware), Tcl command dispatch, callback wiring,
-  `after`/event-loop pumping, and Tk lifecycle operations.
+  deterministic intrinsic-backed headless behavior by default (core Tk command
+  semantics plus broad `tkinter.ttk` command-family lowering) and an opt-in
+  native Tcl/Tk backend (`cargo` feature `molt_tk_native`) that performs
+  interpreter app creation (`useTk` aware), Tcl command dispatch, callback
+  wiring, `after`/event-loop pumping, and Tk lifecycle operations.
 - Native-unavailable behavior remains explicitly capability-gated and
   deterministic (`RuntimeError` on native hosts, `NotImplementedError` on wasm),
   with no host-Python fallback.
-- Implemented: `_tkinter` stdlib shim now routes an expanded Phase-0 API through
+- Implemented: `_tkinter` stdlib shim now routes an expanded intrinsic-backed API through
   `molt_tk_*` intrinsics (Tkapp shell, call/event helpers, var helpers,
   conversion helpers, and config helpers) and retains deterministic unsupported
   behavior.
@@ -118,11 +119,12 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Differential regression coverage now includes
   `tests/differential/stdlib/tkinter_phase0_core_semantics.py` to validate
   `_tkinter`/`tkinter` import + missing-attribute error-shape contracts,
-  `_tkinter` Phase-0 core API presence (`create`, Tkapp helpers, conversion and
+  `_tkinter` intrinsic-backed core API presence (`create`, Tkapp helpers, conversion and
   var helpers, and exported constants/types), and tkinter wrapper submodule
   import/error-shape/capability-gate contracts (`tkinter.__main__`,
-  dialog/helper stubs, and `tkinter.ttk`) without requiring a real GUI backend,
-  including runtime headless `ttk` semantics checks (`tkinter.ttk:runtime_semantics`).
+  dialog/helper wrappers, and `tkinter.ttk`) without requiring a real GUI backend,
+  including runtime-lowered core + `ttk` semantics checks
+  (`tkinter:runtime_core_semantics`, `tkinter.ttk:runtime_semantics`).
 - Hard gate contract in `tools/check_stdlib_intrinsics.py` now includes:
   - zero `probe-only`,
   - zero `python-only`,
@@ -1288,15 +1290,15 @@ Sign-off criteria:
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `telnetlib` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.__main__` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.colorchooser` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.commondialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): advance `tkinter.commondialog` from intrinsic-backed command wiring to full CPython parity.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.constants` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.dialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): advance `tkinter.dialog` from intrinsic-backed command wiring to full CPython parity.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.dnd` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.filedialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): advance `tkinter.filedialog` from intrinsic-backed command wiring to full CPython parity.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.font` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.messagebox` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): advance `tkinter.messagebox` from intrinsic-backed command wiring to full CPython parity.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.scrolledtext` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.simpledialog` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): advance `tkinter.simpledialog` from intrinsic-backed command wiring to full CPython parity.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tkinter.tix` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._parser` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._re` module stub with full intrinsic-backed lowering.
