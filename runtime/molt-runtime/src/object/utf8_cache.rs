@@ -83,8 +83,19 @@ impl Utf8CountCacheStore {
     }
 
     pub(crate) fn remove(&mut self, key: usize) {
-        self.entries.remove(&key);
-        self.order.retain(|entry| *entry != key);
+        if self.entries.remove(&key).is_none() {
+            return;
+        }
+        // Avoid O(n) retain on every delete; compact occasionally instead.
+        if self.order.len() > self.capacity.saturating_mul(8).max(64) {
+            let mut compacted = VecDeque::with_capacity(self.entries.len());
+            for entry in self.order.drain(..) {
+                if self.entries.contains_key(&entry) {
+                    compacted.push_back(entry);
+                }
+            }
+            self.order = compacted;
+        }
     }
 }
 
@@ -116,7 +127,18 @@ impl Utf8CacheStore {
     }
 
     pub(crate) fn remove(&mut self, key: usize) {
-        self.entries.remove(&key);
-        self.order.retain(|entry| *entry != key);
+        if self.entries.remove(&key).is_none() {
+            return;
+        }
+        // Avoid O(n) retain on every delete; compact occasionally instead.
+        if self.order.len() > UTF8_CACHE_MAX_ENTRIES.saturating_mul(8).max(64) {
+            let mut compacted = VecDeque::with_capacity(self.entries.len());
+            for entry in self.order.drain(..) {
+                if self.entries.contains_key(&entry) {
+                    compacted.push_back(entry);
+                }
+            }
+            self.order = compacted;
+        }
     }
 }

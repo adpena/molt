@@ -4,17 +4,43 @@ The module intentionally exposes only a minimal Tk core while broader tkinter
 lowering is in progress. All behavior routes through `_tkinter` intrinsics.
 """
 
+import enum
+
 import _tkinter as _phase0_tk
 from _intrinsics import require_intrinsic as _require_intrinsic
+from .constants import *  # noqa: F403
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 
 
 NO_VALUE = object()
+_support_default_root = True
 _default_root = None
 _variable_serial = 0
 _command_serial = 0
+_SUBST_FORMAT = (
+    "%#",
+    "%b",
+    "%f",
+    "%h",
+    "%k",
+    "%s",
+    "%t",
+    "%w",
+    "%x",
+    "%y",
+    "%A",
+    "%E",
+    "%K",
+    "%N",
+    "%W",
+    "%T",
+    "%X",
+    "%Y",
+    "%D",
+)
+_SUBST_FORMAT_STR = " ".join(_SUBST_FORMAT)
 
 
 def _require_phase0_callable(attr):
@@ -45,6 +71,12 @@ _TK_DESTROY_WIDGET = _require_phase0_callable("destroy_widget")
 _TK_LAST_ERROR = _require_phase0_callable("last_error")
 
 TclError = _phase0_tk.TclError
+wantobjects = 1 if bool(_phase0_tk.wantobjects()) else 0
+TkVersion = float(_phase0_tk.TK_VERSION)
+TclVersion = float(_phase0_tk.TCL_VERSION)
+READABLE = _phase0_tk.READABLE
+WRITABLE = _phase0_tk.WRITABLE
+EXCEPTION = _phase0_tk.EXCEPTION
 
 
 def _has_any_capability(*names):
@@ -82,6 +114,28 @@ def _normalize_tk_options(cnf=None, **kw):
         normalized.append(_normalize_option_name(str(key)))
         normalized.append(value)
     return normalized
+
+
+def _flatten(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, (tuple, list)):
+            out.extend(_flatten(item))
+        elif item is not None:
+            out.append(item)
+    return tuple(out)
+
+
+def _cnfmerge(cnfs):
+    if isinstance(cnfs, dict):
+        return cnfs
+    if cnfs is None or isinstance(cnfs, str):
+        return cnfs
+    merged = {}
+    for cfg in _flatten(cnfs):
+        if isinstance(cfg, dict):
+            merged.update(cfg)
+    return merged
 
 
 def _normalize_delay_ms(delay_ms):
@@ -135,7 +189,7 @@ def _pop_after_command(root, token):
 
 def _set_default_root(root):
     global _default_root
-    if _default_root is None:
+    if _support_default_root and _default_root is None:
         _default_root = root
 
 
@@ -145,8 +199,20 @@ def _clear_default_root(root):
         _default_root = None
 
 
-def _get_default_root():
+def NoDefaultRoot():
+    global _support_default_root, _default_root
+    _support_default_root = False
+    _default_root = None
+
+
+def _get_default_root(what=None):
+    if not _support_default_root:
+        raise RuntimeError(
+            "No master specified and tkinter is configured to not support default root"
+        )
     if _default_root is None:
+        if what:
+            raise RuntimeError(f"Too early to {what}: no default root window")
         return Tk()
     return _default_root
 
@@ -158,10 +224,126 @@ def _next_variable_name():
     return name
 
 
+def _event_int(widget, value):
+    try:
+        return widget.tk.getint(value)
+    except Exception:  # noqa: BLE001
+        return value
+
+
+def _event_from_subst_args(widget, event_args):
+    args = list(event_args)
+    if any(isinstance(item, tuple) and len(item) == 1 for item in args):
+        args = [
+            item[0] if isinstance(item, tuple) and len(item) == 1 else item
+            for item in args
+        ]
+    if len(args) != len(_SUBST_FORMAT):
+        return None
+
+    (
+        nsign,
+        b,
+        f,
+        h,
+        k,
+        s,
+        t,
+        w,
+        x,
+        y,
+        a,
+        e_send,
+        keysym,
+        keysym_num,
+        widget_path,
+        ev_type,
+        x_root,
+        y_root,
+        delta,
+    ) = args
+
+    event = Event()
+    event.serial = _event_int(widget, nsign)
+    event.num = _event_int(widget, b)
+    try:
+        event.focus = widget.tk.getboolean(f)
+    except Exception:  # noqa: BLE001
+        pass
+    event.height = _event_int(widget, h)
+    event.keycode = _event_int(widget, k)
+    event.state = _event_int(widget, s)
+    event.time = _event_int(widget, t)
+    event.width = _event_int(widget, w)
+    event.x = _event_int(widget, x)
+    event.y = _event_int(widget, y)
+    event.char = a
+    try:
+        event.send_event = widget.tk.getboolean(e_send)
+    except Exception:  # noqa: BLE001
+        pass
+    event.keysym = keysym
+    event.keysym_num = _event_int(widget, keysym_num)
+    event.type = ev_type
+    if isinstance(widget_path, str) and widget_path:
+        event.widget = widget if widget_path == widget._w else widget_path
+    else:
+        event.widget = widget
+    event.x_root = _event_int(widget, x_root)
+    event.y_root = _event_int(widget, y_root)
+    try:
+        event.delta = widget.tk.getint(delta)
+    except Exception:  # noqa: BLE001
+        event.delta = 0 if delta in ("", None) else delta
+    return event
+
+
 class Event:
     """Minimal tkinter event object placeholder for bind callbacks."""
 
     pass
+
+
+class EventType(str, enum.Enum):
+    KeyPress = "2"
+    Key = KeyPress
+    KeyRelease = "3"
+    ButtonPress = "4"
+    Button = ButtonPress
+    ButtonRelease = "5"
+    Motion = "6"
+    Enter = "7"
+    Leave = "8"
+    FocusIn = "9"
+    FocusOut = "10"
+    Keymap = "11"
+    Expose = "12"
+    GraphicsExpose = "13"
+    NoExpose = "14"
+    Visibility = "15"
+    Create = "16"
+    Destroy = "17"
+    Unmap = "18"
+    Map = "19"
+    MapRequest = "20"
+    Reparent = "21"
+    Configure = "22"
+    ConfigureRequest = "23"
+    Gravity = "24"
+    ResizeRequest = "25"
+    Circulate = "26"
+    CirculateRequest = "27"
+    Property = "28"
+    SelectionClear = "29"
+    SelectionRequest = "30"
+    Selection = "31"
+    Colormap = "32"
+    ClientMessage = "33"
+    Mapping = "34"
+    VirtualEvent = "35"
+    Activate = "36"
+    Deactivate = "37"
+    MouseWheel = "38"
 
 
 class Misc:
@@ -365,6 +547,9 @@ class Misc:
         widget = self
 
         def wrapped(*event_args):
+            parsed_event = _event_from_subst_args(widget, event_args)
+            if parsed_event is not None:
+                return func(parsed_event)
             if event_args:
                 return func(*event_args)
             event = Event()
@@ -372,7 +557,10 @@ class Misc:
             return func(event)
 
         command_name = self._register_command("bind", wrapped)
-        script = f"{add_prefix}{command_name}" if add_prefix else command_name
+        bind_script = (
+            f'if {{"[{command_name} {_SUBST_FORMAT_STR}]" == "break"}} break\n'
+        )
+        script = f"{add_prefix}{bind_script}" if add_prefix else bind_script
         try:
             self.call("bind", target_name, sequence, script)
         except Exception:
@@ -825,7 +1013,96 @@ class Misc:
         )
 
 
-class Tk(Misc):
+class CallWrapper:
+    """Compatibility callback wrapper used by Tk command bridges."""
+
+    def __init__(self, func, subst, widget):
+        self.func = func
+        self.subst = subst
+        self.widget = widget
+
+    def __call__(self, *args):
+        try:
+            if self.subst:
+                args = self.subst(*args)
+            return self.func(*args)
+        except SystemExit:
+            raise
+        except Exception:  # noqa: BLE001
+            reporter = getattr(self.widget, "_report_exception", None)
+            if callable(reporter):
+                reporter()
+            return None
+
+
+class XView:
+    def xview(self, *args):
+        result = self._call_widget("xview", *args)
+        if args:
+            return result
+        return tuple(self.getdouble(part) for part in self.splitlist(result))
+
+    def xview_moveto(self, fraction):
+        return self._call_widget("xview", "moveto", fraction)
+
+    def xview_scroll(self, number, what):
+        return self._call_widget("xview", "scroll", number, what)
+
+
+class YView:
+    def yview(self, *args):
+        result = self._call_widget("yview", *args)
+        if args:
+            return result
+        return tuple(self.getdouble(part) for part in self.splitlist(result))
+
+    def yview_moveto(self, fraction):
+        return self._call_widget("yview", "moveto", fraction)
+
+    def yview_scroll(self, number, what):
+        return self._call_widget("yview", "scroll", number, what)
+
+
+class Pack:
+    pack_configure = Misc.pack_configure
+    pack = configure = config = Misc.pack_configure
+    pack_forget = forget = Misc.pack_forget
+    pack_info = info = Misc.pack_info
+    propagate = pack_propagate = Misc.pack_propagate
+    slaves = pack_slaves = Misc.pack_slaves
+
+
+class Place:
+    place_configure = Misc.place_configure
+    place = configure = config = Misc.place_configure
+    place_forget = forget = Misc.place_forget
+    place_info = info = Misc.place_info
+    slaves = place_slaves = Misc.place_slaves
+
+
+class Grid:
+    grid_configure = Misc.grid_configure
+    grid = configure = config = Misc.grid_configure
+    bbox = grid_bbox = Misc.grid_bbox
+    columnconfigure = grid_columnconfigure = Misc.grid_columnconfigure
+    grid_forget = forget = Misc.grid_forget
+    grid_info = info = Misc.grid_info
+    location = grid_location = Misc.grid_location
+    propagate = grid_propagate = Misc.grid_propagate
+    rowconfigure = grid_rowconfigure = Misc.grid_rowconfigure
+    size = grid_size = Misc.grid_size
+    slaves = grid_slaves = Misc.grid_slaves
+
+
+class Wm(Misc):
+    """Window-manager mixin marker for compatibility."""
+
+
+def Tcl(screenName=None, baseName=None, className="Tk", useTk=False):
+    return Tk(screenName, baseName, className, useTk)
+
+
+class Tk(Wm):
     """Phase-0 root window wrapper backed by `_tkinter` intrinsics."""
 
     def __init__(
@@ -1050,6 +1327,10 @@ class Widget(Misc):
         return self._w
 
 
+class BaseWidget(Widget):
+    """Compatibility alias for CPython's internal BaseWidget."""
+
+
 class _CoreWidget(Widget):
     _widget_command = "widget"
 
@@ -1092,9 +1373,16 @@ class Listbox(_CoreWidget):
 class Menu(_CoreWidget):
     _widget_command = "menu"
 
+    def add_command(self, cnf=None, **kw):
+        return self._call_widget("add", "command", *_normalize_tk_options(cnf, **kw))
+
 
 class Scrollbar(_CoreWidget):
     _widget_command = "scrollbar"
+
+
+class Menubutton(_CoreWidget):
+    _widget_command = "menubutton"
 
 
 class Checkbutton(_CoreWidget):
@@ -1123,6 +1411,118 @@ class LabelFrame(_CoreWidget):
 
 class Message(_CoreWidget):
     _widget_command = "message"
+
+
+def _setit(variable, value, callback=None):
+    def setter(*_args):
+        if hasattr(variable, "set") and callable(variable.set):
+            variable.set(value)
+        else:
+            _get_default_root().setvar(str(variable), value)
+        if callback is not None:
+            callback(value)
+
+    return setter
+
+
+class OptionMenu(Menubutton):
+    def __init__(self, master, variable, value, *values, **kwargs):
+        callback = kwargs.pop("command", None)
+        if kwargs:
+            raise TclError(f'unknown option "-{next(iter(kwargs))}"')
+        super().__init__(
+            master,
+            textvariable=variable,
+            indicatoron=1,
+            relief=RAISED,  # noqa: F405
+            anchor="c",
+            highlightthickness=2,
+            borderwidth=2,
+        )
+        self.widgetName = "tk_optionMenu"
+        menu = Menu(self, tearoff=0)
+        self.__menu = menu
+        self.menuname = menu._w
+        self._optionmenu_commands = []
+
+        for candidate in (value, *values):
+            command = self._register_command(
+                "optionmenu", _setit(variable, candidate, callback)
+            )
+            self._optionmenu_commands.append(command)
+            menu.add_command(label=candidate, command=command)
+        self["menu"] = menu
+
+    def __getitem__(self, name):
+        if name == "menu":
+            return self.__menu
+        return super().__getitem__(name)
+
+    def destroy(self):
+        for command in getattr(self, "_optionmenu_commands", ()):
+            self._release_command(command)
+        self._optionmenu_commands = []
+        self.__menu = None
+        super().destroy()
+
+
+class Image:
+    _last_id = 0
+
+    def __init__(self, imgtype, name=None, cnf=None, master=None, **kw):
+        if master is None:
+            master = _get_default_root("create image")
+        self.tk = master.tk if isinstance(master, Misc) else master
+        if not name:
+            Image._last_id += 1
+            name = f"pyimage{Image._last_id}"
+        options = _normalize_tk_options(cnf, **kw)
+        self.tk.call("image", "create", imgtype, name, *options)
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+    def __del__(self):
+        if getattr(self, "name", None):
+            try:
+                self.tk.call("image", "delete", self.name)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def __setitem__(self, key, value):
+        self.tk.call(self.name, "configure", _normalize_option_name(key), value)
+
+    def __getitem__(self, key):
+        return self.tk.call(self.name, "configure", _normalize_option_name(key))
+
+    def configure(self, cnf=None, **kw):
+        return self.tk.call(self.name, "configure", *_normalize_tk_options(cnf, **kw))
+
+    config = configure
+
+    def cget(self, key):
+        return self.tk.call(self.name, "cget", _normalize_option_name(key))
+
+
+class PhotoImage(Image):
+    def __init__(self, name=None, cnf=None, master=None, **kw):
+        super().__init__("photo", name, cnf, master, **kw)
+
+
+class BitmapImage(Image):
+    def __init__(self, name=None, cnf=None, master=None, **kw):
+        super().__init__("bitmap", name, cnf, master, **kw)
+
+
+def image_names():
+    tk = _get_default_root("use image_names()").tk
+    return tk.splitlist(tk.call("image", "names"))
+
+
+def image_types():
+    tk = _get_default_root("use image_types()").tk
+    return tk.splitlist(tk.call("image", "types"))
 
 
 class Variable:
@@ -1315,33 +1715,54 @@ def splitlist(value):
 
 
 __all__ = [
+    "BaseWidget",
+    "BitmapImage",
     "BooleanVar",
     "Button",
+    "CallWrapper",
     "Canvas",
     "Checkbutton",
     "DoubleVar",
     "Entry",
     "Event",
+    "EventType",
     "Frame",
+    "Grid",
+    "Image",
     "IntVar",
     "Label",
     "LabelFrame",
     "Listbox",
     "Menu",
+    "Menubutton",
     "Message",
     "Misc",
+    "NoDefaultRoot",
+    "OptionMenu",
+    "Pack",
     "PanedWindow",
+    "PhotoImage",
+    "Place",
     "Radiobutton",
+    "READABLE",
     "Scale",
     "Scrollbar",
     "Spinbox",
     "StringVar",
+    "Tcl",
     "TclError",
+    "TclVersion",
     "Text",
     "Tk",
+    "TkVersion",
     "Toplevel",
     "Variable",
     "Widget",
+    "Wm",
+    "WRITABLE",
+    "XView",
+    "YView",
+    "EXCEPTION",
     "after",
     "after_cancel",
     "after_idle",
@@ -1359,11 +1780,18 @@ __all__ = [
     "splitlist",
     "tk_available",
     "unsetvar",
+    "image_names",
+    "image_types",
+    "wantobjects",
 ]
+
+for _name in tuple(globals()):
+    if _name.isupper() and not _name.startswith("_") and _name not in __all__:
+        __all__.append(_name)
 
 
 def __getattr__(attr):
     raise AttributeError(
         f'module "{__name__}" has no attribute "{attr}"; '
-        "only the Phase-0 tkinter core surface is implemented."
+        "only the intrinsic-backed tkinter compatibility surface is implemented."
     )

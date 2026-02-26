@@ -1,7 +1,8 @@
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{SimpleBackend, SimpleIR};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::env;
 use std::fs::File;
 use std::io::Write;
@@ -77,28 +78,42 @@ struct DaemonStats {
 }
 
 struct DaemonCache {
-    entries: HashMap<String, Vec<u8>>,
-    order: VecDeque<String>,
+    entries: HashMap<String, CacheEntry>,
+    order: BinaryHeap<Reverse<(u64, String)>>,
+    clock: u64,
     bytes: usize,
     max_bytes: usize,
+}
+
+struct CacheEntry {
+    bytes: Vec<u8>,
+    stamp: u64,
 }
 
 impl DaemonCache {
     fn new(max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            order: VecDeque::new(),
+            order: BinaryHeap::new(),
+            clock: 0,
             bytes: 0,
             max_bytes,
         }
     }
 
+    fn touch(&mut self, key: &str) -> Option<u64> {
+        let entry = self.entries.get_mut(key)?;
+        self.clock = self.clock.wrapping_add(1);
+        let stamp = self.clock;
+        entry.stamp = stamp;
+        self.order.push(Reverse((stamp, key.to_string())));
+        Some(stamp)
+    }
+
     fn get_cloned(&mut self, key: &str) -> Option<Vec<u8>> {
-        let value = self.entries.get(key).cloned();
-        if value.is_some() {
-            self.touch(key);
-        }
-        value
+        let value = self.entries.get(key).map(|entry| entry.bytes.clone())?;
+        let _ = self.touch(key);
+        Some(value)
     }
 
     fn insert(&mut self, key: String, value: Vec<u8>) {
@@ -106,34 +121,52 @@ impl DaemonCache {
             return;
         }
         if let Some(prev) = self.entries.remove(&key) {
-            self.bytes = self.bytes.saturating_sub(prev.len());
+            self.bytes = self.bytes.saturating_sub(prev.bytes.len());
         }
-        self.order.retain(|queued| queued != &key);
+        self.clock = self.clock.wrapping_add(1);
+        let stamp = self.clock;
         self.bytes = self.bytes.saturating_add(value.len());
-        self.order.push_back(key.clone());
-        self.entries.insert(key, value);
+        self.order.push(Reverse((stamp, key.clone())));
+        self.entries.insert(
+            key,
+            CacheEntry {
+                bytes: value,
+                stamp,
+            },
+        );
         self.evict();
-    }
-
-    fn touch(&mut self, key: &str) {
-        self.order.retain(|queued| queued != key);
-        self.order.push_back(key.to_string());
     }
 
     fn evict(&mut self) {
         while self.bytes > self.max_bytes {
-            let Some(old_key) = self.order.pop_front() else {
+            let Some(Reverse((stamp, old_key))) = self.order.pop() else {
                 break;
             };
-            if let Some(old_val) = self.entries.remove(&old_key) {
-                self.bytes = self.bytes.saturating_sub(old_val.len());
+            let is_live = self
+                .entries
+                .get(&old_key)
+                .is_some_and(|entry| entry.stamp == stamp);
+            if !is_live {
+                continue;
             }
+            if let Some(old_val) = self.entries.remove(&old_key) {
+                self.bytes = self.bytes.saturating_sub(old_val.bytes.len());
+            }
+        }
+        // Compact stale generations after enough churn.
+        if self.order.len() > self.entries.len().saturating_mul(8).saturating_add(32) {
+            let mut compacted = BinaryHeap::with_capacity(self.entries.len());
+            for (key, entry) in &self.entries {
+                compacted.push(Reverse((entry.stamp, key.clone())));
+            }
+            self.order = compacted;
         }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.clock = 0;
         self.bytes = 0;
     }
 }

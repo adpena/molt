@@ -138,34 +138,51 @@ class CompletedProcess:
             )
 
 
-def _to_argv_item(value: Any) -> str:
+def _to_argv_item(value: Any) -> str | bytes:
     if isinstance(value, str):
         return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return bytes(value).decode("utf-8")
+    if isinstance(value, bytes):
+        return value  # type: ignore[return-value]
     fspath = getattr(_os, "fspath", None)
     if callable(fspath):
         try:
             path_value = fspath(value)
             if isinstance(path_value, str):
                 return path_value
-            if isinstance(path_value, (bytes, bytearray, memoryview)):
-                return bytes(path_value).decode("utf-8")
+            if isinstance(path_value, bytes):
+                return path_value  # type: ignore[return-value]
         except TypeError:
             pass
     raise TypeError("args must be str, bytes, or os.PathLike")
 
 
-def _coerce_argv(args: Any, shell: bool) -> list[str]:
+def _to_env_item(value: Any) -> str | bytes:
+    if isinstance(value, (str, bytes)):
+        return value
+    fspath = getattr(_os, "fspath", None)
+    if callable(fspath):
+        try:
+            path_value = fspath(value)
+            if isinstance(path_value, (str, bytes)):
+                return path_value
+        except TypeError:
+            pass
+    raise TypeError("env keys and values must be str, bytes, or os.PathLike")
+
+
+def _coerce_argv(args: Any, shell: bool) -> list[str | bytes]:
     if shell:
         if isinstance(args, str):
             command = args
-        elif isinstance(args, (bytes, bytearray, memoryview)):
-            command = bytes(args).decode("utf-8")
+        elif isinstance(args, bytes):
+            fsdecode = getattr(_os, "fsdecode", None)
+            command = fsdecode(args) if callable(fsdecode) else args.decode("utf-8")
+        elif hasattr(args, "__fspath__"):
+            raise TypeError("path-like args is not allowed when shell is true")
         else:
             raise TypeError("args must be str, bytes, or os.PathLike when shell=True")
         return ["/bin/sh", "-c", command]
-    if isinstance(args, (str, bytes, bytearray, memoryview)):
+    if isinstance(args, (str, bytes)) or hasattr(args, "__fspath__"):
         return [_to_argv_item(args)]
     try:
         return [_to_argv_item(item) for item in args]
@@ -173,14 +190,16 @@ def _coerce_argv(args: Any, shell: bool) -> list[str]:
         raise TypeError("args must be str, bytes, os.PathLike, or a sequence")
 
 
-def _coerce_env(env: _Mapping[Any, Any] | None) -> dict[str, str] | None:
+def _coerce_env(
+    env: _Mapping[Any, Any] | None,
+) -> dict[str | bytes, str | bytes] | None:
     if env is None:
         return None
     if not isinstance(env, _Mapping):
         raise TypeError("env must be a mapping")
-    out: dict[str, str] = {}
+    out: dict[str | bytes, str | bytes] = {}
     for key, value in env.items():
-        out[str(key)] = str(value)
+        out[_to_env_item(key)] = _to_env_item(value)
     return out
 
 
@@ -244,14 +263,12 @@ class _PopenPipeWriter:
         if self._closed:
             raise ValueError("I/O operation on closed file.")
         if self._text:
-            if isinstance(data, str):
-                payload = data.encode(self._encoding, self._errors)
-                written = len(data)
-            elif isinstance(data, (bytes, bytearray, memoryview)):
-                payload = bytes(data)
-                written = len(payload)
-            else:
-                raise TypeError("input must be str or bytes-like")
+            if not isinstance(data, str):
+                raise TypeError(
+                    f"write() argument must be str, not {type(data).__name__}"
+                )
+            payload = data.encode(self._encoding, self._errors)
+            written = len(data)
         else:
             if isinstance(data, str):
                 raise TypeError("input must be bytes-like when text=False")
@@ -324,8 +341,24 @@ class _PopenPipeReader:
             raise ValueError("I/O operation on closed file.")
         if size == 0:
             return self._decode(b"")
-        if size is not None and int(size) >= 0:
-            return self.read(int(size))
+        if size is not None and int(size) > 0:
+            remaining = int(size)
+            chunks = bytearray()
+            while remaining > 0:
+                out = _MOLT_STREAM_READER_READ(self._reader, 1)
+                if _is_pending(out):
+                    self._sleep()
+                    continue
+                if out is None:
+                    break
+                chunk = bytes(out)
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+                remaining -= len(chunk)
+                if chunk.endswith(b"\n"):
+                    break
+            return self._decode(bytes(chunks))
         while True:
             out = _MOLT_STREAM_READER_READLINE(self._reader)
             if _is_pending(out):
@@ -372,6 +405,7 @@ class Popen:
         self._stdin_mode = _stdio_mode(stdin, "stdin")
         self._stdout_mode = _stdio_mode(stdout, "stdout")
         self._stderr_mode = _stdio_mode(stderr, "stderr")
+        self._communication_started = False
 
         argv = _coerce_argv(args, bool(shell))
         env_map = _coerce_env(env)
@@ -476,9 +510,17 @@ class Popen:
 
     def _write_input(self, data: Any) -> None:
         if self.stdin is None:
-            raise ValueError("stdin was not set to PIPE")
+            return
         if data is None:
             return
+        if self._text and not isinstance(data, str):
+            # Mirror CPython's text-mode communicate() normalization path,
+            # which calls input.encode(...) before writing to the child pipe.
+            encoded = data.encode(self._encoding, self._errors)
+            if isinstance(encoded, (bytes, bytearray, memoryview)):
+                data = bytes(encoded).decode(self._encoding, self._errors)
+            else:
+                data = encoded
         self.stdin.write(data)
 
     def _read_stream(self, reader: Any | None) -> bytes | None:
@@ -496,12 +538,39 @@ class Popen:
             break
         return bytes(chunks)
 
+    def _read_available_stream(self, reader: Any | None) -> bytes | None:
+        if reader is None:
+            return None
+        chunks = bytearray()
+        while True:
+            out = _MOLT_STREAM_READER_READ(reader, 65536)
+            if _is_pending(out):
+                break
+            if out is None:
+                break
+            chunk = bytes(out)
+            if not chunk:
+                break
+            chunks.extend(chunk)
+            if len(chunk) < 65536:
+                continue
+        if not chunks:
+            return None
+        return bytes(chunks)
+
     def _finalize_text(self, payload: bytes | None) -> str | None:
         if payload is None:
             return None
         if self._text:
             return payload.decode(self._encoding, self._errors)
         return payload  # type: ignore[return-value]
+
+    def _as_bytes(self, payload: Any) -> bytes:
+        if payload is None:
+            return b""
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return bytes(payload)
+        return b""
 
     def poll(self) -> int | None:
         out = _MOLT_PROCESS_RETURNCODE(self._handle)
@@ -525,11 +594,19 @@ class Popen:
         self, input: Any | None = None, timeout: float | None = None
     ) -> tuple[Any | None, Any | None]:
         limit = _normalize_timeout(timeout)
+        if self.stdin is not None and self._communication_started and input is not None:
+            raise ValueError("Cannot send input after starting communication")
+        self._communication_started = True
         if input is not None:
             self._write_input(input)
         if self.stdin is not None:
             self.stdin.close()
-        self.wait(limit)
+        try:
+            self.wait(limit)
+        except TimeoutExpired as exc:
+            exc.output = self._read_available_stream(self._stdout_reader)
+            exc.stderr = self._read_available_stream(self._stderr_reader)
+            raise
         out = self._read_stream(self._stdout_reader)
         err = self._read_stream(self._stderr_reader)
         return self._finalize_text(out), self._finalize_text(err)
@@ -621,13 +698,19 @@ def run(
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
     except TimeoutExpired as exc:
+        partial_out = proc._as_bytes(getattr(exc, "output", None))
+        partial_err = proc._as_bytes(getattr(exc, "stderr", None))
         proc.kill()
         try:
             proc.wait(None)
         except Exception:
             pass
-        exc.output = proc._read_stream(proc._stdout_reader)
-        exc.stderr = proc._read_stream(proc._stderr_reader)
+        tail_out = proc._as_bytes(proc._read_stream(proc._stdout_reader))
+        tail_err = proc._as_bytes(proc._read_stream(proc._stderr_reader))
+        full_out = partial_out + tail_out
+        full_err = partial_err + tail_err
+        exc.output = full_out if full_out else None
+        exc.stderr = full_err if full_err else None
         raise
 
     code = proc.returncode if proc.returncode is not None else proc.wait(None)

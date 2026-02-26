@@ -37,6 +37,12 @@ _MOLT_CSV_QUOTE_NONE = _require_intrinsic("molt_csv_quote_none", globals())
 _MOLT_CSV_QUOTE_STRINGS = _require_intrinsic("molt_csv_quote_strings", globals())
 _MOLT_CSV_QUOTE_NOTNULL = _require_intrinsic("molt_csv_quote_notnull", globals())
 _MOLT_CSV_FIELD_SIZE_LIMIT = _require_intrinsic("molt_csv_field_size_limit", globals())
+_MOLT_CSV_REGISTER_DIALECT = _require_intrinsic("molt_csv_register_dialect", globals())
+_MOLT_CSV_UNREGISTER_DIALECT = _require_intrinsic(
+    "molt_csv_unregister_dialect", globals()
+)
+_MOLT_CSV_LIST_DIALECTS = _require_intrinsic("molt_csv_list_dialects", globals())
+_MOLT_CSV_GET_DIALECT = _require_intrinsic("molt_csv_get_dialect", globals())
 _MOLT_CSV_READER_NEW = _require_intrinsic("molt_csv_reader_new", globals())
 _MOLT_CSV_READER_PARSE_LINE = _require_intrinsic(
     "molt_csv_reader_parse_line", globals()
@@ -140,11 +146,6 @@ excel_tab = Dialect(delimiter="\t")
 unix_dialect = Dialect(lineterminator="\n", quoting=QUOTE_ALL)
 
 
-_dialects: dict[str, Dialect] = {
-    "excel": excel,
-    "excel-tab": excel_tab,
-    "unix": unix_dialect,
-}
 _DIALECT_FMTPARAM_KEYS = frozenset(Dialect.__slots__)
 
 
@@ -221,9 +222,7 @@ def _validate_dialect(dialect: Dialect) -> None:
 def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
     _validate_fmtparams(fmtparams)
     if isinstance(dialect, str):
-        if dialect not in _dialects:
-            raise Error("unknown dialect")
-        base = _dialects[dialect]
+        base = get_dialect(dialect)
     else:
         base = dialect
     resolved = _dialect_from_obj(base).clone(**fmtparams)
@@ -231,30 +230,88 @@ def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
     return resolved
 
 
+def _dialect_from_intrinsic(raw: object) -> Dialect:
+    if not isinstance(raw, tuple) or len(raw) != 8:
+        raise RuntimeError("csv intrinsic returned invalid dialect payload")
+    (
+        delimiter,
+        quotechar,
+        escapechar,
+        doublequote,
+        skipinitialspace,
+        lineterminator,
+        quoting,
+        strict,
+    ) = raw
+    dialect = Dialect(
+        delimiter=cast(str, delimiter),
+        quotechar=cast(str | None, quotechar),
+        escapechar=cast(str | None, escapechar),
+        doublequote=bool(doublequote),
+        skipinitialspace=bool(skipinitialspace),
+        lineterminator=cast(str, lineterminator),
+        quoting=int(quoting),
+        strict=bool(strict),
+    )
+    _validate_dialect(dialect)
+    return dialect
+
+
+def _dialect_lookup_name(name: object) -> str:
+    if isinstance(name, str):
+        return name
+    try:
+        hash(name)
+    except TypeError:
+        typename = type(name).__name__
+        raise TypeError(
+            f"cannot use '{typename}' as a dict key (unhashable type: '{typename}')"
+        ) from None
+    raise Error("unknown dialect")
+
+
 def register_dialect(
     name: str, dialect: object | None = None, **fmtparams: object
 ) -> None:
     if not isinstance(name, str):
         raise TypeError("dialect name must be a string")
-    base = excel if dialect is None else dialect
+    base: object = "excel" if dialect is None else dialect
     resolved = _resolve_dialect(base, fmtparams)
-    _dialects[name] = resolved
+    _MOLT_CSV_REGISTER_DIALECT(
+        name,
+        resolved.delimiter,
+        resolved.quotechar,
+        resolved.escapechar,
+        resolved.doublequote,
+        resolved.skipinitialspace,
+        resolved.lineterminator,
+        resolved.quoting,
+        resolved.strict,
+    )
 
 
 def unregister_dialect(name: str) -> None:
-    if name not in _dialects:
-        raise Error("unknown dialect")
-    del _dialects[name]
+    lookup_name = _dialect_lookup_name(name)
+    try:
+        _MOLT_CSV_UNREGISTER_DIALECT(lookup_name)
+    except ValueError as exc:
+        if str(exc) == "unknown dialect":
+            raise Error("unknown dialect") from None
+        raise
 
 
 def get_dialect(name: str) -> Dialect:
-    if name not in _dialects:
-        raise Error("unknown dialect")
-    return _dialects[name].clone()
+    lookup_name = _dialect_lookup_name(name)
+    try:
+        return _dialect_from_intrinsic(_MOLT_CSV_GET_DIALECT(lookup_name))
+    except ValueError as exc:
+        if str(exc) == "unknown dialect":
+            raise Error("unknown dialect") from None
+        raise
 
 
 def list_dialects() -> list[str]:
-    return list(_dialects.keys())
+    return [cast(str, item) for item in _MOLT_CSV_LIST_DIALECTS()]
 
 
 def _iter_csvfile(csvfile: object) -> Iterator[str]:

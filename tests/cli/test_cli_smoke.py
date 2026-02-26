@@ -1150,8 +1150,22 @@ def test_cli_completion_includes_build_flags() -> None:
     assert res.returncode == 0
     payload = json.loads(res.stdout)
     script = payload["data"]["script"]
+    assert "extension" in script
+    assert "build audit" in script
     assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script
     assert "--trusted" in script
     assert "--no-trusted" in script
+    assert "--molt-abi" in script
+    assert "--target" in script
+    assert "--require-abi" in script
+    assert "--require-checksum" in script
+    assert "--extension-metadata" in script
+    assert "--require-extension-capabilities" in script
+
+
+def test_cli_extension_requires_subcommand() -> None:
+    res = _run_cli(["extension"])
+    assert res.returncode != 0
+    assert "extension_command" in res.stderr

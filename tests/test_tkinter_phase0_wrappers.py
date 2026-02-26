@@ -54,6 +54,8 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_destroy_widget": lambda _app=None, _w=None: _runtime_unavailable("molt_tk_destroy_widget"),
     "molt_tk_last_error": lambda _app=None: "tk runtime unavailable",
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
+    "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
+    "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_filedialog_show"),
     "molt_tk_dialog_show": lambda _app=None, _master=None, _title=None, _text=None, _bitmap=None, _default=None, _strings=None: _runtime_unavailable("molt_tk_dialog_show"),
     "molt_tk_simpledialog_query": lambda _app=None, _parent=None, _title=None, _prompt=None, _initial=None, _kind=None, _min=None, _max=None: _runtime_unavailable("molt_tk_simpledialog_query"),
 }
@@ -204,6 +206,26 @@ def _dispatch_fileevent(app, file_obj, event_name):
     callback()
     return True
 
+_SUPPORTED_COMMONDIALOG_COMMANDS = {
+    "tk_messageBox",
+    "tk_getOpenFile",
+    "tk_getSaveFile",
+    "tk_chooseDirectory",
+    "tk_chooseColor",
+}
+
+def _commondialog_has_option(options, option_name):
+    want = str(option_name).lower()
+    idx = 0
+    while idx + 1 < len(options):
+        name = str(options[idx])
+        if not name.startswith("-"):
+            name = f"-{name}"
+        if name.lower() == want:
+            return True
+        idx += 2
+    return False
+
 def _tk_call(app, argv):
     app["calls"].append(tuple(argv))
     if not argv:
@@ -246,6 +268,10 @@ def _tk_call(app, argv):
             if "simpledialog_ok" in str(command_name):
                 callback()
                 break
+        return ""
+    if op == "tk_messageBox":
+        return "ok"
+    if op in {"tk_getOpenFile", "tk_getSaveFile", "tk_chooseDirectory", "tk_chooseColor"}:
         return ""
     if len(argv) >= 2 and str(argv[1]) == "exists":
         return "1"
@@ -358,9 +384,23 @@ def _tk_dialog_show(_app, _master, _title, _text, _bitmap, default_index, string
     return selected
 
 def _tk_commondialog_show(_app, _master, command, options):
-    argv = [str(command)]
-    argv.extend(tuple(options or ()))
+    command_name = str(command)
+    if command_name not in _SUPPORTED_COMMONDIALOG_COMMANDS:
+        raise RuntimeError(f'unsupported commondialog command "{command_name}"')
+    normalized_options = tuple(options or ())
+    argv = [command_name]
+    if _master not in (None, "") and not _commondialog_has_option(
+        normalized_options, "-parent"
+    ):
+        argv.extend(["-parent", str(_master)])
+    argv.extend(normalized_options)
     return _tk_call(_app, argv)
+
+def _tk_messagebox_show(_app, _master, options):
+    return _tk_commondialog_show(_app, _master, "tk_messageBox", options)
+
+def _tk_filedialog_show(_app, _master, command, options):
+    return _tk_commondialog_show(_app, _master, command, options)
 
 def _tk_simpledialog_query(
     _app,
@@ -413,12 +453,19 @@ builtins._molt_intrinsics = {
     "molt_tk_destroy_widget": lambda _app=None, _w=None: None,
     "molt_tk_last_error": lambda app=None: None if app is None else app.get("last_error"),
     "molt_tk_commondialog_show": _tk_commondialog_show,
+    "molt_tk_messagebox_show": _tk_messagebox_show,
+    "molt_tk_filedialog_show": _tk_filedialog_show,
     "molt_tk_dialog_show": _tk_dialog_show,
     "molt_tk_simpledialog_query": _tk_simpledialog_query,
 }
 
 import _tkinter
 import tkinter
+import tkinter.colorchooser as colorchooser
+import tkinter.commondialog as commondialog
+import tkinter.dialog as dialog_module
+import tkinter.filedialog as filedialog
+import tkinter.messagebox as messagebox
 import tkinter.simpledialog as simpledialog
 import tkinter.ttk as ttk
 
@@ -609,6 +656,114 @@ checks["tkinter_simpledialog_query_helpers"] = (
     and simpledialog_int_bad is None
 )
 
+checks["tkinter_dialog_alias_exports_present"] = (
+    colorchooser.Dialog is commondialog.Dialog
+    and filedialog.Dialog is dialog_module.Dialog
+    and messagebox.Dialog is commondialog.Dialog
+    and simpledialog.messagebox is messagebox
+)
+checks["tkinter_dialog_module_compat_symbols_present"] = (
+    dialog_module.DIALOG_ICON == "questhead"
+    and dialog_module.TclError is tkinter.TclError
+    and dialog_module.Widget is tkinter.Widget
+    and dialog_module.Button is tkinter.Button
+)
+checks["tkinter_filedialog_compat_symbols_present"] = (
+    hasattr(filedialog, "FileDialog")
+    and hasattr(filedialog, "LoadFileDialog")
+    and hasattr(filedialog, "SaveFileDialog")
+    and isinstance(filedialog.dialogstates, dict)
+    and filedialog.commondialog is commondialog
+)
+
+orig_askopenfilename = filedialog.askopenfilename
+orig_asksaveasfilename = filedialog.asksaveasfilename
+compat_open_calls = []
+compat_save_calls = []
+
+def _compat_askopenfilename(**options):
+    compat_open_calls.append(dict(options))
+    return "/virtual/data/input.txt"
+
+def _compat_asksaveasfilename(**options):
+    compat_save_calls.append(dict(options))
+    return "/virtual/data/output.txt"
+
+filedialog.askopenfilename = _compat_askopenfilename
+filedialog.asksaveasfilename = _compat_asksaveasfilename
+try:
+    filedialog.dialogstates.clear()
+    compat_open_result = filedialog.FileDialog(root, title="Compat Open").go(
+        dir_or_file="/virtual/data",
+        pattern="*.txt",
+        default="seed.txt",
+        key="phase0-key",
+    )
+    compat_load_result = filedialog.LoadFileDialog(root).go(
+        dir_or_file="/virtual/data",
+        pattern="*.txt",
+        default="seed.txt",
+    )
+    compat_save_result = filedialog.SaveFileDialog(root).go(
+        dir_or_file="/virtual/data",
+        default="seed-out.txt",
+    )
+finally:
+    filedialog.askopenfilename = orig_askopenfilename
+    filedialog.asksaveasfilename = orig_asksaveasfilename
+
+checks["tkinter_filedialog_compat_classes_route_to_wrappers"] = (
+    compat_open_result == "/virtual/data/input.txt"
+    and compat_load_result == "/virtual/data/input.txt"
+    and compat_save_result == "/virtual/data/output.txt"
+    and len(compat_open_calls) == 2
+    and len(compat_save_calls) == 1
+    and compat_open_calls[0].get("parent") is root
+    and compat_open_calls[0].get("initialdir") == "/virtual/data"
+    and compat_open_calls[0].get("initialfile") == "seed.txt"
+    and compat_save_calls[0].get("parent") is root
+    and filedialog.dialogstates.get("phase0-key") == ("/virtual/data", "*.txt")
+)
+checks["tkinter_filedialog_compat_cancel_returns_none"] = (
+    filedialog.FileDialog(root).go() is None
+)
+
+commondialog_call_start = len(root._tk_app._handle["calls"])
+messagebox_result = messagebox.showinfo("Probe", "Message")
+askopenfilename_result = filedialog.askopenfilename()
+commondialog_calls = root._tk_app._handle["calls"][commondialog_call_start:]
+
+def _commondialog_call_has_parent(command_name):
+    for call in commondialog_calls:
+        if not call or call[0] != command_name:
+            continue
+        idx = 1
+        while idx + 1 < len(call):
+            if str(call[idx]).lower() == "-parent":
+                return True
+            idx += 2
+    return False
+
+checks["tkinter_commondialog_supported_commands_dispatch_to_tk_call"] = (
+    messagebox_result == "ok"
+    and askopenfilename_result == ""
+    and _commondialog_call_has_parent("tk_messageBox")
+    and _commondialog_call_has_parent("tk_getOpenFile")
+)
+
+class _UnsupportedDialog(commondialog.Dialog):
+    command = "tk_chooseFont"
+
+try:
+    _UnsupportedDialog(master=root).show()
+except BaseException as exc:  # noqa: BLE001
+    checks["tkinter_commondialog_unsupported_command_error_shape"] = (
+        type(exc).__name__ == "RuntimeError"
+        and str(exc) == 'unsupported commondialog command "tk_chooseFont"'
+    )
+else:
+    checks["tkinter_commondialog_unsupported_command_error_shape"] = False
+
 expected_all = {
     "BooleanVar",
     "Button",
@@ -642,6 +797,7 @@ ttk_expected_surfaces = {
     "Checkbutton",
     "Combobox",
     "LabelFrame",
+    "LabeledScale",
     "Labelframe",
     "Menubutton",
     "Notebook",
@@ -655,6 +811,8 @@ ttk_expected_surfaces = {
     "Spinbox",
     "Style",
     "Treeview",
+    "setup_master",
+    "tclobjs_to_py",
 }
 checks["ttk_new_surfaces_exported"] = all(
     hasattr(ttk, name) for name in ttk_expected_surfaces
@@ -664,6 +822,18 @@ checks["ttk_all_includes_new_surfaces"] = ttk_expected_surfaces.issubset(
 )
 checks["ttk_alias_exports_present"] = (
     ttk.LabelFrame is ttk.Labelframe and ttk.PanedWindow is ttk.Panedwindow
+)
+checks["ttk_tkinter_symbol_exported"] = ttk.tkinter is tkinter
+checks["ttk_setup_master_default_root"] = (
+    ttk.setup_master(root) is root and ttk.setup_master() is root
+)
+tclobj_probe = {"numbers": ("7", "2.5"), "empty": (), "plain": "ok"}
+tclobj_converted = ttk.tclobjs_to_py(tclobj_probe)
+checks["ttk_tclobjs_to_py_converts_tuple_like_values"] = (
+    tclobj_converted is tclobj_probe
+    and tclobj_probe["numbers"] == [7, 2.5]
+    and tclobj_probe["empty"] == ""
+    and tclobj_probe["plain"] == "ok"
 )
 
 ttk_call_start = len(root._tk_app._handle["calls"])
@@ -707,6 +877,7 @@ ttk_radio = ttk.Radiobutton(root, text="ttk-radio")
 ttk_scale = ttk.Scale(root)
 ttk_spinbox = ttk.Spinbox(root)
 ttk_tree = ttk.Treeview(root)
+ttk_labeled = ttk.LabeledScale(root, from_=1, to=9)
 ttk_option_var = tkinter.StringVar(root, value="default")
 ttk_option = ttk.OptionMenu(root, ttk_option_var, "default", "alpha")
 
@@ -733,6 +904,7 @@ ttk_notebook.enable_traversal()
 ttk_paned.insert("end", ttk_tab_frame, weight=1)
 ttk_paned.pane(ttk_tab_frame, weight=2)
 ttk_paned.pane(ttk_tab_frame, option="weight")
+ttk_paned.forget(ttk_tab_frame)
 ttk_paned.sashpos(0)
 ttk_paned.sashpos(0, 9)
 ttk_progress.start()
@@ -743,6 +915,9 @@ ttk_progress.stop()
 ttk_radio.invoke()
 ttk_scale.get()
 ttk_scale.get(6, 7)
+ttk_scale.configure({"from": 1, "to": 9})
+ttk_scale.configure(from_=2)
+ttk_scale.configure(command="noop")
 ttk_spinbox.set("spin-value")
 ttk_bbox = ttk_tree.bbox("row0")
 ttk_children_root = ttk_tree.get_children()
@@ -828,6 +1003,16 @@ ttk_tree.tag_configure("tag1", option="foreground")
 ttk_tag_has_all = ttk_tree.tag_has("tag1")
 ttk_tag_has_row1 = ttk_tree.tag_has("tag1", "row1")
 ttk_option.set_menu("beta", "beta", "gamma")
+labeled_has_children_before_destroy = isinstance(ttk_labeled.label, ttk.Label) and isinstance(
+    ttk_labeled.scale, ttk.Scale
+)
+labeled_value_before = ttk_labeled.value
+ttk_labeled.value = 4
+labeled_value_after = ttk_labeled.value
+ttk_labeled.destroy()
+labeled_destroyed = ttk_labeled.label is None and ttk_labeled.scale is None
+optionmenu_had_variable = hasattr(ttk_option, "_variable")
+ttk_option.destroy()
 
 style = ttk.Style(root)
 style.configure("Probe.TButton", padding=4)
@@ -960,8 +1145,21 @@ checks["ttk_panedwindow_methods_forwarded"] = (
     _saw_prefix(ttk_paned._w, "insert", "end", ttk_tab_frame, "-weight", 1)
     and _saw_prefix(ttk_paned._w, "pane", ttk_tab_frame, "-weight", 2)
     and _saw_prefix(ttk_paned._w, "pane", ttk_tab_frame, "-weight")
+    and _saw_prefix(ttk_paned._w, "forget", ttk_tab_frame)
     and _saw_prefix(ttk_paned._w, "sashpos", 0)
     and _saw_prefix(ttk_paned._w, "sashpos", 0, 9)
+)
+
+range_changed_events = [
+    call
+    for call in method_calls
+    if tuple(call[:4]) == ("event", "generate", ttk_scale._w, "<<RangeChanged>>")
+]
+checks["ttk_scale_configure_emits_range_changed_event"] = (
+    _saw_prefix(ttk_scale._w, "configure", "-from", 1, "-to", 9)
+    and _saw_prefix(ttk_scale._w, "configure", "-from_", 2)
+    and _saw_prefix(ttk_scale._w, "configure", "-command", "noop")
+    and len(range_changed_events) == 2
 )
 
 checks["ttk_treeview_methods_forwarded"] = (
@@ -1048,6 +1246,174 @@ checks["ttk_optionmenu_set_menu_updates_values"] = (
     and ttk_option.values == ("beta", "gamma")
     and ttk_option_var.get() == "beta"
 )
+checks["ttk_optionmenu_destroy_releases_variable"] = optionmenu_had_variable and (
+    not hasattr(ttk_option, "_variable") and not hasattr(ttk_option, "variable")
+)
+checks["ttk_labeledscale_wrapper_sanity"] = (
+    labeled_has_children_before_destroy
+    and labeled_value_before == 1
+    and labeled_value_after == 4
+    and labeled_destroyed
+)
+root.destroy()
+
+for key in sorted(checks):
+    print(f"CHECK|{key}|{checks[key]}")
+"""
+
+_TTK_PHASE0_PARITY_PROBE = """
+import builtins
+import sys
+
+sys.path.insert(0, __STDLIB_ROOT__)
+
+def _capabilities_has(name=None):
+    return name in {"gui.window", "gui", "process.spawn", "process"}
+
+def _app_new(_opts=None):
+    create_options = dict(_opts or {})
+    return {
+        "vars": {},
+        "commands": {},
+        "calls": [],
+        "create_options": create_options,
+    }
+
+def _tk_call(app, argv):
+    app["calls"].append(tuple(argv))
+    if not argv:
+        return None
+    op = str(argv[0])
+    if op == "set":
+        if len(argv) == 2:
+            return app["vars"][str(argv[1])]
+        if len(argv) == 3:
+            app["vars"][str(argv[1])] = argv[2]
+            return argv[2]
+        raise RuntimeError("invalid set arity")
+    if op == "unset":
+        if len(argv) != 2:
+            raise RuntimeError("invalid unset arity")
+        app["vars"].pop(str(argv[1]), None)
+        return ""
+    if op == "rename" and len(argv) == 3 and argv[2] == "":
+        app["commands"].pop(str(argv[1]), None)
+        return ""
+    if len(argv) >= 2 and str(argv[1]) == "selection":
+        return ()
+    if len(argv) >= 2 and str(argv[1]) == "set":
+        if len(argv) == 3:
+            return ()
+        return ""
+    return tuple(argv)
+
+def _tk_bind_command(app, name, callback):
+    app["commands"][str(name)] = callback
+
+def _tk_unbind_command(app, name):
+    app["commands"].pop(str(name), None)
+    app["calls"].append(("rename", str(name), ""))
+    return None
+
+def _tk_after(_app, delay_ms, callback):
+    callback()
+    return f"after#{int(delay_ms)}"
+
+builtins._molt_intrinsics = {
+    "molt_capabilities_has": _capabilities_has,
+    "molt_tk_available": lambda: True,
+    "molt_tk_app_new": _app_new,
+    "molt_tk_quit": lambda _app=None: None,
+    "molt_tk_mainloop": lambda _app=None: None,
+    "molt_tk_do_one_event": lambda _app=None, _flags=None: False,
+    "molt_tk_after": _tk_after,
+    "molt_tk_call": _tk_call,
+    "molt_tk_bind_command": _tk_bind_command,
+    "molt_tk_unbind_command": _tk_unbind_command,
+    "molt_tk_filehandler_create": lambda _app=None, _fd=None, _mask=None, _callback=None, _file=None: None,
+    "molt_tk_filehandler_delete": lambda _app=None, _fd=None: None,
+    "molt_tk_destroy_widget": lambda _app=None, _w=None: None,
+    "molt_tk_last_error": lambda _app=None: None,
+    "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
+    "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",
+    "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
+    "molt_tk_dialog_show": lambda _app=None, _master=None, _title=None, _text=None, _bitmap=None, _default=None, _strings=None: 0,
+    "molt_tk_simpledialog_query": lambda _app=None, _parent=None, _title=None, _prompt=None, _initial=None, _kind=None, _min=None, _max=None: "",
+}
+
+import tkinter
+import tkinter.ttk as ttk
+
+checks = {}
+root = tkinter.Tk(useTk=False)
+
+checks["exports"] = all(
+    hasattr(ttk, name)
+    for name in (
+        "LabeledScale",
+        "OptionMenu",
+        "PanedWindow",
+        "Panedwindow",
+        "Scale",
+        "setup_master",
+        "tclobjs_to_py",
+    )
+)
+checks["all"] = {"LabeledScale", "setup_master", "tclobjs_to_py"}.issubset(
+    set(ttk.__all__)
+)
+checks["tkinter_symbol"] = ttk.tkinter is tkinter
+checks["setup_master"] = ttk.setup_master(root) is root and ttk.setup_master() is root
+
+tclobj_probe = {"numbers": ("7", "2.5"), "empty": (), "plain": "ok"}
+tclobj_converted = ttk.tclobjs_to_py(tclobj_probe)
+checks["tclobjs_to_py"] = (
+    tclobj_converted is tclobj_probe
+    and tclobj_probe["numbers"] == [7, 2.5]
+    and tclobj_probe["empty"] == ""
+    and tclobj_probe["plain"] == "ok"
+)
+
+paned = ttk.Panedwindow(root)
+pane_child = ttk.Frame(paned)
+paned.forget(pane_child)
+
+scale = ttk.Scale(root)
+scale.configure({"from": 1, "to": 9})
+scale.configure(from_=2)
+
+option_var = tkinter.StringVar(root, value="alpha")
+option = ttk.OptionMenu(root, option_var, "alpha", "beta")
+had_option_var = hasattr(option, "_variable")
+option.destroy()
+checks["optionmenu_destroy"] = had_option_var and not hasattr(option, "_variable")
+
+labeled = ttk.LabeledScale(root, from_=1, to=4)
+labeled_start = labeled.value
+labeled.value = 3
+labeled.destroy()
+checks["labeledscale"] = (
+    labeled_start == 1 and labeled.label is None and labeled.scale is None
+)
+
+calls = root._tk_app._handle["calls"]
+
+def _saw_prefix(*expected):
+    n = len(expected)
+    return any(tuple(call[:n]) == expected for call in calls)
+
+range_changed_events = [
+    call
+    for call in calls
+    if tuple(call[:4]) == ("event", "generate", scale._w, "<<RangeChanged>>")
+]
+checks["panedwindow_forget"] = _saw_prefix(paned._w, "forget", pane_child)
+checks["scale_configure"] = (
+    _saw_prefix(scale._w, "configure", "-from", 1, "-to", 9)
+    and _saw_prefix(scale._w, "configure", "-from_", 2)
+    and len(range_changed_events) == 2
+)
+
 root.destroy()
 
 for key in sorted(checks):
@@ -1162,8 +1528,15 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_all_exports_include_widget_and_var_wrappers",
         "tkinter_after_callback_invoked",
         "tkinter_call_roundtrip",
+        "tkinter_commondialog_supported_commands_dispatch_to_tk_call",
+        "tkinter_commondialog_unsupported_command_error_shape",
         "tkinter_create_use_tk_false_forwarded",
         "tkinter_deletecommand_runtime_notified",
+        "tkinter_dialog_alias_exports_present",
+        "tkinter_dialog_module_compat_symbols_present",
+        "tkinter_filedialog_compat_cancel_returns_none",
+        "tkinter_filedialog_compat_classes_route_to_wrappers",
+        "tkinter_filedialog_compat_symbols_present",
         "tkinter_named_variable_uses_explicit_name",
         "tkinter_simpledialog_query_helpers",
         "tkinter_set_get_roundtrip",
@@ -1176,14 +1549,20 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "ttk_all_includes_new_surfaces",
         "ttk_alias_exports_present",
         "ttk_constructor_command_routing",
+        "ttk_labeledscale_wrapper_sanity",
         "ttk_notebook_methods_forwarded",
         "ttk_notebook_tab_conflict_error",
         "ttk_new_surfaces_exported",
+        "ttk_optionmenu_destroy_releases_variable",
         "ttk_optionmenu_set_menu_updates_values",
         "ttk_panedwindow_methods_forwarded",
+        "ttk_scale_configure_emits_range_changed_event",
+        "ttk_setup_master_default_root",
         "ttk_style_configure_conflict_error",
         "ttk_style_map_conflict_error",
         "ttk_style_methods_forwarded",
+        "ttk_tclobjs_to_py_converts_tuple_like_values",
+        "ttk_tkinter_symbol_exported",
         "ttk_tree_column_conflict_error",
         "ttk_treeview_return_fidelity",
         "ttk_treeview_tag_bind_callback_fidelity",
@@ -1198,3 +1577,30 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
 
     failed = sorted(name for name in expected if not checks[name])
     assert not failed, f"headless stub checks failed: {failed}"
+
+
+def test_ttk_phase0_wrapper_parity_surface_and_methods() -> None:
+    lines = _run_probe(_TTK_PHASE0_PARITY_PROBE)
+    checks: dict[str, bool] = {}
+    for line in lines:
+        if not line.startswith("CHECK|"):
+            continue
+        _, key, raw = line.split("|", 2)
+        checks[key] = raw == "True"
+
+    expected = {
+        "all",
+        "exports",
+        "labeledscale",
+        "optionmenu_destroy",
+        "panedwindow_forget",
+        "scale_configure",
+        "setup_master",
+        "tclobjs_to_py",
+        "tkinter_symbol",
+    }
+    missing = sorted(expected - checks.keys())
+    assert not missing, f"missing expected ttk parity checks: {missing}"
+
+    failed = sorted(name for name in expected if not checks[name])
+    assert not failed, f"ttk parity checks failed: {failed}"

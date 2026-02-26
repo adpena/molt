@@ -5,7 +5,8 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-import math
+import operator
+import re
 from typing import Any, Callable, Iterable
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
@@ -15,6 +16,10 @@ _MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic(
 _MOLT_JSON_ENCODE_BASESTRING_ASCII = _require_intrinsic(
     "molt_json_encode_basestring_ascii_obj", globals()
 )
+_MOLT_JSON_DETECT_ENCODING = _require_intrinsic("molt_json_detect_encoding", globals())
+_MOLT_JSON_LOADS_EX = _require_intrinsic("molt_json_loads_ex", globals())
+_MOLT_JSON_DUMPS_EX = _require_intrinsic("molt_json_dumps_ex", globals())
+_MOLT_JSON_RAW_DECODE_EX = _require_intrinsic("molt_json_raw_decode_ex", globals())
 
 
 __all__ = [
@@ -27,7 +32,7 @@ __all__ = [
     "JSONEncoder",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue full json parity work (JSONDecodeError formatting nuances, cls hooks, and additional runtime fast paths).
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue full json parity work (JSONDecodeError formatting nuances and remaining edge-case diagnostics).
 
 
 class JSONDecodeError(ValueError):
@@ -46,10 +51,6 @@ class JSONDecodeError(ValueError):
 
 
 def _calc_lineno_col(doc: str, pos: int) -> tuple[int, int]:
-    if pos < 0:
-        pos = 0
-    if pos > len(doc):
-        pos = len(doc)
     lineno = doc.count("\n", 0, pos) + 1
     line_start = doc.rfind("\n", 0, pos)
     if line_start < 0:
@@ -57,6 +58,96 @@ def _calc_lineno_col(doc: str, pos: int) -> tuple[int, int]:
     else:
         colno = pos - line_start
     return lineno, colno
+
+
+def _decode_bytes_payload(payload: bytes | bytearray) -> str:
+    data = bytes(payload)
+    if not data:
+        return ""
+    encoding = _MOLT_JSON_DETECT_ENCODING(data)
+    if encoding == "utf-8" and data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig")
+    return data.decode(encoding)
+
+
+def _coerce_json_text(payload: str | bytes | bytearray) -> str:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, (bytes, bytearray)):
+        return _decode_bytes_payload(payload)
+    raise TypeError(
+        f"the JSON object must be str, bytes or bytearray, not {type(payload).__name__}"
+    )
+
+
+def _default_separators(indent: int | str | None) -> tuple[str, str]:
+    return (", ", ": ") if indent is None else (",", ": ")
+
+
+_JSON_ERROR_RE = re.compile(
+    r"^(?P<msg>.*): line (?P<line>\d+) column (?P<col>\d+) \(char (?P<pos>\d+)\)$"
+)
+
+
+def _raise_json_decode_from_value_error(exc: ValueError, doc: str) -> None:
+    text = str(exc)
+    match = _JSON_ERROR_RE.match(text)
+    if match is None:
+        raise exc
+    msg = match.group("msg")
+    pos = int(match.group("pos"))
+    raise JSONDecodeError(msg, doc, pos) from None
+
+
+def _walk_circular_markers(obj: Any, markers: set[int]) -> None:
+    if isinstance(obj, dict):
+        marker = id(obj)
+        if marker in markers:
+            raise ValueError("Circular reference detected")
+        markers.add(marker)
+        for key, value in obj.items():
+            _walk_circular_markers(key, markers)
+            _walk_circular_markers(value, markers)
+        markers.remove(marker)
+        return
+    if isinstance(obj, (list, tuple)):
+        marker = id(obj)
+        if marker in markers:
+            raise ValueError("Circular reference detected")
+        markers.add(marker)
+        for item in obj:
+            _walk_circular_markers(item, markers)
+        markers.remove(marker)
+
+
+def _validate_no_circular_references(obj: Any) -> None:
+    _walk_circular_markers(obj, set())
+
+
+def _try_intrinsic_dumps(
+    obj: Any,
+    *,
+    skipkeys: bool,
+    ensure_ascii: bool,
+    check_circular: bool,
+    allow_nan: bool,
+    sort_keys: bool,
+    indent: int | str | None,
+    separators: tuple[str, str],
+    default: Callable[[Any], Any] | None,
+) -> str:
+    return _MOLT_JSON_DUMPS_EX(
+        obj,
+        skipkeys,
+        ensure_ascii,
+        check_circular,
+        allow_nan,
+        sort_keys,
+        indent,
+        separators[0],
+        separators[1],
+        default,
+    )
 
 
 def loads(
@@ -68,38 +159,43 @@ def loads(
     parse_int: Callable[[str], Any] | None = None,
     parse_constant: Callable[[str], Any] | None = None,
     object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-    **_kwargs: Any,
+    **kw: Any,
 ) -> Any:
-    if isinstance(s, (bytes, bytearray)):
-        text = s.decode("utf-8")
-    elif isinstance(s, str):
-        text = s
-    else:
-        raise TypeError(
-            f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
-        )
-    if (
-        cls is None
-        and object_hook is None
-        and parse_float is None
-        and parse_int is None
-        and parse_constant is None
-        and object_pairs_hook is None
-        and not _kwargs
-    ):
-        # Keep scalar fast path explicit-only; do not swallow intrinsic failures.
-        stripped = text.strip()
-        if stripped in {"true", "false", "null", "NaN", "Infinity", "-Infinity"}:
-            return _MOLT_JSON_PARSE_SCALAR(stripped)
+    strict_explicit = "strict" in kw
+    strict = kw.pop("strict", True)
+    decoder_cls = JSONDecoder if cls is None else cls
+    text = _coerce_json_text(s)
+    if isinstance(s, str) and text.startswith("\ufeff"):
+        raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)", text, 0)
+    if decoder_cls is JSONDecoder and not kw:
+        try:
+            return _MOLT_JSON_LOADS_EX(
+                text,
+                parse_float,
+                parse_int,
+                parse_constant,
+                object_hook,
+                object_pairs_hook,
+                strict,
+            )
+        except ValueError as exc:
+            _raise_json_decode_from_value_error(exc, text)
 
-    decoder_cls = cls or JSONDecoder
-    decoder = decoder_cls(
-        object_hook=object_hook,
-        parse_float=parse_float,
-        parse_int=parse_int,
-        parse_constant=parse_constant,
-        object_pairs_hook=object_pairs_hook,
-    )
+    decoder_kwargs = dict(kw)
+    if object_hook is not None:
+        decoder_kwargs["object_hook"] = object_hook
+    if parse_float is not None:
+        decoder_kwargs["parse_float"] = parse_float
+    if parse_int is not None:
+        decoder_kwargs["parse_int"] = parse_int
+    if parse_constant is not None:
+        decoder_kwargs["parse_constant"] = parse_constant
+    if object_pairs_hook is not None:
+        decoder_kwargs["object_pairs_hook"] = object_pairs_hook
+    if strict_explicit or strict is not True:
+        decoder_kwargs["strict"] = strict
+
+    decoder = decoder_cls(**decoder_kwargs)
     return decoder.decode(text)
 
 
@@ -112,7 +208,7 @@ def load(
     parse_int: Callable[[str], Any] | None = None,
     parse_constant: Callable[[str], Any] | None = None,
     object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-    **_kwargs: Any,
+    **kw: Any,
 ) -> Any:
     return loads(
         fp.read(),
@@ -122,6 +218,7 @@ def load(
         parse_int=parse_int,
         parse_constant=parse_constant,
         object_pairs_hook=object_pairs_hook,
+        **kw,
     )
 
 
@@ -137,12 +234,25 @@ def dumps(
     indent: int | str | None = None,
     separators: tuple[str, str] | None = None,
     default: Callable[[Any], Any] | None = None,
+    **kw: Any,
 ) -> str:
     if separators is None:
-        separators = (", ", ": ") if indent is None else (",", ": ")
+        separators = _default_separators(indent)
     elif len(separators) != 2:
         raise ValueError("separators must be a (item, key) tuple")
     encoder_cls = cls or JSONEncoder
+    if encoder_cls is JSONEncoder and not kw:
+        return _try_intrinsic_dumps(
+            obj,
+            skipkeys=skipkeys,
+            ensure_ascii=ensure_ascii,
+            check_circular=check_circular,
+            allow_nan=allow_nan,
+            sort_keys=sort_keys,
+            indent=indent,
+            separators=separators,
+            default=default,
+        )
     encoder = encoder_cls(
         skipkeys=skipkeys,
         ensure_ascii=ensure_ascii,
@@ -152,6 +262,7 @@ def dumps(
         indent=indent,
         separators=separators,
         default=default,
+        **kw,
     )
     return encoder.encode(obj)
 
@@ -169,6 +280,7 @@ def dump(
     indent: int | str | None = None,
     separators: tuple[str, str] | None = None,
     default: Callable[[Any], Any] | None = None,
+    **kw: Any,
 ) -> None:
     text = dumps(
         obj,
@@ -181,173 +293,9 @@ def dump(
         indent=indent,
         separators=separators,
         default=default,
+        **kw,
     )
     fp.write(text)
-
-
-class _Encoder:
-    def __init__(
-        self,
-        *,
-        skipkeys: bool,
-        ensure_ascii: bool,
-        check_circular: bool,
-        allow_nan: bool,
-        sort_keys: bool,
-        indent: int | str | None,
-        separators: tuple[str, str],
-        default: Callable[[Any], Any] | None,
-    ) -> None:
-        self.skipkeys = skipkeys
-        self.ensure_ascii = ensure_ascii
-        self.check_circular = check_circular
-        self.allow_nan = allow_nan
-        self.sort_keys = sort_keys
-        self.indent = indent
-        self.sep_item, self.sep_key = separators
-        self.default = default
-        self._stack: list[int] = []
-
-    def encode(self, obj: Any) -> str:
-        return self._encode(obj, 0)
-
-    def _encode(self, obj: Any, depth: int) -> str:
-        if obj is None:
-            return "null"
-        if obj is True:
-            return "true"
-        if obj is False:
-            return "false"
-        if isinstance(obj, int) and not isinstance(obj, bool):
-            return str(obj)
-        if isinstance(obj, float):
-            return self._encode_float(obj)
-        if isinstance(obj, str):
-            return self._encode_str(obj)
-        if isinstance(obj, (list, tuple)):
-            return self._encode_list(obj, depth)
-        if isinstance(obj, dict):
-            return self._encode_dict(obj, depth)
-        if self.default is not None:
-            return self._encode(self.default(obj), depth)
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-    def _encode_float(self, value: float) -> str:
-        if math.isfinite(value):
-            return repr(value)
-        if not self.allow_nan:
-            raise ValueError("Out of range float values are not JSON compliant")
-        if math.isnan(value):
-            return "NaN"
-        if value > 0:
-            return "Infinity"
-        return "-Infinity"
-
-    def _encode_str(self, value: str) -> str:
-        if self.ensure_ascii:
-            return _MOLT_JSON_ENCODE_BASESTRING_ASCII(value)
-        return _MOLT_JSON_ENCODE_BASESTRING(value)
-
-    def _escape_codepoint(self, code: int) -> str:
-        if code <= 0xFFFF:
-            return f"\\u{code:04x}"
-        code -= 0x10000
-        high = 0xD800 + (code >> 10)
-        low = 0xDC00 + (code & 0x3FF)
-        return f"\\u{high:04x}\\u{low:04x}"
-
-    def _encode_list(self, items: list[Any] | tuple[Any, ...], depth: int) -> str:
-        if self._push(items):
-            raise ValueError("Circular reference detected")
-        try:
-            if not items:
-                return "[]"
-            pieces: list[str] = []
-            for item in items:
-                pieces.append(self._encode(item, depth + 1))
-            if self.indent is None:
-                return "[" + self.sep_item.join(pieces) + "]"
-            return self._format_block(pieces, depth, "[", "]")
-        finally:
-            self._pop(items)
-
-    def _encode_dict(self, mapping: dict[Any, Any], depth: int) -> str:
-        if self._push(mapping):
-            raise ValueError("Circular reference detected")
-        try:
-            if not mapping:
-                return "{}"
-            items = list(mapping.items())
-            if self.sort_keys:
-                items.sort()
-            entries: list[tuple[str, Any]] = []
-            for key, value in items:
-                key_text = self._key_to_text(key)
-                if key_text is None:
-                    if self.skipkeys:
-                        continue
-                    typename = type(key).__name__
-                    raise TypeError(
-                        f"keys must be str, int, float, bool or None, not {typename}"
-                    )
-                entries.append((key_text, value))
-            pieces: list[str] = []
-            for key_text, value in entries:
-                encoded_key = self._encode_str(key_text)
-                encoded_val = self._encode(value, depth + 1)
-                pieces.append(encoded_key + self.sep_key + encoded_val)
-            if self.indent is None:
-                return "{" + self.sep_item.join(pieces) + "}"
-            return self._format_block(pieces, depth, "{", "}")
-        finally:
-            self._pop(mapping)
-
-    def _format_block(
-        self, pieces: list[str], depth: int, open_ch: str, close_ch: str
-    ) -> str:
-        pad = self._indent_text()
-        lines: list[str] = []
-        for idx, piece in enumerate(pieces):
-            suffix = self.sep_item if idx < len(pieces) - 1 else ""
-            lines.append(pad * (depth + 1) + piece + suffix)
-        inner = "\n".join(lines)
-        return f"{open_ch}\n{inner}\n{pad * depth}{close_ch}"
-
-    def _indent_text(self) -> str:
-        if self.indent is None:
-            return ""
-        if isinstance(self.indent, int):
-            return " " * self.indent
-        return self.indent
-
-    def _key_to_text(self, key: Any) -> str | None:
-        if isinstance(key, str):
-            return key
-        if isinstance(key, bool):
-            return "true" if key else "false"
-        if key is None:
-            return "null"
-        if isinstance(key, int):
-            return str(key)
-        if isinstance(key, float):
-            return self._encode_float(key)
-        return None
-
-    def _push(self, obj: Any) -> bool:
-        if not self.check_circular:
-            return False
-        marker = id(obj)
-        if marker in self._stack:
-            return True
-        self._stack.append(marker)
-        return False
-
-    def _pop(self, obj: Any) -> None:
-        if not self.check_circular:
-            return
-        marker = id(obj)
-        if self._stack and self._stack[-1] == marker:
-            self._stack.pop()
 
 
 class JSONEncoder:
@@ -382,7 +330,11 @@ class JSONEncoder:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
     def encode(self, obj: Any) -> str:
-        enc = _Encoder(
+        default_cb: Callable[[Any], Any] | None = self._default
+        if type(self) is not JSONEncoder:
+            default_cb = self.default
+        return _try_intrinsic_dumps(
+            obj,
             skipkeys=self.skipkeys,
             ensure_ascii=self.ensure_ascii,
             check_circular=self.check_circular,
@@ -390,289 +342,11 @@ class JSONEncoder:
             sort_keys=self.sort_keys,
             indent=self.indent,
             separators=self.separators,
-            default=self.default,
+            default=default_cb,
         )
-        return enc.encode(obj)
 
     def iterencode(self, obj: Any) -> Iterable[str]:
         yield self.encode(obj)
-
-
-class _Parser:
-    def __init__(
-        self,
-        text: str,
-        *,
-        parse_float: Callable[[str], Any] | None,
-        parse_int: Callable[[str], Any] | None,
-        parse_constant: Callable[[str], Any] | None,
-        object_hook: Callable[[dict[str, Any]], Any] | None,
-        object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None,
-        strict: bool = True,
-    ) -> None:
-        self.text = text
-        self.length = len(text)
-        self.index = 0
-        self.parse_float = parse_float
-        self.parse_int = parse_int
-        self.parse_constant = parse_constant
-        self.object_hook = object_hook
-        self.object_pairs_hook = object_pairs_hook
-        self.strict = strict
-
-    def _error(self, msg: str, pos: int | None = None) -> JSONDecodeError:
-        if pos is None:
-            pos = self.index
-        return JSONDecodeError(msg, self.text, pos)
-
-    def parse(self) -> Any:
-        self._consume_ws()
-        value = self._parse_value()
-        self._consume_ws()
-        if self.index != self.length:
-            raise self._error("Extra data")
-        return value
-
-    def parse_raw(self, idx: int) -> tuple[Any, int]:
-        if idx < 0:
-            raise self._error("Expecting value", 0)
-        if idx > self.length:
-            raise self._error("Expecting value", self.length)
-        self.index = idx
-        self._consume_ws()
-        value = self._parse_value()
-        return value, self.index
-
-    def _consume_ws(self) -> None:
-        while self.index < self.length and self.text[self.index] in " \t\r\n":
-            self.index += 1
-
-    def _peek(self) -> str:
-        if self.index >= self.length:
-            return ""
-        return self.text[self.index]
-
-    def _advance(self) -> str:
-        ch = self._peek()
-        self.index += 1
-        return ch
-
-    def _parse_value(self) -> Any:
-        ch = self._peek()
-        if ch == "{":
-            return self._parse_object()
-        if ch == "[":
-            return self._parse_array()
-        if ch == '"':
-            return self._parse_string()
-        if ch == "t":
-            return self._parse_literal("true", True)
-        if ch == "f":
-            return self._parse_literal("false", False)
-        if ch == "n":
-            return self._parse_literal("null", None)
-        if ch == "N":
-            return self._parse_constant("NaN")
-        if ch == "I":
-            return self._parse_constant("Infinity")
-        if ch == "-" and self._text_startswith("-Infinity"):
-            return self._parse_constant("-Infinity")
-        if ch == "-" or self._is_digit(ch):
-            return self._parse_number()
-        raise self._error("Expecting value")
-
-    def _parse_literal(self, text: str, value: Any) -> Any:
-        if self._text_startswith(text):
-            self.index += len(text)
-            return value
-        raise self._error("Expecting value")
-
-    def _parse_constant(self, text: str) -> Any:
-        if not self._text_startswith(text):
-            raise self._error("Expecting value")
-        self.index += len(text)
-        if self.parse_constant is not None:
-            return self.parse_constant(text)
-        if text == "NaN":
-            return float("nan")
-        if text == "Infinity":
-            return float("inf")
-        return float("-inf")
-
-    def _parse_number(self) -> Any:
-        start = self.index
-        if self._peek() == "-":
-            self.index += 1
-        if self.index >= self.length:
-            raise self._error("Expecting value", start)
-        ch = self.text[self.index]
-        if ch == "0":
-            self.index += 1
-        elif self._is_digit(ch):
-            while self.index < self.length and self._is_digit(self.text[self.index]):
-                self.index += 1
-        else:
-            raise self._error("Expecting value", start)
-        if self.index < self.length and self.text[self.index] == ".":
-            self.index += 1
-            if self.index >= self.length or not self._is_digit(self.text[self.index]):
-                raise self._error("Expecting value", start)
-            while self.index < self.length and self._is_digit(self.text[self.index]):
-                self.index += 1
-        if self.index < self.length and self.text[self.index] in "eE":
-            self.index += 1
-            if self.index < self.length and self.text[self.index] in "+-":
-                self.index += 1
-            if self.index >= self.length or not self._is_digit(self.text[self.index]):
-                raise self._error("Expecting value", start)
-            while self.index < self.length and self._is_digit(self.text[self.index]):
-                self.index += 1
-        raw = self.text[start : self.index]
-        if "." in raw or "e" in raw or "E" in raw:
-            if self.parse_float is not None:
-                return self.parse_float(raw)
-            return float(raw)
-        if self.parse_int is not None:
-            return self.parse_int(raw)
-        return int(raw)
-
-    def _parse_string(self) -> str:
-        if self._advance() != '"':
-            raise self._error("Expecting value")
-        start = self.index - 1
-        out: list[str] = []
-        while self.index < self.length:
-            ch = self._advance()
-            if ch == '"':
-                return "".join(out)
-            if ch == "\\":
-                if self.index >= self.length:
-                    raise self._error("Invalid \\uXXXX escape", start)
-                esc = self._advance()
-                if esc == '"':
-                    out.append('"')
-                elif esc == "\\":
-                    out.append("\\")
-                elif esc == "/":
-                    out.append("/")
-                elif esc == "b":
-                    out.append("\b")
-                elif esc == "f":
-                    out.append("\f")
-                elif esc == "n":
-                    out.append("\n")
-                elif esc == "r":
-                    out.append("\r")
-                elif esc == "t":
-                    out.append("\t")
-                elif esc == "u":
-                    out.append(self._parse_unicode_escape())
-                else:
-                    raise self._error("Invalid \\uXXXX escape")
-            else:
-                if ord(ch) < 0x20 and self.strict:
-                    raise self._error("Invalid control character")
-                out.append(ch)
-        raise self._error("Unterminated string starting at", start)
-
-    def _parse_unicode_escape(self) -> str:
-        if self.index + 4 > self.length:
-            raise self._error("Invalid \\uXXXX escape")
-        hex_text = self.text[self.index : self.index + 4]
-        if not _is_hex(hex_text):
-            raise self._error("Invalid \\uXXXX escape")
-        code = int(hex_text, 16)
-        self.index += 4
-        if 0xD800 <= code <= 0xDBFF:
-            if self._text_startswith("\\u"):
-                low_start = self.index + 2
-                if low_start + 4 <= self.length:
-                    low_text = self.text[low_start : low_start + 4]
-                    if _is_hex(low_text):
-                        low = int(low_text, 16)
-                        if 0xDC00 <= low <= 0xDFFF:
-                            self.index = low_start + 4
-                            combined = (
-                                0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
-                            )
-                            return chr(combined)
-            return chr(code)
-        if 0xDC00 <= code <= 0xDFFF:
-            return chr(code)
-        return chr(code)
-
-    def _parse_array(self) -> list[Any]:
-        if self._advance() != "[":
-            raise self._error("Expecting value")
-        items: list[Any] = []
-        self._consume_ws()
-        if self._peek() == "]":
-            self.index += 1
-            return items
-        while True:
-            self._consume_ws()
-            items.append(self._parse_value())
-            self._consume_ws()
-            ch = self._peek()
-            if ch == "]":
-                self.index += 1
-                break
-            if ch == ",":
-                self.index += 1
-                continue
-            raise self._error("Expecting ',' delimiter")
-        return items
-
-    def _parse_object(self) -> Any:
-        if self._advance() != "{":
-            raise self._error("Expecting value")
-        pairs: list[tuple[str, Any]] = []
-        self._consume_ws()
-        if self._peek() == "}":
-            self.index += 1
-            return self._finish_object(pairs)
-        while True:
-            self._consume_ws()
-            if self._peek() != '"':
-                raise self._error("Expecting property name enclosed in double quotes")
-            key = self._parse_string()
-            self._consume_ws()
-            if self._peek() != ":":
-                raise self._error("Expecting ':' delimiter")
-            self.index += 1
-            self._consume_ws()
-            value = self._parse_value()
-            pairs.append((key, value))
-            self._consume_ws()
-            ch = self._peek()
-            if ch == "}":
-                self.index += 1
-                break
-            if ch == ",":
-                self.index += 1
-                continue
-            raise self._error("Expecting ',' delimiter")
-        return self._finish_object(pairs)
-
-    @staticmethod
-    def _is_digit(ch: str) -> bool:
-        return "0" <= ch <= "9"
-
-    def _text_startswith(self, text: str) -> bool:
-        end = self.index + len(text)
-        if end > self.length:
-            return False
-        return self.text[self.index : end] == text
-
-    def _finish_object(self, pairs: list[tuple[str, Any]]) -> Any:
-        if self.object_pairs_hook is not None:
-            return self.object_pairs_hook(pairs)
-        obj: dict[str, Any] = {}
-        for key, value in pairs:
-            obj[key] = value
-        if self.object_hook is not None:
-            return self.object_hook(obj)
-        return obj
 
 
 class JSONDecoder:
@@ -698,36 +372,35 @@ class JSONDecoder:
             raise TypeError(
                 f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
             )
-        parser = _Parser(
-            s,
-            parse_float=self.parse_float,
-            parse_int=self.parse_int,
-            parse_constant=self.parse_constant,
-            object_hook=self.object_hook,
-            object_pairs_hook=self.object_pairs_hook,
-            strict=self.strict,
-        )
-        return parser.parse()
+        try:
+            return _MOLT_JSON_LOADS_EX(
+                s,
+                self.parse_float,
+                self.parse_int,
+                self.parse_constant,
+                self.object_hook,
+                self.object_pairs_hook,
+                self.strict,
+            )
+        except ValueError as exc:
+            _raise_json_decode_from_value_error(exc, s)
 
     def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]:
         if not isinstance(s, str):
-            raise TypeError(
-                f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
+            raise TypeError(f"first argument must be a string, not {type(s).__name__}")
+        idx = operator.index(idx)
+        if idx < 0:
+            raise ValueError("idx cannot be negative")
+        try:
+            return _MOLT_JSON_RAW_DECODE_EX(
+                s,
+                idx,
+                self.parse_float,
+                self.parse_int,
+                self.parse_constant,
+                self.object_hook,
+                self.object_pairs_hook,
+                self.strict,
             )
-        parser = _Parser(
-            s,
-            parse_float=self.parse_float,
-            parse_int=self.parse_int,
-            parse_constant=self.parse_constant,
-            object_hook=self.object_hook,
-            object_pairs_hook=self.object_pairs_hook,
-            strict=self.strict,
-        )
-        return parser.parse_raw(idx)
-
-
-def _is_hex(text: str) -> bool:
-    for ch in text:
-        if ch not in "0123456789abcdefABCDEF":
-            return False
-    return True
+        except ValueError as exc:
+            _raise_json_decode_from_value_error(exc, s)

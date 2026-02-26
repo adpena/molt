@@ -2,6 +2,7 @@ use cranelift::codegen::Context;
 use cranelift::codegen::ir::{FuncRef, Function};
 use cranelift::codegen::isa;
 use cranelift::prelude::*;
+use cranelift_frontend::Switch;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
@@ -485,36 +486,42 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
         "object_set_class",
     ];
 
+    let mut uses_by_name: HashMap<&str, Vec<(usize, usize, &str)>> = HashMap::new();
+    for (use_idx, use_op) in func_ir.ops.iter().enumerate() {
+        let Some(args) = use_op.args.as_ref() else {
+            continue;
+        };
+        let kind = use_op.kind.as_str();
+        for (pos, arg) in args.iter().enumerate() {
+            uses_by_name
+                .entry(arg.as_str())
+                .or_default()
+                .push((use_idx, pos, kind));
+        }
+    }
+
     for (idx, op) in func_ir.ops.iter().enumerate() {
         if !alloc_kinds.contains(&op.kind.as_str()) {
             continue;
         }
-        let Some(out_name) = op.out.as_ref() else {
+        let Some(out_name) = op.out.as_deref() else {
+            continue;
+        };
+        let Some(uses) = uses_by_name.get(out_name) else {
+            // Dead allocation with no uses can be dropped directly.
+            remove[idx] = true;
             continue;
         };
         let mut allowed = true;
-        let mut uses = Vec::new();
-        for (use_idx, use_op) in func_ir.ops.iter().enumerate() {
-            let Some(args) = use_op.args.as_ref() else {
-                continue;
-            };
-            for (pos, arg) in args.iter().enumerate() {
-                if arg != out_name {
-                    continue;
-                }
-                if pos != 0 || !allowed_use_kinds.contains(&use_op.kind.as_str()) {
-                    allowed = false;
-                    break;
-                }
-                uses.push(use_idx);
-            }
-            if !allowed {
+        for &(_, pos, use_kind) in uses {
+            if pos != 0 || !allowed_use_kinds.contains(&use_kind) {
+                allowed = false;
                 break;
             }
         }
         if allowed {
             remove[idx] = true;
-            for use_idx in uses {
+            for &(use_idx, _, _) in uses {
                 remove[use_idx] = true;
             }
         }
@@ -608,6 +615,32 @@ fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
     let mut names: Vec<String> = names.into_iter().collect();
     names.sort();
     names
+}
+
+fn compute_if_end_maps(ops: &[OpIR]) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
+    let mut if_to_end: HashMap<usize, usize> = HashMap::new();
+    let mut else_to_end: HashMap<usize, usize> = HashMap::new();
+    let mut stack: Vec<(usize, Option<usize>)> = Vec::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "if" => stack.push((idx, None)),
+            "else" => {
+                if let Some((_, else_idx)) = stack.last_mut() {
+                    *else_idx = Some(idx);
+                }
+            }
+            "end_if" => {
+                if let Some((if_idx, else_idx)) = stack.pop() {
+                    if_to_end.insert(if_idx, idx);
+                    if let Some(else_idx) = else_idx {
+                        else_to_end.insert(else_idx, idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (if_to_end, else_to_end)
 }
 
 fn drain_cleanup_tracked(
@@ -1365,6 +1398,7 @@ impl SimpleBackend {
 
         let mut vars: HashMap<String, Variable> = HashMap::new();
         let var_names = collect_var_names(&func_ir.params, &func_ir.ops);
+        let param_name_set: HashSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
             vars.insert(name.clone(), var);
@@ -1583,6 +1617,7 @@ impl SimpleBackend {
 
         // 2. Implementation
         let ops = &func_ir.ops;
+        let (if_to_end_if, else_to_end_if) = compute_if_end_maps(ops);
         let mut skip_ops: HashSet<usize> = HashSet::new();
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
@@ -1592,24 +1627,7 @@ impl SimpleBackend {
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if" {
-                    let mut depth = 0usize;
-                    let mut scan = op_idx + 1;
-                    let mut end_if_idx = None;
-                    while scan < ops.len() {
-                        match ops[scan].kind.as_str() {
-                            "if" => depth += 1,
-                            "end_if" => {
-                                if depth == 0 {
-                                    end_if_idx = Some(scan);
-                                    break;
-                                }
-                                depth -= 1;
-                            }
-                            _ => {}
-                        }
-                        scan += 1;
-                    }
-                    if let Some(end_if_idx) = end_if_idx {
+                    if let Some(&end_if_idx) = if_to_end_if.get(&op_idx) {
                         for idx in op_idx..=end_if_idx {
                             skip_ops.insert(idx);
                         }
@@ -7565,17 +7583,16 @@ impl SimpleBackend {
 
                     let mut sorted_states: Vec<_> = resume_states.iter().copied().collect();
                     sorted_states.sort();
-
+                    let fallback_block = builder.create_block();
+                    let mut switch = Switch::new();
                     for id in sorted_states {
                         let block = state_blocks[&id];
-                        let id_const = builder.ins().iconst(types::I64, id);
-                        let is_state = builder.ins().icmp(IntCC::Equal, state, id_const);
-                        let next_check = builder.create_block();
+                        switch.set_entry((id as u64) as u128, block);
                         reachable_blocks.insert(block);
-                        reachable_blocks.insert(next_check);
-                        brif_block(&mut builder, is_state, block, &[], next_check, &[]);
-                        switch_to_block_tracking(&mut builder, next_check, &mut is_block_filled);
                     }
+                    reachable_blocks.insert(fallback_block);
+                    switch.emit(&mut builder, state, fallback_block);
+                    switch_to_block_tracking(&mut builder, fallback_block, &mut is_block_filled);
                 }
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
@@ -8709,7 +8726,7 @@ impl SimpleBackend {
                     let mut arg_cleanup = Vec::new();
                     let mut arg_cleanup_names = HashSet::new();
                     for (name, value) in args_names.iter().zip(args.iter()) {
-                        if func_ir.params.iter().any(|p| p == name) {
+                        if param_name_set.contains(name.as_str()) {
                             continue;
                         }
                         let last = last_use.get(name).copied().unwrap_or(op_idx);
@@ -11596,24 +11613,9 @@ impl SimpleBackend {
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
                     if frame.phi_ops.is_empty() {
-                        let mut depth = 0usize;
-                        let mut scan = op_idx + 1;
-                        let mut end_if_idx = None;
-                        while scan < ops.len() {
-                            match ops[scan].kind.as_str() {
-                                "if" => depth += 1,
-                                "end_if" => {
-                                    if depth == 0 {
-                                        end_if_idx = Some(scan);
-                                        break;
-                                    }
-                                    depth -= 1;
-                                }
-                                _ => {}
-                            }
-                            scan += 1;
-                        }
-                        let end_if_idx = end_if_idx.expect("else without matching end_if");
+                        let end_if_idx = *else_to_end_if
+                            .get(&op_idx)
+                            .expect("else without matching end_if");
                         let mut phi_ops: Vec<(String, String, String)> = Vec::new();
                         let mut scan_idx = end_if_idx + 1;
                         while scan_idx < ops.len() {
@@ -11990,11 +11992,17 @@ impl SimpleBackend {
                             // decref'd at the phi boundary while the output is still live,
                             // leading to UAF/segfaults for object-valued if-expressions.
                             if let Some(tracked) = block_tracked_obj.get_mut(&frame.merge_block) {
+                                let mut remove_names: HashSet<&str> =
+                                    HashSet::with_capacity(frame.phi_ops.len() * 2);
                                 for (_out, then_name, else_name) in &frame.phi_ops {
-                                    tracked.retain(|name| name != then_name && name != else_name);
+                                    remove_names.insert(then_name.as_str());
+                                    remove_names.insert(else_name.as_str());
                                 }
+                                tracked.retain(|name| !remove_names.contains(name.as_str()));
+                                let mut present: HashSet<String> =
+                                    tracked.iter().cloned().collect();
                                 for (out, _then_name, _else_name) in &frame.phi_ops {
-                                    if !tracked.iter().any(|name| name == out) {
+                                    if present.insert(out.clone()) {
                                         tracked.push(out.clone());
                                     }
                                 }

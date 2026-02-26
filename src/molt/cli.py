@@ -96,6 +96,10 @@ CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
+_MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
+_WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
+_WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
+_PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -152,6 +156,17 @@ class PgoProfileSummary:
     version: str
     hash: str
     hot_functions: list[str]
+
+
+@dataclass(frozen=True)
+class ExtensionManifestValidation:
+    errors: list[str]
+    warnings: list[str]
+    wheel_path: Path | None
+    abi_version: str
+    abi_tag: str | None
+    capabilities: list[str]
+    wheel_tags: tuple[str, str, str] | None
 
 
 def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -536,6 +551,298 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info.date_time = (1980, 1, 1, 0, 0, 0)
     info.compress_type = zipfile.ZIP_DEFLATED
     zf.writestr(info, data)
+
+
+def _wheel_record_line(path: str, data: bytes) -> str:
+    digest = hashlib.sha256(data).digest()
+    encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"{path},sha256={encoded},{len(data)}"
+
+
+def _coerce_str_list(
+    value: Any,
+    field: str,
+    errors: list[str],
+    *,
+    allow_empty: bool = True,
+) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return [stripped]
+        if allow_empty:
+            return []
+        errors.append(f"{field} must not be empty")
+        return []
+    if isinstance(value, list):
+        items: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if stripped:
+                    items.append(stripped)
+                elif not allow_empty:
+                    errors.append(f"{field} must not include empty entries")
+            else:
+                errors.append(f"{field} entries must be strings")
+        return items
+    errors.append(f"{field} must be a string or list of strings")
+    return []
+
+
+def _module_parts(module_name: str) -> list[str] | None:
+    stripped = module_name.strip()
+    if not stripped:
+        return None
+    parts = stripped.split(".")
+    if any(_PY_IDENTIFIER_RE.match(part) is None for part in parts):
+        return None
+    return parts
+
+
+def _wheel_token(value: str) -> str:
+    cleaned = _WHEEL_TOKEN_RE.sub("_", value.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "unknown"
+
+
+def _wheel_version_token(value: str) -> str:
+    cleaned = _WHEEL_VERSION_RE.sub("_", value.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "0"
+
+
+def _extension_binary_suffix(target_triple: str | None = None) -> str:
+    target = (target_triple or "").strip().lower()
+    if "windows" in target:
+        return ".pyd"
+    if os.name == "nt" and not target:
+        return ".pyd"
+    return ".so"
+
+
+def _host_target_triple() -> str:
+    system = platform.system().lower()
+    arch = platform.machine().lower() or "unknown"
+    arch_aliases = {
+        "amd64": "x86_64",
+        "x86-64": "x86_64",
+        "arm64": "aarch64",
+    }
+    arch = arch_aliases.get(arch, arch)
+    if system == "darwin":
+        return f"{arch}-apple-darwin"
+    if system == "linux":
+        return f"{arch}-unknown-linux-gnu"
+    if system == "windows":
+        return f"{arch}-pc-windows-msvc"
+    return f"{arch}-{system}"
+
+
+def _default_molt_c_api_version(molt_root: Path) -> str:
+    header = molt_root / "include" / "molt" / "molt.h"
+    try:
+        text = header.read_text()
+    except OSError:
+        return "1"
+    match = re.search(
+        r"^\s*#\s*define\s+MOLT_C_API_VERSION\s+([0-9]+)u?\s*$",
+        text,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return "1"
+    return match.group(1)
+
+
+def _wheel_filename_tags(path: Path) -> tuple[str, str, str] | None:
+    if path.suffix != ".whl":
+        return None
+    parts = path.stem.split("-")
+    if len(parts) < 5:
+        return None
+    python_tag = parts[-3]
+    abi_tag = parts[-2]
+    platform_tag = parts[-1]
+    if not python_tag or not abi_tag or not platform_tag:
+        return None
+    return python_tag, abi_tag, platform_tag
+
+
+def _is_extension_manifest(manifest: Mapping[str, Any]) -> bool:
+    extension_keys = {
+        "molt_c_api_version",
+        "abi_tag",
+        "target_triple",
+        "platform_tag",
+        "module",
+        "wheel",
+        "extension",
+    }
+    matched = sum(1 for key in extension_keys if key in manifest)
+    return matched >= 2
+
+
+def _validate_extension_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_dir: Path,
+    wheel_path: Path | None,
+    require_capabilities: bool,
+    required_abi: str | None,
+    require_checksum: bool = False,
+    warn_missing_checksum: bool = False,
+) -> ExtensionManifestValidation:
+    errors: list[str] = []
+    warnings: list[str] = []
+    required_fields = (
+        "molt_c_api_version",
+        "capabilities",
+        "abi_tag",
+        "target_triple",
+        "platform_tag",
+        "module",
+    )
+    for field in required_fields:
+        if field not in manifest:
+            errors.append(f"Missing manifest field: {field}")
+
+    manifest_abi = manifest.get("molt_c_api_version")
+    if not isinstance(manifest_abi, str):
+        errors.append("molt_c_api_version must be a string")
+        manifest_abi = ""
+    elif _MOLT_C_API_VERSION_RE.match(manifest_abi.strip()) is None:
+        errors.append(
+            f"molt_c_api_version must be MAJOR[.MINOR[.PATCH]] (got {manifest_abi!r})"
+        )
+        manifest_abi = ""
+    else:
+        manifest_abi = manifest_abi.strip()
+
+    capabilities_value = manifest.get("capabilities")
+    manifest_capabilities: list[str] = []
+    if not isinstance(capabilities_value, list) or not all(
+        isinstance(item, str) for item in capabilities_value
+    ):
+        errors.append("capabilities must be a list of strings")
+    else:
+        manifest_capabilities = [
+            item.strip() for item in capabilities_value if item.strip()
+        ]
+    if require_capabilities and not manifest_capabilities:
+        errors.append(
+            "Capabilities are required but manifest capability list is empty."
+        )
+
+    if required_abi is not None and manifest_abi and manifest_abi != required_abi:
+        errors.append(
+            f"ABI mismatch: required {required_abi}, manifest has {manifest_abi}"
+        )
+
+    manifest_abi_tag: str | None = None
+    abi_tag_value = manifest.get("abi_tag")
+    if isinstance(abi_tag_value, str):
+        manifest_abi_tag = abi_tag_value
+    if manifest_abi_tag is not None and manifest_abi:
+        expected_abi_tag = f"molt_abi{manifest_abi.split('.', 1)[0]}"
+        if manifest_abi_tag != expected_abi_tag:
+            errors.append(
+                f"ABI tag mismatch: expected {expected_abi_tag}, found {manifest_abi_tag}"
+            )
+
+    resolved_wheel = wheel_path
+    if resolved_wheel is not None:
+        resolved_wheel = resolved_wheel.expanduser()
+        if not resolved_wheel.is_absolute():
+            resolved_wheel = (manifest_dir / resolved_wheel).absolute()
+
+    wheel_field = manifest.get("wheel")
+    if resolved_wheel is None and isinstance(wheel_field, str) and wheel_field.strip():
+        candidate = Path(wheel_field).expanduser()
+        if not candidate.is_absolute():
+            candidate = (manifest_dir / candidate).absolute()
+        if candidate.exists():
+            resolved_wheel = candidate
+        else:
+            warnings.append(f"Wheel path referenced by manifest not found: {candidate}")
+
+    wheel_tags: tuple[str, str, str] | None = None
+    if resolved_wheel is not None and resolved_wheel.exists():
+        wheel_tags = _wheel_filename_tags(resolved_wheel)
+        if wheel_tags is None:
+            errors.append(f"Invalid wheel filename format: {resolved_wheel.name}")
+        else:
+            _python_tag, wheel_abi_tag, wheel_platform_tag = wheel_tags
+            if manifest_abi_tag is not None and wheel_abi_tag != manifest_abi_tag:
+                errors.append(
+                    f"Wheel ABI tag mismatch: wheel has {wheel_abi_tag}, "
+                    f"manifest has {manifest_abi_tag}"
+                )
+            manifest_platform = manifest.get("platform_tag")
+            if (
+                isinstance(manifest_platform, str)
+                and wheel_platform_tag != manifest_platform
+            ):
+                errors.append(
+                    f"Wheel platform tag mismatch: wheel has {wheel_platform_tag}, "
+                    f"manifest has {manifest_platform}"
+                )
+
+        expected_wheel_sha = manifest.get("wheel_sha256")
+        if isinstance(expected_wheel_sha, str) and expected_wheel_sha.strip():
+            actual_wheel_sha = _sha256_file(resolved_wheel)
+            if actual_wheel_sha != expected_wheel_sha.strip():
+                errors.append("wheel_sha256 does not match wheel contents")
+        elif require_checksum:
+            errors.append("wheel_sha256 missing")
+        elif warn_missing_checksum:
+            warnings.append("wheel_sha256 missing")
+
+        extension_entry = manifest.get("extension")
+        expected_extension_sha = manifest.get("extension_sha256")
+        if isinstance(extension_entry, str) and extension_entry.strip():
+            try:
+                with zipfile.ZipFile(resolved_wheel) as zf:
+                    ext_bytes = zf.read(extension_entry)
+            except KeyError:
+                errors.append(f"Wheel is missing extension entry: {extension_entry}")
+            except (OSError, zipfile.BadZipFile) as exc:
+                errors.append(f"Failed to read wheel extension payload: {exc}")
+            else:
+                if (
+                    isinstance(expected_extension_sha, str)
+                    and expected_extension_sha.strip()
+                ):
+                    actual_extension_sha = hashlib.sha256(ext_bytes).hexdigest()
+                    if actual_extension_sha != expected_extension_sha.strip():
+                        errors.append("extension_sha256 does not match wheel entry")
+                elif require_checksum:
+                    errors.append("extension_sha256 missing")
+                elif warn_missing_checksum:
+                    warnings.append("extension_sha256 missing")
+        elif require_checksum:
+            errors.append("extension path missing")
+    else:
+        if require_checksum:
+            errors.append(
+                "wheel artifact required for checksum verification is missing"
+            )
+        else:
+            warnings.append(
+                "Wheel artifact not found; wheel tag and checksum checks skipped."
+            )
+
+    return ExtensionManifestValidation(
+        errors=errors,
+        warnings=warnings,
+        wheel_path=resolved_wheel,
+        abi_version=manifest_abi,
+        abi_tag=manifest_abi_tag,
+        capabilities=manifest_capabilities,
+        wheel_tags=wheel_tags,
+    )
 
 
 def _compiler_metadata() -> tuple[str | None, str | None]:
@@ -10933,6 +11240,681 @@ def doctor(
     return 0
 
 
+def extension_build(
+    project: str | None = None,
+    out_dir: str | None = None,
+    molt_abi: str | None = None,
+    capabilities: CapabilityInput | None = None,
+    deterministic: bool = True,
+    target: str | None = None,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> int:
+    project_root = Path(project).expanduser() if project else Path.cwd()
+    if not project_root.is_absolute():
+        project_root = (Path.cwd() / project_root).absolute()
+    if not project_root.exists() or not project_root.is_dir():
+        return _fail(
+            f"Project directory not found: {project_root}",
+            json_output,
+            command="extension-build",
+        )
+
+    pyproject = _load_toml(project_root / "pyproject.toml")
+    project_meta = pyproject.get("project")
+    extension_meta = _config_value(pyproject, ["tool", "molt", "extension"])
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(project_meta, dict):
+        return _fail(
+            "pyproject.toml must contain a [project] table.",
+            json_output,
+            command="extension-build",
+        )
+    if not isinstance(extension_meta, dict):
+        return _fail(
+            "pyproject.toml must contain [tool.molt.extension].",
+            json_output,
+            command="extension-build",
+        )
+
+    project_name = project_meta.get("name")
+    project_version = project_meta.get("version")
+    if not isinstance(project_name, str) or not project_name.strip():
+        errors.append("project.name must be a non-empty string")
+    if not isinstance(project_version, str) or not project_version.strip():
+        errors.append("project.version must be a non-empty string")
+
+    module_name = extension_meta.get("module")
+    if not isinstance(module_name, str):
+        errors.append("tool.molt.extension.module must be a string")
+        module_name = ""
+    module_parts = _module_parts(module_name)
+    if module_parts is None:
+        errors.append("tool.molt.extension.module must be a dotted Python identifier")
+        module_parts = ["extension"]
+
+    raw_sources = _coerce_str_list(
+        extension_meta.get("sources"),
+        "tool.molt.extension.sources",
+        errors,
+        allow_empty=False,
+    )
+    if not raw_sources:
+        errors.append("tool.molt.extension.sources must include at least one source")
+    source_paths: list[Path] = []
+    for entry in raw_sources:
+        source_path = Path(entry).expanduser()
+        if not source_path.is_absolute():
+            source_path = (project_root / source_path).absolute()
+        if not source_path.exists() or not source_path.is_file():
+            errors.append(f"source file not found: {source_path}")
+            continue
+        source_paths.append(source_path)
+
+    include_dirs_raw = _coerce_str_list(
+        extension_meta.get("include_dirs") or extension_meta.get("include-dirs"),
+        "tool.molt.extension.include_dirs",
+        errors,
+    )
+    include_paths: list[Path] = []
+    for entry in include_dirs_raw:
+        include_path = Path(entry).expanduser()
+        if not include_path.is_absolute():
+            include_path = (project_root / include_path).absolute()
+        include_paths.append(include_path)
+
+    compile_args = _coerce_str_list(
+        extension_meta.get("extra_compile_args")
+        or extension_meta.get("extra-compile-args"),
+        "tool.molt.extension.extra_compile_args",
+        errors,
+    )
+    link_args = _coerce_str_list(
+        extension_meta.get("extra_link_args") or extension_meta.get("extra-link-args"),
+        "tool.molt.extension.extra_link_args",
+        errors,
+    )
+
+    effects = _normalize_effects(extension_meta.get("effects"))
+    determinism_mode = "deterministic" if deterministic else "nondet"
+    determinism_raw = extension_meta.get("determinism")
+    if determinism_raw is not None:
+        if not isinstance(determinism_raw, str):
+            errors.append(
+                "tool.molt.extension.determinism must be 'deterministic' or 'nondet'"
+            )
+        else:
+            normalized = determinism_raw.strip().lower()
+            if normalized not in {"deterministic", "nondet"}:
+                errors.append(
+                    "tool.molt.extension.determinism must be 'deterministic' or "
+                    "'nondet'"
+                )
+            else:
+                determinism_mode = normalized
+    if deterministic:
+        determinism_mode = "deterministic"
+
+    requested_target = (target or "native").strip()
+    if not requested_target:
+        requested_target = "native"
+    normalized_target = requested_target.lower()
+    runtime_target_triple: str | None = None
+    manifest_target_triple = _host_target_triple()
+    if normalized_target == "native":
+        runtime_target_triple = None
+    elif normalized_target == "wasm" or normalized_target.startswith("wasm32"):
+        errors.append("Extension build only supports native target triples, not wasm")
+    else:
+        if any(ch.isspace() for ch in requested_target):
+            errors.append("target must be 'native' or a Rust target triple")
+        runtime_target_triple = normalized_target
+        manifest_target_triple = normalized_target
+
+    capability_input: CapabilityInput | None = capabilities
+    if capability_input is None:
+        cfg_capabilities = extension_meta.get("capabilities")
+        if isinstance(cfg_capabilities, (str, list, dict)):
+            capability_input = cfg_capabilities
+    if capability_input is None:
+        errors.append(
+            "Missing extension capabilities: set tool.molt.extension.capabilities "
+            "or pass --capabilities."
+        )
+    capabilities_list: list[str] = []
+    capability_profiles: list[str] = []
+    if capability_input is not None:
+        spec = _parse_capabilities_spec(capability_input)
+        if spec.errors:
+            errors.append("Invalid capabilities: " + ", ".join(spec.errors))
+        else:
+            capabilities_list = spec.capabilities or []
+            capability_profiles = spec.profiles
+
+    cwd_root = _find_project_root(Path.cwd())
+    molt_root = _find_molt_root(project_root, cwd_root)
+    root_error = _require_molt_root(molt_root, json_output, "extension-build")
+    if root_error is not None:
+        return root_error
+
+    lock_error = _check_lockfiles(
+        molt_root,
+        json_output,
+        warnings,
+        deterministic,
+        False,
+        "extension-build",
+    )
+    if lock_error is not None:
+        return lock_error
+
+    default_abi = _default_molt_c_api_version(molt_root)
+    abi_raw = molt_abi or extension_meta.get("molt_c_api_version") or default_abi
+    if not isinstance(abi_raw, str):
+        errors.append("molt ABI must be a string")
+        abi_raw = default_abi
+    abi_version = abi_raw.strip()
+    if _MOLT_C_API_VERSION_RE.match(abi_version) is None:
+        errors.append(
+            "Invalid molt ABI version. Expected MAJOR[.MINOR[.PATCH]] "
+            f"(got {abi_version!r})."
+        )
+    abi_major = abi_version.split(".", 1)[0] if abi_version else "0"
+    abi_tag = f"molt_abi{abi_major}"
+
+    if errors:
+        return _fail(
+            "Extension build configuration errors: " + "; ".join(errors),
+            json_output,
+            command="extension-build",
+        )
+
+    output_root = Path(out_dir).expanduser() if out_dir else Path("dist")
+    if not output_root.is_absolute():
+        output_root = (project_root / output_root).absolute()
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
+    if timeout_err:
+        return _fail(timeout_err, json_output, command="extension-build")
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name("release")
+    if runtime_profile_err:
+        return _fail(runtime_profile_err, json_output, command="extension-build")
+    profile_dir = _cargo_profile_dir(runtime_cargo_profile)
+    target_root = _cargo_target_root(molt_root)
+    if runtime_target_triple:
+        _ensure_rustup_target(runtime_target_triple, warnings)
+        runtime_lib = (
+            target_root / runtime_target_triple / profile_dir / "libmolt_runtime.a"
+        )
+    else:
+        runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+    if not _ensure_runtime_lib(
+        runtime_lib,
+        runtime_target_triple,
+        json_output,
+        runtime_cargo_profile,
+        molt_root,
+        cargo_timeout,
+    ):
+        return _fail("Runtime build failed", json_output, command="extension-build")
+
+    include_root = molt_root / "include"
+    if not include_root.exists():
+        return _fail(
+            f"Missing Molt header root: {include_root}",
+            json_output,
+            command="extension-build",
+        )
+
+    cc = os.environ.get("CC", "clang")
+    cc_cmd = shlex.split(cc)
+    if not cc_cmd:
+        return _fail(
+            "Compiler command is empty. Set CC or install clang.",
+            json_output,
+            command="extension-build",
+        )
+    if runtime_target_triple:
+        cross_cc = os.environ.get("MOLT_CROSS_CC")
+        target_arg = runtime_target_triple
+        if cross_cc:
+            cc_cmd = shlex.split(cross_cc)
+        elif shutil.which("zig"):
+            cc_cmd = ["zig", "cc"]
+            normalized = _zig_target_query(runtime_target_triple)
+            if normalized != runtime_target_triple:
+                warnings.append(
+                    f"Zig target normalized to {normalized} from {runtime_target_triple}."
+                )
+            target_arg = normalized
+        else:
+            return _fail(
+                "Cross-target extension build requires zig or MOLT_CROSS_CC "
+                f"(missing for {runtime_target_triple}).",
+                json_output,
+                command="extension-build",
+            )
+        if not cc_cmd:
+            return _fail(
+                "Compiler command is empty. Set MOLT_CROSS_CC or install zig.",
+                json_output,
+                command="extension-build",
+            )
+        cc_cmd.extend(["-target", target_arg])
+
+    dist_name = _normalize_name(str(project_name)).replace("-", "_")
+    wheel_version = _wheel_version_token(str(project_version))
+    target_triple = manifest_target_triple
+    platform_tag = _wheel_token(target_triple)
+    python_tag = "py3"
+    wheel_name = (
+        f"{dist_name}-{wheel_version}-{python_tag}-{abi_tag}-{platform_tag}.whl"
+    )
+    wheel_path = output_root / wheel_name
+
+    build_env = os.environ.copy()
+    if deterministic:
+        build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
+
+    module_rel = Path(
+        *module_parts[:-1],
+        module_parts[-1] + _extension_binary_suffix(runtime_target_triple),
+    )
+    compile_commands: list[list[str]] = []
+    link_command: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="molt_ext_build_", dir=output_root) as td:
+        build_tmp = Path(td)
+        object_paths: list[Path] = []
+        for idx, source_path in enumerate(source_paths):
+            object_path = build_tmp / f"{idx}_{source_path.stem}.o"
+            cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
+            cmd.extend(["-I", str(include_root), "-I", str(project_root)])
+            for include_path in include_paths:
+                cmd.extend(["-I", str(include_path)])
+            if os.name != "nt":
+                cmd.append("-fPIC")
+            if deterministic:
+                prefix = str(project_root)
+                cmd.append(f"-ffile-prefix-map={prefix}=.")
+                cmd.append(f"-fdebug-prefix-map={prefix}=.")
+            cmd.extend(compile_args)
+            result = subprocess.run(
+                cmd,
+                cwd=project_root,
+                env=build_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip()
+                if not detail:
+                    detail = f"compiler exited with code {result.returncode}"
+                return _fail(
+                    f"Failed compiling {source_path.name}: {detail}",
+                    json_output,
+                    command="extension-build",
+                )
+            compile_commands.append(cmd)
+            object_paths.append(object_path)
+
+        built_extension = build_tmp / module_rel
+        built_extension.parent.mkdir(parents=True, exist_ok=True)
+        link_command = [*cc_cmd, "-shared"]
+        link_command.extend(str(path) for path in object_paths)
+        link_command.append(str(runtime_lib))
+        link_command.extend(["-o", str(built_extension)])
+        link_command.extend(link_args)
+        link_result = subprocess.run(
+            link_command,
+            cwd=project_root,
+            env=build_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if link_result.returncode != 0:
+            detail = link_result.stderr.strip() or link_result.stdout.strip()
+            if not detail:
+                detail = f"linker exited with code {link_result.returncode}"
+            return _fail(
+                f"Failed linking extension module: {detail}",
+                json_output,
+                command="extension-build",
+            )
+
+        if not built_extension.exists():
+            return _fail(
+                "Link succeeded but extension artifact is missing.",
+                json_output,
+                command="extension-build",
+            )
+
+        extension_bytes = built_extension.read_bytes()
+        extension_archive_path = module_rel.as_posix()
+        manifest_payload: dict[str, Any] = {
+            "schema_version": 1,
+            "name": str(project_name),
+            "version": str(project_version),
+            "module": ".".join(module_parts),
+            "sources": [str(path) for path in source_paths],
+            "molt_c_api_version": abi_version,
+            "abi_tag": abi_tag,
+            "python_tag": python_tag,
+            "target_triple": target_triple,
+            "platform_tag": platform_tag,
+            "capabilities": capabilities_list,
+            "capability_profiles": capability_profiles,
+            "deterministic": deterministic,
+            "determinism": determinism_mode,
+            "effects": effects,
+            "wheel": wheel_name,
+            "extension": extension_archive_path,
+            "build": {
+                "compiler": cc_cmd,
+                "compiler_target": runtime_target_triple or "native",
+                "runtime_lib": str(runtime_lib),
+                "include_dirs": [str(include_root), str(project_root)]
+                + [str(path) for path in include_paths],
+                "extra_compile_args": compile_args,
+                "extra_link_args": link_args,
+            },
+        }
+        manifest_bytes = (
+            json.dumps(manifest_payload, sort_keys=True, indent=2).encode("utf-8")
+            + b"\n"
+        )
+
+        dist_info = f"{dist_name}-{wheel_version}.dist-info"
+        wheel_metadata = "\n".join(
+            [
+                "Wheel-Version: 1.0",
+                "Generator: molt extension build",
+                "Root-Is-Purelib: false",
+                f"Tag: {python_tag}-{abi_tag}-{platform_tag}",
+                "",
+            ]
+        ).encode("utf-8")
+        package_metadata = "\n".join(
+            [
+                "Metadata-Version: 2.1",
+                f"Name: {project_name}",
+                f"Version: {project_version}",
+                "Summary: Molt C extension package",
+                "",
+            ]
+        ).encode("utf-8")
+
+        wheel_entries: list[tuple[str, bytes]] = [
+            (extension_archive_path, extension_bytes),
+            ("extension_manifest.json", manifest_bytes),
+            (f"{dist_info}/WHEEL", wheel_metadata),
+            (f"{dist_info}/METADATA", package_metadata),
+        ]
+        record_path = f"{dist_info}/RECORD"
+        record_lines = [_wheel_record_line(path, data) for path, data in wheel_entries]
+        record_lines.append(f"{record_path},,")
+        record_bytes = ("\n".join(record_lines) + "\n").encode("utf-8")
+
+        with zipfile.ZipFile(wheel_path, "w") as zf:
+            for path, data in wheel_entries:
+                _write_zip_member(zf, path, data)
+            _write_zip_member(zf, record_path, record_bytes)
+
+    wheel_sha = _sha256_file(wheel_path)
+    extension_sha = hashlib.sha256(extension_bytes).hexdigest()
+    sidecar_payload = dict(manifest_payload)
+    sidecar_payload["wheel_sha256"] = wheel_sha
+    sidecar_payload["extension_sha256"] = extension_sha
+    if deterministic:
+        sidecar_payload["generated_at_utc"] = "1970-01-01T00:00:00Z"
+    else:
+        sidecar_payload["generated_at_utc"] = (
+            dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+        )
+    manifest_path = output_root / "extension_manifest.json"
+    manifest_path.write_text(
+        json.dumps(sidecar_payload, sort_keys=True, indent=2) + "\n"
+    )
+
+    if json_output:
+        payload = _json_payload(
+            "extension-build",
+            "ok",
+            data={
+                "project": str(project_root),
+                "wheel": str(wheel_path),
+                "manifest": str(manifest_path),
+                "module": ".".join(module_parts),
+                "molt_c_api_version": abi_version,
+                "abi_tag": abi_tag,
+                "target_triple": target_triple,
+                "build_target": runtime_target_triple or "native",
+                "platform_tag": platform_tag,
+                "deterministic": deterministic,
+                "determinism": determinism_mode,
+                "capabilities": capabilities_list,
+                "capability_profiles": capability_profiles,
+                "wheel_sha256": wheel_sha,
+                "extension_sha256": extension_sha,
+            },
+            warnings=warnings,
+        )
+        _emit_json(payload, json_output=True)
+    else:
+        print(f"Built extension wheel: {wheel_path}")
+        print(f"Wrote extension manifest: {manifest_path}")
+        if verbose:
+            print(f"Target triple: {target_triple}")
+            print(f"Build target: {runtime_target_triple or 'native'}")
+            print(f"Molt C API version: {abi_version}")
+            print(f"Capabilities: {json.dumps(capabilities_list)}")
+            print(f"Compile steps: {len(compile_commands)}")
+    return 0
+
+
+def extension_audit(
+    path: str,
+    require_capabilities: bool = False,
+    require_abi: str | None = None,
+    require_checksum: bool = False,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> int:
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = (Path.cwd() / target).absolute()
+
+    if (
+        require_abi is not None
+        and _MOLT_C_API_VERSION_RE.match(require_abi.strip()) is None
+    ):
+        return _fail(
+            "Invalid --require-abi value. Expected MAJOR[.MINOR[.PATCH]].",
+            json_output,
+            command="extension-audit",
+        )
+    required_abi = require_abi.strip() if require_abi is not None else None
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    manifest: dict[str, Any] | None = None
+    manifest_source = ""
+    manifest_dir = target.parent if target.is_file() else target
+    wheel_path: Path | None = None
+
+    def load_manifest_json(source_path: Path) -> dict[str, Any] | None:
+        try:
+            loaded = json.loads(source_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"Failed to read extension manifest {source_path}: {exc}")
+            return None
+        if not isinstance(loaded, dict):
+            errors.append(f"Extension manifest must be a JSON object: {source_path}")
+            return None
+        return loaded
+
+    if target.is_dir():
+        manifest_path = target / "extension_manifest.json"
+        if not manifest_path.exists():
+            return _fail(
+                f"Missing extension manifest: {manifest_path}",
+                json_output,
+                command="extension-audit",
+            )
+        manifest = load_manifest_json(manifest_path)
+        manifest_source = str(manifest_path)
+        manifest_dir = manifest_path.parent
+    elif target.is_file() and target.suffix == ".whl":
+        wheel_path = target
+        sibling_manifest = target.parent / "extension_manifest.json"
+        if sibling_manifest.exists():
+            manifest = load_manifest_json(sibling_manifest)
+            manifest_source = str(sibling_manifest)
+            manifest_dir = sibling_manifest.parent
+        else:
+            try:
+                with zipfile.ZipFile(target) as zf:
+                    manifest_bytes = zf.read("extension_manifest.json")
+            except KeyError:
+                return _fail(
+                    "extension_manifest.json not found next to wheel or inside wheel.",
+                    json_output,
+                    command="extension-audit",
+                )
+            except (OSError, zipfile.BadZipFile) as exc:
+                return _fail(
+                    f"Failed to inspect wheel {target}: {exc}",
+                    json_output,
+                    command="extension-audit",
+                )
+            try:
+                decoded = json.loads(manifest_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                return _fail(
+                    f"Invalid embedded extension_manifest.json: {exc}",
+                    json_output,
+                    command="extension-audit",
+                )
+            if not isinstance(decoded, dict):
+                return _fail(
+                    "Embedded extension_manifest.json must be a JSON object.",
+                    json_output,
+                    command="extension-audit",
+                )
+            manifest = decoded
+            manifest_source = f"{target}!/extension_manifest.json"
+            manifest_dir = target.parent
+    elif target.is_file() and target.suffix == ".json":
+        manifest = load_manifest_json(target)
+        manifest_source = str(target)
+        manifest_dir = target.parent
+    else:
+        return _fail(
+            f"Unsupported audit path: {target}",
+            json_output,
+            command="extension-audit",
+        )
+
+    if manifest is None:
+        return _fail(
+            "Failed to load extension manifest.",
+            json_output,
+            command="extension-audit",
+        )
+
+    validation = _validate_extension_manifest(
+        manifest,
+        manifest_dir=manifest_dir,
+        wheel_path=wheel_path,
+        require_capabilities=require_capabilities,
+        required_abi=required_abi,
+        require_checksum=require_checksum,
+        warn_missing_checksum=not require_checksum,
+    )
+    errors.extend(validation.errors)
+    warnings.extend(validation.warnings)
+    wheel_path = validation.wheel_path
+    manifest_abi = validation.abi_version
+    manifest_abi_tag = validation.abi_tag
+    manifest_capabilities = validation.capabilities
+    wheel_tags = validation.wheel_tags
+
+    status = "ok" if not errors else "error"
+    if json_output:
+        payload = _json_payload(
+            "extension-audit",
+            status,
+            data={
+                "path": str(target),
+                "manifest_source": manifest_source,
+                "wheel": str(wheel_path) if wheel_path is not None else None,
+                "molt_c_api_version": manifest_abi,
+                "abi_tag": manifest_abi_tag,
+                "capabilities": manifest_capabilities,
+                "require_capabilities": require_capabilities,
+                "require_abi": required_abi,
+                "require_checksum": require_checksum,
+                "wheel_tags": {
+                    "python": wheel_tags[0],
+                    "abi": wheel_tags[1],
+                    "platform": wheel_tags[2],
+                }
+                if wheel_tags is not None
+                else None,
+            },
+            warnings=warnings,
+            errors=errors,
+        )
+        _emit_json(payload, json_output=True)
+    else:
+        if errors:
+            for err in errors:
+                print(f"ERROR: {err}")
+        else:
+            print(f"Extension audit passed: {target}")
+        if verbose:
+            print(f"Manifest source: {manifest_source}")
+            if wheel_path is not None:
+                print(f"Wheel: {wheel_path}")
+            for warning in warnings:
+                print(f"WARN: {warning}")
+    return 0 if not errors else 1
+
+
+def _resolve_extension_manifest_for_verify(
+    wheel_path: Path,
+) -> tuple[Path | None, tempfile.TemporaryDirectory[str] | None, str | None]:
+    sibling_manifest = wheel_path.parent / "extension_manifest.json"
+    if sibling_manifest.exists():
+        return sibling_manifest, None, None
+    try:
+        with zipfile.ZipFile(wheel_path) as zf:
+            manifest_bytes = zf.read("extension_manifest.json")
+    except KeyError:
+        return (
+            None,
+            None,
+            "extension_manifest.json not found next to wheel or inside wheel.",
+        )
+    except (OSError, zipfile.BadZipFile) as exc:
+        return None, None, f"Failed to inspect wheel {wheel_path}: {exc}"
+    try:
+        decoded = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, None, f"Invalid embedded extension_manifest.json: {exc}"
+    if not isinstance(decoded, dict):
+        return None, None, "Embedded extension_manifest.json must be a JSON object."
+    tmpdir = tempfile.TemporaryDirectory(prefix="molt_ext_manifest_")
+    manifest_path = Path(tmpdir.name) / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(decoded, sort_keys=True, indent=2) + "\n")
+    return manifest_path, tmpdir, None
+
+
 def _resolve_sidecar_path(output_path: Path, override: str | None, suffix: str) -> Path:
     if override:
         path = Path(override).expanduser()
@@ -11107,9 +12089,10 @@ def _remote_sidecar_url(dest_url: str, suffix: str) -> str:
 
 
 def _registry_content_type(path: Path) -> str:
-    if path.suffix == ".moltpkg":
+    suffix = path.suffix.lower()
+    if suffix in {".moltpkg", ".whl"}:
         return "application/zip"
-    if path.suffix == ".json":
+    if suffix == ".json":
         return "application/json"
     return "application/octet-stream"
 
@@ -11471,6 +12454,8 @@ def publish(
     )
     if lock_error is not None:
         return lock_error
+    extension_manifest_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    is_extension_wheel = source.suffix.lower() == ".whl"
     if verify_signature:
         require_signature = True
     should_verify = (
@@ -11479,8 +12464,66 @@ def publish(
         or verify_signature
         or trusted_signers is not None
     )
-    if should_verify:
-        verify_code = verify(
+
+    def run_publish_verify(*verify_args: Any) -> tuple[int, str]:
+        if not json_output:
+            return verify(*verify_args), ""
+        captured = io.StringIO()
+        with redirect_stdout(captured), redirect_stderr(captured):
+            code = verify(*verify_args)
+        return code, captured.getvalue()
+
+    if is_extension_wheel:
+        manifest_path, extension_manifest_tmpdir, manifest_error = (
+            _resolve_extension_manifest_for_verify(source)
+        )
+        if manifest_error is not None:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
+            return _fail(manifest_error, json_output, command="publish")
+        if manifest_path is None:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
+            return _fail(
+                "Failed to resolve extension manifest for wheel verification.",
+                json_output,
+                command="publish",
+            )
+        verify_code, verify_output = run_publish_verify(
+            None,  # package_path
+            str(manifest_path),  # manifest_path
+            str(source),  # artifact_path
+            True,  # require_checksum
+            False,  # json_output
+            verbose,
+            deterministic,
+            capabilities,
+            require_signature,
+            verify_signature,
+            trusted_signers,
+            signer,
+            signing_key,
+            True,  # require_extension_capabilities
+            None,  # require_extension_abi
+            True,  # extension_metadata
+        )
+        if verify_code != 0:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
+            if json_output:
+                verify_msg = (
+                    verify_output.strip().splitlines()[-1]
+                    if verify_output.strip()
+                    else "extension publish verification failed"
+                )
+                return _fail(
+                    f"Extension publish verification failed: {verify_msg}",
+                    json_output,
+                    command="publish",
+                )
+            return verify_code
+    elif should_verify:
+        verify_code, verify_output = run_publish_verify(
             package_path,
             None,
             None,
@@ -11496,6 +12539,19 @@ def publish(
             signing_key,
         )
         if verify_code != 0:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
+            if json_output:
+                verify_msg = (
+                    verify_output.strip().splitlines()[-1]
+                    if verify_output.strip()
+                    else "publish verification failed"
+                )
+                return _fail(
+                    f"Publish verification failed: {verify_msg}",
+                    json_output,
+                    command="publish",
+                )
             return verify_code
     is_remote = _is_remote_registry(registry)
     sidecars: list[dict[str, str]] = []
@@ -11504,6 +12560,8 @@ def publish(
     if is_remote:
         url_error = _validate_registry_url(registry)
         if url_error:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
             return _fail(url_error, json_output, command="publish")
         try:
             headers, auth_info = _resolve_registry_auth(
@@ -11511,6 +12569,8 @@ def publish(
             )
             timeout = _resolve_registry_timeout(registry_timeout)
         except RuntimeError as exc:
+            if extension_manifest_tmpdir is not None:
+                extension_manifest_tmpdir.cleanup()
             return _fail(str(exc), json_output, command="publish")
         dest = _remote_registry_destination(registry, source.name)
         upload_plan: list[tuple[Path, str]] = [(source, dest)]
@@ -11528,6 +12588,8 @@ def publish(
                         upload_src, upload_dest, headers, timeout
                     )
                 except RuntimeError as exc:
+                    if extension_manifest_tmpdir is not None:
+                        extension_manifest_tmpdir.cleanup()
                     return _fail(str(exc), json_output, command="publish")
                 uploads.append(
                     {
@@ -11567,6 +12629,7 @@ def publish(
                 "deterministic": deterministic,
                 "sidecars": sidecars,
                 "remote": is_remote,
+                "extension_wheel": is_extension_wheel,
                 "auth": auth_info,
                 "uploads": uploads,
             },
@@ -11586,6 +12649,8 @@ def publish(
                 print(f"Auth: {auth_info['mode']}")
             else:
                 print(f"Registry: {registry_label}")
+    if extension_manifest_tmpdir is not None:
+        extension_manifest_tmpdir.cleanup()
     return 0
 
 
@@ -11603,14 +12668,20 @@ def verify(
     trusted_signers: str | None = None,
     signer: str | None = None,
     signing_key: str | None = None,
+    require_extension_capabilities: bool = False,
+    require_extension_abi: str | None = None,
+    extension_metadata: bool | None = None,
 ) -> int:
     errors: list[str] = []
     warnings: list[str] = []
     manifest: dict[str, Any] | None = None
+    manifest_file: Path | None = None
     artifact_name = None
     artifact_bytes = None
     artifact_file: Path | None = None
     checksum: str | None = None
+    extension_mode = False
+    extension_validation: ExtensionManifestValidation | None = None
     capabilities_list = None
     capability_profiles: list[str] = []
     capability_manifest: CapabilityManifest | None = None
@@ -11639,6 +12710,16 @@ def verify(
                 json_output,
                 command="verify",
             )
+    required_extension_abi: str | None = None
+    if require_extension_abi is not None:
+        normalized = require_extension_abi.strip()
+        if _MOLT_C_API_VERSION_RE.match(normalized) is None:
+            return _fail(
+                "Invalid --require-extension-abi value. Expected MAJOR[.MINOR[.PATCH]].",
+                json_output,
+                command="verify",
+            )
+        required_extension_abi = normalized
 
     if package_path:
         pkg_path = Path(package_path)
@@ -11702,7 +12783,8 @@ def verify(
                 json_output,
                 command="verify",
             )
-        manifest = _load_manifest(Path(manifest_path))
+        manifest_file = Path(manifest_path)
+        manifest = _load_manifest(manifest_file)
         if manifest is None:
             errors.append("failed to load manifest")
         artifact_file = Path(artifact_path)
@@ -11720,50 +12802,107 @@ def verify(
             signature_name = sidecar_sig.name
 
     if manifest is not None:
-        errors.extend(_manifest_errors(manifest))
-        checksum = manifest.get("checksum")
-        if checksum and artifact_bytes is not None:
-            actual = hashlib.sha256(artifact_bytes).hexdigest()
-            if actual != checksum:
-                errors.append("checksum mismatch")
-        elif require_checksum:
-            errors.append("checksum missing")
-        elif not checksum:
-            warnings.append("checksum missing")
-        if require_deterministic and manifest.get("deterministic") is not True:
-            errors.append("manifest is not deterministic")
-        required_caps = manifest.get("capabilities", [])
-        if not isinstance(required_caps, list):
-            required_caps = []
-        required_effects = _normalize_effects(manifest.get("effects"))
-        if capabilities_list is None and (required_caps or required_effects):
-            errors.append(
-                "capabilities allowlist required; pass --capabilities or set "
-                "tool.molt.capabilities in config"
-            )
-        if capabilities_list is not None:
-            pkg_name = manifest.get("name")
-            allowlist = _allowed_capabilities_for_package(
-                capabilities_list, capability_manifest, pkg_name
-            )
-            missing = [cap for cap in required_caps if cap not in allowlist]
-            if missing:
+        extension_mode = (
+            extension_metadata
+            if extension_metadata is not None
+            else _is_extension_manifest(manifest)
+        )
+        if extension_mode:
+            if not _is_extension_manifest(manifest):
                 errors.append(
-                    "capabilities missing from allowlist: " + ", ".join(missing)
+                    "Manifest does not match extension metadata schema "
+                    "(disable with --no-extension-metadata)."
                 )
-            allowed_effects = _allowed_effects_for_package(
-                capability_manifest, pkg_name
-            )
-            if allowed_effects is not None:
-                missing_effects = [
-                    effect
-                    for effect in required_effects
-                    if effect not in allowed_effects
-                ]
-                if missing_effects:
-                    errors.append(
-                        "effects missing from allowlist: " + ", ".join(missing_effects)
+            else:
+                manifest_dir = (
+                    manifest_file.parent
+                    if manifest_file is not None
+                    else (
+                        Path(package_path).parent
+                        if package_path is not None
+                        else Path.cwd()
                     )
+                )
+                extension_wheel: Path | None = None
+                if artifact_file is not None and artifact_file.suffix == ".whl":
+                    extension_wheel = artifact_file
+                extension_validation = _validate_extension_manifest(
+                    manifest,
+                    manifest_dir=manifest_dir,
+                    wheel_path=extension_wheel,
+                    require_capabilities=require_extension_capabilities,
+                    required_abi=required_extension_abi,
+                    require_checksum=require_checksum,
+                    warn_missing_checksum=not require_checksum,
+                )
+                errors.extend(extension_validation.errors)
+                warnings.extend(extension_validation.warnings)
+                wheel_checksum = manifest.get("wheel_sha256")
+                checksum = wheel_checksum if isinstance(wheel_checksum, str) else None
+                if require_deterministic and manifest.get("deterministic") is not True:
+                    errors.append("manifest is not deterministic")
+                required_caps = extension_validation.capabilities
+                if capabilities_list is None and required_caps:
+                    errors.append(
+                        "capabilities allowlist required; pass --capabilities or set "
+                        "tool.molt.capabilities in config"
+                    )
+                if capabilities_list is not None:
+                    pkg_name = manifest.get("name")
+                    allowlist = _allowed_capabilities_for_package(
+                        capabilities_list, capability_manifest, pkg_name
+                    )
+                    missing = [cap for cap in required_caps if cap not in allowlist]
+                    if missing:
+                        errors.append(
+                            "capabilities missing from allowlist: " + ", ".join(missing)
+                        )
+        else:
+            errors.extend(_manifest_errors(manifest))
+            checksum = manifest.get("checksum")
+            if checksum and artifact_bytes is not None:
+                actual = hashlib.sha256(artifact_bytes).hexdigest()
+                if actual != checksum:
+                    errors.append("checksum mismatch")
+            elif require_checksum:
+                errors.append("checksum missing")
+            elif not checksum:
+                warnings.append("checksum missing")
+            if require_deterministic and manifest.get("deterministic") is not True:
+                errors.append("manifest is not deterministic")
+            required_caps = manifest.get("capabilities", [])
+            if not isinstance(required_caps, list):
+                required_caps = []
+            required_effects = _normalize_effects(manifest.get("effects"))
+            if capabilities_list is None and (required_caps or required_effects):
+                errors.append(
+                    "capabilities allowlist required; pass --capabilities or set "
+                    "tool.molt.capabilities in config"
+                )
+            if capabilities_list is not None:
+                pkg_name = manifest.get("name")
+                allowlist = _allowed_capabilities_for_package(
+                    capabilities_list, capability_manifest, pkg_name
+                )
+                missing = [cap for cap in required_caps if cap not in allowlist]
+                if missing:
+                    errors.append(
+                        "capabilities missing from allowlist: " + ", ".join(missing)
+                    )
+                allowed_effects = _allowed_effects_for_package(
+                    capability_manifest, pkg_name
+                )
+                if allowed_effects is not None:
+                    missing_effects = [
+                        effect
+                        for effect in required_effects
+                        if effect not in allowed_effects
+                    ]
+                    if missing_effects:
+                        errors.append(
+                            "effects missing from allowlist: "
+                            + ", ".join(missing_effects)
+                        )
 
     signature_status = None
     signer_meta: dict[str, Any] | None = None
@@ -11859,18 +12998,41 @@ def verify(
 
     status = "ok" if not errors else "error"
     if json_output:
+        data: dict[str, Any] = {
+            "artifact": artifact_name,
+            "deterministic": require_deterministic,
+            "capability_profiles": capability_profiles,
+            "signature_status": signature_status
+            or ("signed" if signed else "unsigned"),
+            "signature_verified": signature_verified,
+            "trust_status": trust_status,
+        }
+        if extension_mode:
+            data["extension_metadata"] = True
+            data["extension_require_capabilities"] = require_extension_capabilities
+            data["extension_require_abi"] = required_extension_abi
+            if extension_validation is not None:
+                data["extension_wheel"] = (
+                    str(extension_validation.wheel_path)
+                    if extension_validation.wheel_path is not None
+                    else None
+                )
+                data["extension_abi"] = extension_validation.abi_version
+                data["extension_abi_tag"] = extension_validation.abi_tag
+                data["extension_capabilities"] = extension_validation.capabilities
+                data["extension_wheel_tags"] = (
+                    {
+                        "python": extension_validation.wheel_tags[0],
+                        "abi": extension_validation.wheel_tags[1],
+                        "platform": extension_validation.wheel_tags[2],
+                    }
+                    if extension_validation.wheel_tags is not None
+                    else None
+                )
         payload = _json_payload(
             "verify",
             status,
-            data={
-                "artifact": artifact_name,
-                "deterministic": require_deterministic,
-                "capability_profiles": capability_profiles,
-                "signature_status": signature_status
-                or ("signed" if signed else "unsigned"),
-                "signature_verified": signature_verified,
-                "trust_status": trust_status,
-            },
+            data=data,
             warnings=warnings,
             errors=errors,
         )
@@ -12487,7 +13649,7 @@ def show_config(
     compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
-    publish_cfg = _resolve_command_config(config, "publish")
+    extension_cfg = _resolve_command_config(config, "extension")
     publish_cfg = _resolve_command_config(config, "publish")
     caps_cfg = _resolve_capabilities_config(config)
     data: dict[str, Any] = {
@@ -12501,6 +13663,7 @@ def show_config(
         "compare": compare_cfg,
         "test": test_cfg,
         "diff": diff_cfg,
+        "extension": extension_cfg,
         "publish": publish_cfg,
         "capabilities": caps_cfg,
         "paths": {
@@ -12555,6 +13718,12 @@ def show_config(
             print(f"- {key}: {diff_cfg[key]}")
     else:
         print("Diff defaults: none")
+    if extension_cfg:
+        print("Extension defaults:")
+        for key in sorted(extension_cfg):
+            print(f"- {key}: {extension_cfg[key]}")
+    else:
+        print("Extension defaults: none")
     if publish_cfg:
         print("Publish defaults:")
         for key in sorted(publish_cfg):
@@ -12574,6 +13743,7 @@ def show_config(
 def _completion_script(shell: str) -> str:
     commands = [
         "build",
+        "extension",
         "check",
         "run",
         "compare",
@@ -12593,6 +13763,28 @@ def _completion_script(shell: str) -> str:
         "config",
         "completion",
     ]
+    extension_subcommands = ["build", "audit"]
+    extension_options = {
+        "build": [
+            "--project",
+            "--out-dir",
+            "--molt-abi",
+            "--target",
+            "--capabilities",
+            "--deterministic",
+            "--no-deterministic",
+            "--json",
+            "--verbose",
+        ],
+        "audit": [
+            "--path",
+            "--require-capabilities",
+            "--require-abi",
+            "--require-checksum",
+            "--json",
+            "--verbose",
+        ],
+    }
     options = {
         "build": [
             "--module",
@@ -12742,6 +13934,10 @@ def _completion_script(shell: str) -> str:
             "--manifest",
             "--artifact",
             "--require-checksum",
+            "--extension-metadata",
+            "--no-extension-metadata",
+            "--require-extension-capabilities",
+            "--require-extension-abi",
             "--require-deterministic",
             "--require-signature",
             "--no-require-signature",
@@ -12798,8 +13994,26 @@ def _completion_script(shell: str) -> str:
             f'    COMPREPLY=( $(compgen -W "{" ".join(commands)}" -- "$cur") )',
             "    return 0",
             "  fi",
-            '  case "${COMP_WORDS[1]}" in',
+            '  if [[ "${COMP_WORDS[1]}" == "extension" ]]; then',
+            "    if [[ ${COMP_CWORD} -eq 2 ]]; then",
+            '      COMPREPLY=( $(compgen -W "build audit" -- "$cur") )',
+            "      return 0",
+            "    fi",
+            '    case "${COMP_WORDS[2]}" in',
         ]
+        for sub in extension_subcommands:
+            opts = " ".join(extension_options.get(sub, []))
+            lines.append(f'      {sub}) opts="{opts}" ;;')
+        lines.extend(
+            [
+                '      *) opts="" ;;',
+                "    esac",
+                '    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )',
+                "    return 0",
+                "  fi",
+                '  case "${COMP_WORDS[1]}" in',
+            ]
+        )
         for cmd in commands:
             opts = " ".join(options.get(cmd, []))
             lines.append(f'    {cmd}) opts="{opts}" ;;')
@@ -12823,9 +14037,28 @@ def _completion_script(shell: str) -> str:
             "    compadd $commands",
             "    return",
             "  fi",
-            "  local -a opts",
-            "  case $words[2] in",
+            "  if [[ $words[2] == extension ]]; then",
+            "    if (( CURRENT == 3 )); then",
+            "      compadd build audit",
+            "      return",
+            "    fi",
+            "    local -a extension_opts",
+            "    case $words[3] in",
         ]
+        for sub in extension_subcommands:
+            opts = " ".join(extension_options.get(sub, []))
+            lines.append(f"      {sub}) extension_opts=({opts}) ;;")
+        lines.extend(
+            [
+                "      *) extension_opts=() ;;",
+                "    esac",
+                "    compadd $extension_opts",
+                "    return",
+                "  fi",
+                "  local -a opts",
+                "  case $words[2] in",
+            ]
+        )
         for cmd in commands:
             opts = " ".join(options.get(cmd, []))
             lines.append(f"    {cmd}) opts=({opts}) ;;")
@@ -12842,12 +14075,21 @@ def _completion_script(shell: str) -> str:
     if shell == "fish":
         lines = [
             f"complete -c molt -f -n '__fish_use_subcommand' -a \"{' '.join(commands)}\"",
+            "complete -c molt -f -n '__fish_seen_subcommand_from extension; and not __fish_seen_subcommand_from build audit' -a \"build audit\"",
         ]
         for cmd in commands:
             for opt in options.get(cmd, []):
                 opt_name = opt.lstrip("-")
                 lines.append(
                     f"complete -c molt -n '__fish_seen_subcommand_from {cmd}' -l {opt_name}"
+                )
+        for sub in extension_subcommands:
+            for opt in extension_options.get(sub, []):
+                opt_name = opt.lstrip("-")
+                lines.append(
+                    "complete -c molt "
+                    "-n '__fish_seen_subcommand_from extension; and "
+                    f"__fish_seen_subcommand_from {sub}' -l {opt_name}"
                 )
         return "\n".join(lines) + "\n"
     raise ValueError(f"Unsupported shell: {shell}")
@@ -13132,6 +14374,86 @@ def main() -> int:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     build_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    extension_parser = subparsers.add_parser(
+        "extension",
+        help="Build and audit C extensions compiled against libmolt.",
+    )
+    extension_subparsers = extension_parser.add_subparsers(
+        dest="extension_command", required=True
+    )
+    extension_build_parser = extension_subparsers.add_parser(
+        "build",
+        help="Compile a C extension against libmolt and emit a wheel + sidecar.",
+    )
+    extension_build_parser.add_argument(
+        "--project",
+        help="Project directory containing pyproject.toml (default: cwd).",
+    )
+    extension_build_parser.add_argument(
+        "--out-dir",
+        help="Output directory for wheel + extension_manifest.json (default: dist/).",
+    )
+    extension_build_parser.add_argument(
+        "--molt-abi",
+        help=(
+            "Molt C-API ABI version override "
+            "(default: tool.molt.extension.molt_c_api_version or MOLT_C_API_VERSION)."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--target",
+        help="Target triple for extension build (default: native host target).",
+    )
+    extension_build_parser.add_argument(
+        "--capabilities",
+        help=(
+            "Capabilities allowlist/profiles override "
+            "(default: tool.molt.extension.capabilities)."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require deterministic lockfile and reproducible wheel checks.",
+    )
+    extension_build_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    extension_build_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    extension_audit_parser = extension_subparsers.add_parser(
+        "audit",
+        help="Audit an extension manifest and wheel for ABI/capability compatibility.",
+    )
+    extension_audit_parser.add_argument(
+        "--path",
+        required=True,
+        help="Path to a wheel, extension_manifest.json, or directory containing it.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-capabilities",
+        action="store_true",
+        help="Fail when the manifest capability list is empty.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-abi",
+        help="Require an exact molt_c_api_version match.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-checksum",
+        action="store_true",
+        help="Require wheel and extension checksums in the manifest.",
+    )
+    extension_audit_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    extension_audit_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -13622,6 +14944,24 @@ def main() -> int:
         help="Fail when checksum is missing.",
     )
     verify_parser.add_argument(
+        "--extension-metadata",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Treat manifest as extension metadata and enforce extension ABI/wheel "
+            "checks (default: auto-detect from manifest keys)."
+        ),
+    )
+    verify_parser.add_argument(
+        "--require-extension-capabilities",
+        action="store_true",
+        help="Fail when extension manifest capability list is empty.",
+    )
+    verify_parser.add_argument(
+        "--require-extension-abi",
+        help="Require an exact extension molt_c_api_version match.",
+    )
+    verify_parser.add_argument(
         "--require-deterministic",
         action="store_true",
         help="Fail when manifest is not deterministic.",
@@ -13813,6 +15153,7 @@ def main() -> int:
     compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
+    extension_cfg = _resolve_command_config(config, "extension")
     publish_cfg = _resolve_command_config(config, "publish")
     cfg_capabilities = _resolve_capabilities_config(config)
 
@@ -13960,6 +15301,68 @@ def main() -> int:
             args.module,
             diagnostics,
             diagnostics_file,
+        )
+    if args.command == "extension":
+        if args.extension_command == "build":
+            deterministic = (
+                args.deterministic
+                if args.deterministic is not None
+                else _coerce_bool(extension_cfg.get("deterministic"), True)
+            )
+            capabilities = (
+                args.capabilities
+                or extension_cfg.get("capabilities")
+                or cfg_capabilities
+            )
+            molt_abi = (
+                args.molt_abi
+                or extension_cfg.get("molt_abi")
+                or extension_cfg.get("molt-abi")
+            )
+            return extension_build(
+                project=args.project or extension_cfg.get("project"),
+                out_dir=args.out_dir
+                or extension_cfg.get("out_dir")
+                or extension_cfg.get("out-dir"),
+                molt_abi=molt_abi,
+                capabilities=capabilities,
+                deterministic=deterministic,
+                target=args.target or extension_cfg.get("target"),
+                json_output=args.json,
+                verbose=args.verbose,
+            )
+        if args.extension_command == "audit":
+            require_abi = (
+                args.require_abi
+                or extension_cfg.get("require_abi")
+                or extension_cfg.get("require-abi")
+            )
+            require_capabilities = args.require_capabilities
+            if not require_capabilities:
+                require_capabilities = _coerce_bool(
+                    extension_cfg.get("require_capabilities")
+                    or extension_cfg.get("require-capabilities"),
+                    False,
+                )
+            require_checksum = args.require_checksum
+            if not require_checksum:
+                require_checksum = _coerce_bool(
+                    extension_cfg.get("require_checksum")
+                    or extension_cfg.get("require-checksum"),
+                    False,
+                )
+            return extension_audit(
+                path=args.path,
+                require_capabilities=require_capabilities,
+                require_abi=require_abi,
+                require_checksum=require_checksum,
+                json_output=args.json,
+                verbose=args.verbose,
+            )
+        return _fail(
+            "Missing extension subcommand (build|audit).",
+            args.json,
+            command="extension",
         )
     if args.command == "check":
         deterministic = args.deterministic
@@ -14184,11 +15587,16 @@ def main() -> int:
     if args.command == "publish":
         deterministic = args.deterministic
         if deterministic is None:
-            deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
+            deterministic = _coerce_bool(
+                publish_cfg.get("deterministic") or build_cfg.get("deterministic"),
+                True,
+            )
         deterministic_warn = args.deterministic_warn
         if deterministic_warn is None:
             deterministic_warn = _coerce_bool(
-                build_cfg.get("deterministic_warn")
+                publish_cfg.get("deterministic_warn")
+                or publish_cfg.get("deterministic-warn")
+                or build_cfg.get("deterministic_warn")
                 or build_cfg.get("deterministic-warn"),
                 False,
             )
@@ -14230,7 +15638,9 @@ def main() -> int:
                     args.json,
                     command="publish",
                 )
-        capabilities = args.capabilities or cfg_capabilities
+        capabilities = (
+            args.capabilities or publish_cfg.get("capabilities") or cfg_capabilities
+        )
         return publish(
             args.package,
             args.registry,
@@ -14271,6 +15681,9 @@ def main() -> int:
             args.trusted_signers,
             args.signer,
             args.signing_key,
+            args.require_extension_capabilities,
+            args.require_extension_abi,
+            args.extension_metadata,
         )
     if args.command == "deps":
         return deps(args.include_dev, args.json, args.verbose)

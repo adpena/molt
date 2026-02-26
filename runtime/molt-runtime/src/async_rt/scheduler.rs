@@ -2,6 +2,7 @@ use crate::PyToken;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
@@ -166,6 +167,135 @@ pub(crate) fn asyncio_event_waiters_map(
     _py: &PyToken<'_>,
 ) -> &'static Mutex<HashMap<u64, Vec<u64>>> {
     &runtime_state(_py).asyncio_event_waiters
+}
+
+#[derive(Default)]
+struct AwaitWaiterIndex {
+    positions: HashMap<PtrSlot, usize>,
+}
+
+fn await_waiter_index_map() -> &'static Mutex<HashMap<PtrSlot, AwaitWaiterIndex>> {
+    static INDEX: OnceLock<Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>> = OnceLock::new();
+    INDEX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Default)]
+struct AsyncioEventWaiterIndex {
+    positions: HashMap<u64, VecDeque<usize>>,
+    live: usize,
+    slots_len: usize,
+}
+
+fn asyncio_event_waiter_index_map() -> &'static Mutex<HashMap<u64, AsyncioEventWaiterIndex>> {
+    static INDEX: OnceLock<Mutex<HashMap<u64, AsyncioEventWaiterIndex>>> = OnceLock::new();
+    INDEX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn rebuild_unique_index<T: Copy + Eq + Hash>(values: &[T]) -> HashMap<T, usize> {
+    let mut index = HashMap::with_capacity(values.len());
+    for (idx, value) in values.iter().copied().enumerate() {
+        index.insert(value, idx);
+    }
+    index
+}
+
+fn indexed_unique_vec_insert<T: Copy + Eq + Hash>(
+    values: &mut Vec<T>,
+    index: &mut HashMap<T, usize>,
+    value: T,
+) -> bool {
+    if let Some(&idx) = index.get(&value)
+        && idx < values.len()
+        && values[idx] == value
+    {
+        return false;
+    }
+    if index.len() != values.len() {
+        *index = rebuild_unique_index(values);
+        if index.contains_key(&value) {
+            return false;
+        }
+    }
+    let next = values.len();
+    values.push(value);
+    index.insert(value, next);
+    true
+}
+
+fn indexed_unique_vec_swap_remove<T: Copy + Eq + Hash>(
+    values: &mut Vec<T>,
+    index: &mut HashMap<T, usize>,
+    value: T,
+) -> bool {
+    if index.len() != values.len() {
+        *index = rebuild_unique_index(values);
+    }
+    let Some(idx) = index.remove(&value) else {
+        return false;
+    };
+    let Some(last) = values.pop() else {
+        return false;
+    };
+    if idx < values.len() {
+        values[idx] = last;
+        index.insert(last, idx);
+    }
+    true
+}
+
+fn rebuild_asyncio_event_waiter_index(waiters: &[u64]) -> AsyncioEventWaiterIndex {
+    let mut index = AsyncioEventWaiterIndex {
+        positions: HashMap::new(),
+        live: 0,
+        slots_len: waiters.len(),
+    };
+    for (slot, waiter_bits) in waiters.iter().copied().enumerate() {
+        if waiter_bits == 0 {
+            continue;
+        }
+        index
+            .positions
+            .entry(waiter_bits)
+            .or_default()
+            .push_back(slot);
+        index.live += 1;
+    }
+    index
+}
+
+fn asyncio_event_waiter_pop_slot(
+    index: &mut AsyncioEventWaiterIndex,
+    waiter_bits: u64,
+) -> Option<usize> {
+    let drop_key;
+    let slot = {
+        let positions = index.positions.get_mut(&waiter_bits)?;
+        let slot = positions.pop_front()?;
+        drop_key = positions.is_empty();
+        slot
+    };
+    if drop_key {
+        index.positions.remove(&waiter_bits);
+    }
+    Some(slot)
+}
+
+fn maybe_compact_asyncio_event_waiters(
+    waiters: &mut Vec<u64>,
+    index: &mut AsyncioEventWaiterIndex,
+) {
+    let tombstones = waiters.len().saturating_sub(index.live);
+    if waiters.len() < 64 || tombstones <= index.live {
+        return;
+    }
+    let mut compacted = Vec::with_capacity(index.live);
+    for waiter_bits in waiters.drain(..) {
+        if waiter_bits != 0 {
+            compacted.push(waiter_bits);
+        }
+    }
+    *waiters = compacted;
+    *index = rebuild_asyncio_event_waiter_index(waiters.as_slice());
 }
 
 fn asyncio_parse_token_id(_py: &PyToken<'_>, token_bits: u64) -> Result<u64, u64> {
@@ -461,8 +591,23 @@ fn asyncio_event_waiters_register_impl(
         return MoltObject::none().bits();
     }
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
+    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
     let waiters = guard.entry(token_id).or_default();
+    let waiter_index = index_guard
+        .entry(token_id)
+        .or_insert_with(|| rebuild_asyncio_event_waiter_index(waiters.as_slice()));
+    if waiter_index.slots_len != waiters.len() {
+        *waiter_index = rebuild_asyncio_event_waiter_index(waiters.as_slice());
+    }
+    let slot = waiters.len();
     waiters.push(waiter_bits);
+    waiter_index
+        .positions
+        .entry(waiter_bits)
+        .or_default()
+        .push_back(slot);
+    waiter_index.live += 1;
+    waiter_index.slots_len = waiters.len();
     inc_ref_bits(_py, waiter_bits);
     MoltObject::none().bits()
 }
@@ -477,18 +622,44 @@ fn asyncio_event_waiters_unregister_impl(
         Err(bits) => return bits,
     };
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
+    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
     let Some(waiters) = guard.get_mut(&token_id) else {
         return MoltObject::from_bool(false).bits();
     };
-    let Some(idx) = waiters.iter().position(|bits| *bits == waiter_bits) else {
+    let waiter_index = index_guard
+        .entry(token_id)
+        .or_insert_with(|| rebuild_asyncio_event_waiter_index(waiters.as_slice()));
+    if waiter_index.slots_len != waiters.len() {
+        *waiter_index = rebuild_asyncio_event_waiter_index(waiters.as_slice());
+    }
+    let Some(mut slot) = asyncio_event_waiter_pop_slot(waiter_index, waiter_bits) else {
         return MoltObject::from_bool(false).bits();
     };
-    let removed = waiters.remove(idx);
-    if removed != 0 && !obj_from_bits(removed).is_none() {
-        dec_ref_bits(_py, removed);
+    if waiters.get(slot).copied() != Some(waiter_bits) {
+        *waiter_index = rebuild_asyncio_event_waiter_index(waiters.as_slice());
+        slot = match asyncio_event_waiter_pop_slot(waiter_index, waiter_bits) {
+            Some(slot) => slot,
+            None => return MoltObject::from_bool(false).bits(),
+        };
+        if waiters.get(slot).copied() != Some(waiter_bits) {
+            return MoltObject::from_bool(false).bits();
+        }
     }
-    if waiters.is_empty() {
+    waiters[slot] = 0;
+    waiter_index.live = waiter_index.live.saturating_sub(1);
+    let mut drop_token = false;
+    if waiter_index.live == 0 {
+        drop_token = true;
+    } else {
+        maybe_compact_asyncio_event_waiters(waiters, waiter_index);
+    }
+    waiter_index.slots_len = waiters.len();
+    if drop_token {
         guard.remove(&token_id);
+        index_guard.remove(&token_id);
+    }
+    if waiter_bits != 0 && !obj_from_bits(waiter_bits).is_none() {
+        dec_ref_bits(_py, waiter_bits);
     }
     MoltObject::from_bool(true).bits()
 }
@@ -499,9 +670,16 @@ fn asyncio_event_waiters_cleanup_token_impl(_py: &PyToken<'_>, token_bits: u64) 
         Err(bits) => return bits,
     };
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
-    let Some(waiters) = guard.remove(&token_id) else {
+    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
+    let Some(raw_waiters) = guard.remove(&token_id) else {
         return MoltObject::from_int(0).bits();
     };
+    index_guard.remove(&token_id);
+    let waiters: Vec<u64> = raw_waiters.into_iter().filter(|bits| *bits != 0).collect();
+    if waiters.is_empty() {
+        return MoltObject::from_int(0).bits();
+    }
+    drop(index_guard);
     drop(guard);
     let list_ptr = alloc_list(_py, waiters.as_slice());
     if list_ptr.is_null() {
@@ -1420,6 +1598,7 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
     let awaited_key = PtrSlot(awaited_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
     let prev = waiting_map.insert(waiter_key, awaited_key);
     // Keep raw pointers alive while they live in the await graph.
     unsafe {
@@ -1434,21 +1613,28 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
         && prev_key != awaited_key
     {
         if let Some(waiters) = awaiters_map.get_mut(&prev_key) {
-            if let Some(pos) = waiters.iter().position(|val| *val == waiter_key) {
-                waiters.swap_remove(pos);
+            let waiter_index = awaiter_index_map.entry(prev_key).or_default();
+            if waiter_index.positions.len() != waiters.len() {
+                waiter_index.positions = rebuild_unique_index(waiters.as_slice());
             }
+            indexed_unique_vec_swap_remove(waiters, &mut waiter_index.positions, waiter_key);
             if waiters.is_empty() {
                 awaiters_map.remove(&prev_key);
+                awaiter_index_map.remove(&prev_key);
             }
+        } else {
+            awaiter_index_map.remove(&prev_key);
         }
         unsafe {
             dec_ref_ptr(_py, prev_key.0);
         }
     }
     let waiters = awaiters_map.entry(awaited_key).or_default();
-    if !waiters.contains(&waiter_key) {
-        waiters.push(waiter_key);
+    let waiter_index = awaiter_index_map.entry(awaited_key).or_default();
+    if waiter_index.positions.len() != waiters.len() {
+        waiter_index.positions = rebuild_unique_index(waiters.as_slice());
     }
+    indexed_unique_vec_insert(waiters, &mut waiter_index.positions, waiter_key);
 }
 
 pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
@@ -1485,13 +1671,19 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
         }
     }
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
     if let Some(waiters) = awaiters_map.get_mut(&awaited_key) {
-        if let Some(pos) = waiters.iter().position(|val| *val == waiter_key) {
-            waiters.swap_remove(pos);
+        let waiter_index = awaiter_index_map.entry(awaited_key).or_default();
+        if waiter_index.positions.len() != waiters.len() {
+            waiter_index.positions = rebuild_unique_index(waiters.as_slice());
         }
+        indexed_unique_vec_swap_remove(waiters, &mut waiter_index.positions, waiter_key);
         if waiters.is_empty() {
             awaiters_map.remove(&awaited_key);
+            awaiter_index_map.remove(&awaited_key);
         }
+    } else {
+        awaiter_index_map.remove(&awaited_key);
     }
 }
 
@@ -1502,7 +1694,9 @@ pub(crate) fn await_waiters_take(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> Vec
     let awaited_key = PtrSlot(awaited_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
     let waiters = awaiters_map.remove(&awaited_key).unwrap_or_default();
+    awaiter_index_map.remove(&awaited_key);
     for waiter in &waiters {
         waiting_map.remove(waiter);
     }
