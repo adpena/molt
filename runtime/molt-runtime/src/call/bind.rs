@@ -46,17 +46,18 @@ use crate::{
     molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
     molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
     molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
-    molt_type_init, molt_type_new, obj_eq, obj_from_bits, object_class_bits, object_set_class_bits,
+    molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
     object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
     raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, tuple_len, type_name,
     type_of_bits,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
     kw_names: Vec<u64>,
     kw_values: Vec<u64>,
+    kw_seen: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1061,6 +1062,7 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
                 pos: Vec::with_capacity(pos_capacity),
                 kw_names: Vec::with_capacity(kw_capacity),
                 kw_values: Vec::with_capacity(kw_capacity),
+                kw_seen: HashSet::with_capacity(kw_capacity),
             });
             let args_ptr = Box::into_raw(args);
             *(ptr as *mut *mut CallArgs) = args_ptr;
@@ -1113,17 +1115,16 @@ unsafe fn callargs_push_kw(
             return MoltObject::none().bits();
         }
         let args = &mut *args_ptr;
-        for existing in args.kw_names.iter().copied() {
-            if obj_eq(_py, obj_from_bits(existing), name_obj) {
-                let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                let msg = format!("got multiple values for keyword argument '{name}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        if args.kw_seen.contains(&name) {
+            let msg = format!("got multiple values for keyword argument '{name}'");
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         // CallArgs must keep keyword arguments alive even if the caller drops its temporaries
         // before `molt_call_bind` executes.
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, val_bits);
+        args.kw_seen.insert(name);
         args.kw_names.push(name_bits);
         args.kw_values.push(val_bits);
         MoltObject::none().bits()
@@ -1819,7 +1820,31 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             }
 
             let mut extra_kwargs: Vec<u64> = Vec::new();
+            enum KeywordSlot {
+                PosOnly,
+                Slot(usize),
+            }
+            let mut keyword_slots: HashMap<String, KeywordSlot> =
+                HashMap::with_capacity(total_pos + kwonly_names.len());
+            for (idx, param_bits) in arg_names.iter().copied().enumerate() {
+                let key = string_obj_to_owned(obj_from_bits(param_bits))
+                    .unwrap_or_else(|| "?".to_string());
+                let slot = if idx < posonly {
+                    KeywordSlot::PosOnly
+                } else {
+                    KeywordSlot::Slot(idx)
+                };
+                keyword_slots.entry(key).or_insert(slot);
+            }
+            for (kw_idx, kw_name_bits) in kwonly_names.iter().copied().enumerate() {
+                let key = string_obj_to_owned(obj_from_bits(kw_name_bits))
+                    .unwrap_or_else(|| "?".to_string());
+                keyword_slots
+                    .entry(key)
+                    .or_insert(KeywordSlot::Slot(kwonly_start + kw_idx));
+            }
             let mut posonly_kw_names: Vec<String> = Vec::new();
+            let mut posonly_kw_seen: HashSet<String> = HashSet::new();
             let mut unexpected_kw: Option<String> = None;
             for (name_bits, val_bits) in args
                 .kw_names
@@ -1828,54 +1853,28 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 .zip(args.kw_values.iter().copied())
             {
                 let name_obj = obj_from_bits(name_bits);
-                let mut matched = false;
-                for (idx, param_bits) in arg_names.iter().copied().enumerate() {
-                    if obj_eq(_py, name_obj, obj_from_bits(param_bits)) {
-                        if idx < posonly {
-                            let name =
-                                string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                            if !posonly_kw_names.contains(&name) {
+                let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+                if let Some(slot) = keyword_slots.get(&name) {
+                    match slot {
+                        KeywordSlot::PosOnly => {
+                            if posonly_kw_seen.insert(name.clone()) {
                                 posonly_kw_names.push(name);
                             }
-                            matched = true;
-                            break;
                         }
-                        if slots[idx].is_some() {
-                            let name =
-                                string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                            let msg = format!("got multiple values for argument '{name}'");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        KeywordSlot::Slot(slot_idx) => {
+                            if slots[*slot_idx].is_some() {
+                                let msg = format!("got multiple values for argument '{name}'");
+                                return raise_exception::<_>(_py, "TypeError", &msg);
+                            }
+                            slots[*slot_idx] = Some(val_bits);
                         }
-                        slots[idx] = Some(val_bits);
-                        matched = true;
-                        break;
                     }
-                }
-                if matched {
-                    continue;
-                }
-                for (kw_idx, kw_name_bits) in kwonly_names.iter().copied().enumerate() {
-                    if obj_eq(_py, name_obj, obj_from_bits(kw_name_bits)) {
-                        let slot_idx = kwonly_start + kw_idx;
-                        if slots[slot_idx].is_some() {
-                            let name =
-                                string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                            let msg = format!("got multiple values for argument '{name}'");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        slots[slot_idx] = Some(val_bits);
-                        matched = true;
-                        break;
-                    }
-                }
-                if matched {
                     continue;
                 }
                 if has_varkw {
                     extra_kwargs.push(name_bits);
                     extra_kwargs.push(val_bits);
                 } else if unexpected_kw.is_none() {
-                    let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
                     unexpected_kw = Some(name);
                 }
             }

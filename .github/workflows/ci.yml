@@ -123,6 +123,306 @@ jobs:
           uv sync --dev --python 3.12 --frozen
           uv run pytest tests/test_django_demo.py
 
+  test-extension-pipeline:
+    name: Extension pipeline (${{ matrix.lane.name }})
+    runs-on: ${{ matrix.lane.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - name: linux-native
+            os: ubuntu-latest
+            target: native
+            install_zig: false
+          - name: linux-cross-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            install_zig: true
+          - name: macos-native
+            os: macos-latest
+            target: native
+            install_zig: false
+          - name: windows-native
+            os: windows-latest
+            target: native
+            install_zig: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Ensure clang is available (unix)
+        if: runner.os != 'Windows'
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            if [ "${{ runner.os }}" = "Linux" ]; then
+              sudo apt-get update
+              sudo apt-get install -y clang
+            elif [ "${{ runner.os }}" = "macOS" ]; then
+              brew install llvm
+              echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+            fi
+          fi
+          clang --version
+      - name: Ensure clang is available (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            choco install llvm --no-progress -y
+          }
+          if (Test-Path $llvmBin) {
+            $env:PATH = "$llvmBin;$env:PATH"
+            Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          }
+          clang --version
+      - name: Install zig (cross lane)
+        if: matrix.lane.install_zig && runner.os == 'Linux'
+        run: |
+          if ! command -v zig >/dev/null 2>&1; then
+            sudo apt-get update
+            if ! sudo apt-get install -y zig; then
+              ZIG_VERSION=0.13.0
+              curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+              sudo tar -C /opt -xf /tmp/zig.tar.xz
+              sudo ln -sf "/opt/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig
+            fi
+          fi
+          zig version
+      - name: Create extension fixture project
+        env:
+          MOLT_EXT_LANE: ${{ matrix.lane.name }}
+        run: |
+          uv run python - <<'PY'
+          import os
+          import pathlib
+          import textwrap
+
+          workdir = pathlib.Path(os.environ["RUNNER_TEMP"]) / f"molt_ext_ci_{os.environ['MOLT_EXT_LANE']}"
+          src_dir = workdir / "src" / "demo"
+          src_dir.mkdir(parents=True, exist_ok=True)
+
+          (workdir / "pyproject.toml").write_text(
+              textwrap.dedent(
+                  """
+                  [project]
+                  name = "molt-ext-ci"
+                  version = "0.1.0"
+
+                  [tool.molt.extension]
+                  module = "demo._native"
+                  sources = ["src/demo/native.c"]
+                  capabilities = ["fs.read"]
+                  determinism = "deterministic"
+                  """
+              ).lstrip(),
+              encoding="utf-8",
+          )
+
+          (src_dir / "native.c").write_text(
+              textwrap.dedent(
+                  r"""
+                  #include <Python.h>
+
+                  static struct PyModuleDef demo_module = {
+                      PyModuleDef_HEAD_INIT,
+                      "demo._native",
+                      "extension pipeline smoke module",
+                      -1,
+                      NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                  };
+
+                  static int parse_single_int(PyObject *args) {
+                      int value = 0;
+                      if (!PyArg_ParseTuple(args, "i", &value)) {
+                          return -1;
+                      }
+                      return value;
+                  }
+
+                  static int parse_kw_pair(PyObject *args, PyObject *kwargs) {
+                      static char *kwlist[] = {"left", "right", NULL};
+                      int left = 0;
+                      int right = 0;
+                      if (!PyArg_ParseTupleAndKeywords(
+                              args, kwargs, "i|i", kwlist, &left, &right)) {
+                          return -1;
+                      }
+                      return left + right;
+                  }
+
+                  int molt_ext_ci_dummy_symbol(void) {
+                      PyObject *module = PyModule_Create(&demo_module);
+                      if (module == NULL) {
+                          return 0;
+                      }
+                      if (PyModule_AddIntConstant(module, "answer", 42) < 0) {
+                          Py_DECREF(module);
+                          return 0;
+                      }
+                      (void)parse_single_int;
+                      (void)parse_kw_pair;
+                      Py_DECREF(module);
+                      return 1;
+                  }
+                  """
+              ).lstrip(),
+              encoding="utf-8",
+          )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"EXT_PROJECT_DIR={workdir.as_posix()}\n")
+          PY
+      - name: Build extension wheel
+        run: |
+          if [ "${{ matrix.lane.target }}" = "native" ]; then
+            uv run python -m molt.cli extension build \
+              --project "$EXT_PROJECT_DIR" \
+              --out-dir "$EXT_PROJECT_DIR/dist" \
+              --json >"$EXT_PROJECT_DIR/build.json"
+          else
+            uv run python -m molt.cli extension build \
+              --project "$EXT_PROJECT_DIR" \
+              --out-dir "$EXT_PROJECT_DIR/dist" \
+              --target "${{ matrix.lane.target }}" \
+              --json >"$EXT_PROJECT_DIR/build.json"
+          fi
+      - name: Capture extension build metadata
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          import pathlib
+
+          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
+          data = json.loads((root / "build.json").read_text()).get("data", {})
+          print(f"EXT_WHEEL={data.get('wheel', '')}")
+          print(f"EXT_MANIFEST={data.get('manifest', '')}")
+          print(f"EXT_ABI={data.get('molt_c_api_version', '')}")
+          PY
+          echo "EXT_EXPECTED_TARGET=${{ matrix.lane.target }}" >> "$GITHUB_ENV"
+      - name: Audit extension wheel metadata
+        run: |
+          uv run python -m molt.cli extension audit \
+            --path "$EXT_WHEEL" \
+            --require-capabilities \
+            --require-checksum \
+            --require-abi "$EXT_ABI" \
+            --json >"$EXT_PROJECT_DIR/audit.json"
+      - name: Verify extension metadata policy
+        run: |
+          uv run python -m molt.cli verify \
+            --manifest "$EXT_MANIFEST" \
+            --artifact "$EXT_WHEEL" \
+            --require-checksum \
+            --extension-metadata \
+            --require-extension-capabilities \
+            --require-extension-abi "$EXT_ABI" \
+            --capabilities fs.read \
+            --json >"$EXT_PROJECT_DIR/verify.json"
+      - name: Publish dry-run for extension wheel
+        run: |
+          uv run python -m molt.cli publish \
+            "$EXT_WHEEL" \
+            --registry "$EXT_PROJECT_DIR/registry/" \
+            --capabilities fs.read \
+            --dry-run \
+            --json >"$EXT_PROJECT_DIR/publish.json"
+      - name: Ensure extension wasm target is rejected
+        if: matrix.lane.name == 'linux-native'
+        run: |
+          set +e
+          uv run python -m molt.cli extension build \
+            --project "$EXT_PROJECT_DIR" \
+            --out-dir "$EXT_PROJECT_DIR/dist-wasm" \
+            --target wasm32-wasip1 \
+            --json >"$EXT_PROJECT_DIR/wasm_unsupported.json"
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          uv run python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          payload = json.loads(
+              (pathlib.Path(os.environ["EXT_PROJECT_DIR"]) / "wasm_unsupported.json").read_text()
+          )
+          assert payload.get("status") == "error", payload
+          assert any(
+              "only supports native target triples, not wasm" in err
+              for err in payload.get("errors", [])
+          ), payload
+          PY
+      - name: Validate extension pipeline JSON outputs
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
+          build = json.loads((root / "build.json").read_text())
+          audit = json.loads((root / "audit.json").read_text())
+          verify = json.loads((root / "verify.json").read_text())
+          publish = json.loads((root / "publish.json").read_text())
+
+          assert build["status"] == "ok", build
+          assert audit["status"] == "ok", audit
+          assert verify["status"] == "ok", verify
+          assert publish["status"] == "ok", publish
+
+          build_data = build["data"]
+          audit_data = audit["data"]
+          verify_data = verify["data"]
+          expected = os.environ["EXT_EXPECTED_TARGET"]
+          if expected == "native":
+              assert build_data["build_target"] == "native", build_data
+          else:
+              assert build_data["build_target"] == expected, build_data
+              assert build_data["target_triple"] == expected, build_data
+
+          assert audit_data["require_abi"] == build_data["molt_c_api_version"], audit_data
+          assert audit_data["wheel_tags"]["abi"] == build_data["abi_tag"], audit_data
+          assert (
+              audit_data["wheel_tags"]["platform"] == build_data["platform_tag"]
+          ), audit_data
+          assert verify_data["extension_metadata"] is True, verify_data
+          assert (
+              verify_data["extension_require_abi"] == build_data["molt_c_api_version"]
+          ), verify_data
+          assert publish["data"].get("extension_wheel") is True, publish
+          print("extension pipeline matrix lane passed")
+          PY
+      - name: Upload extension pipeline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-pipeline-${{ matrix.lane.name }}
+          path: |
+            ${{ env.EXT_PROJECT_DIR }}/build.json
+            ${{ env.EXT_PROJECT_DIR }}/audit.json
+            ${{ env.EXT_PROJECT_DIR }}/verify.json
+            ${{ env.EXT_PROJECT_DIR }}/publish.json
+            ${{ env.EXT_PROJECT_DIR }}/wasm_unsupported.json
+
   test-rust:
     runs-on: ubuntu-latest
     steps:
@@ -158,3 +458,176 @@ jobs:
         uses: swatinem/rust-cache@v2
       - name: Run wasm parity test
         run: uv run pytest tests/test_wasm_control_flow.py
+
+  test-tkinter-live-smoke:
+    name: Tk live smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            live_test_name: test_tkinter_live_smoke_linux
+          - os: macos-latest
+            live_test_name: test_tkinter_live_smoke_macos
+          - os: windows-latest
+            live_test_name: test_tkinter_live_smoke_windows
+    env:
+      MOLT_TK_LIVE_SMOKE: "1"
+      MOLT_RUNTIME_TK_NATIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare external artifact root (unix)
+        if: runner.os != 'Windows'
+        run: |
+          sudo mkdir -p /Volumes/APDataStore/Molt/tmp
+          sudo mkdir -p /Volumes/APDataStore/Molt/diff
+          sudo mkdir -p /Volumes/APDataStore/Molt/molt_cache
+          sudo mkdir -p /Volumes/APDataStore/Molt/uv-cache
+          sudo mkdir -p /Volumes/APDataStore/Molt/cargo-target-tk-live-smoke
+          sudo chown -R "$(id -u):$(id -g)" /Volumes/APDataStore
+
+      - name: Prepare external artifact root (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = "C:\Volumes\APDataStore\Molt"
+          New-Item -ItemType Directory -Force -Path "$root\tmp" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\diff" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\molt_cache" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\uv-cache" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\cargo-target-tk-live-smoke" | Out-Null
+
+      - name: Export external-volume env (unix)
+        if: runner.os != 'Windows'
+        run: |
+          {
+            echo "MOLT_EXT_ROOT=/Volumes/APDataStore/Molt"
+            echo "CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target-tk-live-smoke"
+            echo "MOLT_DIFF_CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target-tk-live-smoke"
+            echo "MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache"
+            echo "MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff"
+            echo "MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp"
+            echo "UV_CACHE_DIR=/Volumes/APDataStore/Molt/uv-cache"
+            echo "TMPDIR=/Volumes/APDataStore/Molt/tmp"
+            echo "MOLT_BACKEND_DAEMON_SOCKET_DIR=/tmp/molt_backend_sockets"
+          } >> "$GITHUB_ENV"
+
+      - name: Export external-volume env (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = "C:\Volumes\APDataStore\Molt"
+          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_EXT_ROOT=$root"
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$root\cargo-target-tk-live-smoke"
+          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_CARGO_TARGET_DIR=$root\cargo-target-tk-live-smoke"
+          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_CACHE=$root\molt_cache"
+          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_ROOT=$root\diff"
+          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_TMPDIR=$root\tmp"
+          Add-Content -Path $env:GITHUB_ENV -Value "UV_CACHE_DIR=$root\uv-cache"
+          Add-Content -Path $env:GITHUB_ENV -Value "TMPDIR=$root\tmp"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Linux Tk/Xvfb prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth python3-tk tk-dev
+
+      - name: Run live Tk smoke tests (linux/xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a uv run pytest -q -rs tests/test_tkinter_live_smoke.py --junitxml=tk-live-smoke.xml
+
+      - name: Run live Tk smoke tests (native)
+        if: runner.os != 'Linux'
+        run: uv run pytest -q -rs tests/test_tkinter_live_smoke.py --junitxml=tk-live-smoke.xml
+
+      # Linux is a hard gate: live tkinter smoke must pass end-to-end under Xvfb.
+      # macOS/Windows remain explicit provisional gates: a skip is allowed only if
+      # runner Tk runtime availability is not yet guaranteed, but test failures still fail.
+      - name: Enforce Tk live smoke gate policy
+        shell: python
+        run: |
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = "tk-live-smoke.xml"
+          try:
+              suite = ET.parse(report).getroot()
+          except Exception as exc:  # noqa: BLE001
+              raise SystemExit(f"failed to parse {report}: {exc}") from exc
+
+          if suite.tag != "testsuite":
+              nested = suite.find("testsuite")
+              if nested is None:
+                  raise SystemExit(f"{report} does not contain a testsuite element")
+              suite = nested
+
+          statuses: dict[str, str] = {}
+          for case in suite.iter("testcase"):
+              name = case.attrib.get("name", "")
+              if not name.startswith("test_tkinter_live_smoke_"):
+                  continue
+              if case.find("failure") is not None:
+                  statuses[name] = "failed"
+              elif case.find("error") is not None:
+                  statuses[name] = "error"
+              elif case.find("skipped") is not None:
+                  statuses[name] = "skipped"
+              else:
+                  statuses[name] = "passed"
+
+          expected_case = os.environ["LIVE_TEST_NAME"]
+          status = statuses.get(expected_case, "missing")
+          runner_os = os.environ.get("RUNNER_OS", "unknown")
+          print(f"runner={runner_os} expected_case={expected_case} status={status}")
+
+          if runner_os == "Linux":
+              if status != "passed":
+                  raise SystemExit(
+                      "linux live tkinter smoke is a required hard gate and must pass; "
+                      f"observed status={status}"
+                  )
+              print("linux hard gate satisfied")
+              raise SystemExit(0)
+
+          if status == "passed":
+              print(f"{runner_os} provisional gate satisfied with pass")
+              raise SystemExit(0)
+          if status == "skipped":
+              print(
+                  f"{runner_os} provisional gate observed explicit skip "
+                  "(allowed until runner Tk runtime provisioning is fully hardened)"
+              )
+              raise SystemExit(0)
+
+          raise SystemExit(
+              f"{runner_os} live tkinter smoke must pass or skip explicitly; observed status={status}"
+          )
+        env:
+          LIVE_TEST_NAME: ${{ matrix.live_test_name }}
+
+      - name: Upload Tk live smoke junit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tk-live-smoke-${{ matrix.os }}
+          path: tk-live-smoke.xml

@@ -32,6 +32,8 @@ const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
 const TASK_KIND_COROUTINE: i64 = 2;
 const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
+const STATE_REMAP_TABLE_MAX_ENTRIES: usize = 4096;
+const STATE_REMAP_TABLE_MAX_SPARSITY: usize = 8;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -233,6 +235,153 @@ fn build_dispatch_block_map(block_for_op: &[usize]) -> Vec<u8> {
         bytes.extend_from_slice(&(block_idx as u32).to_le_bytes());
     }
     bytes
+}
+
+#[derive(Default)]
+struct DispatchControlMaps {
+    label_to_index: HashMap<i64, usize>,
+    else_for_if: HashMap<usize, usize>,
+    end_for_if: HashMap<usize, usize>,
+    end_for_else: HashMap<usize, usize>,
+    loop_continue_target: HashMap<usize, usize>,
+    loop_break_target: HashMap<usize, usize>,
+}
+
+fn build_dispatch_control_maps(ops: &[OpIR], include_state_labels: bool) -> DispatchControlMaps {
+    struct LoopFrame {
+        start_idx: usize,
+        break_ops: Vec<usize>,
+    }
+
+    let mut maps = DispatchControlMaps::default();
+    let mut if_stack: Vec<usize> = Vec::new();
+    let mut loop_stack: Vec<LoopFrame> = Vec::new();
+
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "label" => {
+                if let Some(label_id) = op.value {
+                    maps.label_to_index.insert(label_id, idx);
+                }
+            }
+            "state_label" if include_state_labels => {
+                if let Some(label_id) = op.value {
+                    maps.label_to_index.insert(label_id, idx);
+                }
+            }
+            "if" => if_stack.push(idx),
+            "else" => {
+                if let Some(if_idx) = if_stack.last().copied() {
+                    maps.else_for_if.insert(if_idx, idx);
+                }
+            }
+            "end_if" => {
+                if let Some(if_idx) = if_stack.pop() {
+                    maps.end_for_if.insert(if_idx, idx);
+                    if let Some(else_idx) = maps.else_for_if.get(&if_idx).copied() {
+                        maps.end_for_else.insert(else_idx, idx);
+                    }
+                }
+            }
+            "loop_start" | "loop_index_start" => {
+                loop_stack.push(LoopFrame {
+                    start_idx: idx,
+                    break_ops: Vec::new(),
+                });
+            }
+            "loop_continue" => {
+                if let Some(frame) = loop_stack.last() {
+                    maps.loop_continue_target.insert(idx, frame.start_idx);
+                }
+            }
+            "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.break_ops.push(idx);
+                }
+            }
+            "loop_end" => {
+                if let Some(frame) = loop_stack.pop() {
+                    for break_idx in frame.break_ops {
+                        maps.loop_break_target.insert(break_idx, idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    maps
+}
+
+fn build_state_resume_maps(ops: &[OpIR]) -> (HashMap<i64, usize>, HashMap<String, i64>) {
+    let mut state_map: HashMap<i64, usize> = HashMap::new();
+    state_map.insert(0, 0);
+    let mut const_ints: HashMap<String, i64> = HashMap::new();
+
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                if let Some(state_id) = op.value {
+                    state_map.insert(state_id, idx + 1);
+                }
+            }
+            "label" | "state_label" => {
+                if let Some(state_id) = op.value {
+                    state_map.insert(state_id, idx);
+                }
+            }
+            "const" => {
+                if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
+                    const_ints.insert(out.clone(), value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (state_map, const_ints)
+}
+
+fn build_dense_state_remap_table(state_map: &HashMap<i64, usize>) -> Option<Vec<u8>> {
+    let mut non_negative_entries: Vec<(usize, i64)> = Vec::new();
+    for (&state_id, &target_idx) in state_map {
+        if state_id < 0 {
+            continue;
+        }
+        let Ok(state_idx) = usize::try_from(state_id) else {
+            return None;
+        };
+        non_negative_entries.push((state_idx, target_idx as i64));
+    }
+    if non_negative_entries.is_empty() {
+        return None;
+    }
+
+    let max_state_idx = non_negative_entries
+        .iter()
+        .map(|(state_idx, _)| *state_idx)
+        .max()?;
+    let entry_count = max_state_idx.checked_add(1)?;
+    if entry_count > STATE_REMAP_TABLE_MAX_ENTRIES {
+        return None;
+    }
+    if entry_count
+        > non_negative_entries
+            .len()
+            .saturating_mul(STATE_REMAP_TABLE_MAX_SPARSITY)
+    {
+        return None;
+    }
+
+    let mut table = vec![-1i64; entry_count];
+    for (state_idx, target_idx) in non_negative_entries {
+        table[state_idx] = target_idx;
+    }
+    let mut bytes = Vec::with_capacity(entry_count * std::mem::size_of::<i64>());
+    for target_idx in table {
+        bytes.extend_from_slice(&target_idx.to_le_bytes());
+    }
+    Some(bytes)
 }
 
 pub struct WasmBackend {
@@ -2610,6 +2759,22 @@ impl WasmBackend {
         } else {
             None
         };
+        let state_remap_base_local = if stateful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
+        let state_remap_value_local = if stateful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
         let const_seed_locals = if stateful || jumpful {
             let mut seen: HashSet<String> = HashSet::new();
             let mut seeds: Vec<(u32, i64)> = Vec::new();
@@ -2662,11 +2827,33 @@ impl WasmBackend {
         } else {
             None
         };
+        let dispatch_control_maps = if stateful || jumpful {
+            Some(build_dispatch_control_maps(&func_ir.ops, stateful))
+        } else {
+            None
+        };
+        let state_resume_maps = if stateful {
+            let (state_map, const_ints) = build_state_resume_maps(&func_ir.ops);
+            let state_remap_table = build_dense_state_remap_table(&state_map).map(|remap_bytes| {
+                let remap_entries = (remap_bytes.len() / std::mem::size_of::<i64>()) as i64;
+                let remap_segment = self.add_data_segment(reloc_enabled, &remap_bytes);
+                (remap_entries, remap_segment)
+            });
+            Some((state_map, const_ints, state_remap_table))
+        } else {
+            None
+        };
         if let Some((_, block_map_segment)) = dispatch_blocks.as_ref() {
             let block_map_base_local =
                 block_map_base_local.expect("block map base local missing for dispatch");
             self.emit_data_ptr(reloc_enabled, func_index, &mut func, *block_map_segment);
             func.instruction(&Instruction::LocalSet(block_map_base_local));
+        }
+        if let Some((_, _, Some((_, remap_segment)))) = state_resume_maps.as_ref() {
+            let remap_base_local =
+                state_remap_base_local.expect("state remap base local missing for stateful wasm");
+            self.emit_data_ptr(reloc_enabled, func_index, &mut func, *remap_segment);
+            func.instruction(&Instruction::LocalSet(remap_base_local));
         }
         if stateful || jumpful {
             // Seed dispatch locals from their first literal assignment so control-flow
@@ -7730,102 +7917,19 @@ impl WasmBackend {
             let block_count = block_starts.len();
             let block_map_base_local =
                 block_map_base_local.expect("block map base local missing for stateful wasm");
-            let mut label_to_index: HashMap<i64, usize> = HashMap::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                if (op.kind == "label" || op.kind == "state_label")
-                    && let Some(label_id) = op.value
-                {
-                    label_to_index.insert(label_id, idx);
-                }
-            }
-
-            let mut else_for_if: HashMap<usize, usize> = HashMap::new();
-            let mut end_for_if: HashMap<usize, usize> = HashMap::new();
-            let mut end_for_else: HashMap<usize, usize> = HashMap::new();
-            let mut if_stack: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "if" => if_stack.push(idx),
-                    "else" => {
-                        if let Some(if_idx) = if_stack.last().copied() {
-                            else_for_if.insert(if_idx, idx);
-                        }
-                    }
-                    "end_if" => {
-                        if let Some(if_idx) = if_stack.pop() {
-                            end_for_if.insert(if_idx, idx);
-                            if let Some(else_idx) = else_for_if.get(&if_idx).copied() {
-                                end_for_else.insert(else_idx, idx);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let mut loop_end_for_start: HashMap<usize, usize> = HashMap::new();
-            let mut loop_stack: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "loop_start" | "loop_index_start" => loop_stack.push(idx),
-                    "loop_end" => {
-                        if let Some(start_idx) = loop_stack.pop() {
-                            loop_end_for_start.insert(start_idx, idx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut loop_continue_target: HashMap<usize, usize> = HashMap::new();
-            let mut loop_break_target: HashMap<usize, usize> = HashMap::new();
-            let mut loop_scan: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "loop_start" | "loop_index_start" => loop_scan.push(idx),
-                    "loop_end" => {
-                        loop_scan.pop();
-                    }
-                    "loop_continue" => {
-                        if let Some(start_idx) = loop_scan.last().copied() {
-                            loop_continue_target.insert(idx, start_idx);
-                        }
-                    }
-                    "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
-                        if let Some(start_idx) = loop_scan.last().copied()
-                            && let Some(end_idx) = loop_end_for_start.get(&start_idx).copied()
-                        {
-                            loop_break_target.insert(idx, end_idx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut state_map: HashMap<i64, usize> = HashMap::new();
-            state_map.insert(0, 0);
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
-                        if let Some(state_id) = op.value {
-                            state_map.insert(state_id, idx + 1);
-                        }
-                    }
-                    "label" | "state_label" => {
-                        if let Some(state_id) = op.value {
-                            state_map.insert(state_id, idx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut const_ints: HashMap<String, i64> = HashMap::new();
-            for op in &func_ir.ops {
-                if op.kind != "const" {
-                    continue;
-                }
-                if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
-                    const_ints.insert(out.clone(), value);
-                }
-            }
+            let dispatch_control_maps = dispatch_control_maps
+                .as_ref()
+                .expect("dispatch control maps missing for stateful wasm");
+            let label_to_index = &dispatch_control_maps.label_to_index;
+            let else_for_if = &dispatch_control_maps.else_for_if;
+            let end_for_if = &dispatch_control_maps.end_for_if;
+            let end_for_else = &dispatch_control_maps.end_for_else;
+            let loop_continue_target = &dispatch_control_maps.loop_continue_target;
+            let loop_break_target = &dispatch_control_maps.loop_break_target;
+            let (state_map, const_ints, state_remap_table) = state_resume_maps
+                .as_ref()
+                .expect("state resume maps missing for stateful wasm");
+            let state_remap_table_entries = state_remap_table.as_ref().map(|(entries, _)| *entries);
 
             func.instruction(&Instruction::LocalGet(self_param));
             func.instruction(&Instruction::LocalSet(self_ptr_local));
@@ -7856,14 +7960,46 @@ impl WasmBackend {
             func.instruction(&Instruction::I64Xor);
             func.instruction(&Instruction::LocalSet(state_local));
             func.instruction(&Instruction::Else);
-            for (state_id, target_idx) in &state_map {
+            if let Some(remap_entries) = state_remap_table_entries {
+                let remap_base_local = state_remap_base_local
+                    .expect("state remap base local missing for stateful wasm");
+                let remap_value_local = state_remap_value_local
+                    .expect("state remap value local missing for stateful wasm");
                 func.instruction(&Instruction::LocalGet(state_local));
-                func.instruction(&Instruction::I64Const(*state_id));
-                func.instruction(&Instruction::I64Eq);
+                func.instruction(&Instruction::I64Const(remap_entries));
+                func.instruction(&Instruction::I64LtU);
                 func.instruction(&Instruction::If(BlockType::Empty));
-                func.instruction(&Instruction::I64Const(*target_idx as i64));
+                func.instruction(&Instruction::LocalGet(remap_base_local));
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::LocalGet(state_local));
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::I32Const(8));
+                func.instruction(&Instruction::I32Mul);
+                func.instruction(&Instruction::I32Add);
+                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                    align: 3,
+                    offset: 0,
+                    memory_index: 0,
+                }));
+                func.instruction(&Instruction::LocalSet(remap_value_local));
+                func.instruction(&Instruction::LocalGet(remap_value_local));
+                func.instruction(&Instruction::I64Const(0));
+                func.instruction(&Instruction::I64GeS);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(remap_value_local));
                 func.instruction(&Instruction::LocalSet(state_local));
                 func.instruction(&Instruction::End);
+                func.instruction(&Instruction::End);
+            } else {
+                for (state_id, target_idx) in &state_map {
+                    func.instruction(&Instruction::LocalGet(state_local));
+                    func.instruction(&Instruction::I64Const(*state_id));
+                    func.instruction(&Instruction::I64Eq);
+                    func.instruction(&Instruction::If(BlockType::Empty));
+                    func.instruction(&Instruction::I64Const(*target_idx as i64));
+                    func.instruction(&Instruction::LocalSet(state_local));
+                    func.instruction(&Instruction::End);
+                }
             }
             func.instruction(&Instruction::End);
 
@@ -8478,76 +8614,15 @@ impl WasmBackend {
             let block_count = block_starts.len();
             let block_map_base_local =
                 block_map_base_local.expect("block map base local missing for jumpful wasm");
-            let mut label_to_index: HashMap<i64, usize> = HashMap::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                if op.kind == "label"
-                    && let Some(label_id) = op.value
-                {
-                    label_to_index.insert(label_id, idx);
-                }
-            }
-
-            let mut else_for_if: HashMap<usize, usize> = HashMap::new();
-            let mut end_for_if: HashMap<usize, usize> = HashMap::new();
-            let mut end_for_else: HashMap<usize, usize> = HashMap::new();
-            let mut if_stack: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "if" => if_stack.push(idx),
-                    "else" => {
-                        if let Some(if_idx) = if_stack.last().copied() {
-                            else_for_if.insert(if_idx, idx);
-                        }
-                    }
-                    "end_if" => {
-                        if let Some(if_idx) = if_stack.pop() {
-                            end_for_if.insert(if_idx, idx);
-                            if let Some(else_idx) = else_for_if.get(&if_idx).copied() {
-                                end_for_else.insert(else_idx, idx);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let mut loop_end_for_start: HashMap<usize, usize> = HashMap::new();
-            let mut loop_stack: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "loop_start" | "loop_index_start" => loop_stack.push(idx),
-                    "loop_end" => {
-                        if let Some(start_idx) = loop_stack.pop() {
-                            loop_end_for_start.insert(start_idx, idx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut loop_continue_target: HashMap<usize, usize> = HashMap::new();
-            let mut loop_break_target: HashMap<usize, usize> = HashMap::new();
-            let mut loop_scan: Vec<usize> = Vec::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "loop_start" | "loop_index_start" => loop_scan.push(idx),
-                    "loop_end" => {
-                        loop_scan.pop();
-                    }
-                    "loop_continue" => {
-                        if let Some(start_idx) = loop_scan.last().copied() {
-                            loop_continue_target.insert(idx, start_idx);
-                        }
-                    }
-                    "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
-                        if let Some(start_idx) = loop_scan.last().copied()
-                            && let Some(end_idx) = loop_end_for_start.get(&start_idx).copied()
-                        {
-                            loop_break_target.insert(idx, end_idx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let dispatch_control_maps = dispatch_control_maps
+                .as_ref()
+                .expect("dispatch control maps missing for jumpful wasm");
+            let label_to_index = &dispatch_control_maps.label_to_index;
+            let else_for_if = &dispatch_control_maps.else_for_if;
+            let end_for_if = &dispatch_control_maps.end_for_if;
+            let end_for_else = &dispatch_control_maps.end_for_else;
+            let loop_continue_target = &dispatch_control_maps.loop_continue_target;
+            let loop_break_target = &dispatch_control_maps.loop_break_target;
 
             let mut scratch_control: Vec<ControlKind> = Vec::new();
             let mut scratch_try: Vec<usize> = Vec::new();

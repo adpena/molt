@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use digest::Digest;
 use getrandom::fill as getrandom_fill;
 use md5::Md5;
+use serde_json::Value as JsonValue;
 use sha1::Sha1;
+use sha2::Sha256;
 
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
@@ -52,6 +55,7 @@ static PROCESS_ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::
 static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
 static UUID_NODE_STATE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static UUID_V1_STATE: OnceLock<Mutex<(Option<u16>, u64)>> = OnceLock::new();
+static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 const UUID_EPOCH_100NS: u64 = 0x01B21DD213814000;
 
 fn trace_env_get() -> bool {
@@ -89,6 +93,10 @@ fn uuid_node_state() -> &'static Mutex<Option<u64>> {
 
 fn uuid_v1_state() -> &'static Mutex<(Option<u16>, u64)> {
     UUID_V1_STATE.get_or_init(|| Mutex::new((None, 0)))
+}
+
+fn extension_metadata_ok_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    EXTENSION_METADATA_OK_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
@@ -2784,6 +2792,481 @@ fn importlib_path_is_file(_py: &PyToken<'_>, path: &str) -> Result<bool, u64> {
     }
 }
 
+struct LoadedExtensionManifest {
+    source: String,
+    manifest: JsonValue,
+    wheel_path: Option<String>,
+}
+
+fn importlib_sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
+}
+
+fn importlib_sha256_file(path: &str) -> Result<String, std::io::Error> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(importlib_sha256_hex(digest.as_ref()))
+}
+
+fn importlib_metadata_timestamp_nanos(meta: &std::fs::Metadata) -> u128 {
+    meta.modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or(0)
+}
+
+fn importlib_metadata_fingerprint(path: &str) -> Result<String, std::io::Error> {
+    let metadata = std::fs::metadata(path)?;
+    let kind = if metadata.is_file() {
+        "f"
+    } else if metadata.is_dir() {
+        "d"
+    } else {
+        "o"
+    };
+    Ok(format!(
+        "{kind}:{}:{}",
+        metadata.len(),
+        importlib_metadata_timestamp_nanos(&metadata)
+    ))
+}
+
+fn importlib_cache_fingerprint_for_path(path: &str) -> Result<String, std::io::Error> {
+    if let Some((archive_path, inner_path)) = split_zip_archive_path(path) {
+        let archive_fp = importlib_metadata_fingerprint(&archive_path)?;
+        return Ok(format!("zip:{archive_fp}:{inner_path}"));
+    }
+    importlib_metadata_fingerprint(path).map(|fp| format!("file:{fp}"))
+}
+
+fn importlib_manifest_cache_fingerprint(
+    loaded: &LoadedExtensionManifest,
+) -> Result<String, std::io::Error> {
+    if let Some(wheel_path) = loaded.wheel_path.as_deref() {
+        let wheel_fp = importlib_metadata_fingerprint(wheel_path)?;
+        return Ok(format!("wheel:{wheel_fp}:{}", loaded.source));
+    }
+    let sidecar_fp = importlib_metadata_fingerprint(loaded.source.as_str())?;
+    Ok(format!("sidecar:{sidecar_fp}:{}", loaded.source))
+}
+
+fn importlib_sha256_path(_py: &PyToken<'_>, path: &str) -> Result<String, u64> {
+    if let Some((archive_path, inner_path)) = split_zip_archive_path(path) {
+        let bytes = zip_archive_read_entry(&archive_path, &inner_path)
+            .map_err(|err| raise_importlib_io_error(_py, err))?;
+        return Ok(importlib_sha256_hex(&bytes));
+    }
+    importlib_sha256_file(path).map_err(|err| raise_importlib_io_error(_py, err))
+}
+
+fn importlib_normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn importlib_extension_path_matches_manifest(path: &str, manifest_extension: &str) -> bool {
+    let path_norm = importlib_normalize_path_separators(path);
+    let expected_norm = importlib_normalize_path_separators(manifest_extension)
+        .trim_matches('/')
+        .to_string();
+    if expected_norm.is_empty() {
+        return false;
+    }
+    if path_norm == expected_norm || path_norm.ends_with(&format!("/{expected_norm}")) {
+        return true;
+    }
+    let path_name = Path::new(path_norm.as_str())
+        .file_name()
+        .and_then(|value| value.to_str());
+    let expected_name = Path::new(expected_norm.as_str())
+        .file_name()
+        .and_then(|value| value.to_str());
+    path_name.is_some() && path_name == expected_name
+}
+
+fn importlib_find_extension_manifest_sidecar(path: &str) -> Result<Option<String>, std::io::Error> {
+    let mut current = Path::new(path).parent();
+    for _ in 0..6 {
+        let Some(dir) = current else {
+            break;
+        };
+        let candidate = dir.join("extension_manifest.json");
+        match std::fs::metadata(&candidate) {
+            Ok(meta) => {
+                if meta.is_file() {
+                    return Ok(Some(candidate.to_string_lossy().into_owned()));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        current = dir.parent();
+    }
+    Ok(None)
+}
+
+fn importlib_load_extension_manifest_for_path(
+    _py: &PyToken<'_>,
+    path: &str,
+) -> Result<LoadedExtensionManifest, u64> {
+    if let Some((archive_path, _inner_path)) = split_zip_archive_path(path) {
+        let manifest_bytes = match zip_archive_read_entry(&archive_path, "extension_manifest.json")
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    &format!(
+                        "extension metadata missing for {path:?}: unable to read extension_manifest.json ({err})"
+                    ),
+                ));
+            }
+        };
+        let manifest = match serde_json::from_slice::<JsonValue>(&manifest_bytes) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    &format!(
+                        "invalid extension metadata in {}: {err}",
+                        format!("{archive_path}/extension_manifest.json")
+                    ),
+                ));
+            }
+        };
+        return Ok(LoadedExtensionManifest {
+            source: format!("{archive_path}/extension_manifest.json"),
+            manifest,
+            wheel_path: Some(archive_path),
+        });
+    }
+
+    let Some(manifest_path) = importlib_find_extension_manifest_sidecar(path)
+        .map_err(|err| raise_importlib_io_error(_py, err))?
+    else {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension metadata missing for {path:?}: extension_manifest.json not found near extension path"
+            ),
+        ));
+    };
+    let manifest_bytes =
+        std::fs::read(&manifest_path).map_err(|err| raise_importlib_io_error(_py, err))?;
+    let manifest = serde_json::from_slice::<JsonValue>(&manifest_bytes).map_err(|err| {
+        raise_exception::<u64>(
+            _py,
+            "ImportError",
+            &format!("invalid extension metadata in {manifest_path}: {err}"),
+        )
+    })?;
+    Ok(LoadedExtensionManifest {
+        source: manifest_path,
+        manifest,
+        wheel_path: None,
+    })
+}
+
+fn importlib_manifest_required_string<'a>(
+    _py: &PyToken<'_>,
+    manifest: &'a serde_json::Map<String, JsonValue>,
+    field: &str,
+    manifest_source: &str,
+) -> Result<&'a str, u64> {
+    let value = manifest
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            raise_exception::<u64>(
+                _py,
+                "ImportError",
+                &format!(
+                    "invalid extension metadata {manifest_source}: missing or invalid field {field:?}"
+                ),
+            )
+        })?;
+    Ok(value)
+}
+
+fn importlib_validate_extension_metadata(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    path: &str,
+    extension_sha256: &str,
+    loaded: &LoadedExtensionManifest,
+) -> Result<(), u64> {
+    let Some(manifest) = loaded.manifest.as_object() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "invalid extension metadata {}: payload must be a JSON object",
+                loaded.source
+            ),
+        ));
+    };
+
+    let manifest_module =
+        importlib_manifest_required_string(_py, manifest, "module", loaded.source.as_str())?;
+    if manifest_module != module_name {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension metadata module mismatch in {}: manifest has {:?}, loader requested {:?}",
+                loaded.source, manifest_module, module_name
+            ),
+        ));
+    }
+
+    let abi_version = importlib_manifest_required_string(
+        _py,
+        manifest,
+        "molt_c_api_version",
+        loaded.source.as_str(),
+    )?;
+    let manifest_abi_major = abi_version
+        .split('.')
+        .next()
+        .and_then(|segment| segment.parse::<u32>().ok())
+        .ok_or_else(|| {
+            raise_exception::<u64>(
+                _py,
+                "ImportError",
+                &format!(
+                    "invalid extension ABI version in {}: {:?}",
+                    loaded.source, abi_version
+                ),
+            )
+        })?;
+    let runtime_abi_major = crate::c_api::MOLT_C_API_VERSION;
+    if manifest_abi_major != runtime_abi_major {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension ABI mismatch for {:?}: runtime requires {}, manifest declares {} (source: {})",
+                module_name, runtime_abi_major, manifest_abi_major, loaded.source
+            ),
+        ));
+    }
+
+    let abi_tag =
+        importlib_manifest_required_string(_py, manifest, "abi_tag", loaded.source.as_str())?;
+    let expected_abi_tag = format!("molt_abi{manifest_abi_major}");
+    if abi_tag != expected_abi_tag {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension ABI tag mismatch in {}: expected {expected_abi_tag}, found {abi_tag}",
+                loaded.source
+            ),
+        ));
+    }
+
+    let _target_triple =
+        importlib_manifest_required_string(_py, manifest, "target_triple", loaded.source.as_str())?;
+    let _platform_tag =
+        importlib_manifest_required_string(_py, manifest, "platform_tag", loaded.source.as_str())?;
+
+    let manifest_extension =
+        importlib_manifest_required_string(_py, manifest, "extension", loaded.source.as_str())?;
+    if !importlib_extension_path_matches_manifest(path, manifest_extension) {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension metadata path mismatch in {}: manifest expects {:?}, loader path is {:?}",
+                loaded.source, manifest_extension, path
+            ),
+        ));
+    }
+
+    let expected_extension_sha = importlib_manifest_required_string(
+        _py,
+        manifest,
+        "extension_sha256",
+        loaded.source.as_str(),
+    )?
+    .to_ascii_lowercase();
+    if expected_extension_sha != extension_sha256 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "extension checksum mismatch for {:?}: expected {}, got {}",
+                module_name, expected_extension_sha, extension_sha256
+            ),
+        ));
+    }
+
+    if let Some(wheel_path) = loaded.wheel_path.as_deref() {
+        let expected_wheel_sha = importlib_manifest_required_string(
+            _py,
+            manifest,
+            "wheel_sha256",
+            loaded.source.as_str(),
+        )?
+        .to_ascii_lowercase();
+        let actual_wheel_sha =
+            importlib_sha256_file(wheel_path).map_err(|err| raise_importlib_io_error(_py, err))?;
+        if expected_wheel_sha != actual_wheel_sha {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!(
+                    "wheel checksum mismatch for extension metadata {}: expected {}, got {}",
+                    loaded.source, expected_wheel_sha, actual_wheel_sha
+                ),
+            ));
+        }
+
+        if let Some(wheel_name) = manifest
+            .get("wheel")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let archive_name = Path::new(wheel_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if archive_name != wheel_name {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    &format!(
+                        "wheel name mismatch in {}: manifest has {:?}, archive is {:?}",
+                        loaded.source, wheel_name, archive_name
+                    ),
+                ));
+            }
+        }
+    }
+
+    let capabilities = manifest
+        .get("capabilities")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            raise_exception::<u64>(
+                _py,
+                "ImportError",
+                &format!(
+                    "invalid extension metadata {}: capabilities must be an array",
+                    loaded.source
+                ),
+            )
+        })?;
+    if capabilities.is_empty() {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "invalid extension metadata {}: capabilities list must not be empty",
+                loaded.source
+            ),
+        ));
+    }
+    let mut missing_caps: BTreeSet<String> = BTreeSet::new();
+    for cap_value in capabilities {
+        let Some(cap_raw) = cap_value.as_str() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!(
+                    "invalid extension metadata {}: capabilities must contain only strings",
+                    loaded.source
+                ),
+            ));
+        };
+        let cap = cap_raw.trim();
+        if cap.is_empty() {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!(
+                    "invalid extension metadata {}: capability entries must be non-empty",
+                    loaded.source
+                ),
+            ));
+        }
+        if !has_capability(_py, cap) {
+            missing_caps.insert(cap.to_string());
+        }
+    }
+    if !missing_caps.is_empty() {
+        return Err(raise_exception::<_>(
+            _py,
+            "PermissionError",
+            &format!(
+                "missing extension capabilities for {:?}: {}",
+                module_name,
+                missing_caps.into_iter().collect::<Vec<_>>().join(", ")
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn importlib_require_extension_metadata(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    path: &str,
+) -> Result<(), u64> {
+    let cache_key = format!("{module_name}\u{1f}{path}");
+    let loaded = importlib_load_extension_manifest_for_path(_py, path)?;
+    let path_fingerprint = importlib_cache_fingerprint_for_path(path)
+        .map_err(|err| raise_importlib_io_error(_py, err))?;
+    let manifest_fingerprint = importlib_manifest_cache_fingerprint(&loaded)
+        .map_err(|err| raise_importlib_io_error(_py, err))?;
+    let cache_value = format!("{path_fingerprint}\u{1f}{manifest_fingerprint}");
+    {
+        let cache = extension_metadata_ok_cache();
+        let guard = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard
+            .get(&cache_key)
+            .is_some_and(|value| value == &cache_value)
+        {
+            return Ok(());
+        }
+    }
+
+    let extension_sha256 = importlib_sha256_path(_py, path)?;
+    importlib_validate_extension_metadata(_py, module_name, path, &extension_sha256, &loaded)?;
+
+    let cache = extension_metadata_ok_cache();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.insert(cache_key, cache_value);
+    Ok(())
+}
+
 fn importlib_extension_exec_unavailable(
     _py: &PyToken<'_>,
     module_name: &str,
@@ -3114,6 +3597,7 @@ fn importlib_reader_collect_unique_strings(
         return Err(MoltObject::none().bits());
     }
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     loop {
         let pair_bits = molt_iter_next(iter_bits);
         let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
@@ -3139,7 +3623,7 @@ fn importlib_reader_collect_unique_strings(
         if entry.is_empty() {
             continue;
         }
-        if !out.iter().any(|value| value == &entry) {
+        if seen.insert(entry.clone()) {
             out.push(entry);
         }
     }
@@ -3297,6 +3781,7 @@ fn importlib_traversable_iterdir_names(
     }
     let name_attr = intern_static_name(_py, &NAME_NAME, b"name");
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     loop {
         let pair_bits = molt_iter_next(iter_bits);
         let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
@@ -3346,7 +3831,7 @@ fn importlib_traversable_iterdir_names(
         if name.is_empty() {
             continue;
         }
-        if !out.iter().any(|value| value == &name) {
+        if seen.insert(name.clone()) {
             out.push(name);
         }
     }
@@ -3796,6 +4281,7 @@ fn importlib_resources_reader_child_names_impl(
     let entries = importlib_resources_reader_contents_impl(_py, reader_bits)?;
     let prefix = parts.join("/");
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for entry in entries {
         let remainder = if prefix.is_empty() {
             entry.as_str()
@@ -3813,8 +4299,9 @@ fn importlib_resources_reader_child_names_impl(
         if child.is_empty() {
             continue;
         }
-        if !out.iter().any(|name| name == child) {
-            out.push(child.to_string());
+        let child_name = child.to_string();
+        if seen.insert(child_name.clone()) {
+            out.push(child_name);
         }
     }
     Ok(out)
@@ -4447,7 +4934,7 @@ fn importlib_target_minor(_py: &PyToken<'_>) -> i64 {
     12
 }
 
-const REMOVED_STDLIB_MODULES_313: [&str; 19] = [
+const REMOVED_STDLIB_MODULES_313: [&str; 20] = [
     "aifc",
     "audioop",
     "cgi",
@@ -4465,6 +4952,7 @@ const REMOVED_STDLIB_MODULES_313: [&str; 19] = [
     "spwd",
     "sunau",
     "telnetlib",
+    "tkinter.tix",
     "uu",
     "xdrlib",
 ];
@@ -6398,6 +6886,9 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
     spec_is_package_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6406,6 +6897,20 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
+        match importlib_path_is_file(_py, &path) {
+            Ok(true) => {}
+            Ok(false) => {
+                return raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    "extension module path must point to a file",
+                );
+            }
+            Err(bits) => return bits,
+        }
+        if let Err(bits) = importlib_require_extension_metadata(_py, &module_name, &path) {
+            return bits;
+        }
         let spec_is_package = is_truthy(_py, obj_from_bits(spec_is_package_bits));
         let resolution = extension_loader_resolution(&module_name, &path, spec_is_package);
         match importlib_loader_resolution_payload_bits(_py, &resolution) {
@@ -6664,6 +7169,9 @@ pub extern "C" fn molt_importlib_exec_extension(
                 "PermissionError",
                 "missing module.extension.exec capability",
             );
+        }
+        if let Err(bits) = importlib_require_extension_metadata(_py, &module_name, &path) {
+            return bits;
         }
         let shim_candidates = importlib_extension_shim_candidates(&module_name, &path);
         let mut restricted_error: Option<String> = None;
@@ -10091,37 +10599,71 @@ pub extern "C" fn molt_importlib_reload(
 
         let out = (|| -> Result<u64, u64> {
             let module_name_name = intern_static_name(_py, &NAME_NAME, b"__name__");
-            let module_name_bits = match getattr_optional_bits(_py, module_bits, module_name_name)?
-            {
-                Some(bits) => bits,
-                None => {
-                    return Err(raise_exception::<_>(
-                        _py,
-                        "ImportError",
-                        "module has no __name__",
-                    ));
-                }
+            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let mut module_name_bits =
+                if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
+                    let out = getattr_optional_bits(_py, spec_bits, module_name_name)?;
+                    if !obj_from_bits(spec_bits).is_none() {
+                        dec_ref_bits(_py, spec_bits);
+                    }
+                    out
+                } else {
+                    None
+                };
+            if module_name_bits.is_none() {
+                module_name_bits = getattr_optional_bits(_py, module_bits, module_name_name)?;
+            }
+            let Some(module_name_bits) = module_name_bits else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "reload() argument must be a module",
+                ));
             };
-            let Some(module_name) = string_obj_to_owned(obj_from_bits(module_name_bits))
-                .filter(|name| !name.is_empty())
-            else {
+
+            modules_bits = importlib_runtime_modules_bits(_py)?;
+            let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+                if !obj_from_bits(module_name_bits).is_none() {
+                    dec_ref_bits(_py, module_name_bits);
+                }
+                return Err(importlib_modules_runtime_error(_py));
+            };
+            let in_sys_modules = unsafe { dict_get_in_place(_py, modules_ptr, module_name_bits) }
+                .is_some_and(|bits| bits == module_bits);
+            if exception_pending(_py) {
+                if !obj_from_bits(module_name_bits).is_none() {
+                    dec_ref_bits(_py, module_name_bits);
+                }
+                return Err(MoltObject::none().bits());
+            }
+            if !in_sys_modules {
+                let display = format_obj_str(_py, obj_from_bits(module_name_bits));
                 if !obj_from_bits(module_name_bits).is_none() {
                     dec_ref_bits(_py, module_name_bits);
                 }
                 return Err(raise_exception::<_>(
                     _py,
                     "ImportError",
-                    "module has no __name__",
+                    &format!("module {display} not in sys.modules"),
+                ));
+            }
+
+            let module_name_obj = obj_from_bits(module_name_bits);
+            let Some(module_name) = string_obj_to_owned(module_name_obj) else {
+                let module_name_type = type_name(_py, module_name_obj);
+                if !module_name_obj.is_none() {
+                    dec_ref_bits(_py, module_name_bits);
+                }
+                return Err(raise_exception::<_>(
+                    _py,
+                    "AttributeError",
+                    &format!("'{module_name_type}' object has no attribute 'rpartition'"),
                 ));
             };
-            if !obj_from_bits(module_name_bits).is_none() {
+            if !module_name_obj.is_none() {
                 dec_ref_bits(_py, module_name_bits);
             }
             name_bits = alloc_str_bits(_py, &module_name)?;
-            modules_bits = importlib_runtime_modules_bits(_py)?;
-            let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
-                return Err(importlib_modules_runtime_error(_py));
-            };
 
             let module_file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
             let module_file = match getattr_optional_bits(_py, module_bits, module_file_name)? {
@@ -10135,7 +10677,6 @@ pub extern "C" fn molt_importlib_reload(
                 None => None,
             };
 
-            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
             let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
             if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
                 if !obj_from_bits(spec_bits).is_none()
@@ -14515,6 +15056,28 @@ mod tests {
         out
     }
 
+    fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior = std::env::var("MOLT_TRUSTED").ok();
+        unsafe {
+            std::env::set_var("MOLT_TRUSTED", "1");
+        }
+        let _ = crate::state::runtime_state::molt_runtime_shutdown();
+        let out = f();
+        let _ = crate::state::runtime_state::molt_runtime_shutdown();
+        match prior {
+            Some(value) => unsafe {
+                std::env::set_var("MOLT_TRUSTED", value);
+            },
+            None => unsafe {
+                std::env::remove_var("MOLT_TRUSTED");
+            },
+        }
+        out
+    }
+
     fn bootstrap_module_file() -> String {
         if sys_platform_str().starts_with("win") {
             "C:\\repo\\src\\molt\\stdlib\\sys.py".to_string()
@@ -14529,6 +15092,108 @@ mod tests {
         } else {
             "/repo/src/molt/stdlib".to_string()
         }
+    }
+
+    fn extension_boundary_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), stamp))
+    }
+
+    fn extension_boundary_filename() -> &'static str {
+        if sys_platform_str().starts_with("win") {
+            "native.pyd"
+        } else {
+            "native.so"
+        }
+    }
+
+    fn clear_extension_metadata_validation_cache() {
+        let cache = extension_metadata_ok_cache();
+        let mut guard = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.clear();
+    }
+
+    fn alloc_test_string_bits(_py: &PyToken<'_>, value: &str) -> u64 {
+        let ptr = alloc_string(_py, value.as_bytes());
+        assert!(!ptr.is_null(), "alloc string failed for {value:?}");
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn call_extension_loader_boundary(_py: &PyToken<'_>, module_name: &str, path: &str) -> u64 {
+        let module_bits = alloc_test_string_bits(_py, module_name);
+        let path_bits = alloc_test_string_bits(_py, path);
+        let out = molt_importlib_extension_loader_payload(
+            module_bits,
+            path_bits,
+            MoltObject::from_bool(false).bits(),
+        );
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, path_bits);
+        out
+    }
+
+    fn call_extension_exec_boundary(
+        _py: &PyToken<'_>,
+        namespace_bits: u64,
+        module_name: &str,
+        path: &str,
+    ) -> u64 {
+        let module_bits = alloc_test_string_bits(_py, module_name);
+        let path_bits = alloc_test_string_bits(_py, path);
+        let out = molt_importlib_exec_extension(namespace_bits, module_bits, path_bits);
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, path_bits);
+        out
+    }
+
+    fn assert_pending_exception_contains(
+        _py: &PyToken<'_>,
+        expected_kind: &str,
+        fragments: &[&str],
+    ) {
+        let (kind, message) =
+            pending_exception_kind_and_message(_py).expect("expected pending exception");
+        assert_eq!(
+            kind, expected_kind,
+            "unexpected exception kind: {kind} ({message})"
+        );
+        for fragment in fragments {
+            assert!(
+                message.contains(fragment),
+                "expected fragment {fragment:?} in exception message {message:?}"
+            );
+        }
+        assert!(
+            clear_pending_if_kind(_py, &[expected_kind]),
+            "failed to clear pending {expected_kind} exception"
+        );
+        assert!(!exception_pending(_py));
+    }
+
+    fn write_valid_extension_manifest(
+        manifest_path: &std::path::Path,
+        module_name: &str,
+        extension_entry: &str,
+        extension_sha256: &str,
+    ) {
+        let abi_major = crate::c_api::MOLT_C_API_VERSION;
+        let manifest = serde_json::json!({
+            "module": module_name,
+            "molt_c_api_version": format!("{abi_major}.0.0"),
+            "abi_tag": format!("molt_abi{abi_major}"),
+            "target_triple": "test-target",
+            "platform_tag": "test-platform",
+            "extension": extension_entry,
+            "extension_sha256": extension_sha256,
+            "capabilities": ["fs.read"],
+        });
+        let bytes = serde_json::to_vec(&manifest).expect("encode extension manifest");
+        std::fs::write(manifest_path, bytes).expect("write extension manifest");
     }
 
     #[test]
@@ -14865,6 +15530,319 @@ mod tests {
         std::fs::write(tmp.join("notext.fake.so"), b"").expect("write invalid extension name");
         let missing = importlib_find_in_path("notext", &search_paths, false);
         assert!(missing.is_none());
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn extension_path_matches_manifest_entry_variants() {
+        assert!(importlib_extension_path_matches_manifest(
+            "/tmp/site/demo/native.so",
+            "demo/native.so"
+        ));
+        assert!(importlib_extension_path_matches_manifest(
+            "/tmp/site/demo/native.so",
+            "native.so"
+        ));
+        assert!(importlib_extension_path_matches_manifest(
+            "C:\\site\\demo\\native.pyd",
+            "demo/native.pyd"
+        ));
+        assert!(!importlib_extension_path_matches_manifest(
+            "/tmp/site/demo/other.so",
+            "demo/native.so"
+        ));
+    }
+
+    #[test]
+    fn find_extension_manifest_sidecar_walks_parent_dirs() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_extension_manifest_sidecar_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        let pkg_dir = tmp.join("pkg").join("nested");
+        std::fs::create_dir_all(&pkg_dir).expect("create extension dir");
+        let extension_path = pkg_dir.join("native.so");
+        std::fs::write(&extension_path, b"binary").expect("write extension placeholder");
+        let manifest_path = tmp.join("extension_manifest.json");
+        std::fs::write(&manifest_path, b"{}\n").expect("write manifest");
+
+        let found = importlib_find_extension_manifest_sidecar(&extension_path.to_string_lossy())
+            .expect("resolve sidecar");
+        assert_eq!(found, Some(manifest_path.to_string_lossy().into_owned()));
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn extension_cache_fingerprint_changes_when_binary_changes() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_extension_cache_fingerprint_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let extension_path = tmp.join("native.so");
+        std::fs::write(&extension_path, b"abc").expect("write extension");
+        let first = importlib_cache_fingerprint_for_path(&extension_path.to_string_lossy())
+            .expect("first fingerprint");
+        std::fs::write(&extension_path, b"abcdef012345").expect("rewrite extension");
+        let second = importlib_cache_fingerprint_for_path(&extension_path.to_string_lossy())
+            .expect("second fingerprint");
+        assert_ne!(first, second);
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn extension_manifest_cache_fingerprint_changes_when_sidecar_changes() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_manifest_cache_fingerprint_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let manifest_path = tmp.join("extension_manifest.json");
+        std::fs::write(&manifest_path, b"{\"module\":\"demo\"}\n").expect("write manifest");
+        let loaded = LoadedExtensionManifest {
+            source: manifest_path.to_string_lossy().into_owned(),
+            manifest: JsonValue::Null,
+            wheel_path: None,
+        };
+        let first = importlib_manifest_cache_fingerprint(&loaded).expect("first fingerprint");
+        std::fs::write(
+            &manifest_path,
+            b"{\"module\":\"demo\",\"capabilities\":[\"fs.read\"]}\n",
+        )
+        .expect("rewrite manifest");
+        let second = importlib_manifest_cache_fingerprint(&loaded).expect("second fingerprint");
+        assert_ne!(first, second);
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_loader_missing_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"loader-boundary-extension")
+                .expect("write extension placeholder");
+            let module_name = "demo.extension.loader.missing";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+
+            crate::with_gil_entry!(_py, {
+                let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &[
+                        "extension metadata missing",
+                        "extension_manifest.json not found near extension path",
+                    ],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_loader_boundary_rejects_invalid_manifest_payload() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_loader_invalid_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"loader-boundary-extension")
+                .expect("write extension placeholder");
+            std::fs::write(tmp.join("extension_manifest.json"), b"{not-json}\n")
+                .expect("write invalid manifest");
+            let module_name = "demo.extension.loader.invalid";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+
+            crate::with_gil_entry!(_py, {
+                let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["invalid extension metadata in", "extension_manifest.json"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_exec_missing_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"exec-boundary-extension")
+                .expect("write extension placeholder");
+            let module_name = "demo.extension.exec.missing";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+
+            crate::with_gil_entry!(_py, {
+                let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!namespace_ptr.is_null(), "alloc namespace dict");
+                let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
+                let _ = call_extension_exec_boundary(
+                    _py,
+                    namespace_bits,
+                    module_name,
+                    &extension_path_text,
+                );
+                dec_ref_bits(_py, namespace_bits);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &[
+                        "extension metadata missing",
+                        "extension_manifest.json not found near extension path",
+                    ],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_exec_invalid_manifest");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"exec-boundary-extension")
+                .expect("write extension placeholder");
+            std::fs::write(tmp.join("extension_manifest.json"), b"{}\n")
+                .expect("write invalid metadata manifest");
+            let module_name = "demo.extension.exec.invalid";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+
+            crate::with_gil_entry!(_py, {
+                let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!namespace_ptr.is_null(), "alloc namespace dict");
+                let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
+                let _ = call_extension_exec_boundary(
+                    _py,
+                    namespace_bits,
+                    module_name,
+                    &extension_path_text,
+                );
+                dec_ref_bits(_py, namespace_bits);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["missing or invalid field", "\"module\""],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_loader_cache_revalidation");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            let initial_extension = b"extension-v1";
+            std::fs::write(&extension_path, initial_extension)
+                .expect("write extension placeholder");
+            let module_name = "demo.extension.loader.cache";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                module_name,
+                extension_boundary_filename(),
+                &extension_sha256,
+            );
+
+            crate::with_gil_entry!(_py, {
+                let payload_bits =
+                    call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected boundary exception on first pass: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+                assert!(
+                    !obj_from_bits(payload_bits).is_none(),
+                    "expected loader payload on first pass"
+                );
+                dec_ref_bits(_py, payload_bits);
+            });
+
+            std::fs::write(&extension_path, b"extension-v2-with-different-size")
+                .expect("mutate extension artifact");
+
+            crate::with_gil_entry!(_py, {
+                let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["extension checksum mismatch"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn importlib_sha256_path_supports_zip_archive_members() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_sha_zip_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let archive = tmp.join("mods.whl");
+        let file = std::fs::File::create(&archive).expect("create archive");
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
+        writer
+            .start_file("demo/native.so", options)
+            .expect("start archive entry");
+        writer
+            .write_all(b"zip-extension-bytes")
+            .expect("write archive entry");
+        writer.finish().expect("finish archive");
+
+        let archive_member_path = format!("{}/demo/native.so", archive.to_string_lossy());
+        crate::with_gil_entry!(_py, {
+            let digest =
+                importlib_sha256_path(_py, &archive_member_path).expect("hash archive member");
+            assert_eq!(digest, importlib_sha256_hex(b"zip-extension-bytes"));
+        });
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
     }

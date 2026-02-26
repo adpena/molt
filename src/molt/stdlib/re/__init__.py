@@ -19,6 +19,23 @@ def _require_callable_intrinsic(name: str):
     return value
 
 
+_LOOK_INTRINSIC_FALLBACK = -2
+
+
+def _optional_look_intrinsic(name: str):
+    try:
+        value = _require_intrinsic(name, globals())
+    except RuntimeError:
+        return None
+    if not callable(value):
+        return None
+    return value
+
+
+def _look_intrinsic_unavailable(*_args: Any) -> int:
+    return _LOOK_INTRINSIC_FALLBACK
+
+
 _molt_re_literal_advance = _require_callable_intrinsic("molt_re_literal_advance")
 _molt_re_any_advance = _require_callable_intrinsic("molt_re_any_advance")
 _molt_re_anchor_matches = _require_callable_intrinsic("molt_re_anchor_matches")
@@ -31,6 +48,22 @@ _molt_re_group_capture = _require_callable_intrinsic("molt_re_group_capture")
 _molt_re_charclass_advance = _require_callable_intrinsic("molt_re_charclass_advance")
 _molt_re_group_values = _require_callable_intrinsic("molt_re_group_values")
 _molt_re_expand_replacement = _require_callable_intrinsic("molt_re_expand_replacement")
+_molt_re_positive_lookahead = (
+    _optional_look_intrinsic("molt_re_positive_lookahead")
+    or _look_intrinsic_unavailable
+)
+_molt_re_positive_lookbehind = (
+    _optional_look_intrinsic("molt_re_positive_lookbehind")
+    or _look_intrinsic_unavailable
+)
+_molt_re_negative_lookahead = (
+    _optional_look_intrinsic("molt_re_negative_lookahead")
+    or _look_intrinsic_unavailable
+)
+_molt_re_negative_lookbehind = (
+    _optional_look_intrinsic("molt_re_negative_lookbehind")
+    or _look_intrinsic_unavailable
+)
 
 
 __all__ = [
@@ -63,7 +96,7 @@ __all__ = [
     "subn",
 ]
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): complete native re parity and continue migrating parser/matcher execution into Rust (remaining lookaround variants, named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics).
+# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): complete native re parity and continue migrating parser/matcher execution into Rust (named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics).
 
 ASCII = 256
 DOTALL = 16
@@ -151,6 +184,7 @@ class _Look:
     node: Any
     behind: bool
     positive: bool
+    width: int | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +207,8 @@ class _Parser:
         self.pos = 0
         self.group_count = 0
         self.group_names: dict[str, int] = {}
+        self.group_widths: dict[int, int | None] = {}
+        self.open_group_names: set[str] = set()
         self.inline_flags = 0
         self.nested_set_warning_pos: int | None = None
 
@@ -291,7 +327,12 @@ class _Parser:
                     self._next()
                     return _Look(node, behind=False, positive=True)
                 if marker == "!":
-                    raise NotImplementedError("negative lookahead is not supported")
+                    self._next()
+                    node = self._parse_expr()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    return _Look(node, behind=False, positive=False)
                 if marker == "<":
                     self._next()
                     look_kind = self._peek()
@@ -301,13 +342,20 @@ class _Parser:
                         if self._peek() != ")":
                             raise error("missing )")
                         self._next()
-                        if _fixed_width(node) is None:
+                        width = _fixed_width(node, self.group_widths)
+                        if width is None:
                             raise error("look-behind requires fixed-width pattern")
-                        return _Look(node, behind=True, positive=True)
+                        return _Look(node, behind=True, positive=True, width=width)
                     if look_kind == "!":
-                        raise NotImplementedError(
-                            "negative lookbehind is not supported"
-                        )
+                        self._next()
+                        node = self._parse_expr()
+                        if self._peek() != ")":
+                            raise error("missing )")
+                        self._next()
+                        width = _fixed_width(node, self.group_widths)
+                        if width is None:
+                            raise error("look-behind requires fixed-width pattern")
+                        return _Look(node, behind=True, positive=False, width=width)
                     raise error("unknown extension")
                 if marker == "(":
                     self._next()
@@ -341,8 +389,32 @@ class _Parser:
                     return node
                 if marker == "P":
                     self._next()
-                    if self._next() != "<":
+                    name_marker = self._peek()
+                    if name_marker == "=":
+                        self._next()
+                        name_chars: list[str] = []
+                        while True:
+                            token = self._peek()
+                            if token is None:
+                                raise error("missing )")
+                            if token == ")":
+                                self._next()
+                                break
+                            if token in _META_CHARS or token in "<>":
+                                raise error("bad character in group name")
+                            name_chars.append(self._next())
+                        if not name_chars:
+                            raise error("missing group name")
+                        name = "".join(name_chars)
+                        if name in self.open_group_names:
+                            raise error("cannot refer to an open group")
+                        group_index = self.group_names.get(name)
+                        if group_index is None:
+                            raise error(f"unknown group name '{name}'")
+                        return _Backref(group_index)
+                    if name_marker != "<":
                         raise error("bad character in group name")
+                    self._next()
                     name_chars: list[str] = []
                     while True:
                         token = self._peek()
@@ -357,14 +429,21 @@ class _Parser:
                     if not name_chars:
                         raise error("missing group name")
                     name = "".join(name_chars)
-                    if name in self.group_names:
+                    if name in self.group_names or name in self.open_group_names:
                         raise error("redefinition of group name")
-                    node = self._parse_expr()
-                    if self._peek() != ")":
-                        raise error("missing )")
-                    self._next()
+                    self.open_group_names.add(name)
+                    try:
+                        node = self._parse_expr()
+                        if self._peek() != ")":
+                            raise error("missing )")
+                        self._next()
+                    finally:
+                        self.open_group_names.discard(name)
                     self.group_count += 1
                     self.group_names[name] = self.group_count
+                    self.group_widths[self.group_count] = _fixed_width(
+                        node, self.group_widths
+                    )
                     return _Group(node, self.group_count)
                 # Inline flags: (?i), (?s), (?x), (?-i:...), (?i:...)
                 flags = 0
@@ -422,6 +501,7 @@ class _Parser:
                 raise error("missing )")
             self._next()
             self.group_count += 1
+            self.group_widths[self.group_count] = _fixed_width(node, self.group_widths)
             return _Group(node, self.group_count)
         if ch == "[":
             return self._parse_class()
@@ -542,7 +622,9 @@ class _Parser:
         return ch
 
 
-def _fixed_width(node: Any) -> int | None:
+def _fixed_width(
+    node: Any, group_widths: dict[int, int | None] | None = None
+) -> int | None:
     if isinstance(node, _Empty):
         return 0
     if isinstance(node, _Literal):
@@ -554,16 +636,18 @@ def _fixed_width(node: Any) -> int | None:
     if isinstance(node, _CharClass):
         return 1
     if isinstance(node, _Backref):
-        return None
+        if group_widths is None:
+            return None
+        return group_widths.get(node.index)
     if isinstance(node, _Group):
-        return _fixed_width(node.node)
+        return _fixed_width(node.node, group_widths)
     if isinstance(node, _Look):
         return 0
     if isinstance(node, _ScopedFlags):
-        return _fixed_width(node.node)
+        return _fixed_width(node.node, group_widths)
     if isinstance(node, _Conditional):
-        yes_width = _fixed_width(node.yes)
-        no_width = _fixed_width(node.no)
+        yes_width = _fixed_width(node.yes, group_widths)
+        no_width = _fixed_width(node.no, group_widths)
         if yes_width is None or no_width is None:
             return None
         if yes_width != no_width:
@@ -572,7 +656,7 @@ def _fixed_width(node: Any) -> int | None:
     if isinstance(node, _Concat):
         total = 0
         for item in node.nodes:
-            width = _fixed_width(item)
+            width = _fixed_width(item, group_widths)
             if width is None:
                 return None
             total += width
@@ -580,16 +664,16 @@ def _fixed_width(node: Any) -> int | None:
     if isinstance(node, _Alt):
         if not node.options:
             return 0
-        first = _fixed_width(node.options[0])
+        first = _fixed_width(node.options[0], group_widths)
         if first is None:
             return None
         for item in node.options[1:]:
-            width = _fixed_width(item)
+            width = _fixed_width(item, group_widths)
             if width is None or width != first:
                 return None
         return first
     if isinstance(node, _Repeat):
-        width = _fixed_width(node.node)
+        width = _fixed_width(node.node, group_widths)
         if width is None:
             return None
         if node.max_count is None:
@@ -851,6 +935,39 @@ def _match_backref(
     return [(new_pos, groups)]
 
 
+def _look_pattern_descriptor(node: Any) -> str | None:
+    if isinstance(node, _Literal):
+        return f"lit:{node.text}"
+    if not isinstance(node, _CharClass):
+        return None
+    if node.ranges:
+        return None
+    if node.categories:
+        if node.chars or len(node.categories) != 1:
+            return None
+        category = node.categories[0]
+        if category.startswith("posix:"):
+            return None
+        if category not in ("d", "D", "s", "S", "w", "W"):
+            return None
+        if node.negated:
+            if category == "d":
+                category = "D"
+            elif category == "D":
+                category = "d"
+            elif category == "s":
+                category = "S"
+            elif category == "S":
+                category = "s"
+            elif category == "w":
+                category = "W"
+            elif category == "W":
+                category = "w"
+        return f"cat:{category}"
+    chars = "".join(node.chars)
+    return f"cls:{1 if node.negated else 0}:{chars}"
+
+
 def _match_look(
     node: _Look,
     text: str,
@@ -860,10 +977,33 @@ def _match_look(
     groups: tuple[tuple[int, int] | None, ...],
     flags: int,
 ) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
+    descriptor = _look_pattern_descriptor(node.node)
     if node.behind:
-        width = _fixed_width(node.node)
+        width = node.width
+        if width is None:
+            width = _fixed_width(node.node)
         if width is None:
             raise error("look-behind requires fixed-width pattern")
+        if node.positive and descriptor is not None:
+            verdict = _molt_re_positive_lookbehind(
+                text, pos, end, descriptor, width, flags
+            )
+            if verdict == 1:
+                return [(pos, groups)]
+            if verdict == 0:
+                return []
+            if verdict != _LOOK_INTRINSIC_FALLBACK:
+                return []
+        if not node.positive and descriptor is not None:
+            verdict = _molt_re_negative_lookbehind(
+                text, pos, end, descriptor, width, flags
+            )
+            if verdict == 1:
+                return [(pos, groups)]
+            if verdict == 0:
+                return []
+            if verdict != _LOOK_INTRINSIC_FALLBACK:
+                return []
         start = pos - width
         if start < 0:
             return [] if node.positive else [(pos, groups)]
@@ -876,6 +1016,22 @@ def _match_look(
         if node.positive:
             return matches
         return [] if matches else [(pos, groups)]
+    if node.positive and descriptor is not None:
+        verdict = _molt_re_positive_lookahead(text, pos, end, descriptor, flags)
+        if verdict == 1:
+            return [(pos, groups)]
+        if verdict == 0:
+            return []
+        if verdict != _LOOK_INTRINSIC_FALLBACK:
+            return []
+    if not node.positive and descriptor is not None:
+        verdict = _molt_re_negative_lookahead(text, pos, end, descriptor, flags)
+        if verdict == 1:
+            return [(pos, groups)]
+        if verdict == 0:
+            return []
+        if verdict != _LOOK_INTRINSIC_FALLBACK:
+            return []
     matches = _match_node(node.node, text, pos, end, origin, groups, flags)
     if node.positive:
         return [(pos, new_groups) for _, new_groups in matches]

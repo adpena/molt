@@ -69,6 +69,8 @@ pub struct MoltStream {
 struct MoltStreamReader {
     stream_bits: u64,
     buffer: Vec<u8>,
+    buffer_start: usize,
+    scan_cursor: usize,
     eof: bool,
 }
 
@@ -370,6 +372,8 @@ enum ReaderPull {
     Data,
 }
 
+const STREAM_READER_COMPACT_PREFIX_MIN: usize = 4096;
+
 unsafe fn stream_reader_pull(
     _py: &PyToken<'_>,
     reader: &mut MoltStreamReader,
@@ -402,13 +406,77 @@ unsafe fn stream_reader_pull(
     Ok(ReaderPull::Data)
 }
 
+#[inline]
+fn stream_reader_unread_len(reader: &MoltStreamReader) -> usize {
+    reader.buffer.len().saturating_sub(reader.buffer_start)
+}
+
+#[inline]
+fn stream_reader_unread_is_empty(reader: &MoltStreamReader) -> bool {
+    stream_reader_unread_len(reader) == 0
+}
+
+#[inline]
+fn stream_reader_unread_slice(reader: &MoltStreamReader) -> &[u8] {
+    &reader.buffer[reader.buffer_start..]
+}
+
+fn stream_reader_maybe_compact(reader: &mut MoltStreamReader) {
+    let consumed = reader.buffer_start;
+    if consumed == 0 {
+        return;
+    }
+    if consumed >= reader.buffer.len() {
+        reader.buffer.clear();
+        reader.buffer_start = 0;
+        reader.scan_cursor = 0;
+        return;
+    }
+    if consumed < STREAM_READER_COMPACT_PREFIX_MIN
+        || consumed.saturating_mul(2) < reader.buffer.len()
+    {
+        return;
+    }
+    let remaining = reader.buffer.len() - consumed;
+    reader.buffer.copy_within(consumed.., 0);
+    reader.buffer.truncate(remaining);
+    reader.buffer_start = 0;
+    reader.scan_cursor = reader.scan_cursor.saturating_sub(consumed);
+}
+
+fn stream_reader_find_newline(reader: &mut MoltStreamReader) -> Option<usize> {
+    let unread_start = reader.buffer_start;
+    let unread_end = reader.buffer.len();
+    let search_start = reader.scan_cursor.max(unread_start).min(unread_end);
+    if search_start == unread_end {
+        return None;
+    }
+    match reader.buffer[search_start..unread_end]
+        .iter()
+        .position(|&b| b == b'\n')
+    {
+        Some(rel_idx) => {
+            let idx = search_start + rel_idx;
+            reader.scan_cursor = idx;
+            Some(idx - unread_start)
+        }
+        None => {
+            reader.scan_cursor = unread_end;
+            None
+        }
+    }
+}
+
 fn stream_reader_take(_py: &PyToken<'_>, reader: &mut MoltStreamReader, count: usize) -> u64 {
-    let n = count.min(reader.buffer.len());
-    let ptr = alloc_bytes(_py, &reader.buffer[..n]);
+    let n = count.min(stream_reader_unread_len(reader));
+    let unread = stream_reader_unread_slice(reader);
+    let ptr = alloc_bytes(_py, &unread[..n]);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
-    reader.buffer.drain(..n);
+    reader.buffer_start += n;
+    reader.scan_cursor = reader.scan_cursor.max(reader.buffer_start);
+    stream_reader_maybe_compact(reader);
     MoltObject::from_ptr(ptr).bits()
 }
 
@@ -429,6 +497,8 @@ pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
         let reader = Box::new(MoltStreamReader {
             stream_bits: cloned_bits,
             buffer: Vec::new(),
+            buffer_start: 0,
+            scan_cursor: 0,
             eof: false,
         });
         bits_from_ptr(Box::into_raw(reader) as *mut u8)
@@ -462,7 +532,7 @@ pub unsafe extern "C" fn molt_stream_reader_at_eof(reader_bits: u64) -> u64 {
         }
         // SAFETY: caller contract guarantees a valid reader handle.
         let reader = unsafe { &*(reader_ptr as *mut MoltStreamReader) };
-        MoltObject::from_bool(reader.eof && reader.buffer.is_empty()).bits()
+        MoltObject::from_bool(reader.eof && stream_reader_unread_is_empty(reader)).bits()
     })
 }
 
@@ -488,7 +558,7 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
         if n < 0 {
             loop {
                 if reader.eof {
-                    return stream_reader_take(_py, reader, reader.buffer.len());
+                    return stream_reader_take(_py, reader, stream_reader_unread_len(reader));
                 }
                 // SAFETY: `reader` owns a retained stream handle.
                 match unsafe { stream_reader_pull(_py, reader) } {
@@ -498,7 +568,7 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
                 }
             }
         }
-        if !reader.buffer.is_empty() {
+        if !stream_reader_unread_is_empty(reader) {
             return stream_reader_take(_py, reader, n as usize);
         }
         if reader.eof {
@@ -513,7 +583,7 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
             match unsafe { stream_reader_pull(_py, reader) } {
                 Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
                 Ok(ReaderPull::Eof) => {
-                    if reader.buffer.is_empty() {
+                    if stream_reader_unread_is_empty(reader) {
                         let ptr = alloc_bytes(_py, &[]);
                         if ptr.is_null() {
                             return MoltObject::none().bits();
@@ -523,7 +593,7 @@ pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) 
                     return stream_reader_take(_py, reader, n as usize);
                 }
                 Ok(ReaderPull::Data) => {
-                    if !reader.buffer.is_empty() {
+                    if !stream_reader_unread_is_empty(reader) {
                         return stream_reader_take(_py, reader, n as usize);
                     }
                 }
@@ -545,11 +615,11 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
         // SAFETY: caller contract guarantees a valid reader handle.
         let reader = unsafe { &mut *(reader_ptr as *mut MoltStreamReader) };
         loop {
-            if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
+            if let Some(idx) = stream_reader_find_newline(reader) {
                 return stream_reader_take(_py, reader, idx + 1);
             }
             if reader.eof {
-                return stream_reader_take(_py, reader, reader.buffer.len());
+                return stream_reader_take(_py, reader, stream_reader_unread_len(reader));
             }
             // SAFETY: `reader` owns a retained stream handle.
             match unsafe { stream_reader_pull(_py, reader) } {

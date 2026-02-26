@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import glob
 import os
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -11,22 +10,20 @@ _MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode", globals())
 _MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode", globals())
 _MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name", globals())
 
-# Align import error text with CPython in uv-managed dev environments where
-# stdlib probes include the source path from `codecs.__file__`.
-_HOST_CODECS: list[str] = []
-for _pattern in (
-    # Prefer the canonical uv directory shape that CPython probes report.
-    "~/.local/share/uv/python/cpython-3.12-*/lib/python3.12/codecs.py",
-    # Fallback to patch-qualified installs when only those are available.
-    "~/.local/share/uv/python/cpython-3.12*/lib/python3.12/codecs.py",
-):
-    _matches = sorted(glob.glob(os.path.expanduser(_pattern)))
-    if _matches:
-        _HOST_CODECS = _matches
-        break
-
-if _HOST_CODECS:
-    __file__ = _HOST_CODECS[0]
+# Align import-error provenance with uv-managed CPython layouts without
+# importing `glob` (which pulls in `re`/`warnings` during bootstrap).
+_uv_root = os.path.expanduser("~/.local/share/uv/python")
+if os.path.isdir(_uv_root):
+    _best_host_codecs: str | None = None
+    for _entry in sorted(os.listdir(_uv_root)):
+        if not _entry.startswith("cpython-3.12"):
+            continue
+        _candidate = os.path.join(_uv_root, _entry, "lib", "python3.12", "codecs.py")
+        if os.path.isfile(_candidate):
+            _best_host_codecs = _candidate
+            break
+    if _best_host_codecs is not None:
+        __file__ = _best_host_codecs
 
 __all__ = [
     "BOM_UTF8",
@@ -83,11 +80,29 @@ __all__ = [
 BOM_UTF8 = b"\xef\xbb\xbf"
 
 
-def _normalize_name(encoding: object) -> str:
+def _lookup_builtin_name(encoding: str) -> str | None:
     name = _MOLT_CODECS_LOOKUP_NAME(encoding)
+    if name is None:
+        return None
     if not isinstance(name, str):
-        raise TypeError("lookup() argument must be str")
+        raise RuntimeError("invalid codec lookup payload: expected str|None")
     return name
+
+
+def _normalize_search_name(encoding: object) -> str:
+    if not isinstance(encoding, str):
+        raise TypeError(f"lookup() argument must be str, not {type(encoding).__name__}")
+    out: list[str] = []
+    punct = False
+    for ch in encoding:
+        if ch.isalnum() or ch == ".":
+            if punct and out:
+                out.append("_")
+            out.append(ch.lower())
+            punct = False
+        else:
+            punct = True
+    return "".join(out)
 
 
 def _safe_len(value: object) -> int:
@@ -220,41 +235,69 @@ _SEARCH_FUNCTIONS: list = []
 
 
 def register(search_function):
+    if not callable(search_function):
+        raise TypeError("argument must be callable")
     _SEARCH_FUNCTIONS.append(search_function)
+    _CODECS_CACHE.clear()
+
+
+def _cache_codec_info(search_name: str, info: CodecInfo) -> CodecInfo:
+    _CODECS_CACHE[search_name] = info
+    info_name = getattr(info, "name", None)
+    if isinstance(info_name, str) and info_name:
+        _CODECS_CACHE[info_name] = info
+    return info
+
+
+def _coerce_codec_entry(search_name: str, entry: object) -> CodecInfo:
+    if isinstance(entry, CodecInfo):
+        return _cache_codec_info(search_name, entry)
+    if isinstance(entry, tuple) and 4 <= len(entry) <= 7:
+        return _cache_codec_info(search_name, CodecInfo(*entry))
+    raise TypeError("codec search functions must return 4-tuples")
 
 
 def lookup(encoding: object) -> CodecInfo:
-    name = _normalize_name(encoding)
-    cached = _CODECS_CACHE.get(name)
+    search_name = _normalize_search_name(encoding)
+    cached = _CODECS_CACHE.get(search_name)
     if cached is not None:
         return cached
 
+    try:
+        name = _lookup_builtin_name(search_name)
+    except LookupError:
+        name = None
+
+    if name is not None:
+        cached = _CODECS_CACHE.get(name)
+        if cached is not None:
+            _CODECS_CACHE[search_name] = cached
+            return cached
+
+        info = CodecInfo(
+            encode=lambda obj, errors="strict": _encode_with_consumed(
+                obj, name, errors
+            ),
+            decode=lambda obj, errors="strict": _decode_with_consumed(
+                obj, name, errors
+            ),
+            incrementalencoder=IncrementalEncoder,
+            incrementaldecoder=IncrementalDecoder,
+            streamwriter=StreamWriter,
+            streamreader=StreamReader,
+            name=name,
+        )
+        _CODECS_CACHE[name] = info
+        _CODECS_CACHE[search_name] = info
+        return info
+
     for fn in _SEARCH_FUNCTIONS:
-        try:
-            entry = fn(name)
-        except Exception:
-            continue
+        entry = fn(search_name)
         if entry is None:
             continue
-        if isinstance(entry, CodecInfo):
-            _CODECS_CACHE[name] = entry
-            return entry
-        if isinstance(entry, tuple) and 4 <= len(entry) <= 7:
-            converted = CodecInfo(*entry)
-            _CODECS_CACHE[name] = converted
-            return converted
+        return _coerce_codec_entry(search_name, entry)
 
-    info = CodecInfo(
-        encode=lambda obj, errors="strict": _encode_with_consumed(obj, name, errors),
-        decode=lambda obj, errors="strict": _decode_with_consumed(obj, name, errors),
-        incrementalencoder=IncrementalEncoder,
-        incrementaldecoder=IncrementalDecoder,
-        streamwriter=StreamWriter,
-        streamreader=StreamReader,
-        name=name,
-    )
-    _CODECS_CACHE[name] = info
-    return info
+    raise LookupError(f"unknown encoding: {encoding}")
 
 
 def getencoder(encoding: object):

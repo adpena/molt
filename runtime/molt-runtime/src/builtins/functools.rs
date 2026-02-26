@@ -1,6 +1,7 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use molt_obj_model::MoltObject;
 
@@ -9,8 +10,8 @@ use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_function_obj, alloc_string,
     alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
-    dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
-    dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
+    dec_ref_bits, dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
+    dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_truthy, isinstance_runtime, molt_class_set_base, molt_getattr_builtin,
     molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
     object_class_bits, object_set_class_bits, object_type_id, raise_exception, raise_not_iterable,
@@ -44,6 +45,55 @@ static LRU_FACTORY_CALL_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_ITER_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_REPR_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_GETATTR_FN: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Default)]
+struct LruOrderState {
+    tick: u64,
+    latest: HashMap<u64, u64>,
+    heap: BinaryHeap<Reverse<(u64, u64)>>,
+}
+
+impl LruOrderState {
+    fn touch(&mut self, key_bits: u64) {
+        self.tick = self.tick.wrapping_add(1);
+        let stamp = self.tick;
+        self.latest.insert(key_bits, stamp);
+        self.heap.push(Reverse((stamp, key_bits)));
+    }
+
+    fn clear(&mut self) {
+        self.tick = 0;
+        self.latest.clear();
+        self.heap.clear();
+    }
+
+    fn evict_over_limit(&mut self, _py: &PyToken<'_>, cache_ptr: *mut u8, maxsize: usize) {
+        while self.latest.len() > maxsize {
+            let Some(Reverse((stamp, key_bits))) = self.heap.pop() else {
+                break;
+            };
+            if self.latest.get(&key_bits).copied() != Some(stamp) {
+                continue;
+            }
+            self.latest.remove(&key_bits);
+            unsafe {
+                let _ = crate::dict_del_in_place(_py, cache_ptr, key_bits);
+            }
+        }
+        // Compact stale heap entries after sufficient churn.
+        if self.heap.len() > self.latest.len().saturating_mul(8).saturating_add(32) {
+            self.compact_heap();
+        }
+    }
+
+    fn compact_heap(&mut self) {
+        let mut compacted = BinaryHeap::with_capacity(self.latest.len());
+        for (&key_bits, &stamp) in &self.latest {
+            compacted.push(Reverse((stamp, key_bits)));
+        }
+        self.heap = compacted;
+    }
+}
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
@@ -430,8 +480,8 @@ unsafe fn lru_typed_bits(ptr: *mut u8) -> u64 {
 unsafe fn lru_cache_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
-unsafe fn lru_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) }
+unsafe fn lru_order_ptr(ptr: *mut u8) -> *mut LruOrderState {
+    unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut LruOrderState) }
 }
 unsafe fn lru_hits(ptr: *mut u8) -> i64 {
     unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const i64) }
@@ -459,9 +509,9 @@ unsafe fn lru_set_cache_bits(ptr: *mut u8, bits: u64) {
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
     }
 }
-unsafe fn lru_set_order_ptr(ptr: *mut u8, order: *mut Vec<u64>) {
+unsafe fn lru_set_order_ptr(ptr: *mut u8, order: *mut LruOrderState) {
     unsafe {
-        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = order;
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut *mut LruOrderState) = order;
     }
 }
 unsafe fn lru_set_hits(ptr: *mut u8, val: i64) {
@@ -1296,7 +1346,7 @@ fn build_lru_wrapper(_py: &PyToken<'_>, func_bits: u64, maxsize_bits: u64, typed
         return MoltObject::none().bits();
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let order = Box::new(Vec::<u64>::new());
+    let order = Box::new(LruOrderState::default());
     let order_ptr = Box::into_raw(order);
     unsafe {
         lru_set_func_bits(inst_ptr, func_bits);
@@ -1484,18 +1534,15 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
                 dec_ref_bits(_py, key_bits);
                 return MoltObject::none().bits();
             }
-            if let Some(val_bits) = dict_get_in_place(_py, cache_ptr, key_bits) {
+            if let Some((cache_key_bits, val_bits)) =
+                dict_find_entry_kv_in_place(_py, cache_ptr, key_bits)
+            {
                 let hits = lru_hits(self_ptr) + 1;
                 lru_set_hits(self_ptr, hits);
                 let order_ptr = lru_order_ptr(self_ptr);
                 if !order_ptr.is_null() {
                     let order = &mut *order_ptr;
-                    if let Some(pos) = order.iter().position(|&bits| bits == key_bits) {
-                        let removed = order.remove(pos);
-                        dec_ref_bits(_py, removed);
-                    }
-                    order.push(key_bits);
-                    inc_ref_bits(_py, key_bits);
+                    order.touch(cache_key_bits);
                 }
                 dec_ref_bits(_py, key_bits);
                 inc_ref_bits(_py, val_bits);
@@ -1543,16 +1590,9 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
         let order_ptr = unsafe { lru_order_ptr(self_ptr) };
         if !order_ptr.is_null() {
             let order = unsafe { &mut *order_ptr };
-            order.push(key_bits);
-            inc_ref_bits(_py, key_bits);
-            if let Some(maxsize) = maxsize
-                && order.len() > maxsize.max(0) as usize
-            {
-                let oldest = order.remove(0);
-                unsafe {
-                    let _ = crate::dict_del_in_place(_py, cache_ptr, oldest);
-                }
-                dec_ref_bits(_py, oldest);
+            order.touch(key_bits);
+            if let Some(maxsize) = maxsize {
+                order.evict_over_limit(_py, cache_ptr, maxsize.max(0) as usize);
             }
         }
         dec_ref_bits(_py, key_bits);
@@ -1681,9 +1721,7 @@ pub extern "C" fn molt_functools_lru_cache_clear(self_bits: u64) -> u64 {
         if !order_ptr.is_null() {
             unsafe {
                 let order = &mut *order_ptr;
-                for bits in order.drain(..) {
-                    dec_ref_bits(_py, bits);
-                }
+                order.clear();
             }
         }
         unsafe {
@@ -1791,10 +1829,7 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         if !order_ptr.is_null() {
             unsafe {
-                let order = Box::from_raw(order_ptr);
-                for bits in order.iter() {
-                    dec_ref_bits(_py, *bits);
-                }
+                drop(Box::from_raw(order_ptr));
             }
         }
         return true;
@@ -1837,10 +1872,8 @@ fn next_singledispatch_handle() -> i64 {
     NEXT_SINGLEDISPATCH_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
-thread_local! {
-    static SINGLEDISPATCH_HANDLES: RefCell<HashMap<i64, SingleDispatchState>> =
-        RefCell::new(HashMap::new());
-}
+static SINGLEDISPATCH_REGISTRY: LazyLock<Mutex<HashMap<i64, SingleDispatchState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn sd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
@@ -1864,7 +1897,7 @@ pub extern "C" fn molt_functools_singledispatch_new(default_func_bits: u64) -> u
             default_func: default_func_bits,
             registry: Vec::new(),
         };
-        SINGLEDISPATCH_HANDLES.with(|h| h.borrow_mut().insert(id, state));
+        SINGLEDISPATCH_REGISTRY.lock().unwrap().insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1883,8 +1916,8 @@ pub extern "C" fn molt_functools_singledispatch_register(
         };
         inc_ref_bits(_py, type_bits);
         inc_ref_bits(_py, func_bits);
-        SINGLEDISPATCH_HANDLES.with(|h| {
-            let mut map = h.borrow_mut();
+        {
+            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 // If a registration already exists for this type, replace it.
                 if let Some(entry) = state.registry.iter_mut().find(|(t, _)| *t == type_bits) {
@@ -1896,7 +1929,7 @@ pub extern "C" fn molt_functools_singledispatch_register(
                     state.registry.push((type_bits, func_bits));
                 }
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }
@@ -1911,8 +1944,8 @@ pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_
         let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        SINGLEDISPATCH_HANDLES.with(|h| {
-            let map = h.borrow();
+        {
+            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
             let Some(state) = map.get(&id) else {
                 return MoltObject::none().bits();
             };
@@ -1934,7 +1967,7 @@ pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_
             let default = state.default_func;
             inc_ref_bits(_py, default);
             default
-        })
+        }
     })
 }
 
@@ -1978,8 +2011,8 @@ pub extern "C" fn molt_functools_singledispatch_call(
         // Get the type of the first argument.
         let arg_type_bits = crate::type_of_bits(_py, first_arg_bits);
         // Look up the function for this type.
-        SINGLEDISPATCH_HANDLES.with(|h| {
-            let map = h.borrow();
+        {
+            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
             let Some(state) = map.get(&id) else {
                 return MoltObject::none().bits();
             };
@@ -2001,7 +2034,7 @@ pub extern "C" fn molt_functools_singledispatch_call(
             let default = state.default_func;
             inc_ref_bits(_py, default);
             default
-        })
+        }
     })
 }
 
@@ -2013,8 +2046,8 @@ pub extern "C" fn molt_functools_singledispatch_registry(handle_bits: u64) -> u6
         let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        SINGLEDISPATCH_HANDLES.with(|h| {
-            let map = h.borrow();
+        {
+            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
             let Some(state) = map.get(&id) else {
                 return MoltObject::none().bits();
             };
@@ -2033,7 +2066,7 @@ pub extern "C" fn molt_functools_singledispatch_registry(handle_bits: u64) -> u6
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(dict_ptr).bits()
-        })
+        }
     })
 }
 
@@ -2044,15 +2077,15 @@ pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
         let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        SINGLEDISPATCH_HANDLES.with(|h| {
-            if let Some(state) = h.borrow_mut().remove(&id) {
+        {
+            if let Some(state) = SINGLEDISPATCH_REGISTRY.lock().unwrap().remove(&id) {
                 dec_ref_bits(_py, state.default_func);
                 for (type_bits, func_bits) in state.registry {
                     dec_ref_bits(_py, type_bits);
                     dec_ref_bits(_py, func_bits);
                 }
             }
-        });
+        }
         MoltObject::none().bits()
     })
 }

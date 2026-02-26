@@ -1218,9 +1218,11 @@ def _diff_force_no_cache() -> bool:
     explicit = _bool_env("MOLT_DIFF_FORCE_NO_CACHE")
     if explicit is not None:
         return explicit
-    # On macOS, forcing fresh builds avoids intermittent dyld
-    # "unknown imports format" crashes observed on cached artifacts.
-    return sys.platform == "darwin"
+    # Throughput-first default: keep cache enabled unless explicitly overridden.
+    # Dyld corruption handling is enforced by the retry/quarantine pipeline
+    # (daemon-off + --no-cache + rebuild + isolated target fallback) only
+    # when a real incident is detected.
+    return False
 
 
 def _diff_force_rebuild() -> bool:

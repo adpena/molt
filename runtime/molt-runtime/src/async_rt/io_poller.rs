@@ -82,6 +82,61 @@ struct IoWaiter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct WaiterList {
+    order: Vec<PtrSlot>,
+    index: HashMap<PtrSlot, usize>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WaiterList {
+    fn insert(&mut self, waiter: PtrSlot) -> bool {
+        if self.index.contains_key(&waiter) {
+            return false;
+        }
+        let next = self.order.len();
+        self.order.push(waiter);
+        self.index.insert(waiter, next);
+        true
+    }
+
+    fn remove(&mut self, waiter: PtrSlot) -> bool {
+        let Some(idx) = self.index.remove(&waiter) else {
+            return false;
+        };
+        let Some(last) = self.order.pop() else {
+            return false;
+        };
+        if idx < self.order.len() {
+            self.order[idx] = last;
+            self.index.insert(last, idx);
+        }
+        true
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    fn drain(&mut self) -> Vec<PtrSlot> {
+        self.index.clear();
+        std::mem::take(&mut self.order)
+    }
+
+    fn replace_with(&mut self, order: Vec<PtrSlot>) {
+        self.order = order;
+        self.index.clear();
+        for (idx, waiter) in self.order.iter().copied().enumerate() {
+            self.index.insert(waiter, idx);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 enum IoSource {
     Socket(PtrSlot),
     WebSocket(MioTcpStream),
@@ -98,7 +153,7 @@ struct IoWaiter {
 struct IoSocketEntry {
     token: Token,
     interests: Interest,
-    waiters: Vec<PtrSlot>,
+    waiters: WaiterList,
     blocking_waiters: Vec<Arc<BlockingWaiter>>,
     source: IoSource,
     debug_fd: i64,
@@ -353,7 +408,7 @@ impl IoPoller {
                     IoSocketEntry {
                         token,
                         interests: Interest::READABLE,
-                        waiters: Vec::new(),
+                        waiters: WaiterList::default(),
                         blocking_waiters: Vec::new(),
                         source: IoSource::Socket(PtrSlot(socket_ptr)),
                         debug_fd,
@@ -363,9 +418,7 @@ impl IoPoller {
                 token
             });
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
-        if !entry.waiters.contains(&waiter_key) {
-            entry.waiters.push(waiter_key);
-        }
+        entry.waiters.insert(waiter_key);
         let interest = interest_from_events(events);
         let needs_register = new_entry;
         let mut updated = false;
@@ -460,7 +513,7 @@ impl IoPoller {
                     IoSocketEntry {
                         token,
                         interests: Interest::READABLE,
-                        waiters: Vec::new(),
+                        waiters: WaiterList::default(),
                         blocking_waiters: Vec::new(),
                         source: IoSource::WebSocket(stream),
                         debug_fd,
@@ -471,9 +524,7 @@ impl IoPoller {
             }
         };
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
-        if !entry.waiters.contains(&waiter_key) {
-            entry.waiters.push(waiter_key);
-        }
+        entry.waiters.insert(waiter_key);
         let interest = interest_from_events(events);
         let needs_register = new_entry;
         let mut updated = false;
@@ -527,9 +578,7 @@ impl IoPoller {
         };
         let mut sockets = self.sockets.lock().unwrap();
         if let Some(entry) = sockets.get_mut(&waiter.socket_id) {
-            if let Some(pos) = entry.waiters.iter().position(|val| *val == waiter_key) {
-                entry.waiters.swap_remove(pos);
-            }
+            entry.waiters.remove(waiter_key);
             if entry.waiters.is_empty() {
                 let token = entry.token;
                 let entry = sockets.remove(&waiter.socket_id);
@@ -591,7 +640,7 @@ impl IoPoller {
         if let Some(mut entry) = entry {
             self.tokens.lock().unwrap().remove(&entry.token);
             let mut ready_futures: Vec<PtrSlot> = Vec::new();
-            let entry_waiters = std::mem::take(&mut entry.waiters);
+            let entry_waiters = entry.waiters.drain();
             for waiter in entry_waiters {
                 waiters.remove(&waiter);
                 ready_futures.push(waiter);
@@ -648,7 +697,7 @@ impl IoPoller {
                     IoSocketEntry {
                         token,
                         interests: Interest::READABLE,
-                        waiters: Vec::new(),
+                        waiters: WaiterList::default(),
                         blocking_waiters: Vec::new(),
                         source: IoSource::Socket(PtrSlot(socket_ptr)),
                         debug_fd,
@@ -818,7 +867,7 @@ fn io_worker(poller: Arc<IoPoller>) {
                     continue;
                 }
                 let mut remaining: Vec<PtrSlot> = Vec::with_capacity(entry.waiters.len());
-                for waiter in entry.waiters.drain(..) {
+                for waiter in entry.waiters.drain() {
                     if let Some(info) = waiters.get(&waiter) {
                         if (info.events & ready_mask) != 0 {
                             if trace_io_poller() {
@@ -835,7 +884,7 @@ fn io_worker(poller: Arc<IoPoller>) {
                         }
                     }
                 }
-                entry.waiters = remaining;
+                entry.waiters.replace_with(remaining);
                 if !entry.blocking_waiters.is_empty() {
                     let mut remaining_blocking: Vec<Arc<BlockingWaiter>> =
                         Vec::with_capacity(entry.blocking_waiters.len());

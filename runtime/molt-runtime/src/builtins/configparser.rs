@@ -16,10 +16,10 @@ use crate::{
     alloc_tuple, dec_ref_bits, dict_order, is_truthy, obj_from_bits, object_type_id,
     raise_exception, string_obj_to_owned, to_f64, to_i64, type_name,
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 // ---------------------------------------------------------------------------
 // Handle counter
@@ -298,13 +298,11 @@ fn split_key_value(line: &str) -> (&str, &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Thread-local handle registry
+// Process-wide handle registry
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static CONFIG_HANDLES: RefCell<HashMap<i64, ConfigState>> =
-        RefCell::new(HashMap::new());
-}
+static CONFIG_REGISTRY: LazyLock<Mutex<HashMap<i64, ConfigState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ---------------------------------------------------------------------------
 // Object helpers
@@ -434,10 +432,10 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
         };
 
         let id = next_handle_id();
-        CONFIG_HANDLES.with(|map| {
-            map.borrow_mut()
-                .insert(id, ConfigState::new(defaults, interpolation));
-        });
+        CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(id, ConfigState::new(defaults, interpolation));
         MoltObject::from_int(id).bits()
     })
 }
@@ -465,12 +463,9 @@ pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -
             }
         };
 
-        let ok = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                state.read_string(&content);
-                true
-            })
+        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            state.read_string(&content);
+            true
         });
         if ok.is_none() {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
@@ -500,11 +495,8 @@ pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "text must be str");
         };
-        let ok = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                state.read_string(&text);
-            })
+        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            state.read_string(&text);
         });
         if ok.is_none() {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
@@ -519,11 +511,11 @@ pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
-        let sections = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .map(|state| state.section_order.to_vec())
-        });
+        let sections = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.section_order.to_vec());
         let Some(secs) = sections else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
         };
@@ -540,11 +532,11 @@ pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: 
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .map(|state| state.sections.contains_key(&section))
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.sections.contains_key(&section));
         let Some(found) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
         };
@@ -569,13 +561,11 @@ pub extern "C" fn molt_configparser_has_option(
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow().get(&id).map(|state| {
-                state
-                    .sections
-                    .get(&section)
-                    .is_some_and(|sec| sec.contains_key(&key) || state.defaults.contains_key(&key))
-            })
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+            state
+                .sections
+                .get(&section)
+                .is_some_and(|sec| sec.contains_key(&key) || state.defaults.contains_key(&key))
         });
         let Some(found) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
@@ -603,11 +593,11 @@ pub extern "C" fn molt_configparser_get(
         };
         // Look up without fallback first; if missing, return fallback_bits
         // directly (avoids round-tripping fallback through string conversion).
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .and_then(|state| state.get(&section, &option, None))
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|state| state.get(&section, &option, None));
         match result {
             Some(val) => {
                 let ptr = alloc_string(_py, val.as_bytes());
@@ -645,11 +635,11 @@ pub extern "C" fn molt_configparser_getint(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .and_then(|state| state.get(&section, &option, None))
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|state| state.get(&section, &option, None));
         match result {
             Some(val) => match val.trim().parse::<i64>() {
                 Ok(n) => MoltObject::from_int(n).bits(),
@@ -690,11 +680,11 @@ pub extern "C" fn molt_configparser_getfloat(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .and_then(|state| state.get(&section, &option, None))
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|state| state.get(&section, &option, None));
         match result {
             Some(val) => match val.trim().parse::<f64>() {
                 Ok(f) => MoltObject::from_float(f).bits(),
@@ -735,11 +725,11 @@ pub extern "C" fn molt_configparser_getboolean(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow()
-                .get(&id)
-                .and_then(|state| state.get(&section, &option, None))
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|state| state.get(&section, &option, None));
 
         fn parse_bool(s: &str) -> Option<bool> {
             match s.trim().to_ascii_lowercase().as_str() {
@@ -788,18 +778,15 @@ pub extern "C" fn molt_configparser_set(
         let value = string_obj_to_owned(obj_from_bits(value_bits)).unwrap_or_default();
         let key = option.to_ascii_lowercase();
 
-        let ok = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                if section.eq_ignore_ascii_case("DEFAULT") {
-                    state.defaults.insert(key, value);
-                } else if let Some(sec) = state.sections.get_mut(&section) {
-                    sec.insert(key, value);
-                } else {
-                    return false;
-                }
-                true
-            })
+        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            if section.eq_ignore_ascii_case("DEFAULT") {
+                state.defaults.insert(key, value);
+            } else if let Some(sec) = state.sections.get_mut(&section) {
+                sec.insert(key, value);
+            } else {
+                return false;
+            }
+            true
         });
         match ok {
             None => raise_exception::<u64>(_py, "ValueError", "configparser handle not found"),
@@ -823,17 +810,14 @@ pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: 
         if section.eq_ignore_ascii_case("DEFAULT") {
             return raise_exception::<u64>(_py, "ValueError", "Invalid section name: 'DEFAULT'");
         }
-        let ok = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                if state.sections.contains_key(&section) {
-                    false // DuplicateSectionError
-                } else {
-                    state.sections.insert(section.clone(), SectionMap::new());
-                    state.section_order.push(section);
-                    true
-                }
-            })
+        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            if state.sections.contains_key(&section) {
+                false // DuplicateSectionError
+            } else {
+                state.sections.insert(section.clone(), SectionMap::new());
+                state.section_order.push(section);
+                true
+            }
         });
         match ok {
             None => raise_exception::<u64>(_py, "ValueError", "configparser handle not found"),
@@ -852,15 +836,12 @@ pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bit
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                let removed = state.sections.remove(&section).is_some();
-                if removed {
-                    state.section_order.retain(|s| s != &section);
-                }
-                removed
-            })
+        let result = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            let removed = state.sections.remove(&section).is_some();
+            if removed {
+                state.section_order.retain(|s| s != &section);
+            }
+            removed
         });
         let Some(removed) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
@@ -886,14 +867,11 @@ pub extern "C" fn molt_configparser_remove_option(
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = CONFIG_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
-                state
-                    .sections
-                    .get_mut(&section)
-                    .map(|sec| sec.remove(&key).is_some())
-            })
+        let result = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            state
+                .sections
+                .get_mut(&section)
+                .map(|sec| sec.remove(&key).is_some())
         });
         match result {
             None => raise_exception::<u64>(_py, "ValueError", "configparser handle not found"),
@@ -914,23 +892,20 @@ pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64)
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow().get(&id).map(|state| {
-                let sec_keys: Vec<String> = state
-                    .sections
-                    .get(&section)
-                    .map(|s| s.keys().cloned().collect())
-                    .unwrap_or_default();
-                // Merge DEFAULT keys
-                let mut all_keys: std::collections::HashSet<String> =
-                    sec_keys.into_iter().collect();
-                for k in state.defaults.keys() {
-                    all_keys.insert(k.clone());
-                }
-                let mut keys: Vec<String> = all_keys.into_iter().collect();
-                keys.sort();
-                keys
-            })
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+            let sec_keys: Vec<String> = state
+                .sections
+                .get(&section)
+                .map(|s| s.keys().cloned().collect())
+                .unwrap_or_default();
+            // Merge DEFAULT keys
+            let mut all_keys: std::collections::HashSet<String> = sec_keys.into_iter().collect();
+            for k in state.defaults.keys() {
+                all_keys.insert(k.clone());
+            }
+            let mut keys: Vec<String> = all_keys.into_iter().collect();
+            keys.sort();
+            keys
         });
         let Some(keys) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
@@ -948,20 +923,18 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_HANDLES.with(|map| {
-            map.borrow().get(&id).and_then(|state| {
-                state.sections.get(&section).map(|sec| {
-                    let mut pairs: Vec<(String, String)> =
-                        sec.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                    // Include DEFAULT fallbacks for keys not already present.
-                    for (dk, dv) in &state.defaults {
-                        if !sec.contains_key(dk) {
-                            pairs.push((dk.clone(), dv.clone()));
-                        }
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).and_then(|state| {
+            state.sections.get(&section).map(|sec| {
+                let mut pairs: Vec<(String, String)> =
+                    sec.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // Include DEFAULT fallbacks for keys not already present.
+                for (dk, dv) in &state.defaults {
+                    if !sec.contains_key(dk) {
+                        pairs.push((dk.clone(), dv.clone()));
                     }
-                    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                    pairs
-                })
+                }
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                pairs
             })
         });
         let Some(pairs) = result else {
@@ -980,7 +953,11 @@ pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) 
         let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "filename must be str");
         };
-        let content = CONFIG_HANDLES.with(|map| map.borrow().get(&id).map(|state| state.write()));
+        let content = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.write());
         let Some(content) = content else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
         };
@@ -995,9 +972,7 @@ pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) 
 pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            CONFIG_HANDLES.with(|map| {
-                map.borrow_mut().remove(&id);
-            });
+            CONFIG_REGISTRY.lock().unwrap().remove(&id);
         }
         MoltObject::none().bits()
     })

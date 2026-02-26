@@ -3056,6 +3056,13 @@ class _EventLoop(AbstractEventLoop):
         *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
+        if self._closed:
+            raise RuntimeError("Event loop is closed")
+        if context is None:
+            try:
+                context = _contextvars.copy_context()
+            except Exception:
+                context = None
         if _DEBUG_ASYNCIO_EXC:
             time_attr = getattr(type(self), "time", None)
             time_owner = getattr(time_attr, "__qualname__", repr(time_attr))
@@ -3088,6 +3095,13 @@ class _EventLoop(AbstractEventLoop):
         *args: Any,
         context: Any | None = None,
     ) -> TimerHandle:
+        if self._closed:
+            raise RuntimeError("Event loop is closed")
+        if context is None:
+            try:
+                context = _contextvars.copy_context()
+            except Exception:
+                context = None
         delay = max(0.0, float(when) - self.time())
         handle = TimerHandle(float(when), callback, args, self, context)
         timer_task = _require_asyncio_intrinsic(
@@ -3927,16 +3941,27 @@ def _cancel_all_tasks(loop: EventLoop) -> None:
 
 
 class Runner:
-    def __init__(self, *, debug: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        debug: bool | None = None,
+        loop_factory: Callable[[], "EventLoop"] | None = None,
+    ) -> None:
         self._loop: EventLoop | None = None
         self._debug = debug
+        self._loop_factory = loop_factory
+        self._context: Any | None = None
 
     def __enter__(self) -> "Runner":
         if self._loop is None:
-            self._loop = new_event_loop()
-        if self._debug is not None:
-            self._loop.set_debug(self._debug)
-        set_event_loop(self._loop)
+            if self._loop_factory is not None:
+                self._loop = self._loop_factory()
+            else:
+                self._loop = new_event_loop()
+            if self._debug is not None:
+                self._loop.set_debug(self._debug)
+            self._context = _contextvars.copy_context()
+            set_event_loop(self._loop)
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -3947,14 +3972,20 @@ class Runner:
             raise RuntimeError("Runner is not initialized")
         return self._loop
 
-    def run(self, coro: Any) -> Any:
+    def run(self, coro: Any, *, context: Any | None = None) -> Any:
         if self._loop is None:
             self.__enter__()
         loop = self.get_loop()
         if loop.is_running():
             raise RuntimeError("Runner loop is already running")
+        if context is None:
+            context = self._context
+        if context is not None:
+            task = loop.create_task(coro, context=context)
+        else:
+            task = loop.create_task(coro)
         try:
-            result = loop.run_until_complete(coro)
+            result = loop.run_until_complete(task)
         except BaseException:
             _cancel_all_tasks(loop)
             shutdown = globals().get("molt_asyncgen_shutdown")
@@ -3977,12 +4008,18 @@ class Runner:
                 shutdown()
             self._loop.close()
         set_event_loop(None)
+        self._context = None
 
 
-def run(awaitable: Any) -> Any:
+def run(
+    awaitable: Any,
+    *,
+    debug: bool | None = None,
+    loop_factory: Callable[[], "EventLoop"] | None = None,
+) -> Any:
     if _get_running_loop() is not None:
         raise RuntimeError("asyncio.run() cannot be called from a running event loop")
-    runner = Runner()
+    runner = Runner(debug=debug, loop_factory=loop_factory)
     exc: BaseException | None = None
     result: Any = None
     runner.__enter__()
@@ -4639,7 +4676,12 @@ async def wait(
     return_when: object = ALL_COMPLETED,
 ) -> tuple[set[Future], set[Future]]:
     get_running_loop()
-    tasks = [ensure_future(aw) for aw in aws]
+    aws_list = list(aws)
+    tasks: list[Future] = []
+    for aw in aws_list:
+        if iscoroutine(aw):
+            raise TypeError("Passing coroutines is forbidden, use tasks explicitly.")
+        tasks.append(ensure_future(aw))
     if not tasks:
         raise ValueError("asyncio.wait() requires at least one awaitable")
     if return_when not in (ALL_COMPLETED, FIRST_COMPLETED, FIRST_EXCEPTION):
@@ -4688,8 +4730,9 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
 async def _wait_one(queue: "Queue", timeout: float | None) -> Any:
     if timeout is None:
         task = await queue.get()
-        return await task
-    return await wait_for(queue.get(), timeout)
+    else:
+        task = await wait_for(queue.get(), timeout)
+    return await task
 
 
 class _AsCompletedIterator:
@@ -4703,6 +4746,10 @@ class _AsCompletedIterator:
         self._queue = queue
         self._timeout = timeout
         self._remaining = len(tasks)
+        if timeout is None:
+            self._deadline: float | None = None
+        else:
+            self._deadline = _time.monotonic() + max(0.0, float(timeout))
 
     def __iter__(self) -> "_AsCompletedIterator":
         return self
@@ -4711,11 +4758,22 @@ class _AsCompletedIterator:
         if self._remaining <= 0:
             raise StopIteration
         self._remaining -= 1
-        return _wait_one(self._queue, self._timeout)
+        timeout: float | None
+        if self._deadline is None:
+            timeout = None
+        else:
+            timeout = self._deadline - _time.monotonic()
+            if timeout < 0.0:
+                timeout = 0.0
+        return _wait_one(self._queue, timeout)
 
 
 def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[Any]:
     tasks = [ensure_future(aw) for aw in aws]
+    if timeout is None:
+        normalized_timeout: float | None = None
+    else:
+        normalized_timeout = float(timeout)
     queue: Queue = Queue()
 
     def _enqueue(task: Future, _queue: "Queue" = queue) -> None:
@@ -4726,7 +4784,7 @@ def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[A
 
     _asyncio_tasks_add_done_callback(tasks, _enqueue)
 
-    return _AsCompletedIterator(tasks, queue, timeout)
+    return _AsCompletedIterator(tasks, queue, normalized_timeout)
 
 
 class Queue:

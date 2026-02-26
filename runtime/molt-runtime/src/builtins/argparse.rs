@@ -302,6 +302,16 @@ impl ParserState {
             .filter(|(_, a)| a.positional)
             .map(|(i, _)| i)
             .collect();
+        let mut option_index: HashMap<&str, usize> = HashMap::new();
+        for (idx, arg) in self.args.iter().enumerate() {
+            if arg.positional {
+                continue;
+            }
+            option_index.entry(arg.name.as_str()).or_insert(idx);
+            if let Some(short) = arg.short.as_deref() {
+                option_index.entry(short).or_insert(idx);
+            }
+        }
 
         while i < raw.len() {
             let tok = &raw[i];
@@ -320,19 +330,15 @@ impl ParserState {
 
             // Does this look like a flag?
             if tok.starts_with('-') && tok.len() > 1 {
-                // Find matching ArgDef
-                let def_idx = self.args.iter().position(|a| {
-                    !a.positional && (a.name == *tok || a.short.as_deref() == Some(tok.as_str()))
-                });
+                // Find matching ArgDef in O(1) average time.
+                let def_idx = option_index.get(tok.as_str()).copied();
 
                 let Some(idx) = def_idx else {
                     // Try --flag=value form
                     if let Some(eq_pos) = tok.find('=') {
                         let flag = &tok[..eq_pos];
                         let val = tok[eq_pos + 1..].to_string();
-                        let def_idx2 = self.args.iter().position(|a| {
-                            !a.positional && (a.name == *flag || a.short.as_deref() == Some(flag))
-                        });
+                        let def_idx2 = option_index.get(flag).copied();
                         if let Some(idx2) = def_idx2 {
                             let def = &self.args[idx2];
                             apply_flag_value(&mut result, def, Some(&val))?;

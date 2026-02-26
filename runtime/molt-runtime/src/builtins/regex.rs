@@ -1,12 +1,16 @@
 #![allow(dead_code, unused_imports)]
 //! Regex intrinsics for Molt stdlib — advanced pattern helpers.
 //!
-//! This module provides the five missing intrinsics that the Python-side
+//! This module provides lookaround and parser fidelity intrinsics that the
+//! Python-side
 //! `re` module cannot implement efficiently with existing helpers:
 //!
+//! * `molt_re_positive_lookahead`  — check that a sub-pattern DOES match at
+//!   the current position (same descriptor protocol as the negative variant).
 //! * `molt_re_negative_lookahead`  — check that a sub-pattern does NOT match
 //!   at the current position (literal and char-class fast paths; complex
 //!   sub-patterns return the sentinel −2 so Python falls back).
+//! * `molt_re_positive_lookbehind` — positive fixed-width look-behind.
 //! * `molt_re_negative_lookbehind` — same, but for fixed-width look-behind.
 //! * `molt_re_strip_verbose`       — pre-process a VERBOSE/X-flag pattern by
 //!   removing unescaped whitespace and `#`-comments (respects `[…]` classes
@@ -189,6 +193,51 @@ fn re_negative_lookahead_impl(text: &str, pos: i64, end: i64, pattern: &str, fla
     SENTINEL_FALLBACK
 }
 
+/// Core logic for positive lookahead.
+///
+/// Returns:
+///   1   → lookahead succeeds (sub-pattern DOES match at pos)
+///   0   → lookahead fails   (sub-pattern does NOT match at pos)
+///  -2   → complex sub-pattern; Python must handle it
+///  -1   → out-of-bounds / error
+fn re_positive_lookahead_impl(text: &str, pos: i64, end: i64, pattern: &str, flags: i64) -> i64 {
+    match re_negative_lookahead_impl(text, pos, end, pattern, flags) {
+        0 => 1,
+        1 => 0,
+        SENTINEL_FALLBACK => SENTINEL_FALLBACK,
+        _ => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_positive_lookahead(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    pattern_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let result = re_positive_lookahead_impl(&text, pos, end, &pattern, flags);
+        MoltObject::from_int(result).bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_negative_lookahead(
     text_bits: u64,
@@ -310,6 +359,62 @@ fn re_negative_lookbehind_impl(
     }
 
     SENTINEL_FALLBACK
+}
+
+/// Core logic for positive lookbehind.
+///
+/// Returns:
+///   1   → lookbehind succeeds (sub-pattern DOES match ending at pos)
+///   0   → lookbehind fails   (sub-pattern does NOT match ending at pos)
+///  -2   → complex sub-pattern; Python must handle it
+///  -1   → out-of-bounds / error
+fn re_positive_lookbehind_impl(
+    text: &str,
+    pos: i64,
+    end: i64,
+    pattern: &str,
+    width: i64,
+    flags: i64,
+) -> i64 {
+    match re_negative_lookbehind_impl(text, pos, end, pattern, width, flags) {
+        0 => 1,
+        1 => 0,
+        SENTINEL_FALLBACK => SENTINEL_FALLBACK,
+        _ => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_positive_lookbehind(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    pattern_bits: u64,
+    width_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let result = re_positive_lookbehind_impl(&text, pos, end, &pattern, width, flags);
+        MoltObject::from_int(result).bits()
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -905,6 +1010,26 @@ mod tests {
     }
 
     #[test]
+    fn test_positive_lookahead_literal_match() {
+        // "abc" starts with "ab" → positive lookahead succeeds (1)
+        let result = re_positive_lookahead_impl("abc", 0, 3, "lit:ab", 0);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_positive_lookahead_literal_no_match() {
+        // "abc" does not start with "xyz" → positive lookahead fails (0)
+        let result = re_positive_lookahead_impl("abc", 0, 3, "lit:xyz", 0);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_positive_lookahead_complex() {
+        let result = re_positive_lookahead_impl("abc", 0, 3, "complex:(a|b)", 0);
+        assert_eq!(result, SENTINEL_FALLBACK);
+    }
+
+    #[test]
     fn test_negative_lookbehind_literal_no_match() {
         // "abc" — at pos 2, the char before is 'b', literal is "x" → no match → succeeds (1)
         let result = re_negative_lookbehind_impl("abc", 2, 3, "lit:x", 1, 0);
@@ -923,6 +1048,27 @@ mod tests {
         // pos=0, width=1 → start = -1 < 0 → succeeds (1)
         let result = re_negative_lookbehind_impl("abc", 0, 3, "lit:a", 1, 0);
         assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_positive_lookbehind_literal_match() {
+        // "abc" — at pos 2, the char before is 'b', literal is "b" → succeeds (1)
+        let result = re_positive_lookbehind_impl("abc", 2, 3, "lit:b", 1, 0);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_positive_lookbehind_literal_no_match() {
+        // "abc" — at pos 2, literal "x" does not match previous char → fails (0)
+        let result = re_positive_lookbehind_impl("abc", 2, 3, "lit:x", 1, 0);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_positive_lookbehind_not_enough_text() {
+        // pos=0, width=1 → start = -1 < 0 → cannot match positive lookbehind.
+        let result = re_positive_lookbehind_impl("abc", 0, 3, "lit:a", 1, 0);
+        assert_eq!(result, 0);
     }
 
     #[test]

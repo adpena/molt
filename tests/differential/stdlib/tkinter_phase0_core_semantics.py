@@ -517,6 +517,233 @@ def _probe_headless_stubbed_semantics(
             simpledialog_module._MOLT_TK_SIMPLEDIALOG_QUERY = old_simpledialog_query
 
 
+def _probe_core_runtime_semantics(
+    tk_module: ModuleType | None,
+    tkinter_module: ModuleType | None,
+) -> bool:
+    if not _is_molt_phase0__tkinter(tk_module) or not _is_molt_phase0_tkinter(
+        tkinter_module
+    ):
+        return True
+
+    old_gui_gate = tkinter_module._require_gui_window_capability
+    old_process_gate = tkinter_module._require_process_spawn_capability
+    root = None
+    try:
+        tkinter_module._require_gui_window_capability = lambda: None
+        tkinter_module._require_process_spawn_capability = lambda: None
+
+        root = tkinter_module.Tk(useTk=False)
+        frame = tkinter_module.Frame(root, width=111, height=77)
+
+        frame.pack(side="left")
+        pack_info = frame.pack_info()
+        pack_slaves = tuple(root.pack_slaves())
+        frame.pack_forget()
+
+        frame.grid(row=1, column=2)
+        grid_info = frame.grid_info()
+        grid_size = root.grid_size()
+        frame.grid_remove()
+
+        frame.place(x=5, y=6)
+        place_info = frame.place_info()
+        place_slaves = tuple(root.place_slaves())
+        frame.place_forget()
+
+        root.title("Probe Title")
+        wm_title = root.title()
+        root.geometry("320x200+3+4")
+        wm_geometry = root.geometry()
+        root.state("normal")
+        wm_state = root.state()
+        root.attributes(alpha=0.5)
+        wm_alpha = root.attributes("-alpha")
+        root.resizable(False, True)
+        wm_resizable = root.resizable()
+        root.minsize(100, 80)
+        wm_minsize = root.minsize()
+        root.maxsize(900, 700)
+        wm_maxsize = root.maxsize()
+        root.overrideredirect(True)
+        wm_overrideredirect = root.overrideredirect()
+        root.transient(root)
+        wm_transient = root.transient()
+        root.iconname("probe-icon")
+        wm_iconname = root.iconname()
+        proto_id = root.protocol("WM_DELETE_WINDOW", lambda: None)
+        proto_before_clear = root.protocol("WM_DELETE_WINDOW")
+        root.protocol("WM_DELETE_WINDOW", "")
+        proto_after_clear = root.protocol("WM_DELETE_WINDOW")
+
+        payloads = []
+
+        def _on_key(event):
+            payloads.append(
+                (
+                    getattr(event, "widget", None) is frame,
+                    getattr(event, "x", None),
+                    getattr(event, "y", None),
+                    getattr(event, "delta", None),
+                    getattr(event, "keysym", None),
+                    getattr(event, "char", None),
+                    getattr(event, "serial", None),
+                    getattr(event, "type", None),
+                    getattr(event, "x_root", None),
+                    getattr(event, "y_root", None),
+                )
+            )
+            return "break"
+
+        bind_id = frame.bind("<KeyPress>", _on_key)
+        bind_before = frame.bind("<KeyPress>")
+        frame.event_generate(
+            "<KeyPress>",
+            x=7,
+            y=9,
+            delta=120,
+            keysym="A",
+            char="A",
+            serial=55,
+            rootx=17,
+            rooty=19,
+        )
+        bind_after = frame.bind("<KeyPress>")
+        frame.unbind("<KeyPress>", bind_id)
+        bind_after_unbind = frame.bind("<KeyPress>")
+
+        frame.event_add("<<ProbeVirtual>>", "<KeyPress>")
+        virtuals_before = tuple(frame.event_info())
+        virtual_probe_before = tuple(frame.event_info("<<ProbeVirtual>>"))
+        frame.event_delete("<<ProbeVirtual>>", "<KeyPress>")
+        virtual_probe_after = tuple(frame.event_info("<<ProbeVirtual>>"))
+
+        frame.focus_set()
+        focus_current = root.focus_get()
+
+        frame.grab_set()
+        grab_current = frame.grab_current()
+        grab_status = frame.grab_status()
+        frame.grab_release()
+        grab_after = frame.grab_current()
+
+        root.clipboard_clear()
+        root.clipboard_append("clip-value")
+        clipboard_text = root.clipboard_get()
+        root.selection_clear()
+        selection_text = root.selection_get()
+
+        winfo_exists = frame.winfo_exists()
+        winfo_manager = frame.winfo_manager()
+        winfo_class = frame.winfo_class()
+        winfo_name = frame.winfo_name()
+        winfo_parent = frame.winfo_parent()
+        winfo_toplevel = frame.winfo_toplevel()
+        winfo_id = frame.winfo_id()
+        winfo_rgb = frame.winfo_rgb("#112233")
+        atom_id = root.winfo_atom("MOLT_PROBE_ATOM")
+        atom_name = root.winfo_atomname(atom_id)
+        containing = root.winfo_containing(0, 0)
+        winfo_children = tuple(root.winfo_children())
+
+        trace_events = []
+        trace_var = tkinter_module.StringVar(root, value="seed")
+        trace_id = trace_var.trace_add(
+            "write",
+            lambda name, index, mode: trace_events.append((name, index, mode)),
+        )
+        trace_var.set("seed-updated")
+        trace_var.trace_remove("write", trace_id)
+        trace_info_after = tuple(trace_var.trace_info())
+        trace_mode = trace_events[0][2] if trace_events else None
+
+        wait_var = tkinter_module.StringVar(root, value="pending")
+        root.after(5, lambda: wait_var.set("ready"))
+        root.wait_variable(wait_var)
+        wait_var_value = wait_var.get()
+
+        after_cancel_hits = []
+        cancel_token = root.after(50, lambda: after_cancel_hits.append("fired"))
+        root.after_cancel(cancel_token)
+        for _ in range(200):
+            root.dooneevent(tkinter_module.DONT_WAIT)
+        after_cancel_ok = after_cancel_hits == []
+
+        root.update()
+        root.update_idletasks()
+        root.wait_visibility(frame)
+
+        root.destroy()
+        root = None
+
+        return (
+            isinstance(pack_info, (tuple, list, dict))
+            and str(frame) in tuple(str(x) for x in pack_slaves)
+            and isinstance(grid_info, (tuple, list, dict))
+            and isinstance(grid_size, tuple)
+            and len(grid_size) == 2
+            and isinstance(place_info, (tuple, list, dict))
+            and str(frame) in tuple(str(x) for x in place_slaves)
+            and wm_title == "Probe Title"
+            and wm_geometry == "320x200+3+4"
+            and wm_state == "normal"
+            and str(wm_alpha).startswith("0.5")
+            and wm_resizable == (False, True)
+            and wm_minsize == (100, 80)
+            and wm_maxsize == (900, 700)
+            and wm_overrideredirect is True
+            and wm_transient == "."
+            and wm_iconname == "probe-icon"
+            and isinstance(proto_id, str)
+            and proto_before_clear == proto_id
+            and proto_after_clear == ""
+            and isinstance(bind_id, str)
+            and bind_id in str(bind_before)
+            and bind_after == bind_before
+            and bind_after_unbind == ""
+            and payloads == [(True, 7, 9, 120, "A", "A", 55, "KeyPress", 17, 19)]
+            and "<<ProbeVirtual>>" in tuple(str(x) for x in virtuals_before)
+            and "<KeyPress>" in tuple(str(x) for x in virtual_probe_before)
+            and virtual_probe_after == ()
+            and str(focus_current) == str(frame)
+            and str(grab_current) == str(frame)
+            and grab_status == "local"
+            and grab_after == ""
+            and clipboard_text == "clip-value"
+            and selection_text == ""
+            and winfo_exists is True
+            and winfo_manager == ""
+            and winfo_class == "Frame"
+            and isinstance(winfo_name, str)
+            and winfo_name
+            and winfo_parent == "."
+            and winfo_toplevel == "."
+            and isinstance(winfo_id, int)
+            and isinstance(winfo_rgb, tuple)
+            and len(winfo_rgb) == 3
+            and atom_name == "MOLT_PROBE_ATOM"
+            and isinstance(containing, str)
+            and str(frame) in tuple(str(x) for x in winfo_children)
+            and len(trace_events) == 1
+            and trace_events[0][0] == trace_var._name
+            and trace_events[0][1] == ""
+            and trace_mode in {"write", "w"}
+            and trace_info_after == ()
+            and wait_var_value == "ready"
+            and after_cancel_ok is True
+        )
+    except BaseException:  # noqa: BLE001
+        return False
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except BaseException:  # noqa: BLE001
+                pass
+        tkinter_module._require_gui_window_capability = old_gui_gate
+        tkinter_module._require_process_spawn_capability = old_process_gate
+
+
 def _probe_ttk_treeview_headless_semantics(
     tk_module: ModuleType | None,
     tkinter_module: ModuleType | None,
@@ -760,6 +987,149 @@ def _probe_ttk_treeview_headless_semantics(
             ttk_module._MOLT_CAPABILITIES_HAS = old_ttk_capability_probe
 
 
+def _probe_ttk_runtime_semantics(
+    tk_module: ModuleType | None,
+    tkinter_module: ModuleType | None,
+    ttk_module: ModuleType | None,
+) -> bool:
+    if (
+        not _is_molt_phase0__tkinter(tk_module)
+        or not _is_molt_phase0_tkinter(tkinter_module)
+        or ttk_module is None
+    ):
+        return True
+
+    old_gui_gate = tkinter_module._require_gui_window_capability
+    old_process_gate = tkinter_module._require_process_spawn_capability
+    old_ttk_capability_probe = getattr(ttk_module, "_MOLT_CAPABILITIES_HAS", None)
+    root = None
+    try:
+        tkinter_module._require_gui_window_capability = lambda: None
+        tkinter_module._require_process_spawn_capability = lambda: None
+        if callable(old_ttk_capability_probe):
+            ttk_module._MOLT_CAPABILITIES_HAS = lambda _name: True
+
+        root = tkinter_module.Tk(useTk=False)
+
+        style = ttk_module.Style(root)
+        style.configure("Probe.TButton", padding=4)
+        style_padding = style.configure("Probe.TButton", query_opt="padding")
+        style.map("Probe.TButton", foreground=[("active", "blue")])
+        style_map = style.map("Probe.TButton", query_opt="foreground")
+        style_lookup = style.lookup(
+            "Probe.TButton", "foreground", ("active",), "fallback"
+        )
+        style.layout("Probe.TButton", [("Button.border", {"sticky": "nswe"})])
+        style_layout = style.layout("Probe.TButton")
+        style.element_create(
+            "Probe.indicator",
+            "from",
+            "default",
+            "Button.button",
+            "-padding",
+            "2",
+        )
+        style_elements = tuple(root.tk.splitlist(style.element_names()))
+        style_element_options = tuple(
+            root.tk.splitlist(style.element_options("Probe.indicator"))
+        )
+        style.theme_create("probe_theme", parent="default", settings={"x": 1})
+        style.theme_settings("probe_theme", {"y": 2})
+        style_theme_names = tuple(root.tk.splitlist(style.theme_names()))
+        style.theme_use("probe_theme")
+        style_theme_current = style.theme_use()
+
+        notebook = ttk_module.Notebook(root)
+        tab_a = ttk_module.Frame(notebook)
+        tab_b = ttk_module.Frame(notebook)
+        notebook.add(tab_a, text="A")
+        notebook.insert("end", tab_b, text="B")
+        notebook_tabs_before = tuple(root.tk.splitlist(notebook.tabs()))
+        notebook_end_index = notebook.index("end")
+        notebook.select(tab_a)
+        notebook_selected = notebook.select()
+        notebook.tab(tab_a, text="AA")
+        notebook_tab_text = notebook.tab(tab_a, option="text")
+        notebook.enable_traversal()
+        notebook.hide(tab_b)
+        notebook_tabs_hidden = tuple(root.tk.splitlist(notebook.tabs()))
+        notebook.forget(tab_a)
+        notebook_tabs_after = tuple(root.tk.splitlist(notebook.tabs()))
+
+        paned = ttk_module.PanedWindow(root)
+        pane = ttk_module.Frame(paned)
+        paned.insert("end", pane, weight=1)
+        pane_weight_before = paned.pane(pane, option="weight")
+        paned.pane(pane, weight=2)
+        pane_weight_after = paned.pane(pane, option="weight")
+        _ = paned.sashpos(0)
+        paned.sashpos(0, 9)
+        sash_position = paned.sashpos(0)
+
+        combo = ttk_module.Combobox(root)
+        combo.current(2)
+        combo_index = combo.current()
+        combo.set("combo-value")
+        combo_value = combo.tk.call(combo._w, "set")
+
+        progress = ttk_module.Progressbar(root)
+        progress.start(17)
+        progress.step(3)
+        progress.stop()
+
+        scale = ttk_module.Scale(root)
+        scale_value = scale.get()
+
+        spin = ttk_module.Spinbox(root)
+        spin.set("spin-value")
+        spin_value = spin.tk.call(spin._w, "set")
+
+        entry = ttk_module.Entry(root)
+        entry_valid = entry.validate()
+        entry_bbox = entry.bbox(0)
+
+        root.destroy()
+        root = None
+
+        return (
+            style_padding == 4
+            and isinstance(style_map, (tuple, list))
+            and style_lookup is not None
+            and style_layout is not None
+            and "Probe.indicator" in tuple(str(x) for x in style_elements)
+            and "-padding" in tuple(str(x) for x in style_element_options)
+            and "probe_theme" in tuple(str(x) for x in style_theme_names)
+            and style_theme_current == "probe_theme"
+            and len(notebook_tabs_before) == 2
+            and notebook_end_index == 2
+            and str(notebook_selected) == str(tab_a)
+            and notebook_tab_text == "AA"
+            and str(tab_b) not in tuple(str(x) for x in notebook_tabs_hidden)
+            and str(tab_a) not in tuple(str(x) for x in notebook_tabs_after)
+            and pane_weight_before == 1
+            and pane_weight_after == 2
+            and sash_position == 9
+            and combo_index == 2
+            and combo_value == "combo-value"
+            and scale_value is not None
+            and spin_value == "spin-value"
+            and bool(entry_valid) is True
+            and isinstance(entry_bbox, tuple)
+        )
+    except BaseException:  # noqa: BLE001
+        return False
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except BaseException:  # noqa: BLE001
+                pass
+        tkinter_module._require_gui_window_capability = old_gui_gate
+        tkinter_module._require_process_spawn_capability = old_process_gate
+        if callable(old_ttk_capability_probe):
+            ttk_module._MOLT_CAPABILITIES_HAS = old_ttk_capability_probe
+
+
 def main() -> None:
     imported: dict[str, ModuleType | None] = {}
     for module_name in MODULES:
@@ -797,6 +1167,13 @@ def main() -> None:
             imported.get("_tkinter"), imported.get("tkinter")
         ),
     )
+    _report(
+        "tkinter",
+        "runtime_core_semantics",
+        _probe_core_runtime_semantics(
+            imported.get("_tkinter"), imported.get("tkinter")
+        ),
+    )
 
     for module_name in SUBMODULES:
         status, module, error = _import_signature(module_name)
@@ -819,6 +1196,13 @@ def main() -> None:
                 module_name,
                 "treeview_headless_semantics",
                 _probe_ttk_treeview_headless_semantics(
+                    imported.get("_tkinter"), imported.get("tkinter"), module
+                ),
+            )
+            _report(
+                module_name,
+                "runtime_semantics",
+                _probe_ttk_runtime_semantics(
                     imported.get("_tkinter"), imported.get("tkinter"), module
                 ),
             )

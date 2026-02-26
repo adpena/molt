@@ -19,6 +19,7 @@ thread_local! {
     static FIELD_SIZE_LIMIT: RefCell<i64> = const { RefCell::new(DEFAULT_FIELD_SIZE_LIMIT) };
     static READER_HANDLES: RefCell<HashMap<i64, ReaderState>> = RefCell::new(HashMap::new());
     static WRITER_HANDLES: RefCell<HashMap<i64, WriterState>> = RefCell::new(HashMap::new());
+    static DIALECT_REGISTRY: RefCell<DialectRegistry> = RefCell::new(default_dialect_registry());
 }
 
 // ── Monotonic handle-ID counter ───────────────────────────────────────────────
@@ -57,6 +58,94 @@ impl Default for Dialect {
             lineterminator: "\r\n".to_string(),
         }
     }
+}
+
+struct DialectRegistry {
+    by_name: HashMap<String, Dialect>,
+    order: Vec<String>,
+}
+
+impl DialectRegistry {
+    fn new() -> Self {
+        Self {
+            by_name: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, name: String, dialect: Dialect) {
+        if !self.by_name.contains_key(&name) {
+            self.order.push(name.clone());
+        }
+        self.by_name.insert(name, dialect);
+    }
+
+    fn remove(&mut self, name: &str) -> Option<Dialect> {
+        let removed = self.by_name.remove(name);
+        if removed.is_some() {
+            self.order.retain(|entry| entry != name);
+        }
+        removed
+    }
+
+    fn get(&self, name: &str) -> Option<&Dialect> {
+        self.by_name.get(name)
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.order.len());
+        for name in &self.order {
+            if self.by_name.contains_key(name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+}
+
+fn default_dialect_registry() -> DialectRegistry {
+    let mut registry = DialectRegistry::new();
+    registry.insert("excel".to_string(), Dialect::default());
+    registry.insert(
+        "excel-tab".to_string(),
+        Dialect {
+            delimiter: '\t',
+            ..Dialect::default()
+        },
+    );
+    registry.insert(
+        "unix".to_string(),
+        Dialect {
+            quoting: QUOTE_ALL,
+            lineterminator: "\n".to_string(),
+            ..Dialect::default()
+        },
+    );
+    registry
+}
+
+fn validate_dialect(_py: &PyToken<'_>, dialect: &Dialect) -> Result<(), u64> {
+    if dialect.quoting != QUOTE_MINIMAL
+        && dialect.quoting != QUOTE_ALL
+        && dialect.quoting != QUOTE_NONNUMERIC
+        && dialect.quoting != QUOTE_NONE
+        && dialect.quoting != QUOTE_STRINGS
+        && dialect.quoting != QUOTE_NOTNULL
+    {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "bad \"quoting\" value",
+        ));
+    }
+    if dialect.quotechar.is_none() && dialect.quoting != QUOTE_NONE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "quotechar must be set if quoting enabled",
+        ));
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,6 +193,12 @@ fn char_from_bits(_py: &PyToken<'_>, bits: u64, param_name: &str) -> Result<char
             let msg = format!("{param_name} must be a 1-character string");
             Err(raise_exception::<u64>(_py, "TypeError", &msg))
         }
+    }
+}
+
+fn release_bits(_py: &PyToken<'_>, bits: &[u64]) {
+    for bit in bits {
+        dec_ref_bits(_py, *bit);
     }
 }
 
@@ -821,6 +916,24 @@ fn raise_csv_parse_error(_py: &PyToken<'_>, err: CsvError) -> u64 {
     }
 }
 
+fn alloc_char_bits(_py: &PyToken<'_>, ch: char) -> Result<u64, u64> {
+    let text = ch.to_string();
+    let ptr = alloc_string(_py, text.as_bytes());
+    if ptr.is_null() {
+        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+    }
+    Ok(MoltObject::from_ptr(ptr).bits())
+}
+
+fn alloc_optional_char_bits(_py: &PyToken<'_>, value: Option<char>) -> Result<(u64, bool), u64> {
+    if let Some(ch) = value {
+        let bits = alloc_char_bits(_py, ch)?;
+        Ok((bits, true))
+    } else {
+        Ok((MoltObject::none().bits(), false))
+    }
+}
+
 // =============================================================================
 // Public intrinsic FFI functions
 // =============================================================================
@@ -883,6 +996,171 @@ pub extern "C" fn molt_csv_field_size_limit(new_limit_bits: u64) -> u64 {
             });
         }
         MoltObject::from_int(old).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_register_dialect(
+    name_bits: u64,
+    delimiter_bits: u64,
+    quotechar_bits: u64,
+    escapechar_bits: u64,
+    doublequote_bits: u64,
+    skipinitialspace_bits: u64,
+    lineterminator_bits: u64,
+    quoting_bits: u64,
+    strict_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+        };
+        let delimiter = match char_from_bits(_py, delimiter_bits, "delimiter") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let quotechar = match opt_char_from_bits(_py, quotechar_bits, "quotechar") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let escapechar = match opt_char_from_bits(_py, escapechar_bits, "escapechar") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(lineterminator) = string_obj_to_owned(obj_from_bits(lineterminator_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "\"lineterminator\" must be a string");
+        };
+        let Some(quoting) = to_i64(obj_from_bits(quoting_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+        };
+        let dialect = Dialect {
+            delimiter,
+            quotechar,
+            escapechar,
+            doublequote: is_truthy(_py, obj_from_bits(doublequote_bits)),
+            skipinitialspace: is_truthy(_py, obj_from_bits(skipinitialspace_bits)),
+            quoting,
+            strict: is_truthy(_py, obj_from_bits(strict_bits)),
+            lineterminator,
+        };
+        if let Err(bits) = validate_dialect(_py, &dialect) {
+            return bits;
+        }
+        DIALECT_REGISTRY.with(|registry| {
+            registry.borrow_mut().insert(name, dialect);
+        });
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+        };
+        let removed = DIALECT_REGISTRY.with(|registry| registry.borrow_mut().remove(&name));
+        if removed.is_none() {
+            return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_list_dialects() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let names = DIALECT_REGISTRY.with(|registry| registry.borrow().names());
+        let mut bits_vec = Vec::with_capacity(names.len());
+        for name in names {
+            let ptr = alloc_string(_py, name.as_bytes());
+            if ptr.is_null() {
+                release_bits(_py, &bits_vec);
+                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
+            bits_vec.push(MoltObject::from_ptr(ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, &bits_vec);
+        release_bits(_py, &bits_vec);
+        if list_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_get_dialect(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+        };
+        let dialect = DIALECT_REGISTRY.with(|registry| registry.borrow().get(&name).cloned());
+        let Some(dialect) = dialect else {
+            return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
+        };
+
+        let delimiter_bits = match alloc_char_bits(_py, dialect.delimiter) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let (quotechar_bits, quotechar_is_ptr) =
+            match alloc_optional_char_bits(_py, dialect.quotechar) {
+                Ok(value) => value,
+                Err(bits) => {
+                    dec_ref_bits(_py, delimiter_bits);
+                    return bits;
+                }
+            };
+        let (escapechar_bits, escapechar_is_ptr) =
+            match alloc_optional_char_bits(_py, dialect.escapechar) {
+                Ok(value) => value,
+                Err(bits) => {
+                    dec_ref_bits(_py, delimiter_bits);
+                    if quotechar_is_ptr {
+                        dec_ref_bits(_py, quotechar_bits);
+                    }
+                    return bits;
+                }
+            };
+        let lineterminator_ptr = alloc_string(_py, dialect.lineterminator.as_bytes());
+        if lineterminator_ptr.is_null() {
+            dec_ref_bits(_py, delimiter_bits);
+            if quotechar_is_ptr {
+                dec_ref_bits(_py, quotechar_bits);
+            }
+            if escapechar_is_ptr {
+                dec_ref_bits(_py, escapechar_bits);
+            }
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        let lineterminator_bits = MoltObject::from_ptr(lineterminator_ptr).bits();
+
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                delimiter_bits,
+                quotechar_bits,
+                escapechar_bits,
+                MoltObject::from_bool(dialect.doublequote).bits(),
+                MoltObject::from_bool(dialect.skipinitialspace).bits(),
+                lineterminator_bits,
+                MoltObject::from_int(dialect.quoting).bits(),
+                MoltObject::from_bool(dialect.strict).bits(),
+            ],
+        );
+        dec_ref_bits(_py, delimiter_bits);
+        if quotechar_is_ptr {
+            dec_ref_bits(_py, quotechar_bits);
+        }
+        if escapechar_is_ptr {
+            dec_ref_bits(_py, escapechar_bits);
+        }
+        dec_ref_bits(_py, lineterminator_bits);
+        if tuple_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 
