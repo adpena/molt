@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.colorchooser` wrappers."""
+"""Intrinsic-backed `tkinter.colorchooser` wrappers."""
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog

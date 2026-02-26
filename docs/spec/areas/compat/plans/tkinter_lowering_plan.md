@@ -1,6 +1,6 @@
 # Tkinter Lowering Plan (Intrinsic-First, Cross-Platform, CPython 3.12+)
 
-**Status:** In progress (Phase-0 intrinsic skeleton + focused deterministic differential coverage landed; native runtime now uses owned dynamic Tcl FFI with `useTk=False` app creation and native `loadtk` support; headless Rust runtime now lowers broad `tkinter.ttk` command families plus core `bind/event/wm/winfo/layout` command families with callback substitution dispatch, with focused runtime-semantics differential checks)
+**Status:** In progress (Phase-0 bootstrap tranche is complete; native runtime now uses owned dynamic Tcl FFI with `useTk=False` app creation and native `loadtk` support; headless Rust runtime lowers broad `tkinter.ttk` plus core `bind/event/wm/winfo/layout` command families with callback substitution dispatch; focused runtime-semantics differential checks are landed while broader parity remains in progress)
 **Owner:** stdlib + runtime + compiler + tooling + testing
 **Scope:** `_tkinter` + `tkinter` stdlib family on native targets (`linux`,
 `macos`, `windows`) with explicit capability-gated behavior on wasm targets.
@@ -50,8 +50,8 @@ Current implementation note:
   set `MOLT_RUNTIME_TK_NATIVE=0` to force the non-native fallback lane.
 - `quit` currently exits Molt’s Tk mainloop without force-destroying the app
   handle, aligning closer to CPython `_tkinter` lifecycle behavior.
-- `tkinter.ttk` Phase-0 wrappers include constructor coverage plus thin
-  forwarding for common widget/style APIs, and headless Rust runtime command
+- `tkinter.ttk` wrappers now cover constructor and common widget/style
+  forwarding paths, and headless Rust runtime command
   lowering now implements these major families for compiled execution:
   `state`/`instate`/`identify` core widget semantics, `invoke`,
   `Combobox.current/set`, `Entry.bbox/identify/validate`, notebook and
@@ -192,20 +192,20 @@ Default stance:
 ### Required evidence for each phase
 1. Targeted native differential tests against CPython behavior for supported
    subset (`tests/differential/stdlib/tkinter_*`), including
-   `tests/differential/stdlib/tkinter_phase0_core_semantics.py` for Phase-0
-   `_tkinter`/`tkinter` import + missing-attribute contracts, `_tkinter`
-   core API surface checks, and wrapper-level submodule import/error-shape/
-   capability-gate checks (`tkinter.__main__`, dialog/helper stubs, and
-  `tkinter.ttk`) without requiring a real GUI backend. Coverage now includes
-  runtime-lowered headless semantics checks for both core Tk and ttk lanes
-  (`tkinter:runtime_core_semantics`, `tkinter.ttk:runtime_semantics`) across
-  bind/event, wm/winfo/layout, and Style/Notebook/Panedwindow/common-widget
-  paths.
-  Keep deep `tkinter.ttk` value-conversion, callback binding, and true Tk
-  behavior parity validation in a follow-on tranche.
-  Focused Phase-0 differential reruns currently require lock/watchdog-quiet
-  lanes plus elevated `MOLT_DIFF_BUILD_TIMEOUT` to avoid build-time aborts
-  during concurrent runtime rebuild contention.
+   `tests/differential/stdlib/tkinter_phase0_core_semantics.py` for
+   bootstrap-and-runtime `_tkinter`/`tkinter` import + missing-attribute
+   contracts, `_tkinter` core API surface checks, and wrapper-level submodule
+   import/error-shape/capability-gate checks (`tkinter.__main__`, dialog/helper
+   wrappers, and `tkinter.ttk`) without requiring a real GUI backend. Coverage
+   now includes runtime-lowered headless semantics checks for both core Tk and
+   ttk lanes (`tkinter:runtime_core_semantics`,
+   `tkinter.ttk:runtime_semantics`) across bind/event, wm/winfo/layout, and
+   Style/Notebook/Panedwindow/common-widget paths.
+   Keep deep `tkinter.ttk` value-conversion, callback binding, and true Tk
+   behavior parity validation in a follow-on tranche.
+   Focused tkinter differential reruns currently require lock/watchdog-quiet
+   lanes plus elevated `MOLT_DIFF_BUILD_TIMEOUT` to avoid build-time aborts
+   during concurrent runtime rebuild contention.
 2. Capability-denied and capability-missing tests (native + wasm).
 3. Import-failure shape tests for unsupported hosts/targets.
 4. Memory and determinism checks under differential harness constraints.

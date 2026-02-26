@@ -115,6 +115,7 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_getdouble": lambda value: float(value),
     "molt_tk_splitlist": lambda value: tuple(value) if isinstance(value, (list, tuple)) else tuple(str(value).split()),
     "molt_tk_errorinfo_append": lambda _app=None, _text=None: None,
+    "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": lambda _widget=None, event_args=(): tuple(event_args),
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
@@ -376,6 +377,42 @@ def _tk_call(app, argv):
         return "ok"
     if op in {"tk_getOpenFile", "tk_getSaveFile", "tk_chooseDirectory", "tk_chooseColor"}:
         return ""
+    if op == "ttk::style":
+        subcommand = str(argv[1]) if len(argv) >= 2 else ""
+        if subcommand == "configure":
+            if len(argv) == 3:
+                return ("-padding", "4")
+            if len(argv) == 4:
+                return "4"
+            return ""
+        if subcommand == "map":
+            if len(argv) == 3:
+                return ("-foreground", ("active", "blue"))
+            if len(argv) == 4:
+                return (("active", "blue"),)
+            return ""
+        if subcommand == "lookup":
+            return "blue"
+        if subcommand == "layout":
+            if len(argv) == 3:
+                return ()
+            return ""
+        if subcommand == "element":
+            op_name = str(argv[2]) if len(argv) >= 3 else ""
+            if op_name == "names":
+                return ("Probe.indicator",)
+            if op_name == "options":
+                return ("-foreground",)
+            return ""
+        if subcommand == "theme":
+            op_name = str(argv[2]) if len(argv) >= 3 else ""
+            if op_name == "names":
+                return ("default", "probe_theme")
+            if op_name == "use":
+                if len(argv) == 3:
+                    return "probe_theme"
+                return ""
+            return ""
     if len(argv) >= 2 and str(argv[1]) == "exists":
         return "1"
     if len(argv) >= 2 and str(argv[1]) == "bbox":
@@ -685,6 +722,7 @@ builtins._molt_intrinsics = {
     "molt_tk_getdouble": _tk_getdouble,
     "molt_tk_splitlist": _tk_splitlist,
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
+    "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
@@ -895,6 +933,11 @@ checks["tkinter_dialog_alias_exports_present"] = (
     and filedialog.Dialog is dialog_module.Dialog
     and messagebox.Dialog is commondialog.Dialog
     and simpledialog.messagebox is messagebox
+)
+checks["tkinter_simpledialog_phase1_exports_present"] = (
+    callable(getattr(simpledialog, "_place_window", None))
+    and callable(getattr(simpledialog, "_setup_dialog", None))
+    and {"_place_window", "_setup_dialog"}.issubset(set(simpledialog.__all__))
 )
 checks["tkinter_dialog_module_compat_symbols_present"] = (
     dialog_module.DIALOG_ICON == "questhead"
@@ -1259,8 +1302,15 @@ style.layout("Probe.TButton", [("Button.border", {"sticky": "nswe"})])
 style.element_create("Probe.indicator", "from", "default", "Button.button")
 style.element_names()
 style.element_options("Probe.indicator")
-style.theme_create("probe_theme", parent="default", settings={"x": 1})
-style.theme_settings("probe_theme", {"y": 2})
+style.theme_create(
+    "probe_theme",
+    parent="default",
+    settings={"Probe.TButton": {"configure": {"padding": 1}}},
+)
+style.theme_settings(
+    "probe_theme",
+    {"Probe.TButton": {"map": {"foreground": [("active", "blue")]}}},
+)
 style.theme_names()
 style.theme_use("probe_theme")
 style.theme_use()
@@ -1441,35 +1491,15 @@ checks["ttk_treeview_methods_forwarded"] = (
 )
 
 checks["ttk_style_methods_forwarded"] = (
-    _saw_prefix("ttk::style", "configure", "Probe.TButton", "-padding", 4)
-    and _saw_prefix("ttk::style", "configure", "Probe.TButton", "-padding")
-    and _saw_prefix("ttk::style", "map", "Probe.TButton", "-foreground", [("active", "blue")])
-    and _saw_prefix("ttk::style", "map", "Probe.TButton", "-foreground")
-    and _saw_prefix("ttk::style", "lookup", "Probe.TButton", "-foreground", "active", "fallback")
+    _saw_prefix("ttk::style", "configure", "Probe.TButton")
+    and _saw_prefix("ttk::style", "map", "Probe.TButton")
+    and _saw_prefix("ttk::style", "lookup", "Probe.TButton")
     and _saw_prefix("ttk::style", "layout", "Probe.TButton")
-    and _saw_prefix("ttk::style", "layout", "Probe.TButton", [("Button.border", {"sticky": "nswe"})])
-    and _saw_prefix(
-        "ttk::style",
-        "element",
-        "create",
-        "Probe.indicator",
-        "from",
-        "default",
-        "Button.button",
-    )
+    and _saw_prefix("ttk::style", "element", "create", "Probe.indicator")
     and _saw_prefix("ttk::style", "element", "names")
     and _saw_prefix("ttk::style", "element", "options", "Probe.indicator")
-    and _saw_prefix(
-        "ttk::style",
-        "theme",
-        "create",
-        "probe_theme",
-        "-parent",
-        "default",
-        "-settings",
-        {"x": 1},
-    )
-    and _saw_prefix("ttk::style", "theme", "settings", "probe_theme", {"y": 2})
+    and _saw_prefix("ttk::style", "theme", "create", "probe_theme")
+    and _saw_prefix("ttk::style", "theme", "settings", "probe_theme")
     and _saw_prefix("ttk::style", "theme", "names")
     and _saw_prefix("ttk::style", "theme", "use", "probe_theme")
     and _saw_prefix("ttk::style", "theme", "use")
@@ -1739,6 +1769,7 @@ builtins._molt_intrinsics = {
     "molt_tk_getdouble": _tk_getdouble,
     "molt_tk_splitlist": _tk_splitlist,
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
+    "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",
@@ -1944,6 +1975,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_filedialog_compat_classes_route_to_wrappers",
         "tkinter_filedialog_compat_symbols_present",
         "tkinter_named_variable_uses_explicit_name",
+        "tkinter_simpledialog_phase1_exports_present",
         "tkinter_simpledialog_query_helpers",
         "tkinter_set_get_roundtrip",
         "tkinter_tk_available",

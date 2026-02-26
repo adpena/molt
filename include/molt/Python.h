@@ -465,6 +465,15 @@ static inline int PyModule_Add(PyObject *module, const char *name, PyObject *val
     return PyModule_AddObject(module, name, value);
 }
 
+static inline int PyModule_AddType(PyObject *module, PyTypeObject *type) {
+    if (type == NULL) {
+        PyErr_SetString(PyExc_TypeError, "module type must not be NULL");
+        return -1;
+    }
+    return molt_module_add_type(
+        _molt_py_handle(module), _molt_py_handle((PyObject *)type));
+}
+
 static inline PyObject *PyModule_GetObject(PyObject *module, const char *name) {
     if (name == NULL) {
         PyErr_SetString(PyExc_TypeError, "module attribute name must not be NULL");

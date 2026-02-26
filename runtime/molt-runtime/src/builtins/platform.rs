@@ -1831,6 +1831,12 @@ fn importlib_find_spec_via_meta_path(
             };
             dec_ref_bits(_py, find_spec_bits);
             if !obj_from_bits(spec_bits).is_none() {
+                if let Err(err) =
+                    importlib_enforce_extension_spec_object_boundary(_py, fullname, spec_bits)
+                {
+                    dec_ref_bits(_py, spec_bits);
+                    return Err(err);
+                }
                 return Ok(Some(spec_bits));
             }
         }
@@ -2033,6 +2039,16 @@ fn importlib_find_spec_via_path_hooks(
                 dec_ref_bits(_py, finder_bits);
             }
             if !obj_from_bits(spec_bits).is_none() {
+                if let Err(err) =
+                    importlib_enforce_extension_spec_object_boundary(_py, fullname, spec_bits)
+                {
+                    dec_ref_bits(_py, spec_bits);
+                    dec_ref_bits(_py, entry_bits);
+                    for hook_bits in hooks {
+                        dec_ref_bits(_py, hook_bits);
+                    }
+                    return Err(err);
+                }
                 dec_ref_bits(_py, entry_bits);
                 for hook_bits in hooks {
                     dec_ref_bits(_py, hook_bits);
@@ -3391,6 +3407,108 @@ fn importlib_require_extension_metadata(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.insert(cache_key, cache_value);
     Ok(())
+}
+
+fn importlib_path_has_extension_suffix(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".so")
+        || lower.ends_with(".pyd")
+        || lower.ends_with(".dll")
+        || lower.ends_with(".dylib")
+}
+
+fn importlib_path_looks_like_extension(path: &str) -> bool {
+    if let Some((_archive_path, inner_path)) = split_zip_archive_path(path) {
+        return importlib_path_has_extension_suffix(&inner_path);
+    }
+    importlib_path_has_extension_suffix(path)
+}
+
+fn importlib_spec_attr_string(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    name_slot: &AtomicU64,
+    name: &'static [u8],
+) -> Result<Option<String>, u64> {
+    let attr_name = intern_static_name(_py, name_slot, name);
+    let Some(attr_bits) = getattr_optional_bits(_py, target_bits, attr_name)? else {
+        return Ok(None);
+    };
+    let value = string_obj_to_owned(obj_from_bits(attr_bits));
+    if !obj_from_bits(attr_bits).is_none() {
+        dec_ref_bits(_py, attr_bits);
+    }
+    Ok(value)
+}
+
+fn importlib_extension_spec_target(
+    _py: &PyToken<'_>,
+    expected_module_name: &str,
+    spec_bits: u64,
+) -> Result<Option<(String, String)>, u64> {
+    static SPEC_NAME_NAME: AtomicU64 = AtomicU64::new(0);
+    static SPEC_ORIGIN_NAME: AtomicU64 = AtomicU64::new(0);
+    static SPEC_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
+
+    if obj_from_bits(spec_bits).is_none() {
+        return Ok(None);
+    }
+
+    let module_name = importlib_spec_attr_string(_py, spec_bits, &SPEC_NAME_NAME, b"name")?
+        .unwrap_or_else(|| expected_module_name.to_string());
+    let origin = importlib_spec_attr_string(_py, spec_bits, &SPEC_ORIGIN_NAME, b"origin")?;
+    let mut has_extension_loader = false;
+
+    let loader_name = intern_static_name(_py, &SPEC_LOADER_NAME, b"loader");
+    if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
+        && !obj_from_bits(loader_bits).is_none()
+    {
+        let loader_type = type_name(_py, obj_from_bits(loader_bits));
+        has_extension_loader = loader_type.contains("ExtensionFileLoader");
+        dec_ref_bits(_py, loader_bits);
+    }
+
+    let Some(path) = origin else {
+        if has_extension_loader {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                "extension module path must point to a file",
+            ));
+        }
+        return Ok(None);
+    };
+    if !has_extension_loader && !importlib_path_looks_like_extension(&path) {
+        return Ok(None);
+    }
+    Ok(Some((module_name, path)))
+}
+
+fn importlib_enforce_extension_spec_object_boundary(
+    _py: &PyToken<'_>,
+    expected_module_name: &str,
+    spec_bits: u64,
+) -> Result<(), u64> {
+    let Some((module_name, path)) =
+        importlib_extension_spec_target(_py, expected_module_name, spec_bits)?
+    else {
+        return Ok(());
+    };
+
+    if split_zip_archive_path(&path).is_none() {
+        match importlib_path_is_file(_py, &path) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ImportError",
+                    "extension module path must point to a file",
+                ));
+            }
+            Err(bits) => return Err(bits),
+        }
+    }
+    importlib_require_extension_metadata(_py, &module_name, &path)
 }
 
 fn importlib_extension_exec_unavailable(
@@ -6462,6 +6580,12 @@ fn importlib_import_via_spec(
             "ModuleNotFoundError",
             &format!("No module named '{resolved}'"),
         ));
+    }
+    if let Err(err) = importlib_enforce_extension_spec_object_boundary(_py, resolved, spec_bits) {
+        if !obj_from_bits(spec_bits).is_none() {
+            dec_ref_bits(_py, spec_bits);
+        }
+        return Err(err);
     }
 
     let module_from_spec_bits = importlib_required_callable(
@@ -15302,6 +15426,52 @@ mod tests {
         out
     }
 
+    fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &str) -> u64 {
+        let spec_bits = unsafe { call_callable0(_py, builtin_classes(_py).object) };
+        assert!(
+            !obj_from_bits(spec_bits).is_none(),
+            "failed to create synthetic spec object"
+        );
+        assert!(
+            !exception_pending(_py),
+            "failed to instantiate synthetic spec object: {:?}",
+            pending_exception_kind_and_message(_py)
+        );
+        let module_name_bits = alloc_test_string_bits(_py, module_name);
+        let rc = unsafe {
+            crate::c_api::molt_object_setattr_bytes(
+                spec_bits,
+                b"name".as_ptr(),
+                b"name".len() as u64,
+                module_name_bits,
+            )
+        };
+        assert_eq!(
+            rc,
+            0,
+            "set synthetic spec name failed: {:?}",
+            pending_exception_kind_and_message(_py)
+        );
+        dec_ref_bits(_py, module_name_bits);
+        let origin_bits = alloc_test_string_bits(_py, origin);
+        let rc = unsafe {
+            crate::c_api::molt_object_setattr_bytes(
+                spec_bits,
+                b"origin".as_ptr(),
+                b"origin".len() as u64,
+                origin_bits,
+            )
+        };
+        assert_eq!(
+            rc,
+            0,
+            "set synthetic spec origin failed: {:?}",
+            pending_exception_kind_and_message(_py)
+        );
+        dec_ref_bits(_py, origin_bits);
+        spec_bits
+    }
+
     fn assert_pending_exception_contains(
         _py: &PyToken<'_>,
         expected_kind: &str,
@@ -15980,6 +16150,93 @@ mod tests {
             });
 
             std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            {
+                let tmp =
+                    extension_boundary_temp_dir("molt_extension_spec_object_missing_manifest");
+                std::fs::create_dir_all(&tmp).expect("create temp dir");
+                let module_name = format!("ext_spec_object_missing_{}", std::process::id());
+                let filename = extension_boundary_module_filename(&module_name);
+                let extension_path = tmp.join(&filename);
+                std::fs::write(&extension_path, b"spec-object-boundary-extension")
+                    .expect("write extension placeholder");
+                let extension_path_text = extension_path.to_string_lossy().into_owned();
+
+                crate::with_gil_entry!(_py, {
+                    let spec_bits =
+                        extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
+                    let out = importlib_enforce_extension_spec_object_boundary(
+                        _py,
+                        &module_name,
+                        spec_bits,
+                    );
+                    assert!(
+                        out.is_err(),
+                        "expected extension spec object boundary failure for missing manifest"
+                    );
+                    assert_pending_exception_contains(
+                        _py,
+                        "ImportError",
+                        &[
+                            "extension metadata missing",
+                            "extension_manifest.json not found near extension path",
+                        ],
+                    );
+                    dec_ref_bits(_py, spec_bits);
+                });
+
+                std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+            }
+
+            clear_extension_metadata_validation_cache();
+
+            {
+                let tmp = extension_boundary_temp_dir("molt_extension_spec_object_valid_manifest");
+                std::fs::create_dir_all(&tmp).expect("create temp dir");
+                let module_name = format!("ext_spec_object_valid_{}", std::process::id());
+                let filename = extension_boundary_module_filename(&module_name);
+                let extension_path = tmp.join(&filename);
+                std::fs::write(&extension_path, b"spec-object-boundary-extension")
+                    .expect("write extension placeholder");
+                let extension_path_text = extension_path.to_string_lossy().into_owned();
+                let extension_sha256 = importlib_sha256_file(&extension_path_text)
+                    .expect("hash extension placeholder");
+                write_valid_extension_manifest(
+                    &tmp.join("extension_manifest.json"),
+                    &module_name,
+                    &filename,
+                    &extension_sha256,
+                );
+
+                crate::with_gil_entry!(_py, {
+                    let spec_bits =
+                        extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
+                    let out = importlib_enforce_extension_spec_object_boundary(
+                        _py,
+                        &module_name,
+                        spec_bits,
+                    );
+                    dec_ref_bits(_py, spec_bits);
+                    assert!(
+                        out.is_ok(),
+                        "unexpected extension spec object boundary failure: {:?}",
+                        pending_exception_kind_and_message(_py)
+                    );
+                    assert!(
+                        !exception_pending(_py),
+                        "unexpected pending exception after successful spec object boundary check: {:?}",
+                        pending_exception_kind_and_message(_py)
+                    );
+                });
+
+                std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+            }
         });
     }
 
