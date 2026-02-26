@@ -349,8 +349,8 @@ Notes:
   dynamic execution builtins (`eval`/`exec`/`compile`) land.
 
 ### 4.10 `molt extension`
-**Status:** Implemented (cross-target build + verify/publish integration;
-runtime load-time metadata enforcement in progress).
+**Status:** Implemented (cross-target build + scan/audit/verify/publish integration;
+runtime import/load metadata enforcement is required at spec + loader/exec boundaries).
 
 Purpose: build and audit C extensions recompiled against `libmolt`.
 
@@ -371,6 +371,13 @@ Subcommands:
   - `--require-capabilities`
   - `--require-abi <ver>`
   - `--require-checksum`
+  - `--json`, `--verbose`
+- `molt extension scan` scans extension C sources for required `Py*` symbols and
+  checks them against the currently shipped `include/molt/Python.h` surface.
+  Key flags:
+  - `--project <path>` (default: cwd)
+  - `--source <path>` (repeatable override for source discovery)
+  - `--fail-on-missing`
   - `--json`, `--verbose`
 
 Runtime behavior:

@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicU64;
 
 // Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
 pub(crate) const BIND_KIND_OPEN: i64 = 1;
+pub(crate) const BIND_KIND_CAPI_METHOD: i64 = 2;
 
 #[allow(dead_code)]
 pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;

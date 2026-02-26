@@ -78,20 +78,50 @@ performance-first C-extension compatibility without embedding CPython.
 
 ### 4.8 Types + Modules
 - `molt_type_ready`
-- `molt_module_create`, `molt_module_get_dict`
+- `molt_module_create`, `molt_module_import`, `molt_module_get_dict`
+- `molt_module_capi_register`, `molt_module_capi_get_def`, `molt_module_capi_get_state`
+- `molt_module_state_add`, `molt_module_state_find`, `molt_module_state_remove`
 - `molt_module_add_object`, `molt_module_add_object_bytes`
 - `molt_module_get_object`, `molt_module_get_object_bytes`
+- `molt_module_add_type`
 - `molt_module_add_int_constant`, `molt_module_add_string_constant`
+- `molt_cfunction_create_bytes`, `molt_module_add_cfunction_bytes`
 
 ### 4.9 CPython Source-Compat Shim (partial)
-- `PyType_Ready`, `PyModule_Create(2)`, `PyModule_AddObject(Ref)`,
+- `PyType_Ready`
+- `PyType_FromSpec`, `PyType_FromSpecWithBases`, `PyType_FromModuleAndSpec`
+- `PyType_GetModule`, `PyType_GetModuleState`, `PyType_GetModuleByDef`
+- `PyModule_New(Object)`, `PyModule_Create(2)`, `PyModuleDef_Init`
+- `PyModule_AddObject(Ref)`, `PyModule_Add`, `PyModule_AddType`,
   `PyModule_AddIntConstant`, `PyModule_AddStringConstant`
+- `PyModule_GetObject`, `PyModule_GetName(Object)`,
+  `PyModule_GetFilename(Object)`, `PyModule_GetDef`, `PyModule_GetState`,
+  `PyModule_SetDocString`, `PyModule_AddFunctions`,
+  `PyModule_FromDefAndSpec(2)`, `PyModule_ExecDef`, `PyState_*`
 - `PyErr_*` core helpers (`Occurred`, `SetString`, `SetObject`, `Clear`,
-  `Fetch`, `Restore`, `Matches`, `Format`)
+  `Fetch`, `Restore`, `Matches`, `Format`, `NoMemory`, warning stubs)
 - `PySequence_*` / `PyMapping_*` wrappers on top of `libmolt`
+- reference/type/memory helper macros and shims used by extension sources
+  (`Py_TYPE`, `Py_SETREF`, `Py_CLEAR`, `PyTuple_GET_*`, `PyList_GET_*`,
+  `PyMem_*`, `PyObject_GetBuffer`/`PyBuffer_Release`)
+- convenience call/build helpers (`PyObject_CallFunctionObjArgs`,
+  `PyObject_CallFunction`, `PyObject_CallMethod`, `Py_BuildValue`)
+- module/threading shims (`PyThreadState_Get`, `PyGILState_Ensure`,
+  `PyGILState_Release`, `PyImport_ImportModule`, `PyCapsule_Import`)
 - `PyArg_ParseTuple` / `PyArg_ParseTupleAndKeywords` format coverage for
   `O,O!,b,B,h,H,i,I,l,k,L,K,n,c,d,f,p,s,s#,z,z#,y#` with `|` optional + `$`
   keyword-only markers and kwlist-driven keyword lookup in the keywords path
+- `PyArg_UnpackTuple` tuple-arity/object unpack helper
+- `PyArg_VaParseTupleAndKeywords` symbol lane (currently fail-fast while full
+  `va_list` parity is implemented)
+- `PyType_Spec` slot lowering includes selected call/numeric/sequence/getset
+  lanes and type-method flag handling for `METH_CLASS` + `METH_STATIC`
+- NumPy source-compat include lane (`#include <numpy/arrayobject.h>`) with
+  initial type/shape macros, typenum predicates, `import_array*` capsule wiring,
+  and fail-fast stubs for unsupported heavy APIs
+- Datetime source-compat include lane (`#include <datetime.h>`) with
+  `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
+  checker shims
 
 ---
 
@@ -109,6 +139,10 @@ performance-first C-extension compatibility without embedding CPython.
 - Current shipped bootstrap header: `include/molt/molt.h`.
 - CPython-compat include path is also available via `#include <Python.h>`,
   implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
+- Initial NumPy compatibility headers ship under `include/numpy/` and are
+  intentionally partial while we close remaining NumPy C-API gaps.
+- Initial datetime compatibility header ships as `include/datetime.h` with a
+  partial `PyDateTime` C-API bootstrap.
 
 ### 6.2 Wheel Tags (proposed)
 - Wheels for `libmolt` are tagged distinctly from CPython wheels.

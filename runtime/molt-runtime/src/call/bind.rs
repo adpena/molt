@@ -1,6 +1,6 @@
 use crate::state::tls::FRAME_STACK;
 use crate::{
-    BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT,
+    BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT,
     CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE,
     FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE,
     FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
@@ -1015,6 +1015,53 @@ unsafe fn protect_callargs_aliased_return(
     }
 }
 
+unsafe fn call_capi_method_with_bound_args(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    args_ptr: *mut CallArgs,
+    args: &CallArgs,
+) -> u64 {
+    unsafe {
+        let tuple_ptr = alloc_tuple(_py, args.pos.as_slice());
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let mut kwargs_owned = false;
+        let kwargs_bits = if args.kw_names.is_empty() {
+            MoltObject::none().bits()
+        } else {
+            let mut pairs = Vec::with_capacity(args.kw_names.len().saturating_mul(2));
+            for (name_bits, val_bits) in args
+                .kw_names
+                .iter()
+                .copied()
+                .zip(args.kw_values.iter().copied())
+            {
+                pairs.push(name_bits);
+                pairs.push(val_bits);
+            }
+            let dict_ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
+            if dict_ptr.is_null() {
+                dec_ref_bits(_py, tuple_bits);
+                return MoltObject::none().bits();
+            }
+            kwargs_owned = true;
+            MoltObject::from_ptr(dict_ptr).bits()
+        };
+        let mut result = call_function_obj_vec(_py, func_bits, &[tuple_bits, kwargs_bits]);
+        if result == tuple_bits || (kwargs_owned && result == kwargs_bits) {
+            inc_ref_bits(_py, result);
+        }
+        dec_ref_bits(_py, tuple_bits);
+        if kwargs_owned {
+            dec_ref_bits(_py, kwargs_bits);
+        }
+        result = protect_callargs_aliased_return(_py, result, args_ptr);
+        result
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1667,6 +1714,11 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     return call_function_obj_vec(_py, func_bits, bound_args.as_slice());
                 }
                 return MoltObject::none().bits();
+            }
+            if let Some(kind_bits) = bind_kind_bits
+                && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
+            {
+                return call_capi_method_with_bound_args(_py, func_bits, args_ptr, args);
             }
             if fn_ptr == fn_addr!(dict_update_method) {
                 return bind_builtin_dict_update(_py, args);

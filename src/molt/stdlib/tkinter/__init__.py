@@ -77,11 +77,15 @@ _TK_CALL = _require_tk_callable("call")
 _TK_BIND_COMMAND = _require_tk_callable("bind_command")
 _TK_BIND_REGISTER = _require_tk_callable("bind_register")
 _TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
-_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_tk_callable("bind_script_remove_command")
+_TK_WIDGET_BIND_REGISTER = _require_tk_callable("widget_bind_register")
+_TK_WIDGET_BIND_UNREGISTER = _require_tk_callable("widget_bind_unregister")
+_TK_TEXT_TAG_BIND_REGISTER = _require_tk_callable("text_tag_bind_register")
+_TK_TEXT_TAG_BIND_UNREGISTER = _require_tk_callable("text_tag_bind_unregister")
 _TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")
 _TK_LAST_ERROR = _require_tk_callable("last_error")
 _TK_TRACE_ADD = _require_tk_callable("trace_add")
 _TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
+_TK_TRACE_CLEAR = _require_tk_callable("trace_clear")
 _TK_TRACE_INFO = _require_tk_callable("trace_info")
 _TK_WAIT_VARIABLE = _require_tk_callable("wait_variable")
 _TK_WAIT_WINDOW = _require_tk_callable("wait_window")
@@ -417,7 +421,70 @@ def _event_from_subst_args(widget, event_args):
 class Event:
     """Minimal tkinter event object placeholder for bind callbacks."""
 
-    pass
+    def __repr__(self):
+        attrs = {key: value for key, value in self.__dict__.items() if value != "??"}
+
+        char_value = attrs.get("char")
+        if not char_value:
+            attrs.pop("char", None)
+        elif char_value != "??":
+            attrs["char"] = repr(char_value)
+
+        if not getattr(self, "send_event", True):
+            attrs.pop("send_event", None)
+
+        state_value = attrs.get("state")
+        if state_value == 0:
+            attrs.pop("state", None)
+        elif isinstance(state_value, int):
+            mods = (
+                "Shift",
+                "Lock",
+                "Control",
+                "Mod1",
+                "Mod2",
+                "Mod3",
+                "Mod4",
+                "Mod5",
+                "Button1",
+                "Button2",
+                "Button3",
+                "Button4",
+                "Button5",
+            )
+            state_bits = state_value
+            parts = []
+            for index, name in enumerate(mods):
+                if state_bits & (1 << index):
+                    parts.append(name)
+            state_bits = state_bits & ~((1 << len(mods)) - 1)
+            if state_bits or not parts:
+                parts.append(hex(state_bits))
+            attrs["state"] = "|".join(parts)
+
+        if attrs.get("delta") == 0:
+            attrs.pop("delta", None)
+
+        keys = (
+            "send_event",
+            "state",
+            "keysym",
+            "keycode",
+            "char",
+            "num",
+            "delta",
+            "focus",
+            "x",
+            "y",
+            "width",
+            "height",
+        )
+        event_type = getattr(self, "type", "?")
+        event_type_name = getattr(event_type, "name", event_type)
+        return "<%s event%s>" % (
+            event_type_name,
+            "".join(f" {key}={attrs[key]}" for key in keys if key in attrs),
+        )
 
 
 class EventType(str, _EventTypeBase):
@@ -539,6 +606,16 @@ class Misc:
                 return keys
         return [str(item).lstrip("-") for item in self.splitlist(configured)]
 
+    def __str__(self):
+        return self._w
+
+    def __repr__(self):
+        return "<%s.%s object %s>" % (
+            self.__class__.__module__,
+            self.__class__.__qualname__,
+            self._w,
+        )
+
     def mainloop(self, n=0):
         del n
         _require_gui_window_capability()
@@ -587,8 +664,10 @@ class Misc:
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
-        if identifier is None:
-            return None
+        if not identifier:
+            raise ValueError(
+                "id must be a valid identifier returned from after or after_idle"
+            )
 
         delete_timer = getattr(identifier, "deletetimerhandler", None)
         if callable(delete_timer):
@@ -598,6 +677,10 @@ class Misc:
         token = getattr(identifier, "_token", identifier)
         _tkimpl.after_cancel(self._tk_app, token)
         return None
+
+    def after_info(self, identifier=None):
+        _require_gui_window_capability()
+        return _tkimpl.after_info(self._tk_app, identifier)
 
     def bind_command(self, name, callback):
         _require_gui_window_capability()
@@ -1725,6 +1808,7 @@ class Tk(Wm):
             "sync": bool(sync),
             "use": use,
         }
+        self._tkloaded = False
         self._tk_app = _TK_CREATE(options=options)
         self._registered_commands = set()
         self._protocol_commands = {}
@@ -1732,11 +1816,22 @@ class Tk(Wm):
         self._w = "."
         self.tk = self
         self._widget_serial = 0
+        if useTk:
+            self._loadtk()
         _set_default_root(self)
 
     def loadtk(self):
-        self.call("tk", "windowingsystem")
+        if not self._tkloaded:
+            self._tk_app.loadtk()
+            self._loadtk()
         return None
+
+    def _loadtk(self):
+        self._tkloaded = True
+        self.call("tk", "windowingsystem")
+        self.createcommand("tkerror", _tkerror)
+        self.createcommand("exit", _exit)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def readprofile(self, baseName, className):
         del baseName, className
@@ -1911,6 +2006,13 @@ class Tk(Wm):
     def __str__(self):
         return self._w
 
+    def __getattr__(self, attr):
+        try:
+            tk_app = object.__getattribute__(self, "_tk_app")
+        except AttributeError as exc:
+            raise AttributeError(attr) from exc
+        return getattr(tk_app, attr)
+
 
 class Widget(Misc):
     """Widget shell used by tkinter/ttk wrappers."""
@@ -2079,11 +2181,13 @@ class Canvas(_CoreWidget):
         if funcid is None:
             return self._call_widget("bind", tag_or_id, sequence, "")
         command_name = str(funcid)
-        current = self._call_widget("bind", tag_or_id, sequence)
-        if current:
-            replacement = _TK_BIND_SCRIPT_REMOVE_COMMAND(current, command_name)
-            self._call_widget("bind", tag_or_id, sequence, replacement)
-        self._release_command(command_name)
+        _TK_WIDGET_BIND_UNREGISTER(
+            self._tk_app,
+            self._w,
+            tag_or_id,
+            sequence,
+            command_name,
+        )
         return None
 
     def tag_bind(self, tag_or_id, sequence=None, func=None, add=None):
@@ -2115,14 +2219,14 @@ class Canvas(_CoreWidget):
             event.widget = widget
             return func(event)
 
-        command_name = self._register_command("canvas_tag_bind", wrapped)
-        script = f"{add_prefix}{command_name}" if add_prefix else command_name
-        try:
-            self._call_widget("bind", tag_or_id, sequence, script)
-        except Exception:
-            self._release_command(command_name)
-            raise
-        return command_name
+        return _TK_WIDGET_BIND_REGISTER(
+            self._tk_app,
+            self._w,
+            tag_or_id,
+            sequence,
+            wrapped,
+            add_prefix,
+        )
 
     def canvasx(self, screenx, gridspacing=None):
         if gridspacing is None:
@@ -2511,11 +2615,13 @@ class Text(_CoreWidget):
         if funcid is None:
             return self._call_widget("tag", "bind", tag_name, sequence, "")
         command_name = str(funcid)
-        current = self._call_widget("tag", "bind", tag_name, sequence)
-        if current:
-            replacement = _TK_BIND_SCRIPT_REMOVE_COMMAND(current, command_name)
-            self._call_widget("tag", "bind", tag_name, sequence, replacement)
-        self._release_command(command_name)
+        _TK_TEXT_TAG_BIND_UNREGISTER(
+            self._tk_app,
+            self._w,
+            tag_name,
+            sequence,
+            command_name,
+        )
         return None
 
     def tag_bind(self, tag_name, sequence=None, func=None, add=None):
@@ -2550,14 +2656,14 @@ class Text(_CoreWidget):
             event.widget = widget
             return func(event)
 
-        command_name = self._register_command("text_tag_bind", wrapped)
-        script = f"{add_prefix}{command_name}" if add_prefix else command_name
-        try:
-            self._call_widget("tag", "bind", tag_name, sequence, script)
-        except Exception:
-            self._release_command(command_name)
-            raise
-        return command_name
+        return _TK_TEXT_TAG_BIND_REGISTER(
+            self._tk_app,
+            self._w,
+            tag_name,
+            sequence,
+            wrapped,
+            add_prefix,
+        )
 
     def tag_cget(self, tag_name, option):
         return self._call_widget(
@@ -3275,6 +3381,8 @@ def image_types():
 
 class Variable:
     _default = ""
+    _tk = None
+    _tclCommands = None
 
     def __init__(self, master=None, value=None, name=None):
         parent = _get_default_root() if master is None else master
@@ -3295,8 +3403,39 @@ class Variable:
     def name(self):
         return self._name
 
+    def __del__(self):
+        tk = getattr(self, "_tk", None)
+        name = getattr(self, "_name", None)
+        if tk is None or name is None:
+            return
+        try:
+            _TK_TRACE_CLEAR(tk._tk_app, name)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if tk.getboolean(tk.call("info", "exists", name)):
+                tk.globalunsetvar(name)
+        except Exception:  # noqa: BLE001
+            pass
+        if self._tclCommands is not None:
+            for command_name in self._tclCommands:
+                try:
+                    tk.deletecommand(command_name)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._tclCommands = None
+
     def __str__(self):
         return self._name
+
+    def __eq__(self, other):
+        if not isinstance(other, Variable):
+            return NotImplemented
+        return (
+            self._name == other._name
+            and self.__class__.__name__ == other.__class__.__name__
+            and self._tk == other._tk
+        )
 
     def set(self, value):
         return self._tk.setvar(self._name, value)
@@ -3305,6 +3444,23 @@ class Variable:
 
     def get(self):
         return self._tk.getvar(self._name)
+
+    def _register(self, callback):
+        wrapped = CallWrapper(callback, None, self._root).__call__
+        command_name = repr(id(wrapped))
+        try:
+            callback = callback.__func__
+        except AttributeError:
+            pass
+        try:
+            command_name = command_name + callback.__name__
+        except AttributeError:
+            pass
+        self._tk.createcommand(command_name, wrapped)
+        if self._tclCommands is None:
+            self._tclCommands = []
+        self._tclCommands.append(command_name)
+        return command_name
 
     def trace_add(self, mode, callback):
         if not callable(callback):
@@ -3317,17 +3473,24 @@ class Variable:
                 return callback(*args)
             return callback(self._name, "", mode_name)
 
-        command_name = _TK_TRACE_ADD(self._tk._tk_app, self._name, mode_name, wrapped)
-        return command_name
+        return _TK_TRACE_ADD(self._tk._tk_app, self._name, mode_name, wrapped)
 
     def trace_remove(self, mode, cbname):
         mode_name = _normalize_trace_mode(mode)
         command_name = str(cbname)
         _TK_TRACE_REMOVE(self._tk._tk_app, self._name, mode_name, command_name)
+        if self._tclCommands is not None:
+            try:
+                self._tclCommands.remove(command_name)
+            except ValueError:
+                pass
         return None
 
     def trace_info(self):
-        return _TK_TRACE_INFO(self._tk._tk_app, self._name)
+        rows = []
+        for mode_name, callback_name in _TK_TRACE_INFO(self._tk._tk_app, self._name):
+            rows.append((self._tk.splitlist(mode_name), callback_name))
+        return rows
 
     def trace(self, mode, callback):
         return self.trace_add(mode, callback)
@@ -3395,6 +3558,10 @@ def after_idle(callback, *args):
 
 def after_cancel(identifier):
     return _get_default_root().after_cancel(identifier)
+
+
+def after_info(identifier=None):
+    return _get_default_root().after_info(identifier)
 
 
 def bind_register(app, target_name, sequence, callback, add_prefix=""):
@@ -3537,6 +3704,7 @@ __all__ = [
     "EXCEPTION",
     "after",
     "after_cancel",
+    "after_info",
     "after_idle",
     "bind_register",
     "bind_unregister",
