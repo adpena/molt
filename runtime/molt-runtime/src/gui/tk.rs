@@ -575,6 +575,7 @@ enum TkOperation {
     After,
     AfterIdle,
     AfterCancel,
+    AfterInfo,
     Call,
     BindCommand,
     UnbindCommand,
@@ -600,6 +601,7 @@ impl TkOperation {
             Self::After => "molt_tk_after",
             Self::AfterIdle => "molt_tk_after_idle",
             Self::AfterCancel => "molt_tk_after_cancel",
+            Self::AfterInfo => "molt_tk_after_info",
             Self::Call => "molt_tk_call",
             Self::BindCommand => "molt_tk_bind_command",
             Self::UnbindCommand => "molt_tk_unbind_command",
@@ -625,6 +627,7 @@ impl TkOperation {
                 | Self::After
                 | Self::AfterIdle
                 | Self::AfterCancel
+                | Self::AfterInfo
                 | Self::Call
                 | Self::BindCommand
                 | Self::UnbindCommand
@@ -723,6 +726,12 @@ struct TkFontState {
 }
 
 #[derive(Default)]
+struct TkMenuEntryState {
+    item_type: String,
+    options: HashMap<String, u64>,
+}
+
+#[derive(Default)]
 struct TkWidgetState {
     widget_command: String,
     options: HashMap<String, u64>,
@@ -740,14 +749,24 @@ struct TkWidgetState {
     grid_rowconfigure: HashMap<String, HashMap<String, u64>>,
     tag_bindings: HashMap<String, HashMap<String, String>>,
     text_tag_ranges: HashMap<String, Vec<(usize, usize)>>,
+    text_tag_options: HashMap<String, HashMap<String, String>>,
+    text_tag_order: Vec<String>,
     text_marks: HashMap<String, usize>,
     text_mark_gravity: HashMap<String, String>,
     text_value: String,
     list_items: Vec<u64>,
+    list_item_options: HashMap<usize, HashMap<String, u64>>,
     list_selection: HashSet<usize>,
+    list_active_index: Option<usize>,
+    menu_entries: Vec<TkMenuEntryState>,
+    menu_active_index: Option<usize>,
+    menu_posted_at: Option<(i64, i64)>,
+    pane_children: Vec<String>,
+    pane_child_options: HashMap<String, HashMap<String, u64>>,
     selection_anchor: Option<usize>,
     selection_range: Option<(usize, usize)>,
     insert_cursor: usize,
+    text_edit_modified: bool,
     next_item_id: i64,
 }
 
@@ -1177,6 +1196,12 @@ fn clear_widget_refs(py: &PyToken<'_>, widget: TkWidgetState) {
     for bits in widget.list_items {
         dec_ref_bits(py, bits);
     }
+    for mut item_options in widget.list_item_options.into_values() {
+        clear_value_map_refs(py, &mut item_options);
+    }
+    for mut menu_entry in widget.menu_entries {
+        clear_value_map_refs(py, &mut menu_entry.options);
+    }
     let mut ttk_values = widget.ttk_values;
     clear_value_map_refs(py, &mut ttk_values);
     for mut item_options in widget.ttk_item_options.into_values() {
@@ -1195,6 +1220,8 @@ fn clear_widget_refs(py: &PyToken<'_>, widget: TkWidgetState) {
     clear_nested_value_map_refs(py, &mut grid_columnconfigure);
     let mut grid_rowconfigure = widget.grid_rowconfigure;
     clear_nested_value_map_refs(py, &mut grid_rowconfigure);
+    let mut pane_child_options = widget.pane_child_options;
+    clear_nested_value_map_refs(py, &mut pane_child_options);
 }
 
 fn clear_ttk_style_refs(py: &PyToken<'_>, style: &mut TkTtkStyleState) {
@@ -1369,6 +1396,45 @@ fn trace_callback_is_referenced(app: &TkAppState, callback_name: &str) -> bool {
     })
 }
 
+fn remove_trace_registration(
+    py: &PyToken<'_>,
+    app: &mut TkAppState,
+    variable_name: &str,
+    mode_name: &str,
+    callback_name: &str,
+) {
+    if let Some(registrations) = app.traces.get_mut(variable_name) {
+        registrations.retain(|registration| {
+            !(registration.mode_name == mode_name && registration.callback_name == callback_name)
+        });
+        if registrations.is_empty() {
+            app.traces.remove(variable_name);
+        }
+    }
+    if !trace_callback_is_referenced(app, callback_name) {
+        unregister_callback_command(py, app, callback_name);
+    }
+}
+
+fn clear_trace_registrations_for_variable(
+    py: &PyToken<'_>,
+    app: &mut TkAppState,
+    variable_name: &str,
+) {
+    let Some(registrations) = app.traces.remove(variable_name) else {
+        return;
+    };
+    let callbacks: HashSet<String> = registrations
+        .into_iter()
+        .map(|registration| registration.callback_name)
+        .collect();
+    for callback_name in callbacks {
+        if !trace_callback_is_referenced(app, callback_name.as_str()) {
+            unregister_callback_command(py, app, callback_name.as_str());
+        }
+    }
+}
+
 fn normalize_bind_add_prefix(py: &PyToken<'_>, add_bits: u64) -> Result<String, u64> {
     let add_obj = obj_from_bits(add_bits);
     if add_obj.is_none() {
@@ -1446,6 +1512,31 @@ fn sort_after_info_tokens(tokens: &mut [String]) {
     );
 }
 
+fn alloc_after_info_all(py: &PyToken<'_>, app: &TkAppState) -> Result<u64, u64> {
+    let mut tokens: Vec<String> = app.after_command_tokens.keys().cloned().collect();
+    sort_after_info_tokens(&mut tokens);
+    alloc_tuple_from_strings(py, tokens.as_slice(), "failed to allocate after info tuple")
+}
+
+fn alloc_after_info_token(py: &PyToken<'_>, app: &mut TkAppState, token: &str) -> Result<u64, u64> {
+    let Some(command_name) = lookup_after_command_for_token(app, token) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("event \"{token}\" doesn't exist"),
+        ));
+    };
+    let kind = lookup_after_kind_for_token(app, token).unwrap_or_else(|| {
+        if command_name.starts_with("::__molt_after_callback_") {
+            "timer".to_string()
+        } else {
+            "idle".to_string()
+        }
+    });
+    let info = [command_name, kind];
+    alloc_tuple_from_strings(py, &info, "failed to allocate after info token tuple")
+}
+
 fn remove_after_events_for_tokens(app: &mut TkAppState, tokens: &HashSet<String>) {
     app.event_queue.retain(|event| match event {
         TkEvent::Callback { token } => !tokens.contains(token),
@@ -1507,6 +1598,103 @@ fn filehandler_event_name(mask: i64) -> Option<&'static str> {
 
 fn filehandler_command_name(fd: i64, event_name: &str) -> String {
     format!("::__molt_filehandler_{fd}_{event_name}")
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+fn filehandler_poll_events(registration: &TkFileHandlerRegistration) -> libc::c_short {
+    let mut events: libc::c_short = 0;
+    if registration.commands.contains_key(&TK_FILE_EVENT_READABLE) {
+        events |= libc::POLLIN;
+    }
+    if registration.commands.contains_key(&TK_FILE_EVENT_WRITABLE) {
+        events |= libc::POLLOUT;
+    }
+    if registration.commands.contains_key(&TK_FILE_EVENT_EXCEPTION) {
+        events |= libc::POLLPRI;
+    }
+    events
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+fn filehandler_revents_to_mask(revents: libc::c_short) -> i64 {
+    let mut mask = 0_i64;
+    if (revents & libc::POLLIN) != 0 || (revents & libc::POLLHUP) != 0 {
+        mask |= TK_FILE_EVENT_READABLE;
+    }
+    if (revents & libc::POLLOUT) != 0 {
+        mask |= TK_FILE_EVENT_WRITABLE;
+    }
+    if (revents & libc::POLLPRI) != 0
+        || (revents & libc::POLLERR) != 0
+        || (revents & libc::POLLNVAL) != 0
+    {
+        mask |= TK_FILE_EVENT_EXCEPTION;
+    }
+    mask
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+fn next_ready_filehandler_commands(py: &PyToken<'_>, handle: i64) -> Result<Vec<String>, u64> {
+    let mut pollfds: Vec<libc::pollfd> = Vec::new();
+    let mut fd_commands: Vec<Vec<(i64, String)>> = Vec::new();
+    {
+        let mut registry = tk_registry().lock().unwrap();
+        let app = app_mut_from_registry(py, &mut registry, handle)?;
+        for (fd, registration) in &app.filehandlers {
+            let Ok(fd_native) = libc::c_int::try_from(*fd) else {
+                continue;
+            };
+            let events = filehandler_poll_events(registration);
+            if events == 0 {
+                continue;
+            }
+            let mut commands: Vec<(i64, String)> = registration
+                .commands
+                .iter()
+                .map(|(mask, command_name)| (*mask, command_name.clone()))
+                .collect();
+            commands.sort_unstable_by(|left, right| left.1.cmp(&right.1));
+            pollfds.push(libc::pollfd {
+                fd: fd_native,
+                events,
+                revents: 0,
+            });
+            fd_commands.push(commands);
+        }
+    }
+
+    if pollfds.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let poll_out = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 0) };
+    if poll_out <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut ready_commands = Vec::new();
+    for (idx, pollfd) in pollfds.iter().enumerate() {
+        if pollfd.revents == 0 {
+            continue;
+        }
+        let ready_mask = filehandler_revents_to_mask(pollfd.revents);
+        if ready_mask == 0 {
+            continue;
+        }
+        for (mask, command_name) in &fd_commands[idx] {
+            if (ready_mask & *mask) != 0 {
+                ready_commands.push(command_name.clone());
+            }
+        }
+    }
+    ready_commands.sort_unstable();
+    ready_commands.dedup();
+    Ok(ready_commands)
+}
+
+#[cfg(any(not(unix), target_arch = "wasm32", feature = "molt_tk_native"))]
+fn next_ready_filehandler_commands(_py: &PyToken<'_>, _handle: i64) -> Result<Vec<String>, u64> {
+    Ok(Vec::new())
 }
 
 fn clear_filehandler_registration_locked(
@@ -2056,15 +2244,120 @@ fn parse_winfo_rgb_components(color: &str) -> (i64, i64, i64) {
     }
 }
 
-fn parse_treeview_index(value: &str, len: usize) -> usize {
+fn parse_treeview_index_strict(value: &str, len: usize) -> Option<usize> {
     if value.eq_ignore_ascii_case("end") {
-        return len;
+        return Some(len);
     }
-    match value.trim().parse::<i64>() {
-        Ok(parsed) if parsed <= 0 => 0,
-        Ok(parsed) => (parsed as usize).min(len),
-        Err(_) => len,
+    value.trim().parse::<i64>().ok().map(|parsed| {
+        if parsed <= 0 {
+            0
+        } else {
+            (parsed as usize).min(len)
+        }
+    })
+}
+
+fn parse_ttk_insert_index_strict(value: &str, len: usize) -> Option<usize> {
+    parse_treeview_index_strict(value, len)
+}
+
+fn parse_notebook_index_strict(value: &str, len: usize) -> Result<i64, String> {
+    if value.eq_ignore_ascii_case("end") {
+        return Ok(len as i64);
     }
+    if let Ok(parsed) = value.parse::<i64>() {
+        if parsed < 0 || (parsed as usize) >= len {
+            return Err(format!("Slave index {parsed} out of bounds"));
+        }
+        return Ok(parsed);
+    }
+    Err(format!("invalid tab identifier \"{value}\""))
+}
+
+fn treeview_subcommand_is_noop_generic_fallback(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "add"
+            | "addtag"
+            | "dtag"
+            | "scan"
+            | "itemconfigure"
+            | "entryconfigure"
+            | "paneconfigure"
+            | "image_configure"
+            | "window_configure"
+            | "activate"
+            | "tk_popup"
+            | "post"
+            | "unpost"
+            | "invoke"
+            | "edit"
+            | "replace"
+            | "dump"
+    )
+}
+
+fn first_missing_treeview_item<'a>(
+    treeview: &TkTreeviewState,
+    items: &'a [String],
+) -> Option<&'a str> {
+    items
+        .iter()
+        .find(|item| !treeview.items.contains_key(item.as_str()))
+        .map(String::as_str)
+}
+
+fn treeview_visible_items(treeview: &TkTreeviewState) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack: Vec<String> = treeview.root_children.iter().rev().cloned().collect();
+    let mut visited = HashSet::new();
+    while let Some(item_id) = stack.pop() {
+        if !visited.insert(item_id.clone()) {
+            continue;
+        }
+        let Some(item) = treeview.items.get(&item_id) else {
+            continue;
+        };
+        out.push(item_id);
+        for child in item.children.iter().rev() {
+            stack.push(child.clone());
+        }
+    }
+    out
+}
+
+fn treeview_hit_item_by_y(treeview: &TkTreeviewState, y: i64) -> Option<String> {
+    if y < 0 {
+        return None;
+    }
+    let row = (y as usize) / 20;
+    treeview_visible_items(treeview).get(row).cloned()
+}
+
+fn parse_treeview_column_offset(spec: &str) -> Option<i64> {
+    let normalized = spec.trim();
+    let suffix = normalized.strip_prefix('#')?;
+    let column = suffix.parse::<i64>().ok()?;
+    (column >= 0).then_some(column * 120)
+}
+
+const TREEVIEW_COLUMN_OPTIONS: &[&str] = &["-id", "-anchor", "-minwidth", "-stretch", "-width"];
+const TREEVIEW_HEADING_OPTIONS: &[&str] = &["-text", "-image", "-anchor", "-command", "-state"];
+const TREEVIEW_ITEM_OPTIONS: &[&str] = &["-text", "-image", "-values", "-open", "-tags"];
+const TREEVIEW_TAG_OPTIONS: &[&str] = &["-foreground", "-background", "-font", "-image"];
+const TTK_NOTEBOOK_TAB_OPTIONS: &[&str] = &[
+    "-state",
+    "-sticky",
+    "-padding",
+    "-text",
+    "-image",
+    "-compound",
+    "-underline",
+];
+const TTK_PANEDWINDOW_PANE_OPTIONS: &[&str] = &["-weight"];
+
+fn option_allowed(option_name: &str, allowed: &[&str]) -> bool {
+    allowed.iter().any(|candidate| option_name == *candidate)
 }
 
 fn clamp_index_i64(value: i64, upper: usize) -> usize {
@@ -2140,6 +2433,78 @@ fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) -> Option<u
             },
         )
     })
+}
+
+fn parse_menu_existing_index_bits(
+    bits: u64,
+    len: usize,
+    active_index: Option<usize>,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_i64(obj) {
+        return Some(clamp_index_i64(value, len - 1));
+    }
+    let spec = string_obj_to_owned(obj)?;
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("end") || trimmed.eq_ignore_ascii_case("last") {
+        return Some(len - 1);
+    }
+    if trimmed.eq_ignore_ascii_case("active") {
+        return active_index.filter(|idx| *idx < len);
+    }
+    if trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    trimmed
+        .parse::<i64>()
+        .ok()
+        .map(|value| clamp_index_i64(value, len - 1))
+}
+
+fn parse_menu_insert_index_bits(bits: u64, len: usize) -> Option<usize> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = to_i64(obj) {
+        return Some(clamp_index_i64(value, len));
+    }
+    let spec = string_obj_to_owned(obj)?;
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("end") {
+        return Some(len);
+    }
+    trimmed
+        .parse::<i64>()
+        .ok()
+        .map(|value| clamp_index_i64(value, len))
+}
+
+fn menu_item_type_supported(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "cascade" | "checkbutton" | "command" | "radiobutton" | "separator"
+    )
+}
+
+fn parse_command_words(command: &str) -> Vec<String> {
+    let parsed = parse_tcl_script_commands(command);
+    if let Some(first) = parsed.into_iter().find(|words| !words.is_empty()) {
+        return first;
+    }
+    vec![command.to_string()]
+}
+
+fn run_tk_word_commands(
+    py: &PyToken<'_>,
+    handle: i64,
+    commands: &[Vec<String>],
+) -> Result<(), u64> {
+    for words in commands {
+        let out_bits = call_tk_command_from_strings(py, handle, words)?;
+        release_result_bits(py, out_bits);
+    }
+    Ok(())
 }
 
 fn parse_entry_like_index_bits(
@@ -3716,12 +4081,10 @@ fn invoke_trace_callbacks(
 ) -> Result<(), u64> {
     let index_text = index.unwrap_or("");
     for (callback_name, op_name) in callbacks {
-        let argv = vec![
-            callback_name.clone(),
-            variable_name.to_string(),
-            index_text.to_string(),
-            op_name.clone(),
-        ];
+        let mut argv = trace_callback_command_words(callback_name.as_str());
+        argv.push(variable_name.to_string());
+        argv.push(index_text.to_string());
+        argv.push(op_name.clone());
         let out_bits = call_tk_command_from_strings(py, handle, &argv)?;
         if !obj_from_bits(out_bits).is_none() {
             dec_ref_bits(py, out_bits);
@@ -3729,6 +4092,14 @@ fn invoke_trace_callbacks(
     }
     clear_last_error(handle);
     Ok(())
+}
+
+fn trace_callback_command_words(callback_name: &str) -> Vec<String> {
+    let parsed = parse_tcl_script_commands(callback_name);
+    if parsed.len() == 1 && !parsed[0].is_empty() {
+        return parsed.into_iter().next().unwrap_or_default();
+    }
+    vec![callback_name.to_string()]
 }
 
 fn handle_set_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
@@ -3998,14 +4369,8 @@ fn handle_after_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
         }
         "info" => {
             if args.len() == 2 {
-                let mut tokens: Vec<String> = app.after_command_tokens.keys().cloned().collect();
-                sort_after_info_tokens(&mut tokens);
                 app.last_error = None;
-                return alloc_tuple_from_strings(
-                    py,
-                    tokens.as_slice(),
-                    "failed to allocate after info tuple",
-                );
+                return alloc_after_info_all(py, app);
             }
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
@@ -4015,28 +4380,14 @@ fn handle_after_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 ));
             }
             let token = get_string_arg(py, handle, args[2], "after info token")?;
-            let Some(command_name) = lookup_after_command_for_token(app, &token) else {
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("event \"{token}\" doesn't exist"),
-                ));
-            };
-            let kind = lookup_after_kind_for_token(app, &token).unwrap_or_else(|| {
-                if command_name.starts_with("::__molt_after_callback_") {
-                    "timer".to_string()
-                } else {
-                    "idle".to_string()
-                }
-            });
             app.last_error = None;
-            let info = [command_name.to_string(), kind.to_string()];
-            alloc_tuple_from_strings(py, &info, "failed to allocate after info token tuple")
+            alloc_after_info_token(py, app, token.as_str())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad after option \"{subcommand}\": must be cancel, idle, or info"),
+        )),
     }
 }
 
@@ -4723,10 +5074,11 @@ fn handle_event_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
             app.last_error = None;
             alloc_tuple_from_strings(py, sequences.as_slice(), "failed to allocate event tuple")
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad event option \"{subcommand}\": must be add, delete, generate, or info"),
+        )),
     }
 }
 
@@ -4986,15 +5338,7 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 }
             };
             let callback_name = get_string_arg(py, handle, args[5], "trace callback")?;
-            if let Some(registrations) = app.traces.get_mut(&variable_name) {
-                registrations.retain(|registration| {
-                    !(registration.mode_name == mode_name
-                        && registration.callback_name == callback_name)
-                });
-                if registrations.is_empty() {
-                    app.traces.remove(&variable_name);
-                }
-            }
+            remove_trace_registration(py, app, &variable_name, &mode_name, &callback_name);
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
@@ -5075,10 +5419,11 @@ fn handle_focus_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                     app.last_error = None;
                     alloc_string_bits(py, &value)
                 }
-                _ => {
-                    app.last_error = None;
-                    Ok(MoltObject::none().bits())
-                }
+                _ => Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("bad focus option \"{op}\": must be -displayof, -force, or -lastfor"),
+                )),
             }
         }
         _ => Err(app_tcl_error_locked(
@@ -5197,10 +5542,11 @@ fn handle_grab_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u6
             app.last_error = None;
             alloc_string_bits(py, status)
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad grab option \"{subcommand}\": must be current, release, set, or status"),
+        )),
     }
 }
 
@@ -5248,10 +5594,11 @@ fn handle_clipboard_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
             app.last_error = None;
             alloc_string_bits(py, &app.clipboard_text)
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad clipboard option \"{subcommand}\": must be append, clear, or get"),
+        )),
     }
 }
 
@@ -5302,10 +5649,11 @@ fn handle_selection_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad selection option \"{subcommand}\": must be clear, get, handle, or own"),
+        )),
     }
 }
 
@@ -5592,10 +5940,11 @@ fn handle_geometry_command(
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad {manager} option \"{subcommand}\""),
+        )),
     }
 }
 
@@ -6998,10 +7347,11 @@ fn handle_image_instance_command(
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("unknown image subcommand \"{subcommand}\" for image \"{image_name}\""),
+        )),
     }
 }
 
@@ -7341,10 +7691,11 @@ fn handle_tix_form_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resul
             app.last_error = None;
             alloc_tuple_from_strings(py, slaves.as_slice(), "failed to allocate tixForm slaves")
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad tixForm option \"{subcommand}\""),
+        )),
     }
 }
 
@@ -7419,10 +7770,11 @@ fn handle_option_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad option option \"{subcommand}\": must be add, clear, get, or readfile"),
+        )),
     }
 }
 
@@ -7466,10 +7818,11 @@ fn handle_tk_global_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("unknown tk command \"{command}\""),
+        )),
     }
 }
 
@@ -7844,10 +8197,13 @@ fn handle_ttk_style_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
                         "failed to allocate ttk style element option tuple",
                     )
                 }
-                _ => {
-                    app.last_error = None;
-                    Ok(MoltObject::none().bits())
-                }
+                _ => Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!(
+                        "bad ttk::style element option \"{element_subcommand}\": must be create, names, or options"
+                    ),
+                )),
             }
         }
         "theme" => {
@@ -7926,16 +8282,22 @@ fn handle_ttk_style_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
                     app.last_error = None;
                     Ok(MoltObject::none().bits())
                 }
-                _ => {
-                    app.last_error = None;
-                    Ok(MoltObject::none().bits())
-                }
+                _ => Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!(
+                        "bad ttk::style theme option \"{theme_subcommand}\": must be create, names, settings, or use"
+                    ),
+                )),
             }
         }
-        _ => {
-            app.last_error = None;
-            Ok(MoltObject::none().bits())
-        }
+        _ => Err(app_tcl_error_locked(
+            py,
+            app,
+            format!(
+                "bad ttk::style option \"{style_subcommand}\": must be configure, element, layout, lookup, map, or theme"
+            ),
+        )),
     }
 }
 
@@ -7991,6 +8353,13 @@ fn handle_treeview_widget_path_command(
     let Some(treeview) = widget.treeview.as_mut() else {
         return Ok(None);
     };
+    if treeview_subcommand_is_noop_generic_fallback(subcommand) {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            unknown_widget_subcommand_message(widget_path, subcommand),
+        ));
+    }
 
     match subcommand {
         "bbox" => {
@@ -8002,19 +8371,38 @@ fn handle_treeview_widget_path_command(
                 ));
             }
             let item_id = get_string_arg(py, handle, args[2], "treeview item")?;
-            if treeview.items.contains_key(&item_id) {
-                let bbox = vec![
-                    "1".to_string(),
-                    "2".to_string(),
-                    "3".to_string(),
-                    "4".to_string(),
-                ];
+            if !treeview.items.contains_key(&item_id) {
                 app.last_error = None;
-                return alloc_tuple_from_strings(py, &bbox, "failed to allocate treeview bbox")
-                    .map(Some);
+                return alloc_string_bits(py, "").map(Some);
             }
+            let visible = treeview_visible_items(treeview);
+            let Some(row_index) = visible.iter().position(|candidate| candidate == &item_id) else {
+                app.last_error = None;
+                return alloc_string_bits(py, "").map(Some);
+            };
+            let x = if args.len() == 4 {
+                let column = get_string_arg(py, handle, args[3], "treeview bbox column")?;
+                let Some(offset) = parse_treeview_column_offset(&column) else {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("invalid column index \"{column}\""),
+                    ));
+                };
+                offset
+            } else {
+                0
+            };
+            let y = (row_index as i64) * 20;
+            let bbox = vec![
+                x.to_string(),
+                y.to_string(),
+                "120".to_string(),
+                "20".to_string(),
+            ];
             app.last_error = None;
-            return alloc_string_bits(py, "").map(Some);
+            return alloc_tuple_from_strings(py, &bbox, "failed to allocate treeview bbox")
+                .map(Some);
         }
         "children" => {
             if args.len() != 3 && args.len() != 4 {
@@ -8128,7 +8516,19 @@ fn handle_treeview_widget_path_command(
             let column = get_string_arg(py, handle, args[2], "treeview column")?;
             let options = treeview.columns.entry(column).or_default();
             if args.len() == 4 {
-                let opt = get_string_arg(py, handle, args[3], "treeview column option")?;
+                let opt = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[3],
+                    "treeview column option",
+                )?);
+                if !option_allowed(opt.as_str(), TREEVIEW_COLUMN_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{opt}\""),
+                    ));
+                }
                 let bits = options
                     .get(&opt)
                     .copied()
@@ -8149,7 +8549,19 @@ fn handle_treeview_widget_path_command(
                 ));
             }
             for idx in (3..args.len()).step_by(2) {
-                let option = get_string_arg(py, handle, args[idx], "treeview column option")?;
+                let option = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[idx],
+                    "treeview column option",
+                )?);
+                if !option_allowed(option.as_str(), TREEVIEW_COLUMN_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{option}\""),
+                    ));
+                }
                 value_map_set_bits(py, options, option, args[idx + 1]);
             }
             app.last_error = None;
@@ -8262,7 +8674,19 @@ fn handle_treeview_widget_path_command(
             let column = get_string_arg(py, handle, args[2], "treeview heading column")?;
             let options = treeview.headings.entry(column).or_default();
             if args.len() == 4 {
-                let opt = get_string_arg(py, handle, args[3], "treeview heading option")?;
+                let opt = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[3],
+                    "treeview heading option",
+                )?);
+                if !option_allowed(opt.as_str(), TREEVIEW_HEADING_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{opt}\""),
+                    ));
+                }
                 let bits = options
                     .get(&opt)
                     .copied()
@@ -8283,7 +8707,19 @@ fn handle_treeview_widget_path_command(
                 ));
             }
             for idx in (3..args.len()).step_by(2) {
-                let option = get_string_arg(py, handle, args[idx], "treeview heading option")?;
+                let option = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[idx],
+                    "treeview heading option",
+                )?);
+                if !option_allowed(option.as_str(), TREEVIEW_HEADING_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{option}\""),
+                    ));
+                }
                 value_map_set_bits(py, options, option, args[idx + 1]);
             }
             app.last_error = None;
@@ -8298,12 +8734,43 @@ fn handle_treeview_widget_path_command(
                 ));
             }
             let component = get_string_arg(py, handle, args[2], "treeview identify component")?;
+            let x = parse_i64_arg(py, handle, args[3], "treeview identify x")?;
+            let y = parse_i64_arg(py, handle, args[4], "treeview identify y")?;
+            let hit_item = treeview_hit_item_by_y(treeview, y);
             let result = match component.as_str() {
-                "row" => treeview.root_children.first().cloned().unwrap_or_default(),
-                "column" => "#0".to_string(),
-                "region" => "cell".to_string(),
-                "element" => "text".to_string(),
-                _ => String::new(),
+                "row" | "item" => hit_item.clone().unwrap_or_default(),
+                "column" => {
+                    if x < 0 {
+                        String::new()
+                    } else {
+                        format!("#{}", x / 120)
+                    }
+                }
+                "region" => {
+                    if y < 0 {
+                        "heading".to_string()
+                    } else if hit_item.is_some() {
+                        "cell".to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                "element" => {
+                    if hit_item.is_some() {
+                        "text".to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!(
+                            "bad identify component \"{component}\": must be column, element, item, region, or row"
+                        ),
+                    ));
+                }
             };
             app.last_error = None;
             return alloc_string_bits(py, &result).map(Some);
@@ -8366,8 +8833,12 @@ fn handle_treeview_widget_path_command(
             let mut item_id: Option<String> = None;
             let mut item_options: HashMap<String, u64> = HashMap::new();
             for idx in (4..args.len()).step_by(2) {
-                let option_name =
-                    get_string_arg(py, handle, args[idx], "treeview insert option name")?;
+                let option_name = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[idx],
+                    "treeview insert option name",
+                )?);
                 let value_bits = args[idx + 1];
                 if option_name == "-id" {
                     item_id = Some(get_string_arg(
@@ -8377,6 +8848,14 @@ fn handle_treeview_widget_path_command(
                         "treeview inserted item id",
                     )?);
                     continue;
+                }
+                if !option_allowed(option_name.as_str(), TREEVIEW_ITEM_OPTIONS) {
+                    clear_value_map_refs(py, &mut item_options);
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{option_name}\""),
+                    ));
                 }
                 value_map_set_bits(py, &mut item_options, option_name, value_bits);
             }
@@ -8403,7 +8882,14 @@ fn handle_treeview_widget_path_command(
                     .map(|item| item.children.len())
                     .unwrap_or(0)
             };
-            let index = parse_treeview_index(&index_spec, sibling_len);
+            let Some(index) = parse_treeview_index_strict(&index_spec, sibling_len) else {
+                clear_value_map_refs(py, &mut item_options);
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("treeview index \"{index_spec}\" must be an integer or end"),
+                ));
+            };
             treeview_insert_into_parent(treeview, &parent, index, resolved_item_id.clone());
             treeview.items.insert(
                 resolved_item_id.clone(),
@@ -8454,7 +8940,19 @@ fn handle_treeview_widget_path_command(
                 return out.map(Some);
             }
             if args.len() == 4 {
-                let option = get_string_arg(py, handle, args[3], "treeview item option")?;
+                let option = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[3],
+                    "treeview item option",
+                )?);
+                if !option_allowed(option.as_str(), TREEVIEW_ITEM_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{option}\""),
+                    ));
+                }
                 let bits = item
                     .options
                     .get(&option)
@@ -8476,7 +8974,19 @@ fn handle_treeview_widget_path_command(
                 ));
             }
             for idx in (3..args.len()).step_by(2) {
-                let option = get_string_arg(py, handle, args[idx], "treeview item option")?;
+                let option = normalize_widget_option_name(&get_string_arg(
+                    py,
+                    handle,
+                    args[idx],
+                    "treeview item option",
+                )?);
+                if !option_allowed(option.as_str(), TREEVIEW_ITEM_OPTIONS) {
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!("unknown option \"{option}\""),
+                    ));
+                }
                 value_map_set_bits(py, &mut item.options, option, args[idx + 1]);
             }
             app.last_error = None;
@@ -8531,7 +9041,13 @@ fn handle_treeview_widget_path_command(
                     .map(|item| item.children.len())
                     .unwrap_or(0)
             };
-            let index = parse_treeview_index(&index_spec, sibling_len);
+            let Some(index) = parse_treeview_index_strict(&index_spec, sibling_len) else {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("treeview index \"{index_spec}\" must be an integer or end"),
+                ));
+            };
             if let Some(item) = treeview.items.get_mut(&item_id) {
                 item.parent = parent.clone();
             }
@@ -8601,6 +9117,14 @@ fn handle_treeview_widget_path_command(
             if args.len() != 3 {
                 return Err(raise_tcl_for_handle(py, handle, "see expects an item id"));
             }
+            let item_id = get_string_arg(py, handle, args[2], "treeview item id")?;
+            if !treeview.items.contains_key(&item_id) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{item_id}\" not found"),
+                ));
+            }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
         }
@@ -8634,12 +9158,19 @@ fn handle_treeview_widget_path_command(
                     )?);
                 }
             }
+            if let Some(missing_item) = first_missing_treeview_item(treeview, &items) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("item \"{missing_item}\" not found"),
+                ));
+            }
             match op.as_str() {
                 "set" => {
                     treeview.selection.clear();
                     let mut selected: HashSet<String> = HashSet::with_capacity(items.len());
                     for item in items {
-                        if treeview.items.contains_key(&item) && selected.insert(item.clone()) {
+                        if selected.insert(item.clone()) {
                             treeview.selection.push(item);
                         }
                     }
@@ -8648,7 +9179,7 @@ fn handle_treeview_widget_path_command(
                     let mut selected: HashSet<String> =
                         treeview.selection.iter().cloned().collect();
                     for item in items {
-                        if treeview.items.contains_key(&item) && selected.insert(item.clone()) {
+                        if selected.insert(item.clone()) {
                             treeview.selection.push(item);
                         }
                     }
@@ -8669,7 +9200,7 @@ fn handle_treeview_widget_path_command(
                     for item in items {
                         if selected.remove(&item) {
                             remove_set.insert(item);
-                        } else if treeview.items.contains_key(&item) {
+                        } else {
                             selected.insert(item.clone());
                             add_items.push(item);
                         }
@@ -8682,8 +9213,13 @@ fn handle_treeview_widget_path_command(
                     treeview.selection.extend(add_items);
                 }
                 _ => {
-                    app.last_error = None;
-                    return Ok(Some(MoltObject::none().bits()));
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!(
+                            "bad selection operation \"{op}\": must be add, remove, set, or toggle"
+                        ),
+                    ));
                 }
             }
             app.last_error = None;
@@ -8763,9 +9299,24 @@ fn handle_treeview_widget_path_command(
                     if args.len() == 6 {
                         let sequence =
                             get_string_arg(py, handle, args[4], "treeview tag bind sequence")?;
-                        let script =
+                        let mut script =
                             get_string_arg(py, handle, args[5], "treeview tag bind script")?;
-                        tag_state.bindings.insert(sequence, script);
+                        if script.starts_with('+') {
+                            script = if let Some(previous) = tag_state.bindings.get(&sequence) {
+                                if previous.trim().is_empty() {
+                                    script
+                                } else {
+                                    format!("{previous}\n{script}")
+                                }
+                            } else {
+                                script
+                            };
+                        }
+                        if script.is_empty() {
+                            tag_state.bindings.remove(&sequence);
+                        } else {
+                            tag_state.bindings.insert(sequence, script);
+                        }
                         app.last_error = None;
                         return Ok(Some(MoltObject::none().bits()));
                     }
@@ -8798,11 +9349,27 @@ fn handle_treeview_widget_path_command(
                     let tag_state = treeview.tags.entry(tagname).or_default();
                     if args.len() == 4 {
                         app.last_error = None;
-                        return Ok(Some(MoltObject::none().bits()));
+                        return option_map_to_tuple(
+                            py,
+                            &tag_state.options,
+                            "failed to allocate treeview tag option tuple",
+                        )
+                        .map(Some);
                     }
                     if args.len() == 5 {
-                        let option =
-                            get_string_arg(py, handle, args[4], "treeview tag configure option")?;
+                        let option = parse_widget_option_name_arg(
+                            py,
+                            handle,
+                            args[4],
+                            "treeview tag configure option",
+                        )?;
+                        if !option_allowed(option.as_str(), TREEVIEW_TAG_OPTIONS) {
+                            return Err(raise_tcl_for_handle(
+                                py,
+                                handle,
+                                format!("unknown option \"{option}\""),
+                            ));
+                        }
                         let bits = tag_state
                             .options
                             .get(&option)
@@ -8824,7 +9391,19 @@ fn handle_treeview_widget_path_command(
                         ));
                     }
                     for idx in (4..args.len()).step_by(2) {
-                        let option = get_string_arg(py, handle, args[idx], "treeview tag option")?;
+                        let option = parse_widget_option_name_arg(
+                            py,
+                            handle,
+                            args[idx],
+                            "treeview tag option",
+                        )?;
+                        if !option_allowed(option.as_str(), TREEVIEW_TAG_OPTIONS) {
+                            return Err(raise_tcl_for_handle(
+                                py,
+                                handle,
+                                format!("unknown option \"{option}\""),
+                            ));
+                        }
                         value_map_set_bits(py, &mut tag_state.options, option, args[idx + 1]);
                     }
                     app.last_error = None;
@@ -8866,8 +9445,13 @@ fn handle_treeview_widget_path_command(
                     ));
                 }
                 _ => {
-                    app.last_error = None;
-                    return Ok(Some(MoltObject::none().bits()));
+                    return Err(raise_tcl_for_handle(
+                        py,
+                        handle,
+                        format!(
+                            "bad treeview tag operation \"{tag_op}\": must be bind, configure, or has"
+                        ),
+                    ));
                 }
             }
         }
@@ -8895,6 +9479,21 @@ fn handle_ttk_widget_path_command(
     if !widget.widget_command.starts_with("ttk::") {
         return Ok(None);
     }
+    let widget_command = widget.widget_command.as_str();
+    let is_ttk_entry = widget_command == "ttk::entry";
+    let is_ttk_combobox = widget_command == "ttk::combobox";
+    let is_ttk_spinbox = widget_command == "ttk::spinbox";
+    let is_ttk_progressbar = widget_command == "ttk::progressbar";
+    let is_ttk_notebook = widget_command == "ttk::notebook";
+    let is_ttk_panedwindow = widget_command == "ttk::panedwindow";
+    let supports_ttk_invoke = matches!(
+        widget_command,
+        "ttk::button" | "ttk::checkbutton" | "ttk::radiobutton" | "ttk::menubutton"
+    );
+    let supports_ttk_current = is_ttk_combobox || is_ttk_spinbox;
+    let supports_ttk_set = is_ttk_combobox || is_ttk_spinbox;
+    let supports_ttk_bbox = is_ttk_entry || is_ttk_combobox || is_ttk_spinbox;
+    let supports_ttk_validate = is_ttk_entry || is_ttk_combobox || is_ttk_spinbox;
 
     match subcommand {
         "state" => {
@@ -8968,6 +9567,13 @@ fn handle_ttk_widget_path_command(
             return alloc_string_bits(py, "element").map(Some);
         }
         "invoke" => {
+            if !supports_ttk_invoke {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -8979,6 +9585,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "current" => {
+            if !supports_ttk_current {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() == 2 {
                 if let Some(bits) = widget.ttk_values.get("-current").copied() {
                     inc_ref_bits(py, bits);
@@ -9012,20 +9625,18 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "set" => {
-            if args.len() == 2 {
-                if let Some(bits) = widget.ttk_values.get("-value").copied() {
-                    inc_ref_bits(py, bits);
-                    app.last_error = None;
-                    return Ok(Some(bits));
-                }
-                app.last_error = None;
-                return alloc_string_bits(py, "").map(Some);
+            if !supports_ttk_set {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
             }
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
                     app,
-                    "set expects optional value argument",
+                    "set expects a value argument",
                 ));
             }
             value_map_set_bits(py, &mut widget.ttk_values, "-value".to_string(), args[2]);
@@ -9033,6 +9644,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "bbox" => {
+            if !supports_ttk_bbox {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9051,6 +9669,13 @@ fn handle_ttk_widget_path_command(
                 .map(Some);
         }
         "validate" => {
+            if !supports_ttk_validate {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9062,11 +9687,21 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::from_bool(true).bits()));
         }
         "get" => {
-            if args.len() != 2 && args.len() != 4 {
+            if is_ttk_entry {
+                return Ok(None);
+            }
+            if !supports_ttk_set {
                 return Err(app_tcl_error_locked(
                     py,
                     app,
-                    "get expects no coordinates or x/y coordinates",
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
+            if args.len() != 2 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "get expects no extra arguments",
                 ));
             }
             if let Some(bits) = widget.ttk_values.get("-value").copied() {
@@ -9078,6 +9713,13 @@ fn handle_ttk_widget_path_command(
             return alloc_string_bits(py, "").map(Some);
         }
         "start" => {
+            if !is_ttk_progressbar {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 && args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9093,6 +9735,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "step" => {
+            if !is_ttk_progressbar {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 && args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9134,6 +9783,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "stop" => {
+            if !is_ttk_progressbar {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9150,6 +9806,13 @@ fn handle_ttk_widget_path_command(
 
     match subcommand {
         "add" => {
+            if !is_ttk_notebook && !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() < 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9162,11 +9825,26 @@ fn handle_ttk_widget_path_command(
                 widget.ttk_items.push(child.clone());
             }
             let option_pairs = parse_widget_option_pairs(py, handle, args, 3, "ttk item options")?;
+            let allowed_options = if is_ttk_notebook {
+                TTK_NOTEBOOK_TAB_OPTIONS
+            } else {
+                TTK_PANEDWINDOW_PANE_OPTIONS
+            };
+            for (option_name, _) in &option_pairs {
+                if !option_allowed(option_name.as_str(), allowed_options) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!("unknown option \"{option_name}\""),
+                    ));
+                }
+            }
             let item_options = widget.ttk_item_options.entry(child.clone()).or_default();
             for (option_name, value_bits) in option_pairs {
                 value_map_set_bits(py, item_options, option_name, value_bits);
             }
-            if !widget.ttk_values.contains_key("-selected")
+            if is_ttk_notebook
+                && !widget.ttk_values.contains_key("-selected")
                 && let Ok(child_bits) = alloc_string_bits(py, &child)
             {
                 value_map_set_bits(
@@ -9181,6 +9859,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "insert" => {
+            if !is_ttk_notebook && !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() < 4 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9191,14 +9876,36 @@ fn handle_ttk_widget_path_command(
             let index_spec = get_string_arg(py, handle, args[2], "ttk insert index")?;
             let child = get_string_arg(py, handle, args[3], "ttk child path")?;
             widget.ttk_items.retain(|existing| existing != &child);
-            let index = parse_treeview_index(&index_spec, widget.ttk_items.len());
+            let Some(index) = parse_ttk_insert_index_strict(&index_spec, widget.ttk_items.len())
+            else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("ttk insert index \"{index_spec}\" must be an integer or end"),
+                ));
+            };
             widget.ttk_items.insert(index, child.clone());
             let option_pairs = parse_widget_option_pairs(py, handle, args, 4, "ttk item options")?;
+            let allowed_options = if is_ttk_notebook {
+                TTK_NOTEBOOK_TAB_OPTIONS
+            } else {
+                TTK_PANEDWINDOW_PANE_OPTIONS
+            };
+            for (option_name, _) in &option_pairs {
+                if !option_allowed(option_name.as_str(), allowed_options) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!("unknown option \"{option_name}\""),
+                    ));
+                }
+            }
             let item_options = widget.ttk_item_options.entry(child.clone()).or_default();
             for (option_name, value_bits) in option_pairs {
                 value_map_set_bits(py, item_options, option_name, value_bits);
             }
-            if !widget.ttk_values.contains_key("-selected")
+            if is_ttk_notebook
+                && !widget.ttk_values.contains_key("-selected")
                 && let Ok(child_bits) = alloc_string_bits(py, &child)
             {
                 value_map_set_bits(
@@ -9213,6 +9920,20 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "forget" | "hide" => {
+            if subcommand == "hide" && !is_ttk_notebook {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
+            if subcommand == "forget" && !is_ttk_notebook && !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9221,30 +9942,51 @@ fn handle_ttk_widget_path_command(
                 ));
             }
             let child = get_string_arg(py, handle, args[2], "ttk child path")?;
+            if !widget.ttk_items.iter().any(|existing| existing == &child) {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("{subcommand} \"{child}\" is not managed by {widget_path}"),
+                ));
+            }
             widget.ttk_items.retain(|existing| existing != &child);
             if subcommand == "forget"
                 && let Some(mut old_options) = widget.ttk_item_options.remove(&child)
             {
                 clear_value_map_refs(py, &mut old_options);
             }
-            let selected_child = widget
-                .ttk_values
-                .get("-selected")
-                .and_then(|bits| string_obj_to_owned(obj_from_bits(*bits)));
-            if selected_child.as_deref() == Some(child.as_str()) {
-                if let Some(next_selected) = widget.ttk_items.first()
-                    && let Ok(bits) = alloc_string_bits(py, next_selected)
-                {
-                    value_map_set_bits(py, &mut widget.ttk_values, "-selected".to_string(), bits);
-                    dec_ref_bits(py, bits);
-                } else if let Some(old_bits) = widget.ttk_values.remove("-selected") {
-                    dec_ref_bits(py, old_bits);
+            if is_ttk_notebook {
+                let selected_child = widget
+                    .ttk_values
+                    .get("-selected")
+                    .and_then(|bits| string_obj_to_owned(obj_from_bits(*bits)));
+                if selected_child.as_deref() == Some(child.as_str()) {
+                    if let Some(next_selected) = widget.ttk_items.first()
+                        && let Ok(bits) = alloc_string_bits(py, next_selected)
+                    {
+                        value_map_set_bits(
+                            py,
+                            &mut widget.ttk_values,
+                            "-selected".to_string(),
+                            bits,
+                        );
+                        dec_ref_bits(py, bits);
+                    } else if let Some(old_bits) = widget.ttk_values.remove("-selected") {
+                        dec_ref_bits(py, old_bits);
+                    }
                 }
             }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
         }
         "index" => {
+            if !is_ttk_notebook {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9253,24 +9995,26 @@ fn handle_ttk_widget_path_command(
                 ));
             }
             let target = get_string_arg(py, handle, args[2], "ttk tab identifier")?;
-            let idx = if target.eq_ignore_ascii_case("end") {
-                widget.ttk_items.len() as i64
-            } else if let Ok(parsed) = target.parse::<i64>() {
-                parsed
-            } else if let Some(position) = widget.ttk_items.iter().position(|item| item == &target)
-            {
-                position as i64
-            } else {
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("invalid tab identifier \"{target}\""),
-                ));
-            };
+            let idx =
+                if let Some(position) = widget.ttk_items.iter().position(|item| item == &target) {
+                    position as i64
+                } else {
+                    match parse_notebook_index_strict(&target, widget.ttk_items.len()) {
+                        Ok(value) => value,
+                        Err(message) => return Err(app_tcl_error_locked(py, app, message)),
+                    }
+                };
             app.last_error = None;
             return Ok(Some(MoltObject::from_int(idx).bits()));
         }
         "select" => {
+            if !is_ttk_notebook {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() == 2 {
                 if let Some(bits) = widget.ttk_values.get("-selected").copied() {
                     inc_ref_bits(py, bits);
@@ -9307,6 +10051,20 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "tab" | "pane" => {
+            if subcommand == "tab" && !is_ttk_notebook {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
+            if subcommand == "pane" && !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() < 3 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9315,6 +10073,18 @@ fn handle_ttk_widget_path_command(
                 ));
             }
             let item_id = get_string_arg(py, handle, args[2], "ttk item id")?;
+            if !widget.ttk_items.iter().any(|existing| existing == &item_id) {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("{subcommand} \"{item_id}\" is not managed by {widget_path}"),
+                ));
+            }
+            let allowed_options = if subcommand == "tab" {
+                TTK_NOTEBOOK_TAB_OPTIONS
+            } else {
+                TTK_PANEDWINDOW_PANE_OPTIONS
+            };
             let item_options = widget.ttk_item_options.entry(item_id).or_default();
             if args.len() == 3 {
                 app.last_error = None;
@@ -9328,10 +10098,26 @@ fn handle_ttk_widget_path_command(
             if args.len() == 4 {
                 let option_name =
                     parse_widget_option_name_arg(py, handle, args[3], "ttk option name")?;
+                if !option_allowed(option_name.as_str(), allowed_options) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!("unknown option \"{option_name}\""),
+                    ));
+                }
                 app.last_error = None;
                 return option_map_query_or_empty(py, item_options, &option_name).map(Some);
             }
             let option_pairs = parse_widget_option_pairs(py, handle, args, 3, "ttk item options")?;
+            for (option_name, _) in &option_pairs {
+                if !option_allowed(option_name.as_str(), allowed_options) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!("unknown option \"{option_name}\""),
+                    ));
+                }
+            }
             for (option_name, value_bits) in option_pairs {
                 value_map_set_bits(py, item_options, option_name, value_bits);
             }
@@ -9339,6 +10125,13 @@ fn handle_ttk_widget_path_command(
             return Ok(Some(MoltObject::none().bits()));
         }
         "tabs" => {
+            if !is_ttk_notebook {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 2 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9354,7 +10147,37 @@ fn handle_ttk_widget_path_command(
             )
             .map(Some);
         }
+        "panes" => {
+            if !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
+            if args.len() != 2 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "panes expects no extra arguments",
+                ));
+            }
+            app.last_error = None;
+            return alloc_tuple_from_strings(
+                py,
+                widget.ttk_items.as_slice(),
+                "failed to allocate ttk panes tuple",
+            )
+            .map(Some);
+        }
         "sashpos" => {
+            if !is_ttk_panedwindow {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
             if args.len() != 3 && args.len() != 4 {
                 return Err(app_tcl_error_locked(
                     py,
@@ -9449,6 +10272,108 @@ fn clamp_text_widget_indices(widget: &mut TkWidgetState) {
     }
 }
 
+fn listbox_shift_item_options_for_insert(
+    widget: &mut TkWidgetState,
+    insert_index: usize,
+    inserted_count: usize,
+) {
+    if inserted_count == 0 || widget.list_item_options.is_empty() {
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(widget.list_item_options.len());
+    for (index, options) in widget.list_item_options.drain() {
+        let target = if index >= insert_index {
+            index.saturating_add(inserted_count)
+        } else {
+            index
+        };
+        shifted.insert(target, options);
+    }
+    widget.list_item_options = shifted;
+    if let Some(active_index) = widget.list_active_index
+        && active_index >= insert_index
+    {
+        widget.list_active_index = Some(active_index.saturating_add(inserted_count));
+    }
+}
+
+fn listbox_reindex_item_options_after_delete(
+    py: &PyToken<'_>,
+    widget: &mut TkWidgetState,
+    first: usize,
+    end: usize,
+) {
+    if first > end {
+        return;
+    }
+    let removed_count = end - first + 1;
+    if widget.list_item_options.is_empty() {
+        if let Some(active_index) = widget.list_active_index {
+            widget.list_active_index = if active_index < first {
+                Some(active_index)
+            } else if active_index > end {
+                Some(active_index - removed_count)
+            } else {
+                None
+            };
+        }
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(widget.list_item_options.len());
+    for (index, mut options) in widget.list_item_options.drain() {
+        if index < first {
+            shifted.insert(index, options);
+            continue;
+        }
+        if index > end {
+            shifted.insert(index - removed_count, options);
+            continue;
+        }
+        clear_value_map_refs(py, &mut options);
+    }
+    widget.list_item_options = shifted;
+    if let Some(active_index) = widget.list_active_index {
+        widget.list_active_index = if active_index < first {
+            Some(active_index)
+        } else if active_index > end {
+            Some(active_index - removed_count)
+        } else {
+            None
+        };
+    }
+}
+
+fn ensure_text_tag_order_entry(widget: &mut TkWidgetState, tag_name: &str) {
+    if !widget
+        .text_tag_order
+        .iter()
+        .any(|existing| existing == tag_name)
+    {
+        widget.text_tag_order.push(tag_name.to_string());
+    }
+}
+
+fn normalize_text_tag_ranges(ranges: &mut Vec<(usize, usize)>) {
+    ranges.retain(|(start, end)| end > start);
+    ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    if ranges.is_empty() {
+        return;
+    }
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges.iter().copied() {
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            if end > last.1 {
+                last.1 = end;
+            }
+            continue;
+        }
+        merged.push((start, end));
+    }
+    *ranges = merged;
+}
+
 fn handle_generic_widget_path_command(
     py: &PyToken<'_>,
     handle: i64,
@@ -9471,6 +10396,65 @@ fn handle_generic_widget_path_command(
             widget.next_item_id += 1;
             app.last_error = None;
             return Ok(Some(MoltObject::from_int(widget.next_item_id).bits()));
+        }
+        "add" => {
+            if widget.widget_command == "menu" {
+                if args.len() < 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu add expects item type and optional key/value pairs",
+                    ));
+                }
+                let item_type =
+                    get_string_arg(py, handle, args[2], "menu item type")?.to_ascii_lowercase();
+                if !menu_item_type_supported(&item_type) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!(
+                            "bad menu entry type \"{item_type}\": must be cascade, checkbutton, command, radiobutton, or separator"
+                        ),
+                    ));
+                }
+                let option_pairs =
+                    parse_widget_option_pairs(py, handle, args, 3, "menu add options")?;
+                let mut entry = TkMenuEntryState {
+                    item_type,
+                    ..TkMenuEntryState::default()
+                };
+                for (option_name, value_bits) in option_pairs {
+                    value_map_set_bits(py, &mut entry.options, option_name, value_bits);
+                }
+                widget.menu_entries.push(entry);
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            if widget.widget_command == "panedwindow" {
+                if args.len() < 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "panedwindow add expects child path and optional key/value pairs",
+                    ));
+                }
+                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
+                if !widget
+                    .pane_children
+                    .iter()
+                    .any(|existing| existing == &child)
+                {
+                    widget.pane_children.push(child.clone());
+                }
+                let option_pairs =
+                    parse_widget_option_pairs(py, handle, args, 3, "panedwindow pane options")?;
+                let pane_options = widget.pane_child_options.entry(child).or_default();
+                for (option_name, value_bits) in option_pairs {
+                    value_map_set_bits(py, pane_options, option_name, value_bits);
+                }
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
         }
         "insert" => {
             if widget.widget_command == "listbox" {
@@ -9508,6 +10492,80 @@ fn handle_generic_widget_path_command(
                     }
                     widget.list_selection = shifted;
                 }
+                listbox_shift_item_options_for_insert(
+                    widget,
+                    original_insert_index,
+                    inserted_count,
+                );
+            } else if widget.widget_command == "menu" {
+                if args.len() < 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu insert expects index, item type, and optional key/value pairs",
+                    ));
+                }
+                let Some(index) = parse_menu_insert_index_bits(args[2], widget.menu_entries.len())
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu insert index must be an integer or end",
+                    ));
+                };
+                let item_type =
+                    get_string_arg(py, handle, args[3], "menu item type")?.to_ascii_lowercase();
+                if !menu_item_type_supported(&item_type) {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        format!(
+                            "bad menu entry type \"{item_type}\": must be cascade, checkbutton, command, radiobutton, or separator"
+                        ),
+                    ));
+                }
+                let option_pairs =
+                    parse_widget_option_pairs(py, handle, args, 4, "menu insert options")?;
+                let mut entry = TkMenuEntryState {
+                    item_type,
+                    ..TkMenuEntryState::default()
+                };
+                for (option_name, value_bits) in option_pairs {
+                    value_map_set_bits(py, &mut entry.options, option_name, value_bits);
+                }
+                widget.menu_entries.insert(index, entry);
+                if let Some(active_index) = widget.menu_active_index
+                    && active_index >= index
+                {
+                    widget.menu_active_index = Some(active_index + 1);
+                }
+            } else if widget.widget_command == "panedwindow" {
+                if args.len() < 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "panedwindow insert expects index, child path, and optional key/value pairs",
+                    ));
+                }
+                let Some(index) =
+                    parse_simple_end_or_int_index_bits(args[2], widget.pane_children.len())
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "panedwindow insert index must be an integer or end",
+                    ));
+                };
+                let child = get_string_arg(py, handle, args[3], "panedwindow child path")?;
+                widget.pane_children.retain(|existing| existing != &child);
+                let insert_index = index.min(widget.pane_children.len());
+                widget.pane_children.insert(insert_index, child.clone());
+                let option_pairs =
+                    parse_widget_option_pairs(py, handle, args, 4, "panedwindow pane options")?;
+                let pane_options = widget.pane_child_options.entry(child).or_default();
+                for (option_name, value_bits) in option_pairs {
+                    value_map_set_bits(py, pane_options, option_name, value_bits);
+                }
             } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox")
                 && args.len() > 3
             {
@@ -9540,6 +10598,9 @@ fn handle_generic_widget_path_command(
                 widget.text_value.insert_str(byte_index, &value);
                 widget.insert_cursor = insert_index.saturating_add(text_char_count(&value));
                 clamp_text_widget_indices(widget);
+                if widget.widget_command == "text" {
+                    widget.text_edit_modified = true;
+                }
             }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
@@ -9593,6 +10654,58 @@ fn handle_generic_widget_path_command(
                             }
                             widget.list_selection = shifted;
                         }
+                        listbox_reindex_item_options_after_delete(py, widget, first, end);
+                    }
+                }
+            } else if widget.widget_command == "menu" {
+                if args.len() != 3 && args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu delete expects first index and optional last index",
+                    ));
+                }
+                let Some(first) = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu delete first index must resolve to an existing entry",
+                    ));
+                };
+                let last = if args.len() == 4 {
+                    let Some(last) = parse_menu_existing_index_bits(
+                        args[3],
+                        widget.menu_entries.len(),
+                        widget.menu_active_index,
+                    ) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "menu delete last index must resolve to an existing entry",
+                        ));
+                    };
+                    last
+                } else {
+                    first
+                };
+                let end = last.max(first);
+                if end < widget.menu_entries.len() {
+                    let removed_count = end - first + 1;
+                    for mut entry in widget.menu_entries.drain(first..=end) {
+                        clear_value_map_refs(py, &mut entry.options);
+                    }
+                    if let Some(active_index) = widget.menu_active_index {
+                        widget.menu_active_index = if active_index < first {
+                            Some(active_index)
+                        } else if active_index > end {
+                            Some(active_index - removed_count)
+                        } else {
+                            None
+                        };
                     }
                 }
             } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
@@ -9663,6 +10776,9 @@ fn handle_generic_widget_path_command(
                 widget.insert_cursor = start;
                 widget.selection_range = None;
                 clamp_text_widget_indices(widget);
+                if widget.widget_command == "text" {
+                    widget.text_edit_modified = true;
+                }
             }
             app.last_error = None;
             return Ok(Some(MoltObject::none().bits()));
@@ -9764,6 +10880,238 @@ fn handle_generic_widget_path_command(
             app.last_error = None;
             return Ok(Some(MoltObject::from_int(value).bits()));
         }
+        "forget" => {
+            if widget.widget_command == "panedwindow" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "panedwindow forget expects exactly one child path",
+                    ));
+                }
+                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
+                widget.pane_children.retain(|existing| existing != &child);
+                if let Some(mut options) = widget.pane_child_options.remove(&child) {
+                    clear_value_map_refs(py, &mut options);
+                }
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+        }
+        "replace" => {
+            if widget.widget_command == "text" {
+                if args.len() < 5 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text replace expects index1, index2, and replacement text",
+                    ));
+                }
+                let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text replace start index must be an integer, end, or line.column",
+                    ));
+                };
+                let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text replace end index must be an integer, end, or line.column",
+                    ));
+                };
+                let replacement = get_text_arg(py, handle, args[4], "text replace chars")?;
+                let replace_start = start.min(end);
+                let replace_end = start.max(end);
+                let start_byte = char_index_to_byte_index(&widget.text_value, replace_start);
+                let end_byte = char_index_to_byte_index(&widget.text_value, replace_end);
+                widget
+                    .text_value
+                    .replace_range(start_byte..end_byte, replacement.as_str());
+                widget.insert_cursor = replace_start.saturating_add(text_char_count(&replacement));
+                widget.selection_range = None;
+                widget.text_edit_modified = true;
+                clamp_text_widget_indices(widget);
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+        }
+        "edit" => {
+            if widget.widget_command == "text" {
+                if args.len() < 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text edit expects a subcommand",
+                    ));
+                }
+                let op = get_string_arg(py, handle, args[2], "text edit subcommand")?;
+                match op.as_str() {
+                    "modified" => {
+                        if args.len() == 3 {
+                            app.last_error = None;
+                            return Ok(Some(
+                                MoltObject::from_bool(widget.text_edit_modified).bits(),
+                            ));
+                        }
+                        if args.len() != 4 {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "text edit modified expects optional boolean argument",
+                            ));
+                        }
+                        let value = parse_bool_arg(py, handle, args[3], "text edit modified flag")?;
+                        widget.text_edit_modified = value;
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "reset" => {
+                        if args.len() != 3 {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "text edit reset expects no additional arguments",
+                            ));
+                        }
+                        widget.text_edit_modified = false;
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "separator" | "undo" | "redo" => {
+                        if args.len() != 3 {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                format!("text edit {op} expects no additional arguments"),
+                            ));
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    _ => {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            unknown_widget_subcommand_message(widget_path, &format!("edit {op}")),
+                        ));
+                    }
+                }
+            }
+        }
+        "dump" => {
+            if widget.widget_command == "text" {
+                let mut idx = 2usize;
+                let mut callback_words: Option<Vec<String>> = None;
+                let mut include_text = true;
+                while idx < args.len() {
+                    let token = get_string_arg(py, handle, args[idx], "text dump option")?;
+                    if !token.starts_with('-') {
+                        break;
+                    }
+                    match token.as_str() {
+                        "-all" | "-text" | "-mark" | "-tag" | "-image" | "-window" => {}
+                        "-command" => {
+                            idx += 1;
+                            if idx >= args.len() {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "text dump -command expects a command name",
+                                ));
+                            }
+                            let command_name =
+                                get_string_arg(py, handle, args[idx], "text dump command name")?;
+                            callback_words = Some(parse_command_words(&command_name));
+                        }
+                        "-elide" => {
+                            include_text = true;
+                        }
+                        _ => {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                format!("bad text dump option \"{token}\""),
+                            ));
+                        }
+                    }
+                    idx += 1;
+                }
+                if idx >= args.len() {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text dump expects index1 and optional index2",
+                    ));
+                }
+                let Some(start) = parse_text_index_bits(args[idx], &widget.text_value) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text dump start index must be an integer, end, or line.column",
+                    ));
+                };
+                idx += 1;
+                let end = if idx < args.len() {
+                    let Some(end) = parse_text_index_bits(args[idx], &widget.text_value) else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "text dump end index must be an integer, end, or line.column",
+                        ));
+                    };
+                    idx += 1;
+                    end
+                } else {
+                    text_char_count(&widget.text_value)
+                };
+                if idx != args.len() {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "text dump received unexpected extra arguments",
+                    ));
+                }
+                let dump_start = start.min(end);
+                let dump_end = start.max(end);
+                let start_byte = char_index_to_byte_index(&widget.text_value, dump_start);
+                let end_byte = char_index_to_byte_index(&widget.text_value, dump_end);
+                let slice = widget.text_value[start_byte..end_byte].to_string();
+                let mut flat_words: Vec<String> = Vec::new();
+                if include_text && !slice.is_empty() {
+                    flat_words.push("text".to_string());
+                    flat_words.push(slice.clone());
+                    flat_words.push(format!("1.{dump_start}"));
+                }
+                let callback_invocations: Vec<Vec<String>> =
+                    if let Some(command_words) = callback_words {
+                        let mut calls = Vec::new();
+                        for triple in flat_words.chunks_exact(3) {
+                            let mut words = command_words.clone();
+                            words.push(triple[0].clone());
+                            words.push(triple[1].clone());
+                            words.push(triple[2].clone());
+                            calls.push(words);
+                        }
+                        calls
+                    } else {
+                        Vec::new()
+                    };
+                app.last_error = None;
+                if !callback_invocations.is_empty() {
+                    drop(registry);
+                    run_tk_word_commands(py, handle, &callback_invocations)?;
+                    return Ok(Some(MoltObject::none().bits()));
+                }
+                return alloc_tuple_from_strings(
+                    py,
+                    flat_words.as_slice(),
+                    "failed to allocate text dump tuple",
+                )
+                .map(Some);
+            }
+        }
         "subwidget" => {
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
@@ -9831,6 +11179,37 @@ fn handle_generic_widget_path_command(
                 };
                 app.last_error = None;
                 return alloc_string_bits(py, &format!("1.{index}")).map(Some);
+            }
+            if widget.widget_command == "menu" {
+                let maybe_index = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                );
+                app.last_error = None;
+                if let Some(index) = maybe_index {
+                    return Ok(Some(MoltObject::from_int(index as i64).bits()));
+                }
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            if widget.widget_command == "panedwindow" {
+                let token = get_string_arg(py, handle, args[2], "panedwindow index")?;
+                if let Some(position) = widget.pane_children.iter().position(|item| item == &token)
+                {
+                    app.last_error = None;
+                    return Ok(Some(MoltObject::from_int(position as i64).bits()));
+                }
+                if let Some(index) =
+                    parse_simple_end_or_int_index(token.as_str(), widget.pane_children.len())
+                {
+                    app.last_error = None;
+                    return Ok(Some(MoltObject::from_int(index as i64).bits()));
+                }
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("bad panedwindow index \"{token}\""),
+                ));
             }
             app.last_error = None;
             Ok(Some(MoltObject::from_int(0).bits()))
@@ -9949,6 +11328,15 @@ fn handle_generic_widget_path_command(
             alloc_empty_tuple_bits(py).map(Some)
         }
         "find" | "tabs" | "panes" => {
+            if subcommand == "panes" && widget.widget_command == "panedwindow" {
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    widget.pane_children.as_slice(),
+                    "failed to allocate panedwindow panes tuple",
+                )
+                .map(Some);
+            }
             app.last_error = None;
             alloc_empty_tuple_bits(py).map(Some)
         }
@@ -9965,8 +11353,139 @@ fn handle_generic_widget_path_command(
             alloc_tuple_from_strings(py, names.as_slice(), "failed to allocate subwidgets tuple")
                 .map(Some)
         }
-        "identify" | "type" | "itemcget" | "entrycget" | "panecget" | "image_cget"
-        | "window_cget" => {
+        "identify" => {
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "type" => {
+            if widget.widget_command == "menu" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu type expects exactly one index argument",
+                    ));
+                }
+                let Some(index) = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                ) else {
+                    app.last_error = None;
+                    return alloc_empty_string_bits(py).map(Some);
+                };
+                if let Some(entry) = widget.menu_entries.get(index) {
+                    app.last_error = None;
+                    return alloc_string_bits(py, &entry.item_type).map(Some);
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "itemcget" => {
+            if widget.widget_command == "listbox" {
+                if args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox itemcget expects index and option",
+                    ));
+                }
+                let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox itemcget index must be an integer or end",
+                    ));
+                };
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "listbox item option name")?;
+                if let Some(bits) = widget
+                    .list_item_options
+                    .get(&index)
+                    .and_then(|options| options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "entrycget" => {
+            if widget.widget_command == "menu" {
+                if args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu entrycget expects index and option",
+                    ));
+                }
+                let Some(index) = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu entrycget index must resolve to an existing entry",
+                    ));
+                };
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "menu entry option name")?;
+                if let Some(bits) = widget
+                    .menu_entries
+                    .get(index)
+                    .and_then(|entry| entry.options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "panecget" => {
+            if widget.widget_command == "panedwindow" {
+                if args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "panedwindow panecget expects child and option",
+                    ));
+                }
+                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "pane option name")?;
+                if let Some(bits) = widget
+                    .pane_child_options
+                    .get(&child)
+                    .and_then(|options| options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "image_cget" | "window_cget" => {
             app.last_error = None;
             alloc_empty_string_bits(py).map(Some)
         }
@@ -10025,6 +11544,40 @@ fn handle_generic_widget_path_command(
             }
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
+        }
+        "xposition" | "yposition" => {
+            if widget.widget_command != "menu" {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, subcommand),
+                ));
+            }
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("{subcommand} expects exactly one index argument"),
+                ));
+            }
+            let Some(index) = parse_menu_existing_index_bits(
+                args[2],
+                widget.menu_entries.len(),
+                widget.menu_active_index,
+            ) else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("{subcommand} index must resolve to an existing menu entry"),
+                ));
+            };
+            let value = if subcommand == "xposition" {
+                (index as i64) * 20
+            } else {
+                (index as i64) * 18
+            };
+            app.last_error = None;
+            Ok(Some(MoltObject::from_int(value).bits()))
         }
         "selection" => {
             if args.len() >= 3 {
@@ -10530,7 +12083,71 @@ fn handle_generic_widget_path_command(
                                     "mark next/previous expects one index or mark name",
                                 ));
                             }
+                            widget
+                                .text_marks
+                                .entry("insert".to_string())
+                                .or_insert(widget.insert_cursor);
+                            widget
+                                .text_marks
+                                .entry("current".to_string())
+                                .or_insert(widget.insert_cursor);
+                            let token = get_string_arg(py, handle, args[3], "mark index or name")?;
+                            let mut ordered_marks: Vec<(usize, String)> = widget
+                                .text_marks
+                                .iter()
+                                .map(|(name, index)| (*index, name.clone()))
+                                .collect();
+                            ordered_marks.sort_unstable_by(|left, right| {
+                                left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+                            });
+                            let selected = if let Some(index) =
+                                widget.text_marks.get(&token).copied()
+                            {
+                                if op == "next" {
+                                    ordered_marks
+                                        .into_iter()
+                                        .find_map(|(mark_index, mark_name)| {
+                                            ((mark_index, mark_name.as_str())
+                                                > (index, token.as_str()))
+                                                .then_some(mark_name)
+                                        })
+                                } else {
+                                    ordered_marks.into_iter().rev().find_map(
+                                        |(mark_index, mark_name)| {
+                                            ((mark_index, mark_name.as_str())
+                                                < (index, token.as_str()))
+                                                .then_some(mark_name)
+                                        },
+                                    )
+                                }
+                            } else {
+                                let Some(index) =
+                                    parse_text_index_bits(args[3], &widget.text_value)
+                                else {
+                                    return Err(app_tcl_error_locked(
+                                        py,
+                                        app,
+                                        "mark next/previous index must be an integer, end, line.column, or mark name",
+                                    ));
+                                };
+                                if op == "next" {
+                                    ordered_marks
+                                        .into_iter()
+                                        .find_map(|(mark_index, mark_name)| {
+                                            (mark_index >= index).then_some(mark_name)
+                                        })
+                                } else {
+                                    ordered_marks.into_iter().rev().find_map(
+                                        |(mark_index, mark_name)| {
+                                            (mark_index <= index).then_some(mark_name)
+                                        },
+                                    )
+                                }
+                            };
                             app.last_error = None;
+                            if let Some(mark_name) = selected {
+                                return alloc_string_bits(py, &mark_name).map(Some);
+                            }
                             return alloc_empty_string_bits(py).map(Some);
                         }
                         "set" => {
@@ -10645,7 +12262,7 @@ fn handle_generic_widget_path_command(
                             ));
                         }
                         let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
-                        let bindings = widget.tag_bindings.entry(tag_name).or_default();
+                        let bindings = widget.tag_bindings.entry(tag_name.clone()).or_default();
                         if args.len() == 4 {
                             let mut sequences: Vec<String> = bindings.keys().cloned().collect();
                             sequences.sort_unstable();
@@ -10681,6 +12298,9 @@ fn handle_generic_widget_path_command(
                             bindings.remove(&sequence);
                         } else {
                             bindings.insert(sequence, script);
+                            if widget.widget_command == "text" {
+                                ensure_text_tag_order_entry(widget, &tag_name);
+                            }
                         }
                         app.last_error = None;
                         return Ok(Some(MoltObject::none().bits()));
@@ -10690,6 +12310,7 @@ fn handle_generic_widget_path_command(
                             let mut names: HashSet<String> =
                                 widget.text_tag_ranges.keys().cloned().collect();
                             names.extend(widget.tag_bindings.keys().cloned());
+                            names.extend(widget.text_tag_options.keys().cloned());
                             if args.len() == 5 {
                                 let Some(index) =
                                     parse_text_index_bits(args[4], &widget.text_value)
@@ -10708,8 +12329,15 @@ fn handle_generic_widget_path_command(
                                     })
                                 });
                             }
-                            let mut ordered: Vec<String> = names.into_iter().collect();
-                            ordered.sort_unstable();
+                            let mut ordered: Vec<String> = Vec::new();
+                            for tag_name in &widget.text_tag_order {
+                                if names.remove(tag_name) {
+                                    ordered.push(tag_name.clone());
+                                }
+                            }
+                            let mut leftovers: Vec<String> = names.into_iter().collect();
+                            leftovers.sort_unstable();
+                            ordered.extend(leftovers);
                             app.last_error = None;
                             return alloc_tuple_from_strings(
                                 py,
@@ -10814,6 +12442,26 @@ fn handle_generic_widget_path_command(
                         return alloc_empty_tuple_bits(py).map(Some);
                     }
                     "cget" => {
+                        if widget.widget_command == "text" {
+                            if args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag cget expects tagname and option",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            let option_name =
+                                parse_widget_option_name_arg(py, handle, args[4], "tag option")?;
+                            let value = widget
+                                .text_tag_options
+                                .get(&tag_name)
+                                .and_then(|options| options.get(&option_name))
+                                .cloned()
+                                .unwrap_or_default();
+                            app.last_error = None;
+                            return alloc_string_bits(py, &value).map(Some);
+                        }
                         app.last_error = None;
                         return alloc_empty_string_bits(py).map(Some);
                     }
@@ -10827,7 +12475,8 @@ fn handle_generic_widget_path_command(
                                 ));
                             }
                             let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
-                            let ranges = widget.text_tag_ranges.entry(tag_name).or_default();
+                            let ranges =
+                                widget.text_tag_ranges.entry(tag_name.clone()).or_default();
                             let mut idx = 4;
                             while idx + 1 < args.len() {
                                 let Some(start) =
@@ -10855,7 +12504,8 @@ fn handle_generic_widget_path_command(
                                 }
                                 idx += 2;
                             }
-                            ranges.sort_unstable_by_key(|(start, _end)| *start);
+                            normalize_text_tag_ranges(ranges);
+                            ensure_text_tag_order_entry(widget, &tag_name);
                             app.last_error = None;
                             return Ok(Some(MoltObject::none().bits()));
                         }
@@ -10895,9 +12545,22 @@ fn handle_generic_widget_path_command(
                             };
                             let (remove_start, remove_end) = (start.min(end), start.max(end));
                             if let Some(ranges) = widget.text_tag_ranges.get_mut(&tag_name) {
-                                ranges.retain(|(range_start, range_end)| {
-                                    *range_end <= remove_start || *range_start >= remove_end
-                                });
+                                let mut updated: Vec<(usize, usize)> =
+                                    Vec::with_capacity(ranges.len().saturating_mul(2));
+                                for (range_start, range_end) in ranges.iter().copied() {
+                                    if range_end <= remove_start || range_start >= remove_end {
+                                        updated.push((range_start, range_end));
+                                        continue;
+                                    }
+                                    if range_start < remove_start {
+                                        updated.push((range_start, remove_start));
+                                    }
+                                    if range_end > remove_end {
+                                        updated.push((remove_end, range_end));
+                                    }
+                                }
+                                *ranges = updated;
+                                normalize_text_tag_ranges(ranges);
                                 if ranges.is_empty() {
                                     widget.text_tag_ranges.remove(&tag_name);
                                 }
@@ -10914,6 +12577,8 @@ fn handle_generic_widget_path_command(
                                 let tag_name = get_string_arg(py, handle, tag_bits, "tag name")?;
                                 widget.text_tag_ranges.remove(&tag_name);
                                 widget.tag_bindings.remove(&tag_name);
+                                widget.text_tag_options.remove(&tag_name);
+                                widget.text_tag_order.retain(|name| name != &tag_name);
                             }
                             app.last_error = None;
                             return Ok(Some(MoltObject::none().bits()));
@@ -10921,7 +12586,128 @@ fn handle_generic_widget_path_command(
                         app.last_error = None;
                         return Ok(Some(MoltObject::none().bits()));
                     }
-                    "configure" | "lower" | "raise" => {
+                    "configure" => {
+                        if widget.widget_command == "text" {
+                            if args.len() < 4 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag configure expects tagname",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            if args.len() == 4 {
+                                let options = widget.text_tag_options.get(&tag_name);
+                                let mut out =
+                                    Vec::with_capacity(options.map_or(0, HashMap::len) * 2);
+                                let mut ordered: Vec<(&String, &String)> =
+                                    options.map(|map| map.iter().collect()).unwrap_or_default();
+                                ordered.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                                for (key, value) in ordered {
+                                    out.push(key.clone());
+                                    out.push(value.clone());
+                                }
+                                app.last_error = None;
+                                return alloc_tuple_from_strings(
+                                    py,
+                                    out.as_slice(),
+                                    "failed to allocate text tag configure tuple",
+                                )
+                                .map(Some);
+                            }
+                            if args.len() == 5 {
+                                let option_name = parse_widget_option_name_arg(
+                                    py,
+                                    handle,
+                                    args[4],
+                                    "tag option",
+                                )?;
+                                let value = widget
+                                    .text_tag_options
+                                    .get(&tag_name)
+                                    .and_then(|options| options.get(&option_name))
+                                    .cloned()
+                                    .unwrap_or_default();
+                                app.last_error = None;
+                                return alloc_string_bits(py, &value).map(Some);
+                            }
+                            if !(args.len() - 4).is_multiple_of(2) {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag configure expects key/value pairs",
+                                ));
+                            }
+                            let options =
+                                widget.text_tag_options.entry(tag_name.clone()).or_default();
+                            let mut idx = 4;
+                            while idx + 1 < args.len() {
+                                let option_name = parse_widget_option_name_arg(
+                                    py,
+                                    handle,
+                                    args[idx],
+                                    "tag option",
+                                )?;
+                                let option_value =
+                                    get_string_arg(py, handle, args[idx + 1], "tag value")?;
+                                options.insert(option_name, option_value);
+                                idx += 2;
+                            }
+                            ensure_text_tag_order_entry(widget, &tag_name);
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::none().bits()));
+                    }
+                    "lower" | "raise" => {
+                        if widget.widget_command == "text" {
+                            if args.len() != 4 && args.len() != 5 {
+                                return Err(app_tcl_error_locked(
+                                    py,
+                                    app,
+                                    "tag lower/raise expects tagname and optional reference tag",
+                                ));
+                            }
+                            let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
+                            ensure_text_tag_order_entry(widget, &tag_name);
+                            widget.text_tag_order.retain(|name| name != &tag_name);
+                            if args.len() == 4 {
+                                if op == "lower" {
+                                    widget.text_tag_order.insert(0, tag_name);
+                                } else {
+                                    widget.text_tag_order.push(tag_name);
+                                }
+                                app.last_error = None;
+                                return Ok(Some(MoltObject::none().bits()));
+                            }
+                            let reference_name =
+                                get_string_arg(py, handle, args[4], "reference tag name")?;
+                            let reference_index = widget
+                                .text_tag_order
+                                .iter()
+                                .position(|name| name == &reference_name);
+                            match reference_index {
+                                Some(index) => {
+                                    let insert_index = if op == "lower" {
+                                        index
+                                    } else {
+                                        index.saturating_add(1)
+                                    }
+                                    .min(widget.text_tag_order.len());
+                                    widget.text_tag_order.insert(insert_index, tag_name);
+                                }
+                                None => {
+                                    if op == "lower" {
+                                        widget.text_tag_order.insert(0, tag_name);
+                                    } else {
+                                        widget.text_tag_order.push(tag_name);
+                                    }
+                                }
+                            }
+                            app.last_error = None;
+                            return Ok(Some(MoltObject::none().bits()));
+                        }
                         app.last_error = None;
                         return Ok(Some(MoltObject::none().bits()));
                     }
@@ -11012,9 +12798,388 @@ fn handle_generic_widget_path_command(
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
         }
-        "add" | "addtag" | "dtag" | "scan" | "itemconfigure" | "entryconfigure"
-        | "paneconfigure" | "image_configure" | "window_configure" | "activate" | "see"
-        | "tk_popup" | "post" | "unpost" | "invoke" | "edit" | "replace" | "dump" => {
+        "itemconfigure" => {
+            if widget.widget_command != "listbox" {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "itemconfigure"),
+                ));
+            }
+            if args.len() < 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "listbox itemconfigure expects index and optional key/value options",
+                ));
+            }
+            let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "listbox itemconfigure index must be an integer or end",
+                ));
+            };
+            if widget.list_items.is_empty() || index >= widget.list_items.len() {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("listbox item \"{index}\" is out of range"),
+                ));
+            }
+            if args.len() == 3 {
+                let options = widget
+                    .list_item_options
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_default();
+                app.last_error = None;
+                return option_map_to_tuple(
+                    py,
+                    &options,
+                    "failed to allocate listbox itemconfigure tuple",
+                )
+                .map(Some);
+            }
+            if args.len() == 4 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "listbox item option")?;
+                if let Some(bits) = widget
+                    .list_item_options
+                    .get(&index)
+                    .and_then(|options| options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            let option_pairs =
+                parse_widget_option_pairs(py, handle, args, 3, "listbox item options")?;
+            let options = widget.list_item_options.entry(index).or_default();
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "entryconfigure" => {
+            if widget.widget_command != "menu" {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "entryconfigure"),
+                ));
+            }
+            if args.len() < 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "menu entryconfigure expects index and optional key/value options",
+                ));
+            }
+            let Some(index) = parse_menu_existing_index_bits(
+                args[2],
+                widget.menu_entries.len(),
+                widget.menu_active_index,
+            ) else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "menu entryconfigure index must resolve to an existing entry",
+                ));
+            };
+            if args.len() == 3 {
+                let options = widget
+                    .menu_entries
+                    .get(index)
+                    .map(|entry| entry.options.clone())
+                    .unwrap_or_default();
+                app.last_error = None;
+                return option_map_to_tuple(
+                    py,
+                    &options,
+                    "failed to allocate menu entryconfigure tuple",
+                )
+                .map(Some);
+            }
+            if args.len() == 4 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "menu entry option")?;
+                if let Some(bits) = widget
+                    .menu_entries
+                    .get(index)
+                    .and_then(|entry| entry.options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            let option_pairs =
+                parse_widget_option_pairs(py, handle, args, 3, "menu entry options")?;
+            let Some(entry) = widget.menu_entries.get_mut(index) else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "menu entryconfigure target does not exist",
+                ));
+            };
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, &mut entry.options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "paneconfigure" => {
+            if widget.widget_command != "panedwindow" {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "paneconfigure"),
+                ));
+            }
+            if args.len() < 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "panedwindow paneconfigure expects child and optional key/value options",
+                ));
+            }
+            let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
+            if !widget
+                .pane_children
+                .iter()
+                .any(|existing| existing == &child)
+            {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("unknown pane \"{child}\""),
+                ));
+            }
+            if args.len() == 3 {
+                let options = widget
+                    .pane_child_options
+                    .get(&child)
+                    .cloned()
+                    .unwrap_or_default();
+                app.last_error = None;
+                return option_map_to_tuple(
+                    py,
+                    &options,
+                    "failed to allocate panedwindow paneconfigure tuple",
+                )
+                .map(Some);
+            }
+            if args.len() == 4 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "pane option name")?;
+                if let Some(bits) = widget
+                    .pane_child_options
+                    .get(&child)
+                    .and_then(|options| options.get(&option_name))
+                    .copied()
+                {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+                app.last_error = None;
+                return alloc_empty_string_bits(py).map(Some);
+            }
+            let option_pairs =
+                parse_widget_option_pairs(py, handle, args, 3, "panedwindow pane options")?;
+            let options = widget.pane_child_options.entry(child).or_default();
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "activate" => {
+            if widget.widget_command == "listbox" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox activate expects exactly one index argument",
+                    ));
+                }
+                let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+                else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "listbox activate index must be an integer or end",
+                    ));
+                };
+                widget.list_active_index = Some(index);
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            if widget.widget_command == "menu" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu activate expects exactly one index argument",
+                    ));
+                }
+                widget.menu_active_index = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                );
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "post" => {
+            if widget.widget_command == "menu" {
+                if args.len() != 4 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu post expects x and y coordinates",
+                    ));
+                }
+                let x = parse_i64_arg(py, handle, args[2], "menu post x")?;
+                let y = parse_i64_arg(py, handle, args[3], "menu post y")?;
+                widget.menu_posted_at = Some((x, y));
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "unpost" => {
+            if widget.widget_command == "menu" {
+                if args.len() != 2 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu unpost expects no additional arguments",
+                    ));
+                }
+                widget.menu_posted_at = None;
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "tk_popup" => {
+            if widget.widget_command != "menu" {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "tk_popup"),
+                ));
+            }
+            if args.len() != 4 && args.len() != 5 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "menu tk_popup expects x, y, and optional entry index",
+                ));
+            }
+            let x = parse_i64_arg(py, handle, args[2], "menu popup x")?;
+            let y = parse_i64_arg(py, handle, args[3], "menu popup y")?;
+            widget.menu_posted_at = Some((x, y));
+            if args.len() == 5 {
+                widget.menu_active_index = parse_menu_existing_index_bits(
+                    args[4],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                );
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "invoke" => {
+            let mut invoke_words: Option<Vec<String>> = None;
+            if widget.widget_command == "menu" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu invoke expects exactly one entry index",
+                    ));
+                }
+                let Some(index) = parse_menu_existing_index_bits(
+                    args[2],
+                    widget.menu_entries.len(),
+                    widget.menu_active_index,
+                ) else {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "menu invoke index must resolve to an existing entry",
+                    ));
+                };
+                if let Some(command_bits) = widget
+                    .menu_entries
+                    .get(index)
+                    .and_then(|entry| entry.options.get("-command"))
+                    .copied()
+                {
+                    let command = get_string_arg(py, handle, command_bits, "menu command")?;
+                    if !command.trim().is_empty() {
+                        invoke_words = Some(parse_command_words(&command));
+                    }
+                }
+                widget.menu_active_index = Some(index);
+            } else if matches!(
+                widget.widget_command.as_str(),
+                "button" | "checkbutton" | "radiobutton" | "menubutton"
+            ) {
+                if args.len() != 2 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "invoke expects no additional arguments",
+                    ));
+                }
+                if let Some(command_bits) = widget.options.get("-command").copied() {
+                    let command =
+                        get_string_arg(py, handle, command_bits, "widget invoke command")?;
+                    if !command.trim().is_empty() {
+                        invoke_words = Some(parse_command_words(&command));
+                    }
+                }
+            } else if widget.widget_command == "spinbox" {
+                if args.len() != 3 {
+                    return Err(app_tcl_error_locked(
+                        py,
+                        app,
+                        "spinbox invoke expects exactly one element name",
+                    ));
+                }
+            } else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, "invoke"),
+                ));
+            }
+            app.last_error = None;
+            if let Some(words) = invoke_words {
+                drop(registry);
+                return call_tk_command_from_strings(py, handle, &words).map(Some);
+            }
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "add" | "addtag" | "dtag" | "scan" | "image_configure" | "window_configure" | "see" => {
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
         }
@@ -11324,6 +13489,45 @@ fn native_loadtk_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<
     }
 }
 
+fn handle_tk_popup_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() != 4 && args.len() != 5 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "tk_popup expects menu path, x, y, and optional entry index",
+        ));
+    }
+    let menu_path = get_string_arg(py, handle, args[1], "tk_popup menu path")?;
+    let x = parse_i64_arg(py, handle, args[2], "tk_popup x")?;
+    let y = parse_i64_arg(py, handle, args[3], "tk_popup y")?;
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    let Some(widget) = app.widgets.get_mut(&menu_path) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad window path name \"{menu_path}\""),
+        ));
+    };
+    if widget.widget_command != "menu" {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("widget \"{menu_path}\" is not a menu"),
+        ));
+    }
+    widget.menu_posted_at = Some((x, y));
+    if args.len() == 5 {
+        widget.menu_active_index = parse_menu_existing_index_bits(
+            args[4],
+            widget.menu_entries.len(),
+            widget.menu_active_index,
+        );
+    }
+    app.last_error = None;
+    Ok(MoltObject::none().bits())
+}
+
 fn tk_call_dispatch(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.is_empty() {
         return Err(raise_tcl_for_handle(py, handle, "empty tkinter command"));
@@ -11365,6 +13569,7 @@ fn tk_call_dispatch(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, 
         match command.as_str() {
             "tk_messageBox" | "tk_getOpenFile" | "tk_getSaveFile" | "tk_chooseDirectory"
             | "tk_chooseColor" => handle_headless_commondialog_command(py, handle, args),
+            "tk_popup" => handle_tk_popup_command(py, handle, args),
             "tk_dialog" => handle_headless_tk_dialog_command(py, handle, args),
             "set" => handle_set_command(py, handle, args),
             "unset" => handle_unset_command(py, handle, args),
@@ -11521,6 +13726,17 @@ fn app_has_pending_after_work(app: &TkAppState) -> bool {
 }
 
 fn dispatch_next_pending_event(py: &PyToken<'_>, handle: i64) -> Result<bool, u64> {
+    let ready_filehandler_commands = next_ready_filehandler_commands(py, handle)?;
+    for command_name in ready_filehandler_commands {
+        if let Some(out_bits) = invoke_filehandler_command(py, handle, &command_name)? {
+            if !obj_from_bits(out_bits).is_none() {
+                dec_ref_bits(py, out_bits);
+            }
+            clear_last_error(handle);
+            return Ok(true);
+        }
+    }
+
     let event = {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
@@ -11881,9 +14097,13 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        if obj_from_bits(identifier_bits).is_none() {
-            clear_last_error(handle);
-            return MoltObject::none().bits();
+        let identifier_obj = obj_from_bits(identifier_bits);
+        if !is_truthy(_py, identifier_obj) {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "id must be a valid identifier returned from after or after_idle",
+            );
         }
         let key = match get_text_arg(_py, handle, identifier_bits, "after cancel token") {
             Ok(value) => value,
@@ -11905,6 +14125,38 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         cleanup_after_tokens(_py, app, &tokens);
         app.last_error = None;
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_after_info(app_bits: u64, identifier_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::AfterInfo) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        if obj_from_bits(identifier_bits).is_none() {
+            app.last_error = None;
+            return match alloc_after_info_all(_py, app) {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
+        }
+        let token = match get_text_arg(_py, handle, identifier_bits, "after info token") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        app.last_error = None;
+        match alloc_after_info_token(_py, app, token.as_str()) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
     })
 }
 
@@ -12036,18 +14288,7 @@ pub extern "C" fn molt_tk_trace_remove(
         let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
             return raise_invalid_handle_error(_py);
         };
-        if let Some(registrations) = app.traces.get_mut(&variable_name) {
-            registrations.retain(|registration| {
-                !(registration.mode_name == mode_name
-                    && registration.callback_name == callback_name)
-            });
-            if registrations.is_empty() {
-                app.traces.remove(&variable_name);
-            }
-        }
-        if !trace_callback_is_referenced(app, &callback_name) {
-            unregister_callback_command(_py, app, &callback_name);
-        }
+        remove_trace_registration(_py, app, &variable_name, &mode_name, &callback_name);
         app.last_error = None;
         MoltObject::none().bits()
     })
@@ -12076,6 +14317,30 @@ pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> 
             Ok(bits) => bits,
             Err(bits) => bits,
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_trace_clear(app_bits: u64, variable_name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let variable_name =
+            match get_string_arg(_py, handle, variable_name_bits, "trace variable name") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        clear_trace_registrations_for_variable(_py, app, &variable_name);
+        app.last_error = None;
+        MoltObject::none().bits()
     })
 }
 
@@ -12255,6 +14520,329 @@ pub extern "C" fn molt_tk_bind_callback_unregister(
         let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
 
         let set_bind_argv = vec!["bind".to_string(), target_name, sequence, replacement];
+        let set_bits = match call_tk_command_from_strings(_py, handle, &set_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        release_result_bits(_py, set_bits);
+
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        unregister_callback_command(_py, app, &command_name);
+        app.last_error = None;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_widget_bind_callback_register(
+    app_bits: u64,
+    widget_path_bits: u64,
+    bind_target_bits: u64,
+    sequence_bits: u64,
+    callback_bits: u64,
+    add_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path = match get_string_arg(_py, handle, widget_path_bits, "widget path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let bind_target = match get_string_arg(_py, handle, bind_target_bits, "widget bind target")
+        {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "widget bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if !callback_is_callable(callback_bits) {
+            return raise_exception::<u64>(_py, "TypeError", "tag_bind callback must be callable");
+        }
+        let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name = {
+            let mut registry = tk_registry().lock().unwrap();
+            let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+                return raise_invalid_handle_error(_py);
+            };
+            let command_name = next_callback_command_name(app, "widget_bind_callback");
+            if let Err(bits) = register_callback_command(
+                _py,
+                app,
+                &command_name,
+                callback_bits,
+                "tkinter widget bind callback command",
+            ) {
+                return bits;
+            }
+            app.last_error = None;
+            command_name
+        };
+
+        let bind_script =
+            format!("if {{\"[{command_name} {TK_BIND_SUBST_FORMAT_STR}]\" == \"break\"}} break\n");
+        let merged_script = if add_prefix.is_empty() {
+            bind_script
+        } else {
+            format!("{add_prefix}{bind_script}")
+        };
+        let set_bind_argv = vec![
+            widget_path,
+            "bind".to_string(),
+            bind_target,
+            sequence,
+            merged_script,
+        ];
+        let bind_result = call_tk_command_from_strings(_py, handle, &set_bind_argv);
+        match bind_result {
+            Ok(result_bits) => {
+                release_result_bits(_py, result_bits);
+            }
+            Err(bits) => {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    unregister_callback_command(_py, app, &command_name);
+                }
+                return bits;
+            }
+        }
+        match alloc_string_bits(_py, &command_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_widget_bind_callback_unregister(
+    app_bits: u64,
+    widget_path_bits: u64,
+    bind_target_bits: u64,
+    sequence_bits: u64,
+    command_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path = match get_string_arg(_py, handle, widget_path_bits, "widget path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let bind_target = match get_string_arg(_py, handle, bind_target_bits, "widget bind target")
+        {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "widget bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name =
+            match get_string_arg(_py, handle, command_name_bits, "widget bind callback id") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+
+        let get_bind_argv = vec![
+            widget_path.clone(),
+            "bind".to_string(),
+            bind_target.clone(),
+            sequence.clone(),
+        ];
+        let current_script_bits = match call_tk_command_from_strings(_py, handle, &get_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let current_script =
+            string_obj_to_owned(obj_from_bits(current_script_bits)).unwrap_or_default();
+        release_result_bits(_py, current_script_bits);
+        let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
+
+        let set_bind_argv = vec![
+            widget_path,
+            "bind".to_string(),
+            bind_target,
+            sequence,
+            replacement,
+        ];
+        let set_bits = match call_tk_command_from_strings(_py, handle, &set_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        release_result_bits(_py, set_bits);
+
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        unregister_callback_command(_py, app, &command_name);
+        app.last_error = None;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_text_tag_bind_callback_register(
+    app_bits: u64,
+    widget_path_bits: u64,
+    tagname_bits: u64,
+    sequence_bits: u64,
+    callback_bits: u64,
+    add_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path = match get_string_arg(_py, handle, widget_path_bits, "text widget path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let tagname = match get_string_arg(_py, handle, tagname_bits, "text tag name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "text tag bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if !callback_is_callable(callback_bits) {
+            return raise_exception::<u64>(_py, "TypeError", "tag_bind callback must be callable");
+        }
+        let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name = {
+            let mut registry = tk_registry().lock().unwrap();
+            let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+                return raise_invalid_handle_error(_py);
+            };
+            let command_name = next_callback_command_name(app, "text_tag_bind_callback");
+            if let Err(bits) = register_callback_command(
+                _py,
+                app,
+                &command_name,
+                callback_bits,
+                "tkinter text tag bind callback command",
+            ) {
+                return bits;
+            }
+            app.last_error = None;
+            command_name
+        };
+
+        let bind_script =
+            format!("if {{\"[{command_name} {TK_BIND_SUBST_FORMAT_STR}]\" == \"break\"}} break\n");
+        let merged_script = if add_prefix.is_empty() {
+            bind_script
+        } else {
+            format!("{add_prefix}{bind_script}")
+        };
+        let set_bind_argv = vec![
+            widget_path,
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname,
+            sequence,
+            merged_script,
+        ];
+        let bind_result = call_tk_command_from_strings(_py, handle, &set_bind_argv);
+        match bind_result {
+            Ok(result_bits) => {
+                release_result_bits(_py, result_bits);
+            }
+            Err(bits) => {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    unregister_callback_command(_py, app, &command_name);
+                }
+                return bits;
+            }
+        }
+        match alloc_string_bits(_py, &command_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
+    app_bits: u64,
+    widget_path_bits: u64,
+    tagname_bits: u64,
+    sequence_bits: u64,
+    command_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path = match get_string_arg(_py, handle, widget_path_bits, "text widget path") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let tagname = match get_string_arg(_py, handle, tagname_bits, "text tag name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "text tag bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name =
+            match get_string_arg(_py, handle, command_name_bits, "text tag bind callback id") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+
+        let get_bind_argv = vec![
+            widget_path.clone(),
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname.clone(),
+            sequence.clone(),
+        ];
+        let current_script_bits = match call_tk_command_from_strings(_py, handle, &get_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let current_script =
+            string_obj_to_owned(obj_from_bits(current_script_bits)).unwrap_or_default();
+        release_result_bits(_py, current_script_bits);
+        let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
+
+        let set_bind_argv = vec![
+            widget_path,
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname,
+            sequence,
+            replacement,
+        ];
         let set_bits = match call_tk_command_from_strings(_py, handle, &set_bind_argv) {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -13855,6 +16443,26 @@ mod tests {
     }
 
     #[test]
+    fn trace_callback_words_parses_command_prefix_words() {
+        assert_eq!(
+            trace_callback_command_words("::__molt_trace_cb arg1 arg2"),
+            vec![
+                "::__molt_trace_cb".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn trace_callback_words_preserves_single_braced_word() {
+        assert_eq!(
+            trace_callback_command_words("{::__molt trace cb}"),
+            vec!["::__molt trace cb".to_string()]
+        );
+    }
+
+    #[test]
     fn bind_script_parser_extracts_if_wrapper_command_words() {
         let script = "if {\"[::__molt_cb %# %x %y]\" == \"break\"} break";
         assert_eq!(
@@ -14263,6 +16871,112 @@ mod tests {
     }
 
     #[test]
+    fn treeview_visible_order_and_hit_testing_are_deterministic() {
+        let mut treeview = TkTreeviewState::default();
+        treeview.root_children = vec!["r1".to_string(), "r2".to_string()];
+        treeview.items.insert(
+            "r1".to_string(),
+            TkTreeviewItem {
+                parent: String::new(),
+                children: vec!["c1".to_string()],
+                ..TkTreeviewItem::default()
+            },
+        );
+        treeview.items.insert(
+            "c1".to_string(),
+            TkTreeviewItem {
+                parent: "r1".to_string(),
+                ..TkTreeviewItem::default()
+            },
+        );
+        treeview.items.insert(
+            "r2".to_string(),
+            TkTreeviewItem {
+                parent: String::new(),
+                ..TkTreeviewItem::default()
+            },
+        );
+
+        assert_eq!(
+            treeview_visible_items(&treeview),
+            vec!["r1".to_string(), "c1".to_string(), "r2".to_string()]
+        );
+        assert_eq!(treeview_hit_item_by_y(&treeview, 0).as_deref(), Some("r1"));
+        assert_eq!(treeview_hit_item_by_y(&treeview, 20).as_deref(), Some("c1"));
+        assert_eq!(treeview_hit_item_by_y(&treeview, 40).as_deref(), Some("r2"));
+        assert_eq!(treeview_hit_item_by_y(&treeview, 60).as_deref(), None);
+    }
+
+    #[test]
+    fn treeview_column_offset_parser_accepts_hash_indices() {
+        assert_eq!(parse_treeview_column_offset("#0"), Some(0));
+        assert_eq!(parse_treeview_column_offset("#1"), Some(120));
+        assert_eq!(parse_treeview_column_offset("#2"), Some(240));
+        assert_eq!(parse_treeview_column_offset("#-1"), None);
+        assert_eq!(parse_treeview_column_offset("1"), None);
+        assert_eq!(parse_treeview_column_offset("bad"), None);
+    }
+
+    #[test]
+    fn treeview_noop_generic_subcommands_are_identified() {
+        assert!(treeview_subcommand_is_noop_generic_fallback(
+            "itemconfigure"
+        ));
+        assert!(treeview_subcommand_is_noop_generic_fallback(
+            "paneconfigure"
+        ));
+        assert!(treeview_subcommand_is_noop_generic_fallback("replace"));
+        assert!(!treeview_subcommand_is_noop_generic_fallback("item"));
+        assert!(!treeview_subcommand_is_noop_generic_fallback("selection"));
+    }
+
+    #[test]
+    fn treeview_strict_index_parser_rejects_non_integer_tokens() {
+        assert_eq!(parse_treeview_index_strict("end", 4), Some(4));
+        assert_eq!(parse_treeview_index_strict("2", 4), Some(2));
+        assert_eq!(parse_treeview_index_strict("-7", 4), Some(0));
+        assert_eq!(parse_treeview_index_strict("oops", 4), None);
+    }
+
+    #[test]
+    fn ttk_insert_index_parser_rejects_non_integer_tokens() {
+        assert_eq!(parse_ttk_insert_index_strict("end", 3), Some(3));
+        assert_eq!(parse_ttk_insert_index_strict("1", 3), Some(1));
+        assert_eq!(parse_ttk_insert_index_strict("-2", 3), Some(0));
+        assert_eq!(parse_ttk_insert_index_strict("bad", 3), None);
+    }
+
+    #[test]
+    fn notebook_index_parser_enforces_bounds() {
+        assert_eq!(parse_notebook_index_strict("end", 2), Ok(2));
+        assert_eq!(parse_notebook_index_strict("0", 2), Ok(0));
+        assert_eq!(parse_notebook_index_strict("1", 2), Ok(1));
+        assert!(parse_notebook_index_strict("-1", 2).is_err());
+        assert!(parse_notebook_index_strict("2", 2).is_err());
+        assert!(parse_notebook_index_strict("tabx", 2).is_err());
+    }
+
+    #[test]
+    fn treeview_missing_item_detection_reports_first_missing_id() {
+        let mut treeview = TkTreeviewState::default();
+        treeview
+            .items
+            .insert("i1".to_string(), TkTreeviewItem::default());
+        treeview
+            .items
+            .insert("i2".to_string(), TkTreeviewItem::default());
+
+        let items = vec!["i1".to_string(), "missing".to_string(), "i2".to_string()];
+        assert_eq!(
+            first_missing_treeview_item(&treeview, &items),
+            Some("missing")
+        );
+
+        let existing = vec!["i1".to_string(), "i2".to_string()];
+        assert_eq!(first_missing_treeview_item(&treeview, &existing), None);
+    }
+
+    #[test]
     fn variable_version_progress_is_monotonic() {
         let mut app = TkAppState::default();
         assert_eq!(variable_version(&app, "name"), 0);
@@ -14433,6 +17147,54 @@ mod tests {
         assert_eq!(
             filehandler_command_name(7, "exception"),
             "::__molt_filehandler_7_exception"
+        );
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+    #[test]
+    fn filehandler_poll_event_mask_is_stable() {
+        let mut registration = TkFileHandlerRegistration {
+            callback_bits: 0,
+            file_obj_bits: 0,
+            commands: HashMap::new(),
+        };
+        registration
+            .commands
+            .insert(TK_FILE_EVENT_READABLE, "r".to_string());
+        registration
+            .commands
+            .insert(TK_FILE_EVENT_WRITABLE, "w".to_string());
+        assert_eq!(
+            filehandler_poll_events(&registration),
+            libc::POLLIN | libc::POLLOUT
+        );
+        registration
+            .commands
+            .insert(TK_FILE_EVENT_EXCEPTION, "x".to_string());
+        assert_eq!(
+            filehandler_poll_events(&registration),
+            libc::POLLIN | libc::POLLOUT | libc::POLLPRI
+        );
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "molt_tk_native")))]
+    #[test]
+    fn filehandler_revents_translation_is_stable() {
+        assert_eq!(
+            filehandler_revents_to_mask(libc::POLLIN),
+            TK_FILE_EVENT_READABLE
+        );
+        assert_eq!(
+            filehandler_revents_to_mask(libc::POLLOUT),
+            TK_FILE_EVENT_WRITABLE
+        );
+        assert_eq!(
+            filehandler_revents_to_mask(libc::POLLERR | libc::POLLNVAL),
+            TK_FILE_EVENT_EXCEPTION
+        );
+        assert_eq!(
+            filehandler_revents_to_mask(libc::POLLHUP | libc::POLLPRI),
+            TK_FILE_EVENT_READABLE | TK_FILE_EVENT_EXCEPTION
         );
     }
 }

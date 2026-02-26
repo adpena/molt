@@ -4,6 +4,8 @@ use crate::state::runtime_state::{
     molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown,
 };
 use crate::*;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 /// libmolt C-API surface version.
 pub const MOLT_C_API_VERSION: u32 = 1;
@@ -20,6 +22,39 @@ pub struct MoltBufferView {
     pub stride: i64,
     pub itemsize: u64,
     pub owner: MoltHandle,
+}
+
+#[derive(Default)]
+struct CApiModuleMetadata {
+    module_def_ptr: usize,
+    module_state: Option<Box<[u8]>>,
+}
+
+#[derive(Default)]
+struct CApiModuleStateRegistry {
+    by_def: HashMap<usize, MoltHandle>,
+    by_module: HashMap<usize, usize>,
+}
+
+static C_API_MODULE_METADATA: OnceLock<Mutex<HashMap<usize, CApiModuleMetadata>>> = OnceLock::new();
+static C_API_MODULE_STATE_REGISTRY: OnceLock<Mutex<CApiModuleStateRegistry>> = OnceLock::new();
+
+const C_API_METH_VARARGS: u32 = 0x0001;
+const C_API_METH_KEYWORDS: u32 = 0x0002;
+const C_API_METH_NOARGS: u32 = 0x0004;
+const C_API_METH_O: u32 = 0x0008;
+const C_API_METH_VARARGS_KEYWORDS: u32 = C_API_METH_VARARGS | C_API_METH_KEYWORDS;
+const C_API_SUPPORTED_METH_FLAGS: u32 =
+    C_API_METH_VARARGS | C_API_METH_KEYWORDS | C_API_METH_NOARGS | C_API_METH_O;
+
+#[inline]
+fn c_api_module_metadata_registry() -> &'static Mutex<HashMap<usize, CApiModuleMetadata>> {
+    C_API_MODULE_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[inline]
+fn c_api_module_state_registry() -> &'static Mutex<CApiModuleStateRegistry> {
+    C_API_MODULE_STATE_REGISTRY.get_or_init(|| Mutex::new(CApiModuleStateRegistry::default()))
 }
 
 #[inline]
@@ -107,24 +142,35 @@ fn set_exception_from_message(_py: &PyToken<'_>, exc_type_bits: u64, message: &[
 }
 
 #[inline]
+fn raise_i32(_py: &PyToken<'_>, kind: &str, message: &str) -> i32 {
+    let _ = raise_exception::<u64>(_py, kind, message);
+    -1
+}
+
+#[inline]
 fn require_type_handle(_py: &PyToken<'_>, type_bits: MoltHandle) -> Result<*mut u8, i32> {
     let Some(type_ptr) = obj_from_bits(type_bits).as_ptr() else {
-        return Err(raise_exception::<i32>(
-            _py,
-            "TypeError",
-            "type object expected",
-        ));
+        return Err(raise_i32(_py, "TypeError", "type object expected"));
     };
     unsafe {
         if object_type_id(type_ptr) != TYPE_ID_TYPE {
-            return Err(raise_exception::<i32>(
-                _py,
-                "TypeError",
-                "type object expected",
-            ));
+            return Err(raise_i32(_py, "TypeError", "type object expected"));
         }
     }
     Ok(type_ptr)
+}
+
+#[inline]
+fn require_module_handle(_py: &PyToken<'_>, module_bits: MoltHandle) -> Result<*mut u8, i32> {
+    let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+        return Err(raise_i32(_py, "TypeError", "module object expected"));
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            return Err(raise_i32(_py, "TypeError", "module object expected"));
+        }
+    }
+    Ok(module_ptr)
 }
 
 #[inline]
@@ -134,19 +180,11 @@ fn require_string_handle(
     label: &str,
 ) -> Result<*mut u8, i32> {
     let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
-        return Err(raise_exception::<i32>(
-            _py,
-            "TypeError",
-            &format!("{label} must be str"),
-        ));
+        return Err(raise_i32(_py, "TypeError", &format!("{label} must be str")));
     };
     unsafe {
         if object_type_id(value_ptr) != TYPE_ID_STRING {
-            return Err(raise_exception::<i32>(
-                _py,
-                "TypeError",
-                &format!("{label} must be str"),
-            ));
+            return Err(raise_i32(_py, "TypeError", &format!("{label} must be str")));
         }
     }
     Ok(value_ptr)
@@ -179,6 +217,390 @@ fn module_get_object_impl(
         return none_bits();
     }
     molt_module_get_attr(module_bits, name_bits)
+}
+
+#[inline]
+fn module_ptr_key(module_ptr: *mut u8) -> usize {
+    module_ptr as usize
+}
+
+#[inline]
+fn alloc_zeroed_state(_py: &PyToken<'_>, size: usize) -> Result<Box<[u8]>, i32> {
+    let mut data: Vec<u8> = Vec::new();
+    if data.try_reserve_exact(size).is_err() {
+        return Err(raise_i32(_py, "MemoryError", "out of memory"));
+    }
+    data.resize(size, 0);
+    Ok(data.into_boxed_slice())
+}
+
+#[inline]
+fn c_api_module_state_registry_remove_module(
+    _py: &PyToken<'_>,
+    module_key: usize,
+) -> Option<MoltHandle> {
+    let registry = c_api_module_state_registry();
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let def_key = guard.by_module.remove(&module_key)?;
+    guard.by_def.remove(&def_key)
+}
+
+#[inline]
+fn c_api_module_state_registry_remove_def(_py: &PyToken<'_>, def_key: usize) -> Option<MoltHandle> {
+    let registry = c_api_module_state_registry();
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let bits = guard.by_def.remove(&def_key)?;
+    if let Some(module_ptr) = obj_from_bits(bits).as_ptr() {
+        guard.by_module.remove(&module_ptr_key(module_ptr));
+    }
+    Some(bits)
+}
+
+#[inline]
+fn c_api_module_state_registry_clear(_py: &PyToken<'_>) -> Vec<MoltHandle> {
+    let registry = c_api_module_state_registry();
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let out = guard.by_def.values().copied().collect::<Vec<_>>();
+    guard.by_def.clear();
+    guard.by_module.clear();
+    out
+}
+
+pub(crate) fn c_api_module_teardown(_py: &PyToken<'_>) {
+    {
+        let registry = c_api_module_metadata_registry();
+        let mut guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.clear();
+    }
+    for bits in c_api_module_state_registry_clear(_py) {
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+}
+
+pub(crate) fn c_api_module_on_module_teardown(_py: &PyToken<'_>, module_ptr: *mut u8) {
+    if module_ptr.is_null() {
+        return;
+    }
+    let module_key = module_ptr_key(module_ptr);
+    {
+        let registry = c_api_module_metadata_registry();
+        let mut guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.remove(&module_key);
+    }
+    if let Some(bits) = c_api_module_state_registry_remove_module(_py, module_key)
+        && let Some(bits_ptr) = obj_from_bits(bits).as_ptr()
+        && bits_ptr != module_ptr
+    {
+        dec_ref_bits(_py, bits);
+    }
+}
+
+#[inline]
+fn c_api_method_flags_supported(flags: u32) -> bool {
+    if flags & !C_API_SUPPORTED_METH_FLAGS != 0 {
+        return false;
+    }
+    matches!(
+        flags,
+        C_API_METH_VARARGS | C_API_METH_VARARGS_KEYWORDS | C_API_METH_NOARGS | C_API_METH_O
+    )
+}
+
+#[inline]
+fn c_api_method_set_attr_bytes(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name: &'static [u8],
+    value_bits: u64,
+) -> i32 {
+    let Some(name_bits) = crate::builtins::attr::attr_name_bits_from_bytes(_py, name) else {
+        if exception_pending(_py) {
+            return -1;
+        }
+        return raise_i32(
+            _py,
+            "RuntimeError",
+            "failed to intern function attribute name",
+        );
+    };
+    let set_out = molt_set_attr_name(obj_bits, name_bits, value_bits);
+    dec_ref_bits(_py, name_bits);
+    if set_out != 0 {
+        dec_ref_bits(_py, set_out);
+    }
+    if exception_pending(_py) { -1 } else { 0 }
+}
+
+#[inline]
+fn c_api_method_set_name(_py: &PyToken<'_>, func_bits: u64, name_bytes: &[u8]) -> Result<(), i32> {
+    let name_ptr = alloc_string(_py, name_bytes);
+    if name_ptr.is_null() {
+        return Err(-1);
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let rc = c_api_method_set_attr_bytes(_py, func_bits, b"__name__", name_bits);
+    dec_ref_bits(_py, name_bits);
+    if rc < 0 {
+        return Err(-1);
+    }
+    Ok(())
+}
+
+#[inline]
+fn c_api_method_set_doc(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    doc_bytes: Option<&[u8]>,
+) -> Result<(), i32> {
+    let Some(doc_bytes) = doc_bytes else {
+        return Ok(());
+    };
+    let doc_ptr = alloc_string(_py, doc_bytes);
+    if doc_ptr.is_null() {
+        return Err(-1);
+    }
+    let doc_bits = MoltObject::from_ptr(doc_ptr).bits();
+    let rc = c_api_method_set_attr_bytes(_py, func_bits, b"__doc__", doc_bits);
+    dec_ref_bits(_py, doc_bits);
+    if rc < 0 {
+        return Err(-1);
+    }
+    Ok(())
+}
+
+#[inline]
+fn c_api_method_build_function(
+    _py: &PyToken<'_>,
+    self_bits: u64,
+    name_bytes: &[u8],
+    method_ptr: usize,
+    method_flags: u32,
+    doc_bytes: Option<&[u8]>,
+) -> Result<u64, i32> {
+    if method_ptr == 0 {
+        return Err(raise_i32(
+            _py,
+            "TypeError",
+            "C-API method pointer must not be NULL",
+        ));
+    }
+    if !c_api_method_flags_supported(method_flags) {
+        return Err(raise_i32(
+            _py,
+            "TypeError",
+            "unsupported C-API method flags (expected VARARGS, VARARGS|KEYWORDS, NOARGS, or O)",
+        ));
+    }
+    if name_bytes.is_empty() {
+        return Err(raise_i32(_py, "TypeError", "method name must not be empty"));
+    }
+
+    let method_ptr_u64 = method_ptr as u64;
+    let ptr_bytes = method_ptr_u64.to_le_bytes();
+    let ptr_bytes_obj = alloc_bytes(_py, &ptr_bytes);
+    if ptr_bytes_obj.is_null() {
+        return Err(-1);
+    }
+    let ptr_bytes_bits = MoltObject::from_ptr(ptr_bytes_obj).bits();
+    let flags_bits = MoltObject::from_int(i64::from(method_flags)).bits();
+    let closure_ptr = alloc_tuple(_py, &[self_bits, flags_bits, ptr_bytes_bits]);
+    dec_ref_bits(_py, ptr_bytes_bits);
+    if closure_ptr.is_null() {
+        return Err(-1);
+    }
+    let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
+    let func_ptr = alloc_function_obj(_py, fn_addr!(molt_capi_method_dispatch), 2);
+    if func_ptr.is_null() {
+        dec_ref_bits(_py, closure_bits);
+        return Err(-1);
+    }
+    unsafe {
+        function_set_closure_bits(_py, func_ptr, closure_bits);
+    }
+    dec_ref_bits(_py, closure_bits);
+    let func_bits = MoltObject::from_ptr(func_ptr).bits();
+    let _ = crate::molt_function_set_builtin(func_bits);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, func_bits);
+        return Err(-1);
+    }
+    if c_api_method_set_attr_bytes(
+        _py,
+        func_bits,
+        b"__molt_bind_kind__",
+        MoltObject::from_int(crate::BIND_KIND_CAPI_METHOD).bits(),
+    ) < 0
+        || c_api_method_set_name(_py, func_bits, name_bytes).is_err()
+        || c_api_method_set_doc(_py, func_bits, doc_bytes).is_err()
+    {
+        dec_ref_bits(_py, func_bits);
+        return Err(-1);
+    }
+    Ok(func_bits)
+}
+
+#[inline]
+fn c_api_method_decode_ptr_from_bytes(
+    _py: &PyToken<'_>,
+    ptr_bytes_bits: u64,
+    label: &str,
+) -> Result<usize, u64> {
+    let Some(ptr_bytes_ptr) = obj_from_bits(ptr_bytes_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("invalid {label}: pointer payload is missing"),
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr_bytes_ptr) != TYPE_ID_BYTES {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("invalid {label}: pointer payload must be bytes"),
+            ));
+        }
+        let len = bytes_len(ptr_bytes_ptr);
+        if len != std::mem::size_of::<u64>() {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("invalid {label}: pointer payload length mismatch"),
+            ));
+        }
+        let src = std::slice::from_raw_parts(bytes_data(ptr_bytes_ptr), len);
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(src);
+        let out = u64::from_le_bytes(raw) as usize;
+        if out == 0 {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("invalid {label}: null function pointer"),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+#[inline]
+fn c_api_method_decode_closure(
+    _py: &PyToken<'_>,
+    closure_bits: u64,
+) -> Result<(u64, u32, usize), u64> {
+    let Some(closure_ptr) = obj_from_bits(closure_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "invalid C-API method closure: missing closure tuple",
+        ));
+    };
+    unsafe {
+        if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid C-API method closure: expected tuple",
+            ));
+        }
+        let slots = seq_vec_ref(closure_ptr);
+        if slots.len() != 3 {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid C-API method closure: expected 3-tuple",
+            ));
+        }
+        let self_bits = slots[0];
+        let flags_i64 = to_i64(obj_from_bits(slots[1])).ok_or_else(|| {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid C-API method closure: flags must be int",
+            )
+        })?;
+        let flags = u32::try_from(flags_i64).map_err(|_| {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid C-API method closure: flags out of range",
+            )
+        })?;
+        if !c_api_method_flags_supported(flags) {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "invalid C-API method closure: unsupported method flags",
+            ));
+        }
+        let fn_ptr = c_api_method_decode_ptr_from_bytes(_py, slots[2], "method closure")?;
+        Ok((self_bits, flags, fn_ptr))
+    }
+}
+
+#[inline]
+fn c_api_method_require_tuple(_py: &PyToken<'_>, args_tuple_bits: u64) -> Result<*mut u8, u64> {
+    let Some(args_ptr) = obj_from_bits(args_tuple_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "C-API method wrapper expects tuple arguments",
+        ));
+    };
+    unsafe {
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "C-API method wrapper expects tuple arguments",
+            ));
+        }
+    }
+    Ok(args_ptr)
+}
+
+#[inline]
+fn c_api_method_kwargs_present(_py: &PyToken<'_>, kwargs_bits: u64) -> Result<bool, u64> {
+    if kwargs_bits == 0 || obj_from_bits(kwargs_bits).is_none() {
+        return Ok(false);
+    }
+    let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "keyword arguments must be dict or None",
+        ));
+    };
+    unsafe {
+        if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "keyword arguments must be dict or None",
+            ));
+        }
+        Ok(dict_order(kwargs_ptr).len() >= 2)
+    }
+}
+
+#[inline]
+fn c_api_method_tuple_len(_py: &PyToken<'_>, args_ptr: *mut u8) -> usize {
+    unsafe {
+        debug_assert!(object_type_id(args_ptr) == TYPE_ID_TUPLE);
+        seq_vec_ref(args_ptr).len()
+    }
 }
 
 #[inline]
@@ -250,6 +672,23 @@ pub extern "C" fn molt_init() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutdown() -> i32 {
+    if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+        crate::with_gil_entry!(_py, {
+            c_api_module_teardown(_py);
+        });
+    } else {
+        let metadata = c_api_module_metadata_registry();
+        metadata
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        let state = c_api_module_state_registry();
+        let mut guard = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.by_def.clear();
+        guard.by_module.clear();
+    }
     // Shutdown returning 0 means "already shut down", which is still a clean state.
     let _ = molt_runtime_shutdown();
     0
@@ -340,7 +779,7 @@ pub unsafe extern "C" fn molt_err_set(
 ) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(message) = (unsafe { bytes_slice_from_raw(message_ptr, message_len) }) else {
-            return raise_exception::<i32>(
+            return raise_i32(
                 _py,
                 "TypeError",
                 "exception message pointer cannot be null when len > 0",
@@ -477,7 +916,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
 ) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
-            return raise_exception::<i32>(
+            return raise_i32(
                 _py,
                 "TypeError",
                 "attribute name pointer cannot be null when len > 0",
@@ -488,7 +927,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
             if exception_pending(_py) {
                 return -1;
             }
-            return raise_exception::<i32>(_py, "RuntimeError", "failed to intern attribute name");
+            return raise_i32(_py, "RuntimeError", "failed to intern attribute name");
         };
         let set_out = molt_set_attr_name(obj_bits, name_bits, val_bits);
         dec_ref_bits(_py, name_bits);
@@ -594,13 +1033,11 @@ pub extern "C" fn molt_module_create(name_bits: MoltHandle) -> MoltHandle {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
     crate::with_gil_entry!(_py, {
-        let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "module object expected");
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(_) => return none_bits(),
         };
         unsafe {
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                return raise_exception::<u64>(_py, "TypeError", "module object expected");
-            }
             let dict_bits = module_dict_bits(module_ptr);
             if obj_from_bits(dict_bits).is_none() {
                 return raise_exception::<u64>(_py, "RuntimeError", "module dict missing");
@@ -608,6 +1045,185 @@ pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
             inc_ref_bits(_py, dict_bits);
             dict_bits
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_capi_register(
+    module_bits: MoltHandle,
+    module_def_ptr: usize,
+    module_state_size: u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(code) => return code,
+        };
+        let module_key = module_ptr_key(module_ptr);
+        let size = match usize::try_from(module_state_size) {
+            Ok(value) => value,
+            Err(_) => {
+                return raise_i32(
+                    _py,
+                    "OverflowError",
+                    "module state size does not fit in usize",
+                );
+            }
+        };
+        let state = if size == 0 {
+            None
+        } else {
+            match alloc_zeroed_state(_py, size) {
+                Ok(value) => Some(value),
+                Err(code) => return code,
+            }
+        };
+        let metadata = CApiModuleMetadata {
+            module_def_ptr,
+            module_state: state,
+        };
+        let registry = c_api_module_metadata_registry();
+        let mut guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.insert(module_key, metadata);
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
+    crate::with_gil_entry!(_py, {
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(_) => return 0,
+        };
+        let module_key = module_ptr_key(module_ptr);
+        let registry = c_api_module_metadata_registry();
+        let guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard
+            .get(&module_key)
+            .map_or(0, |entry| entry.module_def_ptr)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> usize {
+    crate::with_gil_entry!(_py, {
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(_) => return 0,
+        };
+        let module_key = module_ptr_key(module_ptr);
+        let registry = c_api_module_metadata_registry();
+        let guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.get(&module_key).map_or(0, |entry| {
+            entry
+                .module_state
+                .as_ref()
+                .map_or(0, |state| state.as_ptr() as usize)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr: usize) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if module_def_ptr == 0 {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "module definition pointer must not be NULL",
+            );
+        }
+        let module_ptr = match require_module_handle(_py, module_bits) {
+            Ok(ptr) => ptr,
+            Err(code) => return code,
+        };
+        let module_key = module_ptr_key(module_ptr);
+        let def_key = module_def_ptr;
+        let mut decref_bits: Vec<MoltHandle> = Vec::new();
+        {
+            let registry = c_api_module_state_registry();
+            let mut guard = registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            if let Some(existing) = guard.by_def.get(&def_key).copied()
+                && existing == module_bits
+                && guard.by_module.get(&module_key).copied() == Some(def_key)
+            {
+                return 0;
+            }
+
+            if let Some(old_def) = guard.by_module.get(&module_key).copied()
+                && old_def != def_key
+                && let Some(old_bits) = guard.by_def.remove(&old_def)
+            {
+                decref_bits.push(old_bits);
+            }
+
+            if let Some(old_bits) = guard.by_def.insert(def_key, module_bits)
+                && old_bits != module_bits
+            {
+                if let Some(old_ptr) = obj_from_bits(old_bits).as_ptr() {
+                    guard.by_module.remove(&module_ptr_key(old_ptr));
+                }
+                decref_bits.push(old_bits);
+            }
+
+            guard.by_module.insert(module_key, def_key);
+            inc_ref_bits(_py, module_bits);
+        }
+        for bits in decref_bits {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
+            }
+        }
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
+    crate::with_gil_entry!(_py, {
+        if module_def_ptr == 0 {
+            let _ = raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "module definition pointer must not be NULL",
+            );
+            return 0;
+        }
+        let registry = c_api_module_state_registry();
+        let guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.by_def.get(&module_def_ptr).copied().unwrap_or(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_state_remove(module_def_ptr: usize) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if module_def_ptr == 0 {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "module definition pointer must not be NULL",
+            );
+        }
+        let Some(bits) = c_api_module_state_registry_remove_def(_py, module_def_ptr) else {
+            return raise_i32(_py, "RuntimeError", "module definition was not registered");
+        };
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+        0
     })
 }
 
@@ -631,7 +1247,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
 ) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
-            return raise_exception::<i32>(
+            return raise_i32(
                 _py,
                 "TypeError",
                 "module attribute name pointer cannot be null when len > 0",
@@ -642,7 +1258,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
             if exception_pending(_py) {
                 return -1;
             }
-            return raise_exception::<i32>(
+            return raise_i32(
                 _py,
                 "RuntimeError",
                 "failed to intern module attribute name",
@@ -741,7 +1357,7 @@ pub unsafe extern "C" fn molt_module_add_string_constant(
 ) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(value_bytes) = (unsafe { bytes_slice_from_raw(value_ptr, value_len) }) else {
-            return raise_exception::<i32>(
+            return raise_i32(
                 _py,
                 "TypeError",
                 "string constant pointer cannot be null when len > 0",
@@ -754,6 +1370,269 @@ pub unsafe extern "C" fn molt_module_add_string_constant(
         let string_bits = MoltObject::from_ptr(string_ptr).bits();
         let rc = module_add_object_impl(_py, module_bits, name_bits, string_bits);
         dec_ref_bits(_py, string_bits);
+        rc
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_capi_method_dispatch(
+    closure_bits: MoltHandle,
+    args_tuple_bits: MoltHandle,
+    kwargs_bits: MoltHandle,
+) -> MoltHandle {
+    crate::with_gil_entry!(_py, {
+        let (self_bits, flags, fn_ptr) = match c_api_method_decode_closure(_py, closure_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let args_ptr = match c_api_method_require_tuple(_py, args_tuple_bits) {
+            Ok(ptr) => ptr,
+            Err(bits) => return bits,
+        };
+        let args_vec = unsafe { seq_vec_ref(args_ptr) };
+        let dynamic_self = obj_from_bits(self_bits).is_none();
+        let callback_self_bits = if dynamic_self {
+            if args_vec.is_empty() {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "C-API method requires a bound self/cls argument",
+                );
+            }
+            args_vec[0]
+        } else {
+            self_bits
+        };
+        let kwargs_present = match c_api_method_kwargs_present(_py, kwargs_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let kwargs_for_callback = if kwargs_bits == 0 || obj_from_bits(kwargs_bits).is_none() {
+            0
+        } else {
+            kwargs_bits
+        };
+        let mut callback_args_owner_bits = 0u64;
+        let result = unsafe {
+            match flags {
+                C_API_METH_VARARGS => {
+                    if kwargs_present {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "C-API method does not accept keyword arguments",
+                        );
+                    }
+                    let callback_args_bits = if dynamic_self {
+                        let tail_ptr = alloc_tuple(_py, &args_vec[1..]);
+                        if tail_ptr.is_null() {
+                            return none_bits();
+                        }
+                        callback_args_owner_bits = MoltObject::from_ptr(tail_ptr).bits();
+                        callback_args_owner_bits
+                    } else {
+                        args_tuple_bits
+                    };
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    func(callback_self_bits, callback_args_bits)
+                }
+                C_API_METH_VARARGS_KEYWORDS => {
+                    let callback_args_bits = if dynamic_self {
+                        let tail_ptr = alloc_tuple(_py, &args_vec[1..]);
+                        if tail_ptr.is_null() {
+                            return none_bits();
+                        }
+                        callback_args_owner_bits = MoltObject::from_ptr(tail_ptr).bits();
+                        callback_args_owner_bits
+                    } else {
+                        args_tuple_bits
+                    };
+                    let func: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    func(callback_self_bits, callback_args_bits, kwargs_for_callback)
+                }
+                C_API_METH_NOARGS => {
+                    if kwargs_present {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "C-API noargs method does not accept keyword arguments",
+                        );
+                    }
+                    let expected = if dynamic_self { 1 } else { 0 };
+                    if c_api_method_tuple_len(_py, args_ptr) != expected {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "C-API noargs method expects no positional arguments",
+                        );
+                    }
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    func(callback_self_bits, 0)
+                }
+                C_API_METH_O => {
+                    if kwargs_present {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "C-API METH_O method does not accept keyword arguments",
+                        );
+                    }
+                    let expected = if dynamic_self { 2 } else { 1 };
+                    if c_api_method_tuple_len(_py, args_ptr) != expected {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "C-API METH_O method expects exactly one argument",
+                        );
+                    }
+                    let arg0_bits = if dynamic_self {
+                        args_vec[1]
+                    } else {
+                        args_vec[0]
+                    };
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    func(callback_self_bits, arg0_bits)
+                }
+                _ => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "unsupported C-API method flags",
+                    );
+                }
+            }
+        };
+        if callback_args_owner_bits != 0 && result == callback_args_owner_bits {
+            inc_ref_bits(_py, result);
+        }
+        if callback_args_owner_bits != 0 {
+            dec_ref_bits(_py, callback_args_owner_bits);
+        }
+        if result == 0 {
+            if exception_pending(_py) {
+                return none_bits();
+            }
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "C-API method returned NULL without setting an exception",
+            );
+        }
+        result
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_cfunction_create_bytes(
+    self_bits: MoltHandle,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_ptr: usize,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> MoltHandle {
+    crate::with_gil_entry!(_py, {
+        let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "method name pointer cannot be null when len > 0",
+            );
+        };
+        let doc_bytes = if doc_ptr.is_null() && doc_len == 0 {
+            None
+        } else {
+            let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "method doc pointer cannot be null when len > 0",
+                );
+            };
+            Some(bytes)
+        };
+        match c_api_method_build_function(
+            _py,
+            self_bits,
+            name_bytes,
+            method_ptr,
+            method_flags,
+            doc_bytes,
+        ) {
+            Ok(bits) => bits,
+            Err(_) => none_bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
+    module_bits: MoltHandle,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_ptr: usize,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "method name pointer cannot be null when len > 0",
+            );
+        };
+        if require_module_handle(_py, module_bits).is_err() {
+            return -1;
+        }
+        let doc_bytes = if doc_ptr.is_null() && doc_len == 0 {
+            None
+        } else {
+            let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
+                return raise_i32(
+                    _py,
+                    "TypeError",
+                    "method doc pointer cannot be null when len > 0",
+                );
+            };
+            Some(bytes)
+        };
+        let func_bits = match c_api_method_build_function(
+            _py,
+            module_bits,
+            name_bytes,
+            method_ptr,
+            method_flags,
+            doc_bytes,
+        ) {
+            Ok(bits) => bits,
+            Err(code) => return code,
+        };
+        let name_ptr_obj = alloc_string(_py, name_bytes);
+        if name_ptr_obj.is_null() {
+            dec_ref_bits(_py, func_bits);
+            return -1;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr_obj).bits();
+        let module_name_bits = unsafe {
+            molt_object_getattr_bytes(module_bits, b"__name__".as_ptr(), b"__name__".len() as u64)
+        };
+        if !obj_from_bits(module_name_bits).is_none() && !exception_pending(_py) {
+            let _ = c_api_method_set_attr_bytes(_py, func_bits, b"__module__", module_name_bits);
+            dec_ref_bits(_py, module_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, func_bits);
+                dec_ref_bits(_py, name_bits);
+                return -1;
+            }
+        } else if exception_pending(_py) {
+            let _ = molt_exception_clear();
+        }
+        let rc = module_add_object_impl(_py, module_bits, name_bits, func_bits);
+        dec_ref_bits(_py, func_bits);
+        dec_ref_bits(_py, name_bits);
         rc
     })
 }
@@ -958,7 +1837,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
 ) -> i32 {
     crate::with_gil_entry!(_py, {
         if out_view.is_null() {
-            return raise_exception::<i32>(_py, "TypeError", "out_view cannot be null");
+            return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
         let mut export = BufferExport {
             ptr: 0,
@@ -1137,6 +2016,158 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
 mod tests {
     use super::*;
     use crate::builtins::exceptions::molt_exception_class;
+
+    extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            if obj_from_bits(self_bits).is_none() {
+                return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            }
+            let len = molt_sequence_length(args_bits);
+            if len < 0 {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_int(len).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_meth_varargs_keywords(
+        self_bits: u64,
+        args_bits: u64,
+        kwargs_bits: u64,
+    ) -> u64 {
+        crate::with_gil_entry!(_py, {
+            if obj_from_bits(self_bits).is_none() {
+                return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            }
+            let pos_len = molt_sequence_length(args_bits);
+            if pos_len < 0 {
+                return MoltObject::none().bits();
+            }
+            let kw_len = if kwargs_bits == 0 || obj_from_bits(kwargs_bits).is_none() {
+                0
+            } else if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
+                unsafe {
+                    if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
+                        return raise_exception::<u64>(
+                            _py,
+                            "TypeError",
+                            "kwargs payload must be dict",
+                        );
+                    }
+                    (dict_order(kwargs_ptr).len() / 2) as i64
+                }
+            } else {
+                0
+            };
+            MoltObject::from_int(pos_len * 10 + kw_len).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_meth_noargs(self_bits: u64, arg_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            if obj_from_bits(self_bits).is_none() {
+                return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            }
+            if arg_bits != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "noargs callback expected NULL argument pointer",
+                );
+            }
+            MoltObject::from_int(101).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_meth_o(self_bits: u64, arg_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            if obj_from_bits(self_bits).is_none() {
+                return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            }
+            if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
+                return raise_exception::<u64>(_py, "TypeError", "METH_O callback missing arg");
+            }
+            inc_ref_bits(_py, arg_bits);
+            arg_bits
+        })
+    }
+
+    extern "C" fn c_api_test_dynamic_varargs(self_bits: u64, args_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "dynamic self must be an int for this probe",
+                );
+            };
+            let len = molt_sequence_length(args_bits);
+            if len < 0 {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_int(self_value * 10 + len).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_dynamic_noargs(self_bits: u64, arg_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "dynamic self must be an int for this probe",
+                );
+            };
+            if arg_bits != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "noargs callback expected NULL argument pointer",
+                );
+            }
+            MoltObject::from_int(1000 + self_value).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_dynamic_o(self_bits: u64, arg_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "dynamic self must be an int for this probe",
+                );
+            };
+            let Some(arg_value) = to_i64(obj_from_bits(arg_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "dynamic METH_O arg must be an int for this probe",
+                );
+            };
+            MoltObject::from_int(self_value * 100 + arg_value).bits()
+        })
+    }
+
+    extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
+        crate::with_gil_entry!(_py, {
+            if self_bits != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "static callback expected NULL self_bits",
+                );
+            }
+            if arg_bits != 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "noargs callback expected NULL argument pointer",
+                );
+            }
+            MoltObject::from_int(204).bits()
+        })
+    }
 
     #[test]
     fn c_api_version_is_nonzero() {
@@ -1610,6 +2641,383 @@ mod tests {
             dec_ref_bits(_py, answer_name_bits);
             dec_ref_bits(_py, module_bits);
             dec_ref_bits(_py, module_name_bits);
+        });
+    }
+
+    #[test]
+    fn module_capi_metadata_and_state_registry_roundtrip() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let module_name_bits = unsafe { molt_string_from(b"demo_meta".as_ptr(), 9) };
+            assert!(!obj_from_bits(module_name_bits).is_none());
+            let module_bits = molt_module_create(module_name_bits);
+            assert!(!obj_from_bits(module_bits).is_none());
+            let module_ptr = obj_from_bits(module_bits)
+                .as_ptr()
+                .expect("module pointer should be valid");
+            let module_def_ptr = 0xD15EA5Eusize;
+
+            assert_eq!(
+                molt_module_capi_register(module_bits, module_def_ptr, 32),
+                0
+            );
+            assert_eq!(molt_module_capi_get_def(module_bits), module_def_ptr);
+            let state_ptr = molt_module_capi_get_state(module_bits);
+            assert_ne!(state_ptr, 0);
+            let state_slice = unsafe { std::slice::from_raw_parts_mut(state_ptr as *mut u8, 32) };
+            for byte in state_slice.iter() {
+                assert_eq!(*byte, 0);
+            }
+            state_slice[0] = 7;
+            state_slice[31] = 9;
+
+            assert_eq!(molt_module_state_add(module_bits, module_def_ptr), 0);
+            assert_eq!(molt_module_state_find(module_def_ptr), module_bits);
+            assert_eq!(molt_module_state_remove(module_def_ptr), 0);
+            assert_eq!(molt_module_state_find(module_def_ptr), 0);
+
+            assert_eq!(molt_module_state_remove(module_def_ptr), -1);
+            assert_eq!(molt_err_pending(), 1);
+            assert_eq!(molt_err_clear(), 0);
+
+            assert_eq!(molt_module_state_add(module_bits, module_def_ptr), 0);
+            c_api_module_on_module_teardown(_py, module_ptr);
+            assert_eq!(molt_module_capi_get_def(module_bits), 0);
+            assert_eq!(molt_module_capi_get_state(module_bits), 0);
+            assert_eq!(molt_module_state_find(module_def_ptr), 0);
+
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, module_name_bits);
+        });
+    }
+
+    #[test]
+    fn module_capi_method_bridge_handles_supported_flags() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let module_name_bits = unsafe { molt_string_from(b"demo_capi".as_ptr(), 9) };
+            assert!(!obj_from_bits(module_name_bits).is_none());
+            let module_bits = molt_module_create(module_name_bits);
+            assert!(!obj_from_bits(module_bits).is_none());
+
+            assert_eq!(
+                unsafe {
+                    molt_module_add_cfunction_bytes(
+                        module_bits,
+                        b"meth_varargs".as_ptr(),
+                        b"meth_varargs".len() as u64,
+                        c_api_test_meth_varargs as *const () as usize,
+                        C_API_METH_VARARGS,
+                        b"varargs".as_ptr(),
+                        b"varargs".len() as u64,
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    molt_module_add_cfunction_bytes(
+                        module_bits,
+                        b"meth_kwargs".as_ptr(),
+                        b"meth_kwargs".len() as u64,
+                        c_api_test_meth_varargs_keywords as *const () as usize,
+                        C_API_METH_VARARGS | C_API_METH_KEYWORDS,
+                        std::ptr::null(),
+                        0,
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    molt_module_add_cfunction_bytes(
+                        module_bits,
+                        b"meth_noargs".as_ptr(),
+                        b"meth_noargs".len() as u64,
+                        c_api_test_meth_noargs as *const () as usize,
+                        C_API_METH_NOARGS,
+                        std::ptr::null(),
+                        0,
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    molt_module_add_cfunction_bytes(
+                        module_bits,
+                        b"meth_o".as_ptr(),
+                        b"meth_o".len() as u64,
+                        c_api_test_meth_o as *const () as usize,
+                        C_API_METH_O,
+                        std::ptr::null(),
+                        0,
+                    )
+                },
+                0
+            );
+
+            let meth_varargs_bits =
+                unsafe { molt_module_get_object_bytes(module_bits, b"meth_varargs".as_ptr(), 12) };
+            let meth_kwargs_bits =
+                unsafe { molt_module_get_object_bytes(module_bits, b"meth_kwargs".as_ptr(), 11) };
+            let meth_noargs_bits =
+                unsafe { molt_module_get_object_bytes(module_bits, b"meth_noargs".as_ptr(), 11) };
+            let meth_o_bits =
+                unsafe { molt_module_get_object_bytes(module_bits, b"meth_o".as_ptr(), 6) };
+
+            let args3_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                    MoltObject::from_int(3).bits(),
+                ],
+            );
+            assert!(!args3_ptr.is_null());
+            let args3_bits = MoltObject::from_ptr(args3_ptr).bits();
+            let out_varargs = molt_object_call(meth_varargs_bits, args3_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_varargs)), Some(3));
+            dec_ref_bits(_py, out_varargs);
+
+            let key_ptr = alloc_string(_py, b"k");
+            assert!(!key_ptr.is_null());
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let kwargs_ptr =
+                alloc_dict_with_pairs(_py, &[key_bits, MoltObject::from_int(9).bits()]);
+            assert!(!kwargs_ptr.is_null());
+            let kwargs_bits = MoltObject::from_ptr(kwargs_ptr).bits();
+
+            let out_kwargs = molt_object_call(meth_kwargs_bits, args3_bits, kwargs_bits);
+            assert_eq!(to_i64(obj_from_bits(out_kwargs)), Some(31));
+            dec_ref_bits(_py, out_kwargs);
+
+            let reject_kwargs = molt_object_call(meth_varargs_bits, args3_bits, kwargs_bits);
+            assert!(obj_from_bits(reject_kwargs).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            let args0_ptr = alloc_tuple(_py, &[]);
+            assert!(!args0_ptr.is_null());
+            let args0_bits = MoltObject::from_ptr(args0_ptr).bits();
+            let out_noargs = molt_object_call(meth_noargs_bits, args0_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_noargs)), Some(101));
+            dec_ref_bits(_py, out_noargs);
+
+            let reject_noargs = molt_object_call(meth_noargs_bits, args3_bits, none_bits());
+            assert!(obj_from_bits(reject_noargs).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            let args1_ptr = alloc_tuple(_py, &[MoltObject::from_int(55).bits()]);
+            assert!(!args1_ptr.is_null());
+            let args1_bits = MoltObject::from_ptr(args1_ptr).bits();
+            let out_o = molt_object_call(meth_o_bits, args1_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_o)), Some(55));
+            dec_ref_bits(_py, out_o);
+
+            let reject_o = molt_object_call(meth_o_bits, args0_bits, none_bits());
+            assert!(obj_from_bits(reject_o).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, args1_bits);
+            dec_ref_bits(_py, args0_bits);
+            dec_ref_bits(_py, kwargs_bits);
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, args3_bits);
+            dec_ref_bits(_py, meth_o_bits);
+            dec_ref_bits(_py, meth_noargs_bits);
+            dec_ref_bits(_py, meth_kwargs_bits);
+            dec_ref_bits(_py, meth_varargs_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, module_name_bits);
+        });
+    }
+
+    #[test]
+    fn module_capi_method_bridge_rejects_unsupported_flags() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let module_name_bits = unsafe { molt_string_from(b"demo_bad".as_ptr(), 8) };
+            assert!(!obj_from_bits(module_name_bits).is_none());
+            let module_bits = molt_module_create(module_name_bits);
+            assert!(!obj_from_bits(module_bits).is_none());
+
+            let rc = unsafe {
+                molt_module_add_cfunction_bytes(
+                    module_bits,
+                    b"bad".as_ptr(),
+                    3,
+                    c_api_test_meth_varargs as *const () as usize,
+                    C_API_METH_VARARGS | C_API_METH_O,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert_eq!(rc, -1);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, module_name_bits);
+        });
+    }
+
+    #[test]
+    fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dyn_varargs_bits = unsafe {
+                molt_cfunction_create_bytes(
+                    none_bits(),
+                    b"dyn_varargs".as_ptr(),
+                    b"dyn_varargs".len() as u64,
+                    c_api_test_dynamic_varargs as *const () as usize,
+                    C_API_METH_VARARGS,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            let dyn_noargs_bits = unsafe {
+                molt_cfunction_create_bytes(
+                    none_bits(),
+                    b"dyn_noargs".as_ptr(),
+                    b"dyn_noargs".len() as u64,
+                    c_api_test_dynamic_noargs as *const () as usize,
+                    C_API_METH_NOARGS,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            let dyn_o_bits = unsafe {
+                molt_cfunction_create_bytes(
+                    none_bits(),
+                    b"dyn_o".as_ptr(),
+                    b"dyn_o".len() as u64,
+                    c_api_test_dynamic_o as *const () as usize,
+                    C_API_METH_O,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert!(!obj_from_bits(dyn_varargs_bits).is_none());
+            assert!(!obj_from_bits(dyn_noargs_bits).is_none());
+            assert!(!obj_from_bits(dyn_o_bits).is_none());
+
+            let args_var_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(40).bits(),
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
+            );
+            assert!(!args_var_ptr.is_null());
+            let args_var_bits = MoltObject::from_ptr(args_var_ptr).bits();
+            let out_var = molt_object_call(dyn_varargs_bits, args_var_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_var)), Some(402));
+            dec_ref_bits(_py, out_var);
+
+            let args_none_ptr = alloc_tuple(_py, &[MoltObject::from_int(7).bits()]);
+            assert!(!args_none_ptr.is_null());
+            let args_none_bits = MoltObject::from_ptr(args_none_ptr).bits();
+            let out_noargs = molt_object_call(dyn_noargs_bits, args_none_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_noargs)), Some(1007));
+            dec_ref_bits(_py, out_noargs);
+
+            let args_o_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(5).bits(),
+                    MoltObject::from_int(9).bits(),
+                ],
+            );
+            assert!(!args_o_ptr.is_null());
+            let args_o_bits = MoltObject::from_ptr(args_o_ptr).bits();
+            let out_o = molt_object_call(dyn_o_bits, args_o_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out_o)), Some(509));
+            dec_ref_bits(_py, out_o);
+
+            let args_missing_self_ptr = alloc_tuple(_py, &[]);
+            assert!(!args_missing_self_ptr.is_null());
+            let args_missing_self_bits = MoltObject::from_ptr(args_missing_self_ptr).bits();
+            let reject_missing_self =
+                molt_object_call(dyn_varargs_bits, args_missing_self_bits, none_bits());
+            assert!(obj_from_bits(reject_missing_self).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            let args_bad_noargs_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(7).bits(),
+                    MoltObject::from_int(1).bits(),
+                ],
+            );
+            assert!(!args_bad_noargs_ptr.is_null());
+            let args_bad_noargs_bits = MoltObject::from_ptr(args_bad_noargs_ptr).bits();
+            let reject_noargs =
+                molt_object_call(dyn_noargs_bits, args_bad_noargs_bits, none_bits());
+            assert!(obj_from_bits(reject_noargs).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            let args_bad_o_ptr = alloc_tuple(_py, &[MoltObject::from_int(7).bits()]);
+            assert!(!args_bad_o_ptr.is_null());
+            let args_bad_o_bits = MoltObject::from_ptr(args_bad_o_ptr).bits();
+            let reject_o = molt_object_call(dyn_o_bits, args_bad_o_bits, none_bits());
+            assert!(obj_from_bits(reject_o).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, args_bad_o_bits);
+            dec_ref_bits(_py, args_bad_noargs_bits);
+            dec_ref_bits(_py, args_missing_self_bits);
+            dec_ref_bits(_py, args_o_bits);
+            dec_ref_bits(_py, args_none_bits);
+            dec_ref_bits(_py, args_var_bits);
+            dec_ref_bits(_py, dyn_o_bits);
+            dec_ref_bits(_py, dyn_noargs_bits);
+            dec_ref_bits(_py, dyn_varargs_bits);
+        });
+    }
+
+    #[test]
+    fn c_api_method_dispatch_supports_null_self_for_static_callbacks() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let static_noargs_bits = unsafe {
+                molt_cfunction_create_bytes(
+                    0,
+                    b"static_noargs".as_ptr(),
+                    b"static_noargs".len() as u64,
+                    c_api_test_static_noargs as *const () as usize,
+                    C_API_METH_NOARGS,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert!(!obj_from_bits(static_noargs_bits).is_none());
+
+            let args_empty_ptr = alloc_tuple(_py, &[]);
+            assert!(!args_empty_ptr.is_null());
+            let args_empty_bits = MoltObject::from_ptr(args_empty_ptr).bits();
+            let out = molt_object_call(static_noargs_bits, args_empty_bits, none_bits());
+            assert_eq!(to_i64(obj_from_bits(out)), Some(204));
+            dec_ref_bits(_py, out);
+
+            let args_bad_ptr = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
+            assert!(!args_bad_ptr.is_null());
+            let args_bad_bits = MoltObject::from_ptr(args_bad_ptr).bits();
+            let reject = molt_object_call(static_noargs_bits, args_bad_bits, none_bits());
+            assert!(obj_from_bits(reject).is_none());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, args_bad_bits);
+            dec_ref_bits(_py, args_empty_bits);
+            dec_ref_bits(_py, static_noargs_bits);
         });
     }
 }

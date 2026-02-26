@@ -56,6 +56,8 @@ static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
 static UUID_NODE_STATE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static UUID_V1_STATE: OnceLock<Mutex<(Option<u16>, u64)>> = OnceLock::new();
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+static EXTENSION_METADATA_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static EXTENSION_METADATA_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 const UUID_EPOCH_100NS: u64 = 0x01B21DD213814000;
 
 fn trace_env_get() -> bool {
@@ -97,6 +99,14 @@ fn uuid_v1_state() -> &'static Mutex<(Option<u16>, u64)> {
 
 fn extension_metadata_ok_cache() -> &'static Mutex<BTreeMap<String, String>> {
     EXTENSION_METADATA_OK_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+#[cfg(test)]
+fn extension_metadata_cache_stats() -> (u64, u64) {
+    (
+        EXTENSION_METADATA_CACHE_HITS.load(Ordering::Relaxed),
+        EXTENSION_METADATA_CACHE_MISSES.load(Ordering::Relaxed),
+    )
 }
 
 fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
@@ -3394,9 +3404,12 @@ fn importlib_require_extension_metadata(
             .get(&cache_key)
             .is_some_and(|value| value == &cache_value)
         {
+            EXTENSION_METADATA_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
     }
+
+    EXTENSION_METADATA_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
 
     let extension_sha256 = importlib_sha256_path(_py, path)?;
     importlib_validate_extension_metadata(_py, module_name, path, &extension_sha256, &loaded)?;
@@ -15391,6 +15404,8 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.clear();
+        EXTENSION_METADATA_CACHE_HITS.store(0, Ordering::Relaxed);
+        EXTENSION_METADATA_CACHE_MISSES.store(0, Ordering::Relaxed);
     }
 
     fn alloc_test_string_bits(_py: &PyToken<'_>, value: &str) -> u64 {
@@ -16085,6 +16100,54 @@ mod tests {
     }
 
     #[test]
+    fn extension_spec_boundary_rejects_manifest_module_mismatch() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_module_mismatch");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let module_name = format!("ext_spec_requested_{}", std::process::id());
+            let manifest_module_name = format!("ext_spec_manifest_{}", std::process::id());
+            let filename = extension_boundary_module_filename(&module_name);
+            let extension_path = tmp.join(&filename);
+            std::fs::write(&extension_path, b"spec-boundary-extension")
+                .expect("write extension placeholder");
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                &manifest_module_name,
+                &filename,
+                &extension_sha256,
+            );
+            let search_paths = vec![tmp.to_string_lossy().into_owned()];
+
+            crate::with_gil_entry!(_py, {
+                let out = importlib_find_spec_payload(
+                    _py,
+                    &module_name,
+                    &search_paths,
+                    None,
+                    1,
+                    0,
+                    false,
+                );
+                assert!(
+                    out.is_err(),
+                    "expected spec boundary failure for manifest module mismatch"
+                );
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["extension metadata module mismatch"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
     fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
         with_trusted_runtime(|| {
             clear_extension_metadata_validation_cache();
@@ -16369,6 +16432,83 @@ mod tests {
     }
 
     #[test]
+    fn extension_loader_boundary_rejects_manifest_module_mismatch() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_loader_module_mismatch");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"loader-boundary-extension")
+                .expect("write extension placeholder");
+            let module_name = "demo.extension.loader.requested";
+            let manifest_module_name = "demo.extension.loader.manifest";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                manifest_module_name,
+                extension_boundary_filename(),
+                &extension_sha256,
+            );
+
+            crate::with_gil_entry!(_py, {
+                let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["extension metadata module mismatch"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_exec_boundary_rejects_manifest_module_mismatch() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_exec_module_mismatch");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            std::fs::write(&extension_path, b"exec-boundary-extension")
+                .expect("write extension placeholder");
+            let module_name = "demo.extension.exec.requested";
+            let manifest_module_name = "demo.extension.exec.manifest";
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                manifest_module_name,
+                extension_boundary_filename(),
+                &extension_sha256,
+            );
+
+            crate::with_gil_entry!(_py, {
+                let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!namespace_ptr.is_null(), "alloc namespace dict");
+                let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
+                let _ = call_extension_exec_boundary(
+                    _py,
+                    namespace_bits,
+                    module_name,
+                    &extension_path_text,
+                );
+                dec_ref_bits(_py, namespace_bits);
+                assert_pending_exception_contains(
+                    _py,
+                    "ImportError",
+                    &["extension metadata module mismatch"],
+                );
+            });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
     fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
         with_trusted_runtime(|| {
             clear_extension_metadata_validation_cache();
@@ -16415,6 +16555,68 @@ mod tests {
                     &["extension checksum mismatch"],
                 );
             });
+
+            std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+        });
+    }
+
+    #[test]
+    fn extension_loader_boundary_records_cache_hits_and_misses() {
+        with_trusted_runtime(|| {
+            clear_extension_metadata_validation_cache();
+            let tmp = extension_boundary_temp_dir("molt_extension_loader_cache_hit_miss");
+            std::fs::create_dir_all(&tmp).expect("create temp dir");
+            let extension_path = tmp.join(extension_boundary_filename());
+            let module_name = "demo.extension.loader.cache_stats";
+            std::fs::write(&extension_path, b"loader-boundary-extension-cache")
+                .expect("write extension placeholder");
+            let extension_path_text = extension_path.to_string_lossy().into_owned();
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
+            write_valid_extension_manifest(
+                &tmp.join("extension_manifest.json"),
+                module_name,
+                extension_boundary_filename(),
+                &extension_sha256,
+            );
+
+            crate::with_gil_entry!(_py, {
+                let payload_bits =
+                    call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected boundary exception on cold validation: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+                assert!(
+                    !obj_from_bits(payload_bits).is_none(),
+                    "expected loader payload on cold validation"
+                );
+                dec_ref_bits(_py, payload_bits);
+
+                let payload_bits =
+                    call_extension_loader_boundary(_py, module_name, &extension_path_text);
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected boundary exception on warm validation: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+                assert!(
+                    !obj_from_bits(payload_bits).is_none(),
+                    "expected loader payload on warm validation"
+                );
+                dec_ref_bits(_py, payload_bits);
+            });
+
+            let (hits, misses) = extension_metadata_cache_stats();
+            assert!(
+                misses >= 1,
+                "expected at least one cold miss, observed hits={hits}, misses={misses}"
+            );
+            assert!(
+                hits >= 1,
+                "expected at least one warm hit, observed hits={hits}, misses={misses}"
+            );
 
             std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
         });

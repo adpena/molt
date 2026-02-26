@@ -134,6 +134,10 @@ jobs:
             os: ubuntu-latest
             target: native
             install_zig: false
+          - name: linux-cross-aarch64-gnu
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            install_zig: true
           - name: linux-cross-musl
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
@@ -246,6 +250,7 @@ jobs:
               textwrap.dedent(
                   r"""
                   #include <Python.h>
+                  #include <numpy/arrayobject.h>
 
                   static struct PyModuleDef demo_module = {
                       PyModuleDef_HEAD_INIT,
@@ -278,19 +283,119 @@ jobs:
                       return left + right;
                   }
 
+                  static PyObject *demo_type_ping(PyObject *self, PyObject *args) {
+                      (void)self;
+                      (void)args;
+                      Py_RETURN_NONE;
+                  }
+
+                  static int numpy_probe(PyObject *obj) {
+                      PyArrayObject *arr = (PyArrayObject *)obj;
+                      PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);
+                      npy_intp nd = PyArray_NDIM(arr);
+                      npy_intp size = PyArray_SIZE(arr);
+                      int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));
+                      import_array1(-1);
+                      if (descr != NULL) {
+                          PyMem_Free(descr);
+                      }
+                      return (int)(nd + size + is_int);
+                  }
+
+                  static PyMethodDef demo_type_methods[] = {
+                      {"ping", (void *)demo_type_ping, METH_VARARGS, "ping"},
+                      {"static_ping", (void *)demo_type_ping, METH_STATIC | METH_VARARGS, "static ping"},
+                      {NULL, NULL, 0, NULL},
+                  };
+
+                  static PyType_Slot demo_type_slots[] = {
+                      {Py_tp_doc, (void *)"demo heap type"},
+                      {Py_tp_methods, (void *)demo_type_methods},
+                      {0, NULL},
+                  };
+
+                  static PyType_Spec demo_type_spec = {
+                      "demo._native.DemoType",
+                      0,
+                      0,
+                      (unsigned int)(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
+                      demo_type_slots,
+                  };
+
                   int molt_ext_ci_dummy_symbol(void) {
+                      int ok = 0;
                       PyObject *module = PyModule_Create(&demo_module);
+                      PyObject *scratch = NULL;
+                      PyObject *heap_type = NULL;
+                      PyObject *file_obj = NULL;
+                      PyObject *filename_obj = NULL;
+                      const char *filename = NULL;
+                      PyModuleDef *module_def = NULL;
                       if (module == NULL) {
                           return 0;
                       }
-                      if (PyModule_AddIntConstant(module, "answer", 42) < 0) {
-                          Py_DECREF(module);
-                          return 0;
+                      module_def = PyModule_GetDef(module);
+                      if (module_def != &demo_module) {
+                          goto done;
                       }
+                      if (PyModule_GetState(module) != NULL) {
+                          goto done;
+                      }
+                      if (PyModule_SetDocString(module, "extension pipeline smoke module") < 0) {
+                          goto done;
+                      }
+                      scratch = PyModule_New("demo.scratch");
+                      if (scratch == NULL) {
+                          goto done;
+                      }
+                      if (PyModule_AddObjectRef(scratch, "linked_module", module) < 0) {
+                          goto done;
+                      }
+                      if (PyModule_AddIntConstant(module, "answer", 42) < 0) {
+                          goto done;
+                      }
+                      heap_type = PyType_FromModuleAndSpec(module, &demo_type_spec, NULL);
+                      if (heap_type == NULL) {
+                          goto done;
+                      }
+                      if (PyType_GetModule((PyTypeObject *)heap_type) != module) {
+                          goto done;
+                      }
+                      if (PyType_GetModuleState((PyTypeObject *)heap_type) != PyModule_GetState(module)) {
+                          goto done;
+                      }
+                      if (PyType_GetModuleByDef((PyTypeObject *)heap_type, &demo_module) != module) {
+                          goto done;
+                      }
+                      if (PyModule_AddObjectRef(module, "DemoType", heap_type) < 0) {
+                          goto done;
+                      }
+                      file_obj = PyUnicode_FromString("/tmp/demo_native.so");
+                      if (file_obj == NULL) {
+                          goto done;
+                      }
+                      if (PyObject_SetAttrString(module, "__file__", file_obj) < 0) {
+                          goto done;
+                      }
+                      filename_obj = PyModule_GetFilenameObject(module);
+                      if (filename_obj == NULL) {
+                          goto done;
+                      }
+                      filename = PyModule_GetFilename(module);
+                      if (filename == NULL || filename[0] == '\0') {
+                          goto done;
+                      }
+                      ok = 1;
                       (void)parse_single_int;
                       (void)parse_kw_pair;
+                      (void)numpy_probe;
+                    done:
+                      Py_XDECREF(filename_obj);
+                      Py_XDECREF(file_obj);
+                      Py_XDECREF(heap_type);
+                      Py_XDECREF(scratch);
                       Py_DECREF(module);
-                      return 1;
+                      return ok;
                   }
                   """
               ).lstrip(),
@@ -350,6 +455,12 @@ jobs:
               env_file.write(f"EXT_ABI={data.get('molt_c_api_version', '')}\n")
               env_file.write(f"EXT_EXPECTED_TARGET={target}\n")
           PY
+      - name: Scan extension C-API usage
+        run: |
+          uv run python -m molt.cli extension scan \
+            --project "$EXT_PROJECT_DIR" \
+            --fail-on-missing \
+            --json >"$EXT_PROJECT_DIR/scan.json"
       - name: Audit extension wheel metadata
         run: |
           uv run python -m molt.cli extension audit \
@@ -377,6 +488,39 @@ jobs:
             --capabilities fs.read \
             --dry-run \
             --json >"$EXT_PROJECT_DIR/publish.json"
+      - name: Runtime extension import smoke (native lanes)
+        if: matrix.lane.target == 'native'
+        run: |
+          uv run python - <<'PY'
+          import os
+          import pathlib
+          import textwrap
+
+          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
+          wheel = pathlib.Path(os.environ["EXT_WHEEL"])
+          script_path = root / "runtime_import_smoke.py"
+          script_path.write_text(
+              textwrap.dedent(
+                  f"""
+                  import sys
+
+                  sys.path.insert(0, {wheel.as_posix()!r})
+                  import demo._native  # noqa: F401
+                  """
+              ).lstrip(),
+              encoding="utf-8",
+          )
+          PY
+          set +e
+          MOLT_TRUSTED=1 uv run python -m molt.cli run --profile dev \
+            "$EXT_PROJECT_DIR/runtime_import_smoke.py" \
+            >"$EXT_PROJECT_DIR/runtime_import_smoke.log" 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep -E \
+            "libmolt extension execution has no intrinsic execution candidate|extension metadata" \
+            "$EXT_PROJECT_DIR/runtime_import_smoke.log"
       - name: Ensure extension wasm target is rejected
         if: matrix.lane.name == 'linux-native'
         run: |
@@ -411,11 +555,13 @@ jobs:
           import pathlib
 
           root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
+          scan = json.loads((root / "scan.json").read_text())
           build = json.loads((root / "build.json").read_text())
           audit = json.loads((root / "audit.json").read_text())
           verify = json.loads((root / "verify.json").read_text())
           publish = json.loads((root / "publish.json").read_text())
 
+          assert scan["status"] == "ok", scan
           assert build["status"] == "ok", build
           assert audit["status"] == "ok", audit
           assert verify["status"] == "ok", verify
@@ -428,8 +574,12 @@ jobs:
           if expected == "native":
               assert build_data["build_target"] == "native", build_data
           else:
+              expected_platform_tag = expected.replace("-", "_")
               assert build_data["build_target"] == expected, build_data
               assert build_data["target_triple"] == expected, build_data
+              assert build_data["platform_tag"] == expected_platform_tag, build_data
+              assert audit_data["wheel_tags"]["platform"] == expected_platform_tag, audit_data
+              assert expected_platform_tag in pathlib.Path(build_data["wheel"]).name, build_data
 
           assert audit_data["require_abi"] == build_data["molt_c_api_version"], audit_data
           assert audit_data["wheel_tags"]["abi"] == build_data["abi_tag"], audit_data
@@ -450,9 +600,11 @@ jobs:
           name: extension-pipeline-${{ matrix.lane.name }}
           path: |
             ${{ env.EXT_PROJECT_DIR }}/build.json
+            ${{ env.EXT_PROJECT_DIR }}/scan.json
             ${{ env.EXT_PROJECT_DIR }}/audit.json
             ${{ env.EXT_PROJECT_DIR }}/verify.json
             ${{ env.EXT_PROJECT_DIR }}/publish.json
+            ${{ env.EXT_PROJECT_DIR }}/runtime_import_smoke.log
             ${{ env.EXT_PROJECT_DIR }}/wasm_unsupported.json
 
   test-rust:

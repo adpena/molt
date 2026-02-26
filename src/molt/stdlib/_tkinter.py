@@ -17,9 +17,11 @@ _MOLT_TK_DO_ONE_EVENT = _require_intrinsic("molt_tk_do_one_event", globals())
 _MOLT_TK_AFTER = _require_intrinsic("molt_tk_after", globals())
 _MOLT_TK_AFTER_IDLE = _require_intrinsic("molt_tk_after_idle", globals())
 _MOLT_TK_AFTER_CANCEL = _require_intrinsic("molt_tk_after_cancel", globals())
+_MOLT_TK_AFTER_INFO = _require_intrinsic("molt_tk_after_info", globals())
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
 _MOLT_TK_TRACE_ADD = _require_intrinsic("molt_tk_trace_add", globals())
 _MOLT_TK_TRACE_REMOVE = _require_intrinsic("molt_tk_trace_remove", globals())
+_MOLT_TK_TRACE_CLEAR = _require_intrinsic("molt_tk_trace_clear", globals())
 _MOLT_TK_TRACE_INFO = _require_intrinsic("molt_tk_trace_info", globals())
 _MOLT_TK_TKWAIT_VARIABLE = _require_intrinsic("molt_tk_tkwait_variable", globals())
 _MOLT_TK_TKWAIT_WINDOW = _require_intrinsic("molt_tk_tkwait_window", globals())
@@ -29,6 +31,18 @@ _MOLT_TK_BIND_CALLBACK_REGISTER = _require_intrinsic(
 )
 _MOLT_TK_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
     "molt_tk_bind_callback_unregister", globals()
+)
+_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_widget_bind_callback_register", globals()
+)
+_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_widget_bind_callback_unregister", globals()
+)
+_MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_text_tag_bind_callback_register", globals()
+)
+_MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_text_tag_bind_callback_unregister", globals()
 )
 _MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_REGISTER = _require_intrinsic(
     "molt_tk_treeview_tag_bind_callback_register", globals()
@@ -277,8 +291,10 @@ def _normalize_after_cancel_identifier(identifier):
 
 
 def after_cancel(app, identifier):
-    if identifier is None:
-        return None
+    if not identifier:
+        raise ValueError(
+            "id must be a valid identifier returned from after or after_idle"
+        )
 
     token = _normalize_after_cancel_identifier(identifier)
     if isinstance(identifier, TkttType):
@@ -286,11 +302,22 @@ def after_cancel(app, identifier):
         identifier._callback = None
         identifier._token = None
 
-    if token is None:
-        return None
+    if token in (None, ""):
+        raise ValueError(
+            "id must be a valid identifier returned from after or after_idle"
+        )
 
     _MOLT_TK_AFTER_CANCEL(_unwrap_app(app), token)
     return None
+
+
+def after_info(app, identifier=None):
+    token = (
+        None if identifier is None else _normalize_after_cancel_identifier(identifier)
+    )
+    if token is None:
+        return tuple(_MOLT_TK_AFTER_INFO(_unwrap_app(app), None))
+    return tuple(_MOLT_TK_AFTER_INFO(_unwrap_app(app), token))
 
 
 def createtimerhandler(app, milliseconds, callback):
@@ -339,6 +366,11 @@ def trace_remove(app, variable_name, mode, cbname):
     return None
 
 
+def trace_clear(app, variable_name):
+    _MOLT_TK_TRACE_CLEAR(_unwrap_app(app), str(variable_name))
+    return None
+
+
 def trace_info(app, variable_name):
     return tuple(_MOLT_TK_TRACE_INFO(_unwrap_app(app), str(variable_name)))
 
@@ -373,6 +405,58 @@ def bind_unregister(app, target_name, sequence, command_name):
     _MOLT_TK_BIND_CALLBACK_UNREGISTER(
         _unwrap_app(app),
         str(target_name),
+        str(sequence),
+        str(command_name),
+    )
+    return None
+
+
+def widget_bind_register(app, widget_path, bind_target, sequence, callback, add_prefix):
+    if add_prefix not in ("", "+"):
+        raise TypeError("bind add prefix must be '' or '+'")
+    if not callable(callback):
+        raise TypeError("tag_bind callback must be callable")
+    return _MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER(
+        _unwrap_app(app),
+        str(widget_path),
+        str(bind_target),
+        str(sequence),
+        callback,
+        add_prefix,
+    )
+
+
+def widget_bind_unregister(app, widget_path, bind_target, sequence, command_name):
+    _MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER(
+        _unwrap_app(app),
+        str(widget_path),
+        str(bind_target),
+        str(sequence),
+        str(command_name),
+    )
+    return None
+
+
+def text_tag_bind_register(app, widget_path, tagname, sequence, callback, add_prefix):
+    if add_prefix not in ("", "+"):
+        raise TypeError("bind add prefix must be '' or '+'")
+    if not callable(callback):
+        raise TypeError("tag_bind callback must be callable")
+    return _MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER(
+        _unwrap_app(app),
+        str(widget_path),
+        str(tagname),
+        str(sequence),
+        callback,
+        add_prefix,
+    )
+
+
+def text_tag_bind_unregister(app, widget_path, tagname, sequence, command_name):
+    _MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER(
+        _unwrap_app(app),
+        str(widget_path),
+        str(tagname),
         str(sequence),
         str(command_name),
     )
@@ -562,6 +646,9 @@ class TkappType:
     def after_cancel(self, identifier):
         return after_cancel(self, identifier)
 
+    def after_info(self, identifier=None):
+        return after_info(self, identifier)
+
     def createtimerhandler(self, milliseconds, callback):
         return createtimerhandler(self, milliseconds, callback)
 
@@ -668,6 +755,7 @@ __all__ = [
     "_flatten",
     "after",
     "after_cancel",
+    "after_info",
     "after_idle",
     "bind_register",
     "bind_script_remove_command",
@@ -699,9 +787,12 @@ __all__ = [
     "setvar",
     "splitlist",
     "trace_add",
+    "trace_clear",
     "trace_info",
     "trace_remove",
     "tk_available",
+    "text_tag_bind_register",
+    "text_tag_bind_unregister",
     "treeview_tag_bind_register",
     "treeview_tag_bind_unregister",
     "unsetvar",
@@ -709,6 +800,8 @@ __all__ = [
     "wait_visibility",
     "wait_window",
     "wantobjects",
+    "widget_bind_register",
+    "widget_bind_unregister",
 ]
 
 
