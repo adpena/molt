@@ -168,7 +168,9 @@ struct HostState {
     call_indirect: Arc<Mutex<HashMap<String, Option<Func>>>>,
     db_worker: Option<DbWorker>,
     db_pending: HashMap<u64, PendingDbRequest>,
-    db_cancel_queue: VecDeque<u64>,
+    db_cancel_index: Vec<u64>,
+    db_cancel_positions: HashMap<u64, usize>,
+    db_cancel_cursor: usize,
     last_cancel_check: Option<Instant>,
     socket_manager: SocketManager,
     ws_manager: WebSocketManager,
@@ -249,7 +251,9 @@ struct WebSocketEntry {
 struct ProcessManager {
     next_id: u64,
     processes: HashMap<u64, ProcessEntry>,
-    poll_queue: VecDeque<u64>,
+    poll_index: Vec<u64>,
+    poll_positions: HashMap<u64, usize>,
+    poll_cursor: usize,
     events_tx: mpsc::Sender<ProcessEvent>,
     events_rx: mpsc::Receiver<ProcessEvent>,
 }
@@ -280,7 +284,9 @@ impl ProcessManager {
         Self {
             next_id: 1,
             processes: HashMap::new(),
-            poll_queue: VecDeque::new(),
+            poll_index: Vec::new(),
+            poll_positions: HashMap::new(),
+            poll_cursor: 0,
             events_tx: tx,
             events_rx: rx,
         }
@@ -293,6 +299,91 @@ impl ProcessManager {
         }
         handle
     }
+
+    fn poll_track(&mut self, handle: u64) {
+        indexed_track(&mut self.poll_index, &mut self.poll_positions, handle);
+    }
+
+    fn poll_untrack(&mut self, handle: u64) {
+        indexed_untrack(
+            &mut self.poll_index,
+            &mut self.poll_positions,
+            &mut self.poll_cursor,
+            handle,
+        );
+    }
+
+    fn poll_batch_handles(&mut self, max_batch: usize) -> Vec<u64> {
+        indexed_next_batch(&self.poll_index, &mut self.poll_cursor, max_batch)
+    }
+}
+
+fn indexed_track(index: &mut Vec<u64>, positions: &mut HashMap<u64, usize>, id: u64) {
+    if positions.contains_key(&id) {
+        return;
+    }
+    let pos = index.len();
+    index.push(id);
+    positions.insert(id, pos);
+}
+
+fn indexed_untrack(
+    index: &mut Vec<u64>,
+    positions: &mut HashMap<u64, usize>,
+    cursor: &mut usize,
+    id: u64,
+) {
+    let Some(pos) = positions.remove(&id) else {
+        return;
+    };
+    let last = index.len().saturating_sub(1);
+    index.swap_remove(pos);
+    if pos < last
+        && let Some(moved) = index.get(pos).copied()
+    {
+        positions.insert(moved, pos);
+    }
+    if index.is_empty() {
+        *cursor = 0;
+    } else if *cursor >= index.len() {
+        *cursor = 0;
+    }
+}
+
+fn indexed_next_batch(index: &[u64], cursor: &mut usize, max_batch: usize) -> Vec<u64> {
+    if index.is_empty() || max_batch == 0 {
+        return Vec::new();
+    }
+    let batch = max_batch.min(index.len());
+    let mut out = Vec::with_capacity(batch);
+    for _ in 0..batch {
+        if *cursor >= index.len() {
+            *cursor = 0;
+        }
+        out.push(index[*cursor]);
+        *cursor += 1;
+        if *cursor >= index.len() {
+            *cursor = 0;
+        }
+    }
+    out
+}
+
+fn db_cancel_track(state: &mut HostState, req_id: u64) {
+    indexed_track(
+        &mut state.db_cancel_index,
+        &mut state.db_cancel_positions,
+        req_id,
+    );
+}
+
+fn db_cancel_untrack(state: &mut HostState, req_id: u64) {
+    indexed_untrack(
+        &mut state.db_cancel_index,
+        &mut state.db_cancel_positions,
+        &mut state.db_cancel_cursor,
+        req_id,
+    );
 }
 
 fn resolve_wasm_path(arg: Option<String>) -> Result<PathBuf> {
@@ -1567,19 +1658,12 @@ fn fail_pending_requests(
 }
 
 fn drain_db_pending(state: &mut HostState) -> Vec<PendingDbRequest> {
-    state.db_cancel_queue.clear();
+    state.db_cancel_index.clear();
+    state.db_cancel_positions.clear();
+    state.db_cancel_cursor = 0;
     std::mem::take(&mut state.db_pending)
         .into_values()
         .collect::<Vec<_>>()
-}
-
-fn requeue_db_cancel(state: &mut HostState, req_id: u64) {
-    if let Some(pending) = state.db_pending.get(&req_id)
-        && pending.token_id != 0
-        && !pending.cancel_sent
-    {
-        state.db_cancel_queue.push_back(req_id);
-    }
 }
 
 fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
@@ -1624,6 +1708,7 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
                 match message {
                     Ok(WorkerMessage::Response(resp)) => {
                         if let Some(pending) = state.db_pending.remove(&resp.request_id) {
+                            db_cancel_untrack(state, resp.request_id);
                             deliveries.push((pending, resp));
                         }
                     }
@@ -1674,24 +1759,30 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
     if should_check {
         let cancel_func = exports.cancel_is_cancelled;
         if let Some(cancel_func) = cancel_func {
+            let candidate_ids = {
+                let state = caller.data_mut();
+                let budget = state.db_cancel_index.len().min(CANCEL_POLL_BATCH);
+                indexed_next_batch(&state.db_cancel_index, &mut state.db_cancel_cursor, budget)
+            };
             let candidates = {
                 let state = caller.data_mut();
-                let budget = state.db_cancel_queue.len().min(CANCEL_POLL_BATCH);
-                let mut batch = Vec::with_capacity(budget);
-                for _ in 0..budget {
-                    let Some(req_id) = state.db_cancel_queue.pop_front() else {
-                        break;
-                    };
+                let mut stale_ids = Vec::new();
+                let mut batch = Vec::with_capacity(candidate_ids.len());
+                for req_id in candidate_ids {
                     if let Some(pending) = state.db_pending.get(&req_id)
                         && pending.token_id != 0
                         && !pending.cancel_sent
                     {
                         batch.push((req_id, pending.token_id));
+                    } else {
+                        stale_ids.push(req_id);
                     }
+                }
+                for req_id in stale_ids {
+                    db_cancel_untrack(state, req_id);
                 }
                 batch
             };
-            let mut retry_ids = Vec::new();
             let mut cancel_ids = Vec::new();
             for (req_id, token_id) in candidates {
                 let boxed = box_int(token_id);
@@ -1699,38 +1790,25 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
                     let bits = bits as u64;
                     if is_bool_bits(bits) && unbox_bool(bits) {
                         cancel_ids.push(req_id);
-                        continue;
                     }
                 }
-                retry_ids.push(req_id);
             }
-            if !retry_ids.is_empty() || !cancel_ids.is_empty() {
+            if !cancel_ids.is_empty() {
                 let state = caller.data_mut();
-                for req_id in retry_ids {
-                    requeue_db_cancel(state, req_id);
-                }
-                if !cancel_ids.is_empty() {
-                    let worker_stdin = state.db_worker.as_ref().map(|worker| worker.stdin.clone());
-                    if let Some(worker_stdin) = worker_stdin {
-                        for req_id in cancel_ids {
-                            let mut should_requeue = false;
-                            if let Some(pending) = state.db_pending.get_mut(&req_id)
-                                && pending.token_id != 0
-                                && !pending.cancel_sent
-                            {
-                                if send_worker_cancel(&worker_stdin, req_id).is_ok() {
-                                    pending.cancel_sent = true;
-                                } else {
-                                    should_requeue = true;
-                                }
-                            }
-                            if should_requeue {
-                                requeue_db_cancel(state, req_id);
-                            }
+                let worker_stdin = state.db_worker.as_ref().map(|worker| worker.stdin.clone());
+                if let Some(worker_stdin) = worker_stdin {
+                    for req_id in cancel_ids {
+                        let mut stop_polling_token = false;
+                        if let Some(pending) = state.db_pending.get_mut(&req_id)
+                            && pending.token_id != 0
+                            && !pending.cancel_sent
+                            && send_worker_cancel(&worker_stdin, req_id).is_ok()
+                        {
+                            pending.cancel_sent = true;
+                            stop_polling_token = true;
                         }
-                    } else {
-                        for req_id in cancel_ids {
-                            requeue_db_cancel(state, req_id);
+                        if stop_polling_token || !state.db_pending.contains_key(&req_id) {
+                            db_cancel_untrack(state, req_id);
                         }
                     }
                 }
@@ -1966,7 +2044,7 @@ fn handle_db_host(
                     },
                 );
                 if token_id != 0 {
-                    state.db_cancel_queue.push_back(id);
+                    db_cancel_track(state, id);
                 }
                 Ok(id)
             }
@@ -3808,7 +3886,7 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                         exit_code: None,
                     },
                 );
-                state.process_manager.poll_queue.push_back(handle);
+                state.process_manager.poll_track(handle);
             }
             if let Some(reader) = merged_stdout_reader.take() {
                 let tx = caller.data().process_manager.events_tx.clone();
@@ -3836,6 +3914,7 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                 Ok(mem) => mem,
                 Err(_) => return -libc::EFAULT,
             };
+            let mut stop_polling = false;
             let code = {
                 let entry = match caller
                     .data_mut()
@@ -3850,13 +3929,23 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                     match entry.child.try_wait() {
                         Ok(Some(status)) => {
                             entry.exit_code = Some(exit_code_from_status(status));
+                            stop_polling = true;
                         }
                         Ok(None) => {}
                         Err(err) => return -map_io_error(&err),
                     }
                 }
+                if entry.exit_code.is_some() {
+                    stop_polling = true;
+                }
                 entry.exit_code
             };
+            if stop_polling {
+                caller
+                    .data_mut()
+                    .process_manager
+                    .poll_untrack(handle as u64);
+            }
             let Some(code) = code else {
                 return -libc::EWOULDBLOCK;
             };
@@ -4083,33 +4172,35 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
             let state = caller.data_mut();
             let budget = state
                 .process_manager
-                .poll_queue
+                .poll_index
                 .len()
                 .min(PROCESS_POLL_BATCH);
-            for _ in 0..budget {
-                let Some(handle) = state.process_manager.poll_queue.pop_front() else {
-                    break;
-                };
-                let mut requeue = false;
+            let handles = state.process_manager.poll_batch_handles(budget);
+            for handle in handles {
+                let mut stop_polling = false;
                 let mut exit_code = None;
-                if let Some(entry) = state.process_manager.processes.get_mut(&handle)
-                    && entry.exit_code.is_none()
-                {
-                    match entry.child.try_wait() {
-                        Ok(Some(status)) => {
-                            let code = exit_code_from_status(status);
-                            entry.exit_code = Some(code);
-                            exit_code = Some(code);
+                if let Some(entry) = state.process_manager.processes.get_mut(&handle) {
+                    if entry.exit_code.is_none() {
+                        match entry.child.try_wait() {
+                            Ok(Some(status)) => {
+                                let code = exit_code_from_status(status);
+                                entry.exit_code = Some(code);
+                                exit_code = Some(code);
+                                stop_polling = true;
+                            }
+                            Ok(None) | Err(_) => {}
                         }
-                        Ok(None) | Err(_) => {
-                            requeue = true;
-                        }
+                    } else {
+                        stop_polling = true;
                     }
+                } else {
+                    stop_polling = true;
                 }
                 if let Some(code) = exit_code {
                     exited.push((handle, code));
-                } else if requeue {
-                    state.process_manager.poll_queue.push_back(handle);
+                }
+                if stop_polling {
+                    state.process_manager.poll_untrack(handle);
                 }
             }
         }
@@ -4337,7 +4428,9 @@ fn main() -> Result<()> {
             call_indirect: Arc::new(Mutex::new(HashMap::new())),
             db_worker: None,
             db_pending: HashMap::new(),
-            db_cancel_queue: VecDeque::new(),
+            db_cancel_index: Vec::new(),
+            db_cancel_positions: HashMap::new(),
+            db_cancel_cursor: 0,
             last_cancel_check: None,
             socket_manager: SocketManager::new(),
             ws_manager: WebSocketManager::new(),
