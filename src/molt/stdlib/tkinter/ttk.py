@@ -5,6 +5,10 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
+    "molt_tk_bind_script_remove_command", globals()
+)
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
@@ -103,13 +107,14 @@ def _event_int(tk, value):
 
 
 def _event_from_subst_args(widget, event_args):
-    args = list(event_args)
-    if any(isinstance(item, tuple) and len(item) == 1 for item in args):
-        args = [
-            item[0] if isinstance(item, tuple) and len(item) == 1 else item
-            for item in args
-        ]
-    if len(args) != len(_SUBST_FORMAT):
+    try:
+        args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
+    except Exception:  # noqa: BLE001
+        return None
+
+    if isinstance(args, list):
+        args = tuple(args)
+    if not isinstance(args, tuple) or len(args) != len(_SUBST_FORMAT):
         return None
 
     (
@@ -757,15 +762,12 @@ class Treeview(Widget):
             self.tk.call(self._w, "tag", "bind", tagname, sequence, "", command_name)
         except Exception:  # noqa: BLE001
             script = self.tk.call(self._w, "tag", "bind", tagname, sequence)
-            replacement = ""
             if isinstance(script, str):
-                prefix = f'if {{"[{command_name} '
-                kept = [
-                    line for line in script.split("\n") if not line.startswith(prefix)
-                ]
-                replacement = "\n".join(kept)
-                if not replacement.strip():
+                replacement = _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND(script, command_name)
+                if not isinstance(replacement, str):
                     replacement = ""
+            else:
+                replacement = ""
             self.tk.call(self._w, "tag", "bind", tagname, sequence, replacement)
         self._release_command(command_name)
         return None

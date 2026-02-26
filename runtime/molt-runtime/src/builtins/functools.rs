@@ -12,10 +12,10 @@ use crate::{
     alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
     dec_ref_bits, dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
     dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_truthy, isinstance_runtime, molt_class_set_base, molt_getattr_builtin,
+    intern_static_name, is_truthy, issubclass_runtime, molt_class_set_base, molt_getattr_builtin,
     molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
     object_class_bits, object_set_class_bits, object_type_id, raise_exception, raise_not_iterable,
-    seq_vec_ref, string_obj_to_owned, to_i64,
+    seq_vec_ref, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -1864,6 +1864,12 @@ struct SingleDispatchState {
     /// Registry: (type_bits, func_bits) pairs.
     /// type_bits is the NaN-boxed class/type object.
     registry: Vec<(u64, u64)>,
+    /// Exact registrations for fast direct dispatch.
+    exact_registry: HashMap<u64, u64>,
+    /// Memoized dispatch results by concrete type bits.
+    dispatch_cache: HashMap<u64, u64>,
+    /// Runtime ABC invalidation token used to keep dispatch cache coherent.
+    abc_cache_token: u64,
 }
 
 static NEXT_SINGLEDISPATCH_HANDLE: AtomicI64 = AtomicI64::new(1);
@@ -1884,6 +1890,42 @@ fn sd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     Some(id)
 }
 
+fn singledispatch_abc_cache_token(_py: &PyToken<'_>) -> u64 {
+    crate::runtime_state(_py)
+        .abc_invalidation_counter
+        .load(Ordering::Acquire)
+}
+
+fn singledispatch_resolve_for_type(
+    _py: &PyToken<'_>,
+    state: &mut SingleDispatchState,
+    type_bits: u64,
+) -> u64 {
+    let token = singledispatch_abc_cache_token(_py);
+    if state.abc_cache_token != token {
+        state.dispatch_cache.clear();
+        state.abc_cache_token = token;
+    }
+    if let Some(&reg_func) = state.exact_registry.get(&type_bits) {
+        return reg_func;
+    }
+    if let Some(&cached_func) = state.dispatch_cache.get(&type_bits) {
+        return cached_func;
+    }
+    let mut resolved = state.default_func;
+    for &(reg_type, reg_func) in &state.registry {
+        if issubclass_runtime(_py, type_bits, reg_type) {
+            resolved = reg_func;
+            break;
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+    }
+    state.dispatch_cache.insert(type_bits, resolved);
+    resolved
+}
+
 // ─── singledispatch intrinsics ─────────────────────────────────────────────
 
 /// Create a new singledispatch handle, storing the default function.
@@ -1896,6 +1938,9 @@ pub extern "C" fn molt_functools_singledispatch_new(default_func_bits: u64) -> u
         let state = SingleDispatchState {
             default_func: default_func_bits,
             registry: Vec::new(),
+            exact_registry: HashMap::new(),
+            dispatch_cache: HashMap::new(),
+            abc_cache_token: singledispatch_abc_cache_token(_py),
         };
         SINGLEDISPATCH_REGISTRY.lock().unwrap().insert(id, state);
         MoltObject::from_int(id).bits()
@@ -1914,11 +1959,11 @@ pub extern "C" fn molt_functools_singledispatch_register(
         let Some(id) = sd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        inc_ref_bits(_py, type_bits);
-        inc_ref_bits(_py, func_bits);
         {
             let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
+                inc_ref_bits(_py, type_bits);
+                inc_ref_bits(_py, func_bits);
                 // If a registration already exists for this type, replace it.
                 if let Some(entry) = state.registry.iter_mut().find(|(t, _)| *t == type_bits) {
                     // Dec-ref the old func, dec-ref the extra type inc we did above.
@@ -1928,6 +1973,9 @@ pub extern "C" fn molt_functools_singledispatch_register(
                 } else {
                     state.registry.push((type_bits, func_bits));
                 }
+                state.exact_registry.insert(type_bits, func_bits);
+                state.dispatch_cache.clear();
+                state.abc_cache_token = singledispatch_abc_cache_token(_py);
             }
         }
         MoltObject::none().bits()
@@ -1935,8 +1983,8 @@ pub extern "C" fn molt_functools_singledispatch_register(
 }
 
 /// Dispatch: given an argument's type, look up the registered function.
-/// Checks for an exact type match first, then walks the registry using
-/// isinstance for MRO-aware matching.  Returns the function bits
+/// Checks for an exact type match first, then walks registered classes with
+/// subclass checks. Returns the function bits
 /// (registered function or default).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_bits: u64) -> u64 {
@@ -1945,28 +1993,13 @@ pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_
             return MoltObject::none().bits();
         };
         {
-            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
-            let Some(state) = map.get(&id) else {
+            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let Some(state) = map.get_mut(&id) else {
                 return MoltObject::none().bits();
             };
-            // 1. Exact type match.
-            for &(reg_type, reg_func) in &state.registry {
-                if reg_type == type_bits {
-                    inc_ref_bits(_py, reg_func);
-                    return reg_func;
-                }
-            }
-            // 2. MRO / isinstance-based match (first match wins, like CPython).
-            for &(reg_type, reg_func) in &state.registry {
-                if isinstance_runtime(_py, type_bits, reg_type) {
-                    inc_ref_bits(_py, reg_func);
-                    return reg_func;
-                }
-            }
-            // 3. Fall back to default.
-            let default = state.default_func;
-            inc_ref_bits(_py, default);
-            default
+            let resolved = singledispatch_resolve_for_type(_py, state, type_bits);
+            inc_ref_bits(_py, resolved);
+            resolved
         }
     })
 }
@@ -2009,31 +2042,16 @@ pub extern "C" fn molt_functools_singledispatch_call(
             );
         };
         // Get the type of the first argument.
-        let arg_type_bits = crate::type_of_bits(_py, first_arg_bits);
+        let arg_type_bits = type_of_bits(_py, first_arg_bits);
         // Look up the function for this type.
         {
-            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
-            let Some(state) = map.get(&id) else {
+            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let Some(state) = map.get_mut(&id) else {
                 return MoltObject::none().bits();
             };
-            // 1. Exact type match.
-            for &(reg_type, reg_func) in &state.registry {
-                if reg_type == arg_type_bits {
-                    inc_ref_bits(_py, reg_func);
-                    return reg_func;
-                }
-            }
-            // 2. MRO / isinstance-based match.
-            for &(reg_type, reg_func) in &state.registry {
-                if isinstance_runtime(_py, first_arg_bits, reg_type) {
-                    inc_ref_bits(_py, reg_func);
-                    return reg_func;
-                }
-            }
-            // 3. Fall back to default.
-            let default = state.default_func;
-            inc_ref_bits(_py, default);
-            default
+            let resolved = singledispatch_resolve_for_type(_py, state, arg_type_bits);
+            inc_ref_bits(_py, resolved);
+            resolved
         }
     })
 }

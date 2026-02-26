@@ -19,7 +19,7 @@ use postgres_protocol::types::{ArrayDimension, Range, RangeBound, array_from_sql
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::hint::black_box;
@@ -2653,9 +2653,9 @@ fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
     })? {
         values.push(decode_pg_raw_value(element_type, raw_val)?);
     }
-    let mut queue = VecDeque::from(values);
-    let nested = build_pg_array(&dimensions, &mut queue)?;
-    if !queue.is_empty() {
+    let mut cursor = 0usize;
+    let nested = build_pg_array(&dimensions, &values, &mut cursor)?;
+    if cursor != values.len() {
         return Err(ExecError {
             status: "InternalError",
             message: "Postgres array decode mismatch (extra values)".to_string(),
@@ -2673,7 +2673,8 @@ fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
 
 fn build_pg_array(
     dimensions: &[ArrayDimension],
-    values: &mut VecDeque<DbRowValue>,
+    values: &[DbRowValue],
+    cursor: &mut usize,
 ) -> Result<Vec<DbRowValue>, ExecError> {
     if dimensions.is_empty() {
         return Ok(Vec::new());
@@ -2688,15 +2689,18 @@ fn build_pg_array(
     let mut out = Vec::with_capacity(len);
     if dimensions.len() == 1 {
         for _ in 0..len {
-            let value = values.pop_front().ok_or_else(|| ExecError {
-                status: "InternalError",
-                message: "Postgres array decode mismatch (missing values)".to_string(),
-            })?;
+            let Some(value) = values.get(*cursor).cloned() else {
+                return Err(ExecError {
+                    status: "InternalError",
+                    message: "Postgres array decode mismatch (missing values)".to_string(),
+                });
+            };
+            *cursor += 1;
             out.push(value);
         }
     } else {
         for _ in 0..len {
-            let nested = build_pg_array(&dimensions[1..], values)?;
+            let nested = build_pg_array(&dimensions[1..], values, cursor)?;
             out.push(DbRowValue::Array(nested));
         }
     }

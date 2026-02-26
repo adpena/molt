@@ -75,7 +75,7 @@ def _live_smoke_script(expected_platform: str) -> str:
         import os
         import sys
         import tkinter as tk
-        from tkinter import simpledialog
+        from tkinter import simpledialog, ttk
 
         if not ({platform_gate}):
             print("SKIP:platform-mismatch")
@@ -90,16 +90,20 @@ def _live_smoke_script(expected_platform: str) -> str:
         root.withdraw()
         widget = tk.Frame(root, width=120, height=80)
         widget.pack()
+        tree = ttk.Treeview(root)
+        tree.pack()
 
         state = {{
             "timer_fired": False,
-            "bind_widget_ok": False,
-            "bind_payload": None,
+            "widget_payload_primary": [],
+            "widget_payload_secondary": [],
+            "tree_payload_primary": [],
+            "tree_payload_secondary": [],
         }}
 
-        def on_bind(event):
-            state["bind_widget_ok"] = getattr(event, "widget", None) is widget
-            state["bind_payload"] = (
+        def _event_payload(expected_widget, event):
+            return (
+                getattr(event, "widget", None) is expected_widget,
                 getattr(event, "x", None),
                 getattr(event, "y", None),
                 getattr(event, "delta", None),
@@ -111,8 +115,39 @@ def _live_smoke_script(expected_platform: str) -> str:
                 getattr(event, "y_root", None),
             )
 
-        bind_id = widget.bind("<KeyPress>", on_bind)
+        def _on_bind_primary(event):
+            state["widget_payload_primary"].append(_event_payload(widget, event))
+
+        def _on_bind_secondary(event):
+            state["widget_payload_secondary"].append(_event_payload(widget, event))
+
+        def _on_tree_primary(event):
+            state["tree_payload_primary"].append(_event_payload(tree, event))
+
+        def _on_tree_secondary(event):
+            state["tree_payload_secondary"].append(_event_payload(tree, event))
+
+        bind_id_primary = widget.bind("<KeyPress>", _on_bind_primary)
+        bind_id_secondary = widget.bind("<KeyPress>", _on_bind_secondary, add="+")
         bind_query_before = widget.bind("<KeyPress>")
+        tree_tag = "phase0_tag"
+        tree_bind_id_primary = tree.tag_bind(
+            tree_tag, "<<TreeviewOpen>>", _on_tree_primary
+        )
+        tree_query_primary = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        tree_bind_id_secondary = tree.tag_bind(
+            tree_tag, "<<TreeviewOpen>>", _on_tree_secondary
+        )
+        tree_query_secondary = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        tree_combined_script = (
+            f"{{tree_query_primary}}\\n{{tree_query_secondary}}".strip()
+        )
+        tree.tag_bind(
+            tree_tag,
+            "<<TreeviewOpen>>",
+            tree_combined_script,
+        )
+        tree_query_before = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
 
         dooneevent_ticks = []
 
@@ -209,7 +244,7 @@ def _live_smoke_script(expected_platform: str) -> str:
         def trigger():
             state["timer_fired"] = True
             root.tk.call(
-                bind_id,
+                bind_id_primary,
                 "55",
                 "1",
                 "1",
@@ -230,14 +265,131 @@ def _live_smoke_script(expected_platform: str) -> str:
                 "116",
                 "120",
             )
+            root.tk.call(
+                bind_id_secondary,
+                "56",
+                "1",
+                "1",
+                "10",
+                "11",
+                "12",
+                "13",
+                "14",
+                "25",
+                "26",
+                "B",
+                "1",
+                "L",
+                "66",
+                widget._w,
+                "KeyPress",
+                "215",
+                "216",
+                "80",
+            )
+            root.tk.call(
+                tree_bind_id_primary,
+                "7",
+                "1",
+                "1",
+                "10",
+                "11",
+                "12",
+                "13",
+                "14",
+                "45",
+                "46",
+                "T",
+                "1",
+                "T",
+                "84",
+                tree._w,
+                "VirtualEvent",
+                "315",
+                "316",
+                "60",
+            )
+            root.tk.call(
+                tree_bind_id_secondary,
+                "8",
+                "1",
+                "1",
+                "10",
+                "11",
+                "12",
+                "13",
+                "14",
+                "55",
+                "56",
+                "U",
+                "1",
+                "U",
+                "85",
+                tree._w,
+                "VirtualEvent",
+                "415",
+                "416",
+                "20",
+            )
             root.after(10, root.quit)
 
         root.after(15, trigger)
         root.mainloop()
 
         bind_after = widget.bind("<KeyPress>")
-        widget.unbind("<KeyPress>", bind_id)
+        widget.unbind("<KeyPress>", bind_id_primary)
+        bind_after_primary_unbind = widget.bind("<KeyPress>")
+        root.tk.call(
+            bind_id_secondary,
+            "57",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "35",
+            "36",
+            "C",
+            "1",
+            "M",
+            "67",
+            widget._w,
+            "KeyPress",
+            "515",
+            "516",
+            "40",
+        )
+        widget.unbind("<KeyPress>", bind_id_secondary)
         bind_after_unbind = widget.bind("<KeyPress>")
+        tree_query_after = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        tree.tag_unbind(tree_tag, "<<TreeviewOpen>>", tree_bind_id_primary)
+        tree_query_after_primary_unbind = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        root.tk.call(
+            tree_bind_id_secondary,
+            "9",
+            "1",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "65",
+            "66",
+            "V",
+            "1",
+            "V",
+            "86",
+            tree._w,
+            "VirtualEvent",
+            "515",
+            "516",
+            "10",
+        )
+        tree.tag_unbind(tree_tag, "<<TreeviewOpen>>", tree_bind_id_secondary)
+        tree_query_after_unbind = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
         children = tuple(root.winfo_children())
 
         def _drive_simpledialog_input(next_value):
@@ -289,11 +441,24 @@ def _live_smoke_script(expected_platform: str) -> str:
         )
 
         ok = (
-            isinstance(bind_id, str)
+            isinstance(bind_id_primary, str)
+            and isinstance(bind_id_secondary, str)
             and isinstance(bind_query_before, str)
-            and bind_id in bind_query_before
+            and bind_id_primary in bind_query_before
+            and bind_id_secondary in bind_query_before
             and bind_after == bind_query_before
+            and bind_id_primary not in bind_after_primary_unbind
+            and bind_id_secondary in bind_after_primary_unbind
             and bind_after_unbind == ""
+            and isinstance(tree_bind_id_primary, str)
+            and isinstance(tree_bind_id_secondary, str)
+            and isinstance(tree_query_before, str)
+            and tree_bind_id_primary in tree_query_before
+            and tree_bind_id_secondary in tree_query_before
+            and tree_query_after == tree_query_before
+            and tree_bind_id_primary not in tree_query_after_primary_unbind
+            and tree_bind_id_secondary in tree_query_after_primary_unbind
+            and tree_query_after_unbind == ""
             and state["timer_fired"] is True
             and dooneevent_ticks == ["fired"]
             and trace_events == [(trace_var._name, "", "write")]
@@ -301,10 +466,22 @@ def _live_smoke_script(expected_platform: str) -> str:
             and wait_var_value == "ready"
             and after_cancel_ok is True
             and filehandler_contract_ok is True
-            and state["bind_widget_ok"] is True
-            and state["bind_payload"] == (15, 16, 120, "K", "A", 55, "KeyPress", 115, 116)
-            and len(children) == 1
-            and str(children[0]) == str(widget)
+            and state["widget_payload_primary"]
+            == [(True, 15, 16, 120, "K", "A", 55, "KeyPress", 115, 116)]
+            and state["widget_payload_secondary"]
+            == [
+                (True, 25, 26, 80, "L", "B", 56, "KeyPress", 215, 216),
+                (True, 35, 36, 40, "M", "C", 57, "KeyPress", 515, 516),
+            ]
+            and state["tree_payload_primary"]
+            == [(True, 45, 46, 60, "T", "T", 7, "VirtualEvent", 315, 316)]
+            and state["tree_payload_secondary"]
+            == [
+                (True, 55, 56, 20, "U", "U", 8, "VirtualEvent", 415, 416),
+                (True, 65, 66, 10, "V", "V", 9, "VirtualEvent", 515, 516),
+            ]
+            and str(widget) in tuple(str(x) for x in children)
+            and str(tree) in tuple(str(x) for x in children)
             and simpledialog_string == "live-string"
             and simpledialog_int == 42
             and simpledialog_float == 2.25
@@ -315,11 +492,22 @@ def _live_smoke_script(expected_platform: str) -> str:
         print(
             "DETAIL:",
             f"platform={{sys.platform}}",
-            f"bind_id={{bind_id!r}}",
+            f"bind_id_primary={{bind_id_primary!r}}",
+            f"bind_id_secondary={{bind_id_secondary!r}}",
             f"bind_query_before={{bind_query_before!r}}",
-            f"bind_payload={{state['bind_payload']!r}}",
+            f"widget_payload_primary={{state['widget_payload_primary']!r}}",
+            f"widget_payload_secondary={{state['widget_payload_secondary']!r}}",
             f"bind_after={{bind_after!r}}",
+            f"bind_after_primary_unbind={{bind_after_primary_unbind!r}}",
             f"bind_after_unbind={{bind_after_unbind!r}}",
+            f"tree_bind_id_primary={{tree_bind_id_primary!r}}",
+            f"tree_bind_id_secondary={{tree_bind_id_secondary!r}}",
+            f"tree_query_before={{tree_query_before!r}}",
+            f"tree_payload_primary={{state['tree_payload_primary']!r}}",
+            f"tree_payload_secondary={{state['tree_payload_secondary']!r}}",
+            f"tree_query_after={{tree_query_after!r}}",
+            f"tree_query_after_primary_unbind={{tree_query_after_primary_unbind!r}}",
+            f"tree_query_after_unbind={{tree_query_after_unbind!r}}",
             f"dooneevent_ticks={{dooneevent_ticks!r}}",
             f"trace_events={{trace_events!r}}",
             f"trace_info_after={{trace_info_after!r}}",

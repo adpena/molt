@@ -1799,6 +1799,8 @@ impl WasmBackend {
             ("molt_weakref_drop", "weakref_drop", 1),
         ];
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
+        let builtin_runtime_names: HashSet<&str> =
+            builtin_table_funcs.iter().map(|(runtime_name, _, _)| *runtime_name).collect();
         for (runtime_name, _, _) in builtin_table_funcs.iter() {
             if let Some(arity) = builtin_trampoline_specs.get(*runtime_name) {
                 builtin_trampoline_funcs.push(((*runtime_name).to_string(), *arity));
@@ -1832,10 +1834,7 @@ impl WasmBackend {
         }
         if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
             for name in builtin_trampoline_specs.keys() {
-                if !builtin_table_funcs
-                    .iter()
-                    .any(|(entry, _, _)| entry == name)
-                {
+                if !builtin_runtime_names.contains(name.as_str()) {
                     panic!("builtin {name} missing from wasm table");
                 }
             }
@@ -9091,27 +9090,26 @@ impl WasmBackend {
             func.instruction(&Instruction::End);
         } else {
             let func = &mut func;
-            let jump_labels: HashSet<i64> = func_ir
-                .ops
-                .iter()
-                .filter_map(|op| {
-                    if op.kind.as_str() == "jump" {
-                        op.value
-                    } else {
-                        None
+            let mut jump_labels: HashSet<i64> = HashSet::new();
+            let mut label_order: Vec<i64> = Vec::new();
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "jump" => {
+                        if let Some(label_id) = op.value {
+                            jump_labels.insert(label_id);
+                        }
                     }
-                })
-                .collect();
-            let label_ids: Vec<i64> = func_ir
-                .ops
-                .iter()
-                .filter_map(|op| {
-                    if op.kind.as_str() == "label" {
-                        op.value.filter(|val| jump_labels.contains(val))
-                    } else {
-                        None
+                    "label" => {
+                        if let Some(label_id) = op.value {
+                            label_order.push(label_id);
+                        }
                     }
-                })
+                    _ => {}
+                }
+            }
+            let label_ids: Vec<i64> = label_order
+                .into_iter()
+                .filter(|label_id| jump_labels.contains(label_id))
                 .collect();
             if !label_ids.is_empty() {
                 for label_id in label_ids.iter().rev() {

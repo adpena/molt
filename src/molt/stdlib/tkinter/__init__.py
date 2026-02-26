@@ -12,6 +12,10 @@ from .constants import *  # noqa: F403
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
+    "molt_tk_bind_script_remove_command", globals()
+)
 
 
 NO_VALUE = object()
@@ -232,13 +236,14 @@ def _event_int(widget, value):
 
 
 def _event_from_subst_args(widget, event_args):
-    args = list(event_args)
-    if any(isinstance(item, tuple) and len(item) == 1 for item in args):
-        args = [
-            item[0] if isinstance(item, tuple) and len(item) == 1 else item
-            for item in args
-        ]
-    if len(args) != len(_SUBST_FORMAT):
+    try:
+        args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
+    except Exception:  # noqa: BLE001
+        return None
+
+    if isinstance(args, list):
+        args = tuple(args)
+    if not isinstance(args, tuple) or len(args) != len(_SUBST_FORMAT):
         return None
 
     (
@@ -583,17 +588,12 @@ class Misc:
         except Exception:  # noqa: BLE001
             script = ""
 
-        replacement = ""
-        if isinstance(script, str) and script:
-            kept = []
-            for line in script.split("\n"):
-                candidate = line.strip()
-                if not candidate:
-                    continue
-                if candidate.lstrip("+") == command_name:
-                    continue
-                kept.append(candidate)
-            replacement = "\n".join(kept)
+        if isinstance(script, str):
+            replacement = _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND(script, command_name)
+            if not isinstance(replacement, str):
+                replacement = ""
+        else:
+            replacement = ""
 
         self.call("bind", target_name, sequence, replacement)
         self._release_command(command_name)
