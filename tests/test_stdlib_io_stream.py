@@ -2,12 +2,13 @@ import asyncio
 
 import pytest
 
-from molt.stdlib import io
 from molt import intrinsics as _intrinsics
 
 
 if not _intrinsics.runtime_active():
     pytest.skip("Molt runtime intrinsics not active", allow_module_level=True)
+
+from molt.stdlib import io
 
 
 def test_stream_requires_capability(tmp_path, monkeypatch):

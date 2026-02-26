@@ -26,7 +26,9 @@ def _run_probe(script: str) -> list[str]:
 
 _UNAVAILABLE_RUNTIME_PROBE = """
 import builtins
+import fnmatch as _host_fnmatch
 import sys
+import types as _host_types
 
 sys.path.insert(0, __STDLIB_ROOT__)
 
@@ -39,20 +41,81 @@ def _tk_available():
     _tk_available_probe_state["calls"] += 1
     return False
 
+def _types_bootstrap():
+    keys = (
+        "AsyncGeneratorType",
+        "BuiltinFunctionType",
+        "BuiltinMethodType",
+        "CapsuleType",
+        "CellType",
+        "ClassMethodDescriptorType",
+        "CodeType",
+        "CoroutineType",
+        "EllipsisType",
+        "FrameType",
+        "FunctionType",
+        "GeneratorType",
+        "MappingProxyType",
+        "MethodType",
+        "MethodDescriptorType",
+        "MethodWrapperType",
+        "ModuleType",
+        "NoneType",
+        "NotImplementedType",
+        "GenericAlias",
+        "GetSetDescriptorType",
+        "LambdaType",
+        "MemberDescriptorType",
+        "SimpleNamespace",
+        "TracebackType",
+        "UnionType",
+        "WrapperDescriptorType",
+        "DynamicClassAttribute",
+        "coroutine",
+        "get_original_bases",
+        "new_class",
+        "prepare_class",
+        "resolve_bases",
+    )
+    return {name: getattr(_host_types, name) for name in keys}
+
 builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
+    "molt_stdlib_probe": lambda: True,
+    "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
+    "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
+    "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
+    "molt_fnmatch_translate": lambda pat: _host_fnmatch.translate(pat),
+    "molt_types_bootstrap": _types_bootstrap,
     "molt_tk_available": _tk_available,
     "molt_tk_app_new": lambda _opts=None: _runtime_unavailable("molt_tk_app_new"),
     "molt_tk_quit": lambda _app=None: _runtime_unavailable("molt_tk_quit"),
     "molt_tk_mainloop": lambda _app=None: _runtime_unavailable("molt_tk_mainloop"),
     "molt_tk_do_one_event": lambda _app=None, _flags=None: _runtime_unavailable("molt_tk_do_one_event"),
     "molt_tk_after": lambda _app=None, _delay=None, _fn=None: _runtime_unavailable("molt_tk_after"),
+    "molt_tk_after_idle": lambda _app=None, _fn=None: _runtime_unavailable("molt_tk_after_idle"),
+    "molt_tk_after_cancel": lambda _app=None, _token=None: None,
     "molt_tk_call": lambda _app=None, _argv=None: _runtime_unavailable("molt_tk_call"),
+    "molt_tk_trace_add": lambda _app=None, _name=None, _mode=None, _fn=None: _runtime_unavailable("molt_tk_trace_add"),
+    "molt_tk_trace_remove": lambda _app=None, _name=None, _mode=None, _cb=None: None,
+    "molt_tk_trace_info": lambda _app=None, _name=None: (),
+    "molt_tk_tkwait_variable": lambda _app=None, _name=None: _runtime_unavailable("molt_tk_tkwait_variable"),
+    "molt_tk_tkwait_window": lambda _app=None, _target=None: _runtime_unavailable("molt_tk_tkwait_window"),
+    "molt_tk_tkwait_visibility": lambda _app=None, _target=None: _runtime_unavailable("molt_tk_tkwait_visibility"),
+    "molt_tk_bind_callback_register": lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: _runtime_unavailable("molt_tk_bind_callback_register"),
+    "molt_tk_bind_callback_unregister": lambda _app=None, _target=None, _sequence=None, _command=None: None,
+    "molt_tk_treeview_tag_bind_callback_register": lambda _app=None, _path=None, _tag=None, _sequence=None, _fn=None: _runtime_unavailable("molt_tk_treeview_tag_bind_callback_register"),
+    "molt_tk_treeview_tag_bind_callback_unregister": lambda _app=None, _path=None, _tag=None, _sequence=None, _command=None: None,
     "molt_tk_bind_command": lambda _app=None, _name=None, _fn=None: _runtime_unavailable("molt_tk_bind_command"),
     "molt_tk_unbind_command": lambda _app=None, _name=None: _runtime_unavailable("molt_tk_unbind_command"),
     "molt_tk_filehandler_create": lambda _app=None, _fd=None, _mask=None, _callback=None, _file=None: _runtime_unavailable("molt_tk_filehandler_create"),
     "molt_tk_filehandler_delete": lambda _app=None, _fd=None: _runtime_unavailable("molt_tk_filehandler_delete"),
     "molt_tk_destroy_widget": lambda _app=None, _w=None: _runtime_unavailable("molt_tk_destroy_widget"),
     "molt_tk_last_error": lambda _app=None: "tk runtime unavailable",
+    "molt_tk_getboolean": lambda value: bool(value),
+    "molt_tk_getdouble": lambda value: float(value),
+    "molt_tk_splitlist": lambda value: tuple(value) if isinstance(value, (list, tuple)) else tuple(str(value).split()),
+    "molt_tk_errorinfo_append": lambda _app=None, _text=None: None,
+    "molt_tk_event_subst_parse": lambda _widget=None, event_args=(): tuple(event_args),
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
     "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_filedialog_show"),
@@ -171,12 +234,52 @@ else:
 
 _HEADLESS_RUNTIME_PROBE = """
 import builtins
+import fnmatch as _host_fnmatch
 import sys
+import types as _host_types
 
 sys.path.insert(0, __STDLIB_ROOT__)
 
 def _capabilities_has(name=None):
     return name in {"gui.window", "gui", "process.spawn", "process"}
+
+def _types_bootstrap():
+    keys = (
+        "AsyncGeneratorType",
+        "BuiltinFunctionType",
+        "BuiltinMethodType",
+        "CapsuleType",
+        "CellType",
+        "ClassMethodDescriptorType",
+        "CodeType",
+        "CoroutineType",
+        "EllipsisType",
+        "FrameType",
+        "FunctionType",
+        "GeneratorType",
+        "MappingProxyType",
+        "MethodType",
+        "MethodDescriptorType",
+        "MethodWrapperType",
+        "ModuleType",
+        "NoneType",
+        "NotImplementedType",
+        "GenericAlias",
+        "GetSetDescriptorType",
+        "LambdaType",
+        "MemberDescriptorType",
+        "SimpleNamespace",
+        "TracebackType",
+        "UnionType",
+        "WrapperDescriptorType",
+        "DynamicClassAttribute",
+        "coroutine",
+        "get_original_bases",
+        "new_class",
+        "prepare_class",
+        "resolve_bases",
+    )
+    return {name: getattr(_host_types, name) for name in keys}
 
 def _app_new(_opts=None):
     create_options = dict(_opts or {})
@@ -437,7 +540,121 @@ def _tk_simpledialog_query(
         return value
     raise RuntimeError(f"unsupported query kind: {query_kind}")
 
+_command_serial = {"value": 0}
+
+
+def _next_command_name(prefix):
+    _command_serial["value"] += 1
+    return f"{prefix}{_command_serial['value']}"
+
+
+def _tk_after_idle(_app, callback):
+    callback()
+    return "after#idle"
+
+
+def _tk_after_cancel(_app, _token):
+    return None
+
+
+def _tk_trace_add(app, _name, _mode, callback):
+    command_name = _next_command_name("::__molt_trace_")
+    app["commands"][command_name] = callback
+    return command_name
+
+
+def _tk_trace_remove(app, _name, _mode, callback_name):
+    app["commands"].pop(str(callback_name), None)
+    return None
+
+
+def _tk_trace_info(_app, _name):
+    return ()
+
+
+def _tk_tkwait_variable(_app, _name):
+    return None
+
+
+def _tk_tkwait_window(_app, _target):
+    return None
+
+
+def _tk_tkwait_visibility(_app, _target):
+    return None
+
+
+def _tk_bind_callback_register(app, _target_name, _sequence, callback, _add_prefix):
+    command_name = _next_command_name("::__molt_bind_")
+    app["commands"][command_name] = callback
+    return command_name
+
+
+def _tk_bind_callback_unregister(app, _target_name, _sequence, command_name):
+    app["commands"].pop(str(command_name), None)
+    return None
+
+
+def _tk_treeview_tag_bind_callback_register(app, treeview_path, tagname, sequence, callback):
+    command_name = _next_command_name("::__molt_ttk_tag_")
+    app["commands"][command_name] = callback
+    app["tree_tag_bindings"][(str(treeview_path), str(tagname), str(sequence))] = command_name
+    return command_name
+
+
+def _tk_treeview_tag_bind_callback_unregister(
+    app, treeview_path, tagname, sequence, command_name
+):
+    key = (str(treeview_path), str(tagname), str(sequence))
+    if app["tree_tag_bindings"].get(key) == str(command_name):
+        app["tree_tag_bindings"][key] = ""
+    app["commands"].pop(str(command_name), None)
+    return None
+
+
+def _tk_getboolean(value):
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _tk_getdouble(value):
+    return float(value)
+
+
+def _tk_splitlist(value):
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
+    text = str(value).strip()
+    if not text:
+        return ()
+    return tuple(text.split())
+
+
+def _tk_errorinfo_append(app, text):
+    current = app["vars"].get("errorInfo")
+    if current:
+        app["vars"]["errorInfo"] = f"{current}\\n{text}"
+    else:
+        app["vars"]["errorInfo"] = str(text)
+    return None
+
+
+def _tk_event_subst_parse(_widget_path, event_args):
+    return tuple(event_args)
+
+
 builtins._molt_intrinsics = {
+    "molt_stdlib_probe": lambda: True,
+    "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
+    "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
+    "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
+    "molt_fnmatch_translate": lambda pat: _host_fnmatch.translate(pat),
+    "molt_types_bootstrap": _types_bootstrap,
     "molt_capabilities_has": _capabilities_has,
     "molt_tk_available": lambda: True,
     "molt_tk_app_new": _app_new,
@@ -445,13 +662,30 @@ builtins._molt_intrinsics = {
     "molt_tk_mainloop": lambda _app=None: None,
     "molt_tk_do_one_event": lambda _app=None, _flags=None: False,
     "molt_tk_after": _tk_after,
+    "molt_tk_after_idle": _tk_after_idle,
+    "molt_tk_after_cancel": _tk_after_cancel,
     "molt_tk_call": _tk_call,
+    "molt_tk_trace_add": _tk_trace_add,
+    "molt_tk_trace_remove": _tk_trace_remove,
+    "molt_tk_trace_info": _tk_trace_info,
+    "molt_tk_tkwait_variable": _tk_tkwait_variable,
+    "molt_tk_tkwait_window": _tk_tkwait_window,
+    "molt_tk_tkwait_visibility": _tk_tkwait_visibility,
+    "molt_tk_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_treeview_tag_bind_callback_register": _tk_treeview_tag_bind_callback_register,
+    "molt_tk_treeview_tag_bind_callback_unregister": _tk_treeview_tag_bind_callback_unregister,
     "molt_tk_bind_command": _tk_bind_command,
     "molt_tk_unbind_command": _tk_unbind_command,
     "molt_tk_filehandler_create": _tk_filehandler_create,
     "molt_tk_filehandler_delete": _tk_filehandler_delete,
     "molt_tk_destroy_widget": lambda _app=None, _w=None: None,
     "molt_tk_last_error": lambda app=None: None if app is None else app.get("last_error"),
+    "molt_tk_getboolean": _tk_getboolean,
+    "molt_tk_getdouble": _tk_getdouble,
+    "molt_tk_splitlist": _tk_splitlist,
+    "molt_tk_errorinfo_append": _tk_errorinfo_append,
+    "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
     "molt_tk_filedialog_show": _tk_filedialog_show,
@@ -1263,18 +1497,59 @@ for key in sorted(checks):
 
 _TTK_PHASE0_PARITY_PROBE = """
 import builtins
+import fnmatch as _host_fnmatch
 import sys
+import types as _host_types
 
 sys.path.insert(0, __STDLIB_ROOT__)
 
 def _capabilities_has(name=None):
     return name in {"gui.window", "gui", "process.spawn", "process"}
 
+def _types_bootstrap():
+    keys = (
+        "AsyncGeneratorType",
+        "BuiltinFunctionType",
+        "BuiltinMethodType",
+        "CapsuleType",
+        "CellType",
+        "ClassMethodDescriptorType",
+        "CodeType",
+        "CoroutineType",
+        "EllipsisType",
+        "FrameType",
+        "FunctionType",
+        "GeneratorType",
+        "MappingProxyType",
+        "MethodType",
+        "MethodDescriptorType",
+        "MethodWrapperType",
+        "ModuleType",
+        "NoneType",
+        "NotImplementedType",
+        "GenericAlias",
+        "GetSetDescriptorType",
+        "LambdaType",
+        "MemberDescriptorType",
+        "SimpleNamespace",
+        "TracebackType",
+        "UnionType",
+        "WrapperDescriptorType",
+        "DynamicClassAttribute",
+        "coroutine",
+        "get_original_bases",
+        "new_class",
+        "prepare_class",
+        "resolve_bases",
+    )
+    return {name: getattr(_host_types, name) for name in keys}
+
 def _app_new(_opts=None):
     create_options = dict(_opts or {})
     return {
         "vars": {},
         "commands": {},
+        "tree_tag_bindings": {},
         "calls": [],
         "create_options": create_options,
     }
@@ -1319,7 +1594,121 @@ def _tk_after(_app, delay_ms, callback):
     callback()
     return f"after#{int(delay_ms)}"
 
+_command_serial = {"value": 0}
+
+
+def _next_command_name(prefix):
+    _command_serial["value"] += 1
+    return f"{prefix}{_command_serial['value']}"
+
+
+def _tk_after_idle(_app, callback):
+    callback()
+    return "after#idle"
+
+
+def _tk_after_cancel(_app, _token):
+    return None
+
+
+def _tk_trace_add(app, _name, _mode, callback):
+    command_name = _next_command_name("::__molt_trace_")
+    app["commands"][command_name] = callback
+    return command_name
+
+
+def _tk_trace_remove(app, _name, _mode, callback_name):
+    app["commands"].pop(str(callback_name), None)
+    return None
+
+
+def _tk_trace_info(_app, _name):
+    return ()
+
+
+def _tk_tkwait_variable(_app, _name):
+    return None
+
+
+def _tk_tkwait_window(_app, _target):
+    return None
+
+
+def _tk_tkwait_visibility(_app, _target):
+    return None
+
+
+def _tk_bind_callback_register(app, _target_name, _sequence, callback, _add_prefix):
+    command_name = _next_command_name("::__molt_bind_")
+    app["commands"][command_name] = callback
+    return command_name
+
+
+def _tk_bind_callback_unregister(app, _target_name, _sequence, command_name):
+    app["commands"].pop(str(command_name), None)
+    return None
+
+
+def _tk_treeview_tag_bind_callback_register(app, treeview_path, tagname, sequence, callback):
+    command_name = _next_command_name("::__molt_ttk_tag_")
+    app["commands"][command_name] = callback
+    app["tree_tag_bindings"][(str(treeview_path), str(tagname), str(sequence))] = command_name
+    return command_name
+
+
+def _tk_treeview_tag_bind_callback_unregister(
+    app, treeview_path, tagname, sequence, command_name
+):
+    key = (str(treeview_path), str(tagname), str(sequence))
+    if app["tree_tag_bindings"].get(key) == str(command_name):
+        app["tree_tag_bindings"][key] = ""
+    app["commands"].pop(str(command_name), None)
+    return None
+
+
+def _tk_getboolean(value):
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _tk_getdouble(value):
+    return float(value)
+
+
+def _tk_splitlist(value):
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
+    text = str(value).strip()
+    if not text:
+        return ()
+    return tuple(text.split())
+
+
+def _tk_errorinfo_append(app, text):
+    current = app["vars"].get("errorInfo")
+    if current:
+        app["vars"]["errorInfo"] = f"{current}\\n{text}"
+    else:
+        app["vars"]["errorInfo"] = str(text)
+    return None
+
+
+def _tk_event_subst_parse(_widget_path, event_args):
+    return tuple(event_args)
+
+
 builtins._molt_intrinsics = {
+    "molt_stdlib_probe": lambda: True,
+    "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
+    "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
+    "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
+    "molt_fnmatch_translate": lambda pat: _host_fnmatch.translate(pat),
+    "molt_types_bootstrap": _types_bootstrap,
     "molt_capabilities_has": _capabilities_has,
     "molt_tk_available": lambda: True,
     "molt_tk_app_new": _app_new,
@@ -1327,13 +1716,30 @@ builtins._molt_intrinsics = {
     "molt_tk_mainloop": lambda _app=None: None,
     "molt_tk_do_one_event": lambda _app=None, _flags=None: False,
     "molt_tk_after": _tk_after,
+    "molt_tk_after_idle": _tk_after_idle,
+    "molt_tk_after_cancel": _tk_after_cancel,
     "molt_tk_call": _tk_call,
+    "molt_tk_trace_add": _tk_trace_add,
+    "molt_tk_trace_remove": _tk_trace_remove,
+    "molt_tk_trace_info": _tk_trace_info,
+    "molt_tk_tkwait_variable": _tk_tkwait_variable,
+    "molt_tk_tkwait_window": _tk_tkwait_window,
+    "molt_tk_tkwait_visibility": _tk_tkwait_visibility,
+    "molt_tk_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_treeview_tag_bind_callback_register": _tk_treeview_tag_bind_callback_register,
+    "molt_tk_treeview_tag_bind_callback_unregister": _tk_treeview_tag_bind_callback_unregister,
     "molt_tk_bind_command": _tk_bind_command,
     "molt_tk_unbind_command": _tk_unbind_command,
     "molt_tk_filehandler_create": lambda _app=None, _fd=None, _mask=None, _callback=None, _file=None: None,
     "molt_tk_filehandler_delete": lambda _app=None, _fd=None: None,
     "molt_tk_destroy_widget": lambda _app=None, _w=None: None,
     "molt_tk_last_error": lambda _app=None: None,
+    "molt_tk_getboolean": _tk_getboolean,
+    "molt_tk_getdouble": _tk_getdouble,
+    "molt_tk_splitlist": _tk_splitlist,
+    "molt_tk_errorinfo_append": _tk_errorinfo_append,
+    "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",
     "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",

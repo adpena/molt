@@ -47,12 +47,39 @@ attribute on _Feature instances. These values must match the appropriate
 No feature line is ever to be deleted from this file.
 """
 
-from __future__ import annotations
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_future_features = _require_intrinsic("molt_future_features", globals())
-_feature_rows = list(_future_features())
+_FALLBACK_FEATURE_ROWS = (
+    ("nested_scopes", (2, 1, 0, "beta", 1), (2, 2, 0, "alpha", 0), 16),
+    ("generators", (2, 2, 0, "alpha", 1), (2, 3, 0, "final", 0), 0),
+    ("division", (2, 2, 0, "alpha", 2), (3, 0, 0, "alpha", 0), 131072),
+    (
+        "absolute_import",
+        (2, 5, 0, "alpha", 1),
+        (3, 0, 0, "alpha", 0),
+        262144,
+    ),
+    ("with_statement", (2, 5, 0, "alpha", 1), (2, 6, 0, "alpha", 0), 524288),
+    ("print_function", (2, 6, 0, "alpha", 2), (3, 0, 0, "alpha", 0), 1048576),
+    ("unicode_literals", (2, 6, 0, "alpha", 2), (3, 0, 0, "alpha", 0), 2097152),
+    ("barry_as_FLUFL", (3, 1, 0, "alpha", 2), (4, 0, 0, "alpha", 0), 4194304),
+    ("generator_stop", (3, 5, 0, "beta", 1), (3, 7, 0, "alpha", 0), 8388608),
+    ("annotations", (3, 7, 0, "beta", 1), None, 16777216),
+)
+
+
+def _load_feature_rows():
+    try:
+        future_features = _require_intrinsic("molt_future_features", globals())
+    except RuntimeError:
+        return list(_FALLBACK_FEATURE_ROWS)
+    rows = list(future_features())
+    if not rows:
+        return list(_FALLBACK_FEATURE_ROWS)
+    return rows
+
+
+_feature_rows = _load_feature_rows()
 all_feature_names = [str(name) for name, *_ in _feature_rows]
 
 __all__ = ["all_feature_names"] + all_feature_names
@@ -104,4 +131,4 @@ for _name, _optional, _mandatory, _compiler_flag in _feature_rows:
 
 del _feature_flags
 del _feature_rows
-del _future_features
+del _load_feature_rows

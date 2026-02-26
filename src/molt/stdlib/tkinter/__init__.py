@@ -4,18 +4,22 @@ The module intentionally exposes only a minimal Tk core while broader tkinter
 lowering is in progress. All behavior routes through `_tkinter` intrinsics.
 """
 
-import enum
+import sys
 
 import _tkinter as _phase0_tk
 from _intrinsics import require_intrinsic as _require_intrinsic
 from .constants import *  # noqa: F403
 
+try:
+    import enum as _enum
+except Exception:  # noqa: BLE001
+    _enum = None
+
+_EventTypeBase = _enum.Enum if _enum is not None else object
+
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
-    "molt_tk_bind_script_remove_command", globals()
-)
 
 
 NO_VALUE = object()
@@ -71,8 +75,16 @@ _TK_QUIT = _require_phase0_callable("quit")
 _TK_AFTER = _require_phase0_callable("after")
 _TK_CALL = _require_phase0_callable("call")
 _TK_BIND_COMMAND = _require_phase0_callable("bind_command")
+_TK_BIND_REGISTER = _require_phase0_callable("bind_register")
+_TK_BIND_UNREGISTER = _require_phase0_callable("bind_unregister")
 _TK_DESTROY_WIDGET = _require_phase0_callable("destroy_widget")
 _TK_LAST_ERROR = _require_phase0_callable("last_error")
+_TK_TRACE_ADD = _require_phase0_callable("trace_add")
+_TK_TRACE_REMOVE = _require_phase0_callable("trace_remove")
+_TK_TRACE_INFO = _require_phase0_callable("trace_info")
+_TK_WAIT_VARIABLE = _require_phase0_callable("wait_variable")
+_TK_WAIT_WINDOW = _require_phase0_callable("wait_window")
+_TK_WAIT_VISIBILITY = _require_phase0_callable("wait_visibility")
 
 TclError = _phase0_tk.TclError
 wantobjects = 1 if bool(_phase0_tk.wantobjects()) else 0
@@ -309,7 +321,7 @@ class Event:
     pass
 
 
-class EventType(str, enum.Enum):
+class EventType(str, _EventTypeBase):
     KeyPress = "2"
     Key = KeyPress
     KeyRelease = "3"
@@ -353,6 +365,12 @@ class EventType(str, enum.Enum):
 
 class Misc:
     """Shared Phase-0 object helpers for Tk and widgets."""
+
+    _last_child_ids = None
+    _tclCommands = None
+    _subst_format = _SUBST_FORMAT
+    _subst_format_str = _SUBST_FORMAT_STR
+    _noarg_ = NO_VALUE
 
     def call(self, *argv):
         _require_gui_window_capability()
@@ -460,31 +478,13 @@ class Misc:
         _require_gui_window_capability()
         if not callable(callback):
             raise TypeError("after_idle callback must be callable")
+        if args:
 
-        state = {"command_name": None, "released": False}
+            def wrapped():
+                return callback(*args)
 
-        def wrapped():
-            if state["released"]:
-                return None
-            state["released"] = True
-            command_name = state["command_name"]
-            if command_name is not None:
-                _pop_after_command(self.tk, command_name)
-                self._release_command(command_name)
-            return callback(*args)
-
-        command_name = self._register_command("after_idle", wrapped)
-        state["command_name"] = command_name
-        try:
-            token = self.call("after", "idle", command_name)
-        except Exception:
-            state["released"] = True
-            self._release_command(command_name)
-            raise
-        if not state["released"]:
-            self.tk._after_tokens[str(token)] = command_name
-            self.tk._after_tokens[command_name] = command_name
-        return token
+            return _phase0_tk.after_idle(self._tk_app, wrapped)
+        return _phase0_tk.after_idle(self._tk_app, callback)
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
@@ -498,11 +498,7 @@ class Misc:
 
         token = getattr(identifier, "_token", identifier)
         command_name = _pop_after_command(self.tk, token)
-        try:
-            self.call("after", "cancel", token)
-        except Exception:  # noqa: BLE001
-            # Keep cancellation idempotent across already-fired/canceled handles.
-            pass
+        _phase0_tk.after_cancel(self._tk_app, token)
         if command_name is not None:
             self._release_command(command_name)
         return None
@@ -561,16 +557,16 @@ class Misc:
             event.widget = widget
             return func(event)
 
-        command_name = self._register_command("bind", wrapped)
-        bind_script = (
-            f'if {{"[{command_name} {_SUBST_FORMAT_STR}]" == "break"}} break\n'
+        command_name = _TK_BIND_REGISTER(
+            self._tk_app,
+            target_name,
+            sequence,
+            wrapped,
+            add_prefix,
         )
-        script = f"{add_prefix}{bind_script}" if add_prefix else bind_script
-        try:
-            self.call("bind", target_name, sequence, script)
-        except Exception:
-            self._release_command(command_name)
-            raise
+        root = getattr(self, "tk", None)
+        if root is not None and hasattr(root, "_registered_commands"):
+            root._registered_commands.add(str(command_name))
         return command_name
 
     def _unbind(self, target, sequence, funcid=None):
@@ -583,20 +579,10 @@ class Misc:
             return self.call("bind", target_name, sequence, "")
 
         command_name = str(funcid)
-        try:
-            script = self.call("bind", target_name, sequence)
-        except Exception:  # noqa: BLE001
-            script = ""
-
-        if isinstance(script, str):
-            replacement = _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND(script, command_name)
-            if not isinstance(replacement, str):
-                replacement = ""
-        else:
-            replacement = ""
-
-        self.call("bind", target_name, sequence, replacement)
-        self._release_command(command_name)
+        _TK_BIND_UNREGISTER(self._tk_app, target_name, sequence, command_name)
+        root = getattr(self, "tk", None)
+        if root is not None and hasattr(root, "_registered_commands"):
+            root._registered_commands.discard(command_name)
         return None
 
     def bind(self, sequence=None, func=None, add=None):
@@ -683,18 +669,38 @@ class Misc:
         return _phase0_tk.globalunsetvar(self._tk_app, name)
 
     def wait_variable(self, name="PY_VAR"):
+        _require_gui_window_capability()
         variable_name = name._name if hasattr(name, "_name") else name
-        return self.call("tkwait", "variable", variable_name)
+        return _TK_WAIT_VARIABLE(self._tk_app, variable_name)
 
     waitvar = wait_variable
 
     def wait_window(self, window=None):
+        _require_gui_window_capability()
         target = self._w if window is None else _normalize_bind_target(window)
-        return self.call("tkwait", "window", target)
+        return _TK_WAIT_WINDOW(self._tk_app, target)
 
     def wait_visibility(self, window=None):
+        _require_gui_window_capability()
         target = self._w if window is None else _normalize_bind_target(window)
-        return self.call("tkwait", "visibility", target)
+        return _TK_WAIT_VISIBILITY(self._tk_app, target)
+
+    def tk_strictMotif(self, boolean=None):
+        if boolean is None:
+            return self.getboolean(self.call("set", "tk_strictMotif"))
+        return self.call("set", "tk_strictMotif", int(bool(boolean)))
+
+    def tk_bisque(self):
+        return self.call("tk_bisque")
+
+    def tk_setPalette(self, *args, **kw):
+        if args and kw:
+            raise TypeError(
+                "tk_setPalette() cannot mix positional arguments and kwargs"
+            )
+        if kw:
+            return self.call("tk_setPalette", *_normalize_tk_options(None, **kw))
+        return self.call("tk_setPalette", *args)
 
     def focus_set(self):
         return self.call("focus", self._w)
@@ -704,6 +710,9 @@ class Misc:
 
     def focus_get(self):
         return self.call("focus")
+
+    def focus_displayof(self):
+        return self.call("focus", "-displayof", self._w)
 
     def focus_lastfor(self):
         return self.call("focus", "-lastfor", self._w)
@@ -733,6 +742,22 @@ class Misc:
         status = self.call("grab", "status", self._w)
         return None if status == "" else status
 
+    def option_add(self, pattern, value, priority=None):
+        if priority is None:
+            return self.call("option", "add", pattern, value)
+        return self.call("option", "add", pattern, value, priority)
+
+    def option_clear(self):
+        return self.call("option", "clear")
+
+    def option_get(self, name, class_name):
+        return self.call("option", "get", self._w, name, class_name)
+
+    def option_readfile(self, file_name, priority=None):
+        if priority is None:
+            return self.call("option", "readfile", file_name)
+        return self.call("option", "readfile", file_name, priority)
+
     def bell(self, displayof=None):
         if displayof is None:
             return self.call("bell")
@@ -758,6 +783,43 @@ class Misc:
 
     def selection_clear(self, **kw):
         return self.call("selection", "clear", *_normalize_tk_options(None, **kw))
+
+    def selection_handle(self, command, **kw):
+        if isinstance(command, str):
+            callback_name = command
+            should_release = False
+        elif callable(command):
+            callback_name = self._register_command("selection_handle", command)
+            should_release = True
+        else:
+            raise TypeError(
+                "selection_handle command must be a callback or command name"
+            )
+        try:
+            return self.call(
+                "selection",
+                "handle",
+                callback_name,
+                self._w,
+                *_normalize_tk_options(None, **kw),
+            )
+        except Exception:
+            if should_release:
+                self._release_command(callback_name)
+            raise
+
+    def selection_own(self, **kw):
+        if not kw:
+            return self.call("selection", "own", self._w)
+        return self.call(
+            "selection", "own", self._w, *_normalize_tk_options(None, **kw)
+        )
+
+    def selection_own_get(self, **kw):
+        return self.call("selection", "own", *_normalize_tk_options(None, **kw))
+
+    def send(self, interp, cmd, *args):
+        return self.call("send", interp, cmd, *args)
 
     def pack_configure(self, cnf=None, **kw):
         if isinstance(cnf, str):
@@ -816,6 +878,11 @@ class Misc:
         if flag is NO_VALUE:
             return self.call("grid", "propagate", self._w)
         return self.call("grid", "propagate", self._w, int(bool(flag)))
+
+    def grid_anchor(self, anchor=None):
+        if anchor is None:
+            return self.call("grid", "anchor", self._w)
+        return self.call("grid", "anchor", self._w, anchor)
 
     def grid_bbox(self, column=None, row=None, col2=None, row2=None):
         args = [self._w]
@@ -915,7 +982,8 @@ class Misc:
             return self.call("raise", self._w)
         return self.call("raise", self._w, _normalize_bind_target(above_this))
 
-    tkraise = lift
+    def tkraise(self, above_this=None):
+        return self.lift(above_this)
 
     def lower(self, below_this=None):
         if below_this is None:
@@ -1012,6 +1080,156 @@ class Misc:
             root_y,
         )
 
+    def info_patchlevel(self):
+        return self.call("info", "patchlevel")
+
+    def winfo_cells(self):
+        return self.getint(self.call("winfo", "cells", self._w))
+
+    def winfo_colormapfull(self):
+        return bool(self.getint(self.call("winfo", "colormapfull", self._w)))
+
+    def winfo_depth(self):
+        return self.getint(self.call("winfo", "depth", self._w))
+
+    def winfo_fpixels(self, number):
+        return self.getdouble(self.call("winfo", "fpixels", self._w, number))
+
+    def winfo_geometry(self):
+        return self.call("winfo", "geometry", self._w)
+
+    def winfo_interps(self, displayof=None):
+        if displayof is None:
+            return self.splitlist(self.call("winfo", "interps"))
+        return self.splitlist(
+            self.call(
+                "winfo", "interps", "-displayof", _normalize_bind_target(displayof)
+            )
+        )
+
+    def winfo_pathname(self, window_id, displayof=None):
+        if displayof is None:
+            return self.call("winfo", "pathname", window_id)
+        return self.call(
+            "winfo",
+            "pathname",
+            "-displayof",
+            _normalize_bind_target(displayof),
+            window_id,
+        )
+
+    def winfo_pixels(self, number):
+        return self.getint(self.call("winfo", "pixels", self._w, number))
+
+    def winfo_screen(self):
+        return self.call("winfo", "screen", self._w)
+
+    def winfo_screencells(self):
+        return self.getint(self.call("winfo", "screencells", self._w))
+
+    def winfo_screendepth(self):
+        return self.getint(self.call("winfo", "screendepth", self._w))
+
+    def winfo_screenmmheight(self):
+        return self.getint(self.call("winfo", "screenmmheight", self._w))
+
+    def winfo_screenmmwidth(self):
+        return self.getint(self.call("winfo", "screenmmwidth", self._w))
+
+    def winfo_screenvisual(self):
+        return self.call("winfo", "screenvisual", self._w)
+
+    def winfo_server(self):
+        return self.call("winfo", "server", self._w)
+
+    def winfo_visual(self):
+        return self.call("winfo", "visual", self._w)
+
+    def winfo_visualid(self):
+        return self.call("winfo", "visualid", self._w)
+
+    def winfo_visualsavailable(self, includeids=False):
+        values = self.splitlist(
+            self.call("winfo", "visualsavailable", self._w, int(bool(includeids)))
+        )
+        if not includeids:
+            return values
+        parsed = []
+        for value in values:
+            entry = self.splitlist(value)
+            if len(entry) >= 3:
+                parsed.append((entry[0], self.getint(entry[1]), entry[2]))
+            elif len(entry) == 2:
+                parsed.append((entry[0], self.getint(entry[1])))
+            elif entry:
+                parsed.append(tuple(entry))
+        return parsed
+
+    def winfo_vrootheight(self):
+        return self.getint(self.call("winfo", "vrootheight", self._w))
+
+    def winfo_vrootwidth(self):
+        return self.getint(self.call("winfo", "vrootwidth", self._w))
+
+    def winfo_vrootx(self):
+        return self.getint(self.call("winfo", "vrootx", self._w))
+
+    def winfo_vrooty(self):
+        return self.getint(self.call("winfo", "vrooty", self._w))
+
+    def _iter_widget_tree(self):
+        root = self.tk if hasattr(self, "tk") else self
+        stack = [root]
+        seen = set()
+        while stack:
+            widget = stack.pop()
+            ident = id(widget)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            yield widget
+            for child in getattr(widget, "children", {}).values():
+                stack.append(child)
+
+    def nametowidget(self, name):
+        if isinstance(name, Misc):
+            return name
+        widget_name = str(name)
+        if widget_name in ("", "."):
+            return self.tk if hasattr(self, "tk") else self
+        if not widget_name.startswith("."):
+            prefix = getattr(self, "_w", ".")
+            if prefix == ".":
+                widget_name = f".{widget_name}"
+            else:
+                widget_name = f"{prefix}.{widget_name}"
+
+        for widget in self._iter_widget_tree():
+            if getattr(widget, "_w", None) == widget_name:
+                return widget
+        raise KeyError(f"unknown widget '{widget_name}'")
+
+    _nametowidget = nametowidget
+
+    def _register(self, func, subst=None, needcleanup=1):
+        del needcleanup
+        callback = CallWrapper(func, subst, self) if subst else func
+        return self._register_command("register", callback)
+
+    def image_names(self):
+        return self.splitlist(self.call("image", "names"))
+
+    def image_types(self):
+        return self.splitlist(self.call("image", "types"))
+
+    focus = focus_set
+    register = _register
+    propagate = pack_propagate
+    slaves = pack_slaves
+    anchor = grid_anchor
+    bbox = grid_bbox
+    size = grid_size
+
 
 class CallWrapper:
     """Compatibility callback wrapper used by Tk command bridges."""
@@ -1064,38 +1282,322 @@ class YView:
 
 
 class Pack:
-    pack_configure = Misc.pack_configure
     pack = configure = config = Misc.pack_configure
-    pack_forget = forget = Misc.pack_forget
-    pack_info = info = Misc.pack_info
+    forget = Misc.pack_forget
+    info = Misc.pack_info
     propagate = pack_propagate = Misc.pack_propagate
     slaves = pack_slaves = Misc.pack_slaves
 
+    def pack_configure(self, cnf=None, **kw):
+        return Misc.pack_configure(self, cnf, **kw)
+
+    def pack_forget(self):
+        return Misc.pack_forget(self)
+
+    def pack_info(self):
+        return Misc.pack_info(self)
+
 
 class Place:
-    place_configure = Misc.place_configure
     place = configure = config = Misc.place_configure
-    place_forget = forget = Misc.place_forget
-    place_info = info = Misc.place_info
+    forget = Misc.place_forget
+    info = Misc.place_info
     slaves = place_slaves = Misc.place_slaves
+
+    def place_configure(self, cnf=None, **kw):
+        return Misc.place_configure(self, cnf, **kw)
+
+    def place_forget(self):
+        return Misc.place_forget(self)
+
+    def place_info(self):
+        return Misc.place_info(self)
 
 
 class Grid:
-    grid_configure = Misc.grid_configure
     grid = configure = config = Misc.grid_configure
     bbox = grid_bbox = Misc.grid_bbox
     columnconfigure = grid_columnconfigure = Misc.grid_columnconfigure
-    grid_forget = forget = Misc.grid_forget
-    grid_info = info = Misc.grid_info
+    forget = Misc.grid_forget
+    info = Misc.grid_info
     location = grid_location = Misc.grid_location
     propagate = grid_propagate = Misc.grid_propagate
     rowconfigure = grid_rowconfigure = Misc.grid_rowconfigure
     size = grid_size = Misc.grid_size
     slaves = grid_slaves = Misc.grid_slaves
 
+    def grid_configure(self, cnf=None, **kw):
+        return Misc.grid_configure(self, cnf, **kw)
+
+    def grid_forget(self):
+        return Misc.grid_forget(self)
+
+    def grid_remove(self):
+        return Misc.grid_remove(self)
+
+    def grid_info(self):
+        return Misc.grid_info(self)
+
 
 class Wm(Misc):
-    """Window-manager mixin marker for compatibility."""
+    """Window-manager mixin for Tk and toplevel-style widgets."""
+
+    def _wm_call(self, command, *args):
+        return self.call("wm", command, self._w, *args)
+
+    def wm_aspect(self, min_num=None, min_denom=None, max_num=None, max_denom=None):
+        if (
+            min_num is None
+            and min_denom is None
+            and max_num is None
+            and max_denom is None
+        ):
+            result = self._wm_call("aspect")
+            if not result:
+                return None
+            return self._split_ints(result)
+        if None in (min_num, min_denom, max_num, max_denom):
+            raise TypeError(
+                "wm_aspect() requires min_num, min_denom, max_num, max_denom"
+            )
+        return self._wm_call("aspect", min_num, min_denom, max_num, max_denom)
+
+    def wm_attributes(self, *args):
+        if not args:
+            return self._wm_call("attributes")
+        if len(args) == 1 and isinstance(args[0], dict):
+            return self._wm_call("attributes", *_normalize_tk_options(args[0]))
+        return self._wm_call("attributes", *args)
+
+    def wm_client(self, name=None):
+        if name is None:
+            return self._wm_call("client")
+        return self._wm_call("client", name)
+
+    def wm_colormapwindows(self, *wlist):
+        if not wlist:
+            return self.splitlist(self._wm_call("colormapwindows"))
+        windows = tuple(_normalize_bind_target(widget) for widget in wlist)
+        return self._wm_call("colormapwindows", windows)
+
+    def wm_command(self, value=None):
+        if value is None:
+            return self._wm_call("command")
+        if isinstance(value, (tuple, list)):
+            value = tuple(value)
+        return self._wm_call("command", value)
+
+    def wm_deiconify(self):
+        return self._wm_call("deiconify")
+
+    def wm_focusmodel(self, model=None):
+        if model is None:
+            return self._wm_call("focusmodel")
+        return self._wm_call("focusmodel", model)
+
+    def wm_forget(self, window):
+        return self.call("wm", "forget", _normalize_bind_target(window))
+
+    def wm_frame(self):
+        return self._wm_call("frame")
+
+    def wm_geometry(self, new_geometry=None):
+        if new_geometry is None:
+            return self._wm_call("geometry")
+        return self._wm_call("geometry", new_geometry)
+
+    def wm_grid(
+        self, base_width=None, base_height=None, width_inc=None, height_inc=None
+    ):
+        if (
+            base_width is None
+            and base_height is None
+            and width_inc is None
+            and height_inc is None
+        ):
+            result = self._wm_call("grid")
+            if not result:
+                return None
+            return self._split_ints(result)
+        if None in (base_width, base_height, width_inc, height_inc):
+            raise TypeError(
+                "wm_grid() requires base_width, base_height, width_inc, and height_inc"
+            )
+        return self._wm_call("grid", base_width, base_height, width_inc, height_inc)
+
+    def wm_group(self, path_name=None):
+        if path_name is None:
+            return self._wm_call("group")
+        return self._wm_call("group", _normalize_bind_target(path_name))
+
+    def wm_iconbitmap(self, bitmap=None, default=None):
+        if bitmap is None and default is None:
+            return self._wm_call("iconbitmap")
+        args = []
+        if default is not None:
+            args.extend(("-default", default))
+        if bitmap is not None:
+            args.append(bitmap)
+        return self._wm_call("iconbitmap", *args)
+
+    def wm_iconify(self):
+        return self._wm_call("iconify")
+
+    def wm_iconmask(self, bitmap=None):
+        if bitmap is None:
+            return self._wm_call("iconmask")
+        return self._wm_call("iconmask", bitmap)
+
+    def wm_iconname(self, new_name=None):
+        if new_name is None:
+            return self._wm_call("iconname")
+        return self._wm_call("iconname", new_name)
+
+    def wm_iconphoto(self, default=False, *args):
+        photo_args = []
+        if default:
+            photo_args.append("-default")
+        photo_args.extend(str(photo) for photo in args)
+        return self._wm_call("iconphoto", *photo_args)
+
+    def wm_iconposition(self, x=None, y=None):
+        if x is None and y is None:
+            result = self._wm_call("iconposition")
+            if not result:
+                return None
+            return self._split_ints(result)
+        if x is None or y is None:
+            raise TypeError("wm_iconposition() requires both x and y")
+        return self._wm_call("iconposition", x, y)
+
+    def wm_iconwindow(self, path_name=None):
+        if path_name is None:
+            return self._wm_call("iconwindow")
+        return self._wm_call("iconwindow", _normalize_bind_target(path_name))
+
+    def wm_manage(self, widget):
+        return self.call("wm", "manage", _normalize_bind_target(widget))
+
+    def wm_maxsize(self, width=None, height=None):
+        if width is None and height is None:
+            return self._split_ints(self._wm_call("maxsize"))
+        if width is None or height is None:
+            raise TypeError("wm_maxsize() requires both width and height")
+        return self._wm_call("maxsize", width, height)
+
+    def wm_minsize(self, width=None, height=None):
+        if width is None and height is None:
+            return self._split_ints(self._wm_call("minsize"))
+        if width is None or height is None:
+            raise TypeError("wm_minsize() requires both width and height")
+        return self._wm_call("minsize", width, height)
+
+    def wm_overrideredirect(self, boolean=NO_VALUE):
+        if boolean is NO_VALUE:
+            return self.getboolean(self._wm_call("overrideredirect"))
+        return self._wm_call("overrideredirect", int(bool(boolean)))
+
+    def wm_positionfrom(self, who=None):
+        if who is None:
+            return self._wm_call("positionfrom")
+        return self._wm_call("positionfrom", who)
+
+    def wm_protocol(self, name=None, func=None):
+        if name is None:
+            return self._wm_call("protocol")
+
+        commands = (
+            self._protocol_commands
+            if hasattr(self, "_protocol_commands")
+            and isinstance(self._protocol_commands, dict)
+            else None
+        )
+        if commands is not None:
+            previous = commands.pop(name, None)
+            if previous is not None:
+                self._release_command(previous)
+
+        if func is None:
+            return self._wm_call("protocol", name)
+        if isinstance(func, str):
+            return self._wm_call("protocol", name, func)
+        if not callable(func):
+            raise TypeError("wm_protocol callback must be callable")
+
+        command_name = self._register_command("wm_protocol", func)
+        try:
+            self._wm_call("protocol", name, command_name)
+        except Exception:
+            self._release_command(command_name)
+            raise
+        if commands is not None:
+            commands[name] = command_name
+        return command_name
+
+    def wm_resizable(self, width=None, height=None):
+        if width is None and height is None:
+            values = self.splitlist(self._wm_call("resizable"))
+            if len(values) >= 2:
+                return (self.getboolean(values[0]), self.getboolean(values[1]))
+            return tuple(self.getboolean(value) for value in values)
+        if width is None or height is None:
+            raise TypeError("wm_resizable() requires both width and height")
+        return self._wm_call("resizable", int(bool(width)), int(bool(height)))
+
+    def wm_sizefrom(self, who=None):
+        if who is None:
+            return self._wm_call("sizefrom")
+        return self._wm_call("sizefrom", who)
+
+    def wm_state(self, new_state=None):
+        if new_state is None:
+            return self._wm_call("state")
+        return self._wm_call("state", new_state)
+
+    def wm_title(self, string=None):
+        if string is None:
+            return self._wm_call("title")
+        return self._wm_call("title", string)
+
+    def wm_transient(self, master=None):
+        if master is None:
+            return self._wm_call("transient")
+        return self._wm_call("transient", _normalize_bind_target(master))
+
+    def wm_withdraw(self):
+        return self._wm_call("withdraw")
+
+    aspect = wm_aspect
+    attributes = wm_attributes
+    client = wm_client
+    colormapwindows = wm_colormapwindows
+    command = wm_command
+    deiconify = wm_deiconify
+    focusmodel = wm_focusmodel
+    forget = wm_forget
+    frame = wm_frame
+    geometry = wm_geometry
+    grid = wm_grid
+    group = wm_group
+    iconbitmap = wm_iconbitmap
+    iconify = wm_iconify
+    iconmask = wm_iconmask
+    iconname = wm_iconname
+    iconphoto = wm_iconphoto
+    iconposition = wm_iconposition
+    iconwindow = wm_iconwindow
+    manage = wm_manage
+    maxsize = wm_maxsize
+    minsize = wm_minsize
+    overrideredirect = wm_overrideredirect
+    positionfrom = wm_positionfrom
+    protocol = wm_protocol
+    resizable = wm_resizable
+    sizefrom = wm_sizefrom
+    state = wm_state
+    title = wm_title
+    transient = wm_transient
+    withdraw = wm_withdraw
 
 
 def Tcl(screenName=None, baseName=None, className="Tk", useTk=False):
@@ -1104,6 +1606,8 @@ def Tcl(screenName=None, baseName=None, className="Tk", useTk=False):
 
 class Tk(Wm):
     """Phase-0 root window wrapper backed by `_tkinter` intrinsics."""
+
+    _w = "."
 
     def __init__(
         self,
@@ -1133,6 +1637,22 @@ class Tk(Wm):
         self.tk = self
         self._widget_serial = 0
         _set_default_root(self)
+
+    def loadtk(self):
+        self.call("tk", "windowingsystem")
+        return None
+
+    def readprofile(self, baseName, className):
+        del baseName, className
+        return None
+
+    def report_callback_exception(self, exc, val, tb):
+        try:
+            import traceback as _traceback
+
+            _traceback.print_exception(exc, val, tb, file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _next_widget_path(self, widget_command):
         base = widget_command.replace("::", "_").replace("-", "_")
@@ -1330,6 +1850,9 @@ class Widget(Misc):
 class BaseWidget(Widget):
     """Compatibility alias for CPython's internal BaseWidget."""
 
+    def destroy(self):
+        return super().destroy()
+
 
 class _CoreWidget(Widget):
     _widget_command = "widget"
@@ -1341,6 +1864,12 @@ class _CoreWidget(Widget):
 class Button(_CoreWidget):
     _widget_command = "button"
 
+    def flash(self):
+        return self._call_widget("flash")
+
+    def invoke(self):
+        return self._call_widget("invoke")
+
 
 class Label(_CoreWidget):
     _widget_command = "label"
@@ -1348,6 +1877,58 @@ class Label(_CoreWidget):
 
 class Entry(_CoreWidget):
     _widget_command = "entry"
+
+    xview = XView.xview
+    xview_moveto = XView.xview_moveto
+    xview_scroll = XView.xview_scroll
+
+    def delete(self, first, last=None):
+        if last is None:
+            return self._call_widget("delete", first)
+        return self._call_widget("delete", first, last)
+
+    def get(self):
+        return self._call_widget("get")
+
+    def icursor(self, index):
+        return self._call_widget("icursor", index)
+
+    def index(self, index):
+        return self.getint(self._call_widget("index", index))
+
+    def insert(self, index, string):
+        return self._call_widget("insert", index, string)
+
+    def scan_mark(self, x):
+        return self._call_widget("scan", "mark", x)
+
+    def scan_dragto(self, x):
+        return self._call_widget("scan", "dragto", x)
+
+    def selection_adjust(self, index):
+        return self._call_widget("selection", "adjust", index)
+
+    def selection_clear(self):
+        return self._call_widget("selection", "clear")
+
+    def selection_from(self, index):
+        return self._call_widget("selection", "from", index)
+
+    def selection_present(self):
+        return bool(self.getint(self._call_widget("selection", "present")))
+
+    def selection_range(self, start, end):
+        return self._call_widget("selection", "range", start, end)
+
+    def selection_to(self, index):
+        return self._call_widget("selection", "to", index)
+
+    select_adjust = selection_adjust
+    select_clear = selection_clear
+    select_from = selection_from
+    select_present = selection_present
+    select_range = selection_range
+    select_to = selection_to
 
 
 class Frame(_CoreWidget):
@@ -1357,9 +1938,617 @@ class Frame(_CoreWidget):
 class Canvas(_CoreWidget):
     _widget_command = "canvas"
 
+    xview = XView.xview
+    xview_moveto = XView.xview_moveto
+    xview_scroll = XView.xview_scroll
+    yview = YView.yview
+    yview_moveto = YView.yview_moveto
+    yview_scroll = YView.yview_scroll
+
+    def addtag(self, *args):
+        return self._call_widget("addtag", *args)
+
+    def addtag_above(self, newtag, tag_or_id):
+        return self._call_widget("addtag", "above", newtag, tag_or_id)
+
+    def addtag_all(self, newtag):
+        return self._call_widget("addtag", "all", newtag)
+
+    def addtag_below(self, newtag, tag_or_id):
+        return self._call_widget("addtag", "below", newtag, tag_or_id)
+
+    def addtag_closest(self, newtag, x, y, halo=None, start=None):
+        args = ["closest", newtag, x, y]
+        if halo is not None:
+            args.append(halo)
+        if start is not None:
+            args.append(start)
+        return self._call_widget("addtag", *args)
+
+    def addtag_enclosed(self, newtag, x1, y1, x2, y2):
+        return self._call_widget("addtag", "enclosed", newtag, x1, y1, x2, y2)
+
+    def addtag_overlapping(self, newtag, x1, y1, x2, y2):
+        return self._call_widget("addtag", "overlapping", newtag, x1, y1, x2, y2)
+
+    def addtag_withtag(self, newtag, tag_or_id):
+        return self._call_widget("addtag", "withtag", newtag, tag_or_id)
+
+    def bbox(self, *args):
+        result = self._call_widget("bbox", *args)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def tag_unbind(self, tag_or_id, sequence, funcid=None):
+        if funcid is not None:
+            self._release_command(funcid)
+        return self._call_widget("bind", tag_or_id, sequence, "")
+
+    def tag_bind(self, tag_or_id, sequence=None, func=None, add=None):
+        if func is None:
+            if sequence is None:
+                return self._call_widget("bind", tag_or_id)
+            return self._call_widget("bind", tag_or_id, sequence)
+        if sequence is None:
+            raise TypeError(
+                "tag_bind sequence must not be None when callback is provided"
+            )
+        add_prefix = _normalize_bind_add(add)
+        if isinstance(func, str):
+            script = f"{add_prefix}{func}" if add_prefix else func
+            self._call_widget("bind", tag_or_id, sequence, script)
+            return func
+        if not callable(func):
+            raise TypeError("tag_bind callback must be callable")
+
+        widget = self
+
+        def wrapped(*event_args):
+            parsed_event = _event_from_subst_args(widget, event_args)
+            if parsed_event is not None:
+                return func(parsed_event)
+            if event_args:
+                return func(*event_args)
+            event = Event()
+            event.widget = widget
+            return func(event)
+
+        command_name = self._register_command("canvas_tag_bind", wrapped)
+        script = f"{add_prefix}{command_name}" if add_prefix else command_name
+        try:
+            self._call_widget("bind", tag_or_id, sequence, script)
+        except Exception:
+            self._release_command(command_name)
+            raise
+        return command_name
+
+    def canvasx(self, screenx, gridspacing=None):
+        if gridspacing is None:
+            return self.getdouble(self._call_widget("canvasx", screenx))
+        return self.getdouble(self._call_widget("canvasx", screenx, gridspacing))
+
+    def canvasy(self, screeny, gridspacing=None):
+        if gridspacing is None:
+            return self.getdouble(self._call_widget("canvasy", screeny))
+        return self.getdouble(self._call_widget("canvasy", screeny, gridspacing))
+
+    def coords(self, *args):
+        result = self._call_widget("coords", *args)
+        if not result:
+            return ()
+        return tuple(self.getdouble(part) for part in self.splitlist(result))
+
+    def _create(self, item_type, args, kw):
+        flat_args = list(_flatten(args))
+        flat_args.extend(_normalize_tk_options(None, **kw))
+        return self.getint(self._call_widget("create", item_type, *flat_args))
+
+    def create_arc(self, *args, **kw):
+        return self._create("arc", args, kw)
+
+    def create_bitmap(self, *args, **kw):
+        return self._create("bitmap", args, kw)
+
+    def create_image(self, *args, **kw):
+        return self._create("image", args, kw)
+
+    def create_line(self, *args, **kw):
+        return self._create("line", args, kw)
+
+    def create_oval(self, *args, **kw):
+        return self._create("oval", args, kw)
+
+    def create_polygon(self, *args, **kw):
+        return self._create("polygon", args, kw)
+
+    def create_rectangle(self, *args, **kw):
+        return self._create("rectangle", args, kw)
+
+    def create_text(self, *args, **kw):
+        return self._create("text", args, kw)
+
+    def create_window(self, *args, **kw):
+        return self._create("window", args, kw)
+
+    def dchars(self, *args):
+        return self._call_widget("dchars", *args)
+
+    def delete(self, *args):
+        return self._call_widget("delete", *args)
+
+    def dtag(self, *args):
+        return self._call_widget("dtag", *args)
+
+    def find(self, *args):
+        return tuple(
+            self.getint(part)
+            for part in self.splitlist(self._call_widget("find", *args))
+        )
+
+    def find_above(self, tag_or_id):
+        return self.find("above", tag_or_id)
+
+    def find_all(self):
+        return self.find("all")
+
+    def find_below(self, tag_or_id):
+        return self.find("below", tag_or_id)
+
+    def find_closest(self, x, y, halo=None, start=None):
+        args = [x, y]
+        if halo is not None:
+            args.append(halo)
+        if start is not None:
+            args.append(start)
+        return self.find("closest", *args)
+
+    def find_enclosed(self, x1, y1, x2, y2):
+        return self.find("enclosed", x1, y1, x2, y2)
+
+    def find_overlapping(self, x1, y1, x2, y2):
+        return self.find("overlapping", x1, y1, x2, y2)
+
+    def find_withtag(self, tag_or_id):
+        return self.find("withtag", tag_or_id)
+
+    def focus(self, *args):
+        return self._call_widget("focus", *args)
+
+    def gettags(self, *args):
+        return self.splitlist(self._call_widget("gettags", *args))
+
+    def icursor(self, *args):
+        return self._call_widget("icursor", *args)
+
+    def index(self, *args):
+        result = self._call_widget("index", *args)
+        try:
+            return self.getint(result)
+        except Exception:  # noqa: BLE001
+            return result
+
+    def insert(self, *args):
+        return self._call_widget("insert", *args)
+
+    def itemcget(self, tag_or_id, option):
+        return self._call_widget("itemcget", tag_or_id, _normalize_option_name(option))
+
+    def itemconfigure(self, tag_or_id, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "itemconfigure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "itemconfigure", tag_or_id, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("itemconfigure", tag_or_id)
+        return self._call_widget(
+            "itemconfigure", tag_or_id, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def tag_lower(self, *args):
+        return self._call_widget("lower", *args)
+
+    def move(self, *args):
+        return self._call_widget("move", *args)
+
+    def moveto(self, tag_or_id, x="", y=""):
+        return self._call_widget("moveto", tag_or_id, x, y)
+
+    def postscript(self, cnf=None, **kw):
+        return self._call_widget("postscript", *_normalize_tk_options(cnf, **kw))
+
+    def tag_raise(self, *args):
+        return self._call_widget("raise", *args)
+
+    def scale(self, *args):
+        return self._call_widget("scale", *args)
+
+    def scan_mark(self, x, y):
+        return self._call_widget("scan", "mark", x, y)
+
+    def scan_dragto(self, x, y, gain=10):
+        return self._call_widget("scan", "dragto", x, y, gain)
+
+    def select_adjust(self, tag_or_id, index):
+        return self._call_widget("select", "adjust", tag_or_id, index)
+
+    def select_clear(self):
+        return self._call_widget("select", "clear")
+
+    def select_from(self, tag_or_id, index):
+        return self._call_widget("select", "from", tag_or_id, index)
+
+    def select_item(self):
+        return self._call_widget("select", "item")
+
+    def select_to(self, tag_or_id, index):
+        return self._call_widget("select", "to", tag_or_id, index)
+
+    def type(self, tag_or_id):
+        return self._call_widget("type", tag_or_id)
+
+    itemconfig = itemconfigure
+    lower = tag_lower
+    lift = tkraise = tag_raise
+
 
 class Text(_CoreWidget):
     _widget_command = "text"
+
+    xview = XView.xview
+    xview_moveto = XView.xview_moveto
+    xview_scroll = XView.xview_scroll
+    yview = YView.yview
+    yview_moveto = YView.yview_moveto
+    yview_scroll = YView.yview_scroll
+
+    def bbox(self, index):
+        result = self._call_widget("bbox", index)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def compare(self, index1, op, index2):
+        return bool(self.getboolean(self._call_widget("compare", index1, op, index2)))
+
+    def count(self, index1, index2, *args):
+        switches = [_normalize_option_name(arg) for arg in args]
+        result = self._call_widget("count", *switches, index1, index2)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def debug(self, boolean=None):
+        if boolean is None:
+            return bool(self.getboolean(self._call_widget("debug")))
+        return self._call_widget("debug", int(bool(boolean)))
+
+    def delete(self, index1, index2=None):
+        if index2 is None:
+            return self._call_widget("delete", index1)
+        return self._call_widget("delete", index1, index2)
+
+    def dlineinfo(self, index):
+        result = self._call_widget("dlineinfo", index)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def dump(self, index1, index2=None, command=None, **kw):
+        args = []
+        callback_name = None
+        for key, value in kw.items():
+            option = _normalize_option_name(str(key))
+            if isinstance(value, bool):
+                if value:
+                    args.append(option)
+                continue
+            args.append(option)
+            if value is not None:
+                args.append(value)
+        if command is not None:
+            if isinstance(command, str):
+                callback_name = command
+            elif callable(command):
+                callback_name = self._register_command("text_dump", command)
+            else:
+                raise TypeError("dump() command must be callable or command name")
+            args.extend(("-command", callback_name))
+        args.append(index1)
+        if index2 is not None:
+            args.append(index2)
+        try:
+            result = self._call_widget("dump", *args)
+        finally:
+            if command is not None and callable(command):
+                self._release_command(callback_name)
+        if command is not None:
+            return None
+        return self.splitlist(result)
+
+    def edit(self, *args):
+        return self._call_widget("edit", *args)
+
+    def edit_modified(self, arg=None):
+        if arg is None:
+            return bool(self.getboolean(self._call_widget("edit", "modified")))
+        return self._call_widget("edit", "modified", arg)
+
+    def edit_redo(self):
+        return self._call_widget("edit", "redo")
+
+    def edit_reset(self):
+        return self._call_widget("edit", "reset")
+
+    def edit_separator(self):
+        return self._call_widget("edit", "separator")
+
+    def edit_undo(self):
+        return self._call_widget("edit", "undo")
+
+    def get(self, index1, index2=None):
+        if index2 is None:
+            return self._call_widget("get", index1)
+        return self._call_widget("get", index1, index2)
+
+    def image_cget(self, index, option):
+        return self._call_widget("image", "cget", index, _normalize_option_name(option))
+
+    def image_configure(self, index, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "image_configure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "image", "configure", index, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("image", "configure", index)
+        return self._call_widget(
+            "image", "configure", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def image_create(self, index, cnf=None, **kw):
+        return self._call_widget(
+            "image", "create", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def image_names(self):
+        return self.splitlist(self._call_widget("image", "names"))
+
+    def index(self, index):
+        return self._call_widget("index", index)
+
+    def insert(self, index, chars, *args):
+        return self._call_widget("insert", index, chars, *args)
+
+    def mark_gravity(self, mark_name, direction=None):
+        if direction is None:
+            return self._call_widget("mark", "gravity", mark_name)
+        return self._call_widget("mark", "gravity", mark_name, direction)
+
+    def mark_names(self):
+        return self.splitlist(self._call_widget("mark", "names"))
+
+    def mark_set(self, mark_name, index):
+        return self._call_widget("mark", "set", mark_name, index)
+
+    def mark_unset(self, *mark_names):
+        return self._call_widget("mark", "unset", *mark_names)
+
+    def mark_next(self, index):
+        value = self._call_widget("mark", "next", index)
+        return None if value == "" else value
+
+    def mark_previous(self, index):
+        value = self._call_widget("mark", "previous", index)
+        return None if value == "" else value
+
+    def peer_create(self, new_path_name, cnf=None, **kw):
+        return self._call_widget(
+            "peer", "create", new_path_name, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def peer_names(self):
+        return self.splitlist(self._call_widget("peer", "names"))
+
+    def replace(self, index1, index2, chars, *args):
+        return self._call_widget("replace", index1, index2, chars, *args)
+
+    def scan_mark(self, x, y):
+        return self._call_widget("scan", "mark", x, y)
+
+    def scan_dragto(self, x, y):
+        return self._call_widget("scan", "dragto", x, y)
+
+    def search(
+        self,
+        pattern,
+        index,
+        stopindex=None,
+        forwards=None,
+        backwards=None,
+        exact=None,
+        regexp=None,
+        nocase=None,
+        count=None,
+        elide=None,
+    ):
+        args = []
+        if forwards:
+            args.append("-forwards")
+        if backwards:
+            args.append("-backwards")
+        if exact:
+            args.append("-exact")
+        if regexp:
+            args.append("-regexp")
+        if nocase:
+            args.append("-nocase")
+        if elide:
+            args.append("-elide")
+        if count is not None:
+            count_name = count._name if hasattr(count, "_name") else count
+            args.extend(("-count", count_name))
+        args.extend((pattern, index))
+        if stopindex is not None:
+            args.append(stopindex)
+        return self._call_widget("search", *args)
+
+    def see(self, index):
+        return self._call_widget("see", index)
+
+    def tag_add(self, tag_name, index1, *args):
+        return self._call_widget("tag", "add", tag_name, index1, *args)
+
+    def tag_unbind(self, tag_name, sequence, funcid=None):
+        if funcid is not None:
+            self._release_command(funcid)
+        return self._call_widget("tag", "bind", tag_name, sequence, "")
+
+    def tag_bind(self, tag_name, sequence=None, func=None, add=None):
+        return self._tag_bind(tag_name, sequence, func, add)
+
+    def _tag_bind(self, tag_name, sequence=None, func=None, add=None):
+        if func is None:
+            if sequence is None:
+                return self._call_widget("tag", "bind", tag_name)
+            return self._call_widget("tag", "bind", tag_name, sequence)
+        if sequence is None:
+            raise TypeError(
+                "tag_bind sequence must not be None when callback is provided"
+            )
+        add_prefix = _normalize_bind_add(add)
+        if isinstance(func, str):
+            script = f"{add_prefix}{func}" if add_prefix else func
+            self._call_widget("tag", "bind", tag_name, sequence, script)
+            return func
+        if not callable(func):
+            raise TypeError("tag_bind callback must be callable")
+
+        widget = self
+
+        def wrapped(*event_args):
+            parsed_event = _event_from_subst_args(widget, event_args)
+            if parsed_event is not None:
+                return func(parsed_event)
+            if event_args:
+                return func(*event_args)
+            event = Event()
+            event.widget = widget
+            return func(event)
+
+        command_name = self._register_command("text_tag_bind", wrapped)
+        script = f"{add_prefix}{command_name}" if add_prefix else command_name
+        try:
+            self._call_widget("tag", "bind", tag_name, sequence, script)
+        except Exception:
+            self._release_command(command_name)
+            raise
+        return command_name
+
+    def tag_cget(self, tag_name, option):
+        return self._call_widget(
+            "tag", "cget", tag_name, _normalize_option_name(option)
+        )
+
+    def tag_configure(self, tag_name, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "tag_configure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "tag", "configure", tag_name, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("tag", "configure", tag_name)
+        return self._call_widget(
+            "tag", "configure", tag_name, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def tag_delete(self, *tag_names):
+        return self._call_widget("tag", "delete", *tag_names)
+
+    def tag_lower(self, tag_name, below_this=None):
+        if below_this is None:
+            return self._call_widget("tag", "lower", tag_name)
+        return self._call_widget("tag", "lower", tag_name, below_this)
+
+    def tag_names(self, index=None):
+        if index is None:
+            return self.splitlist(self._call_widget("tag", "names"))
+        return self.splitlist(self._call_widget("tag", "names", index))
+
+    def tag_nextrange(self, tag_name, index1, index2=None):
+        if index2 is None:
+            return self.splitlist(
+                self._call_widget("tag", "nextrange", tag_name, index1)
+            )
+        return self.splitlist(
+            self._call_widget("tag", "nextrange", tag_name, index1, index2)
+        )
+
+    def tag_prevrange(self, tag_name, index1, index2=None):
+        if index2 is None:
+            return self.splitlist(
+                self._call_widget("tag", "prevrange", tag_name, index1)
+            )
+        return self.splitlist(
+            self._call_widget("tag", "prevrange", tag_name, index1, index2)
+        )
+
+    def tag_raise(self, tag_name, above_this=None):
+        if above_this is None:
+            return self._call_widget("tag", "raise", tag_name)
+        return self._call_widget("tag", "raise", tag_name, above_this)
+
+    def tag_ranges(self, tag_name):
+        return self.splitlist(self._call_widget("tag", "ranges", tag_name))
+
+    def tag_remove(self, tag_name, index1, index2=None):
+        if index2 is None:
+            return self._call_widget("tag", "remove", tag_name, index1)
+        return self._call_widget("tag", "remove", tag_name, index1, index2)
+
+    def window_cget(self, index, option):
+        return self._call_widget(
+            "window", "cget", index, _normalize_option_name(option)
+        )
+
+    def window_configure(self, index, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "window_configure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "window", "configure", index, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("window", "configure", index)
+        return self._call_widget(
+            "window", "configure", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def window_create(self, index, cnf=None, **kw):
+        return self._call_widget(
+            "window", "create", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def window_names(self):
+        return self.splitlist(self._call_widget("window", "names"))
+
+    def yview_pickplace(self, *what):
+        return self._call_widget("yview", "pickplace", *what)
+
+    tag_config = tag_configure
+    window_config = window_configure
 
 
 class Toplevel(_CoreWidget):
@@ -1369,16 +2558,219 @@ class Toplevel(_CoreWidget):
 class Listbox(_CoreWidget):
     _widget_command = "listbox"
 
+    xview = XView.xview
+    xview_moveto = XView.xview_moveto
+    xview_scroll = XView.xview_scroll
+    yview = YView.yview
+    yview_moveto = YView.yview_moveto
+    yview_scroll = YView.yview_scroll
+
+    def activate(self, index):
+        return self._call_widget("activate", index)
+
+    def bbox(self, index):
+        result = self._call_widget("bbox", index)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def curselection(self):
+        return tuple(
+            self.getint(part)
+            for part in self.splitlist(self._call_widget("curselection"))
+        )
+
+    def delete(self, first, last=None):
+        if last is None:
+            return self._call_widget("delete", first)
+        return self._call_widget("delete", first, last)
+
+    def get(self, first, last=None):
+        if last is None:
+            return self._call_widget("get", first)
+        return self.splitlist(self._call_widget("get", first, last))
+
+    def index(self, index):
+        return self.getint(self._call_widget("index", index))
+
+    def insert(self, index, *elements):
+        return self._call_widget("insert", index, *elements)
+
+    def nearest(self, y):
+        return self.getint(self._call_widget("nearest", y))
+
+    def scan_mark(self, x, y):
+        return self._call_widget("scan", "mark", x, y)
+
+    def scan_dragto(self, x, y):
+        return self._call_widget("scan", "dragto", x, y)
+
+    def see(self, index):
+        return self._call_widget("see", index)
+
+    def selection_anchor(self, index):
+        return self._call_widget("selection", "anchor", index)
+
+    def selection_clear(self, first, last=None):
+        if last is None:
+            return self._call_widget("selection", "clear", first)
+        return self._call_widget("selection", "clear", first, last)
+
+    def selection_includes(self, index):
+        return bool(self.getint(self._call_widget("selection", "includes", index)))
+
+    def selection_set(self, first, last=None):
+        if last is None:
+            return self._call_widget("selection", "set", first)
+        return self._call_widget("selection", "set", first, last)
+
+    def size(self):
+        return self.getint(self._call_widget("size"))
+
+    def itemcget(self, index, option):
+        return self._call_widget("itemcget", index, _normalize_option_name(option))
+
+    def itemconfigure(self, index, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "itemconfigure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "itemconfigure", index, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("itemconfigure", index)
+        return self._call_widget(
+            "itemconfigure", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    select_anchor = selection_anchor
+    select_clear = selection_clear
+    select_includes = selection_includes
+    select_set = selection_set
+    itemconfig = itemconfigure
+
 
 class Menu(_CoreWidget):
     _widget_command = "menu"
 
+    def tk_popup(self, x, y, entry=""):
+        if entry == "":
+            return self.call("tk_popup", self._w, x, y)
+        return self.call("tk_popup", self._w, x, y, entry)
+
+    def activate(self, index):
+        return self._call_widget("activate", index)
+
+    def add(self, item_type, cnf=None, **kw):
+        return self._call_widget("add", item_type, *_normalize_tk_options(cnf, **kw))
+
+    def add_cascade(self, cnf=None, **kw):
+        return self.add("cascade", cnf, **kw)
+
+    def add_checkbutton(self, cnf=None, **kw):
+        return self.add("checkbutton", cnf, **kw)
+
     def add_command(self, cnf=None, **kw):
         return self._call_widget("add", "command", *_normalize_tk_options(cnf, **kw))
+
+    def add_radiobutton(self, cnf=None, **kw):
+        return self.add("radiobutton", cnf, **kw)
+
+    def add_separator(self, cnf=None, **kw):
+        return self.add("separator", cnf, **kw)
+
+    def insert(self, index, item_type, cnf=None, **kw):
+        return self._call_widget(
+            "insert", index, item_type, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def insert_cascade(self, index, cnf=None, **kw):
+        return self.insert(index, "cascade", cnf, **kw)
+
+    def insert_checkbutton(self, index, cnf=None, **kw):
+        return self.insert(index, "checkbutton", cnf, **kw)
+
+    def insert_command(self, index, cnf=None, **kw):
+        return self.insert(index, "command", cnf, **kw)
+
+    def insert_radiobutton(self, index, cnf=None, **kw):
+        return self.insert(index, "radiobutton", cnf, **kw)
+
+    def insert_separator(self, index, cnf=None, **kw):
+        return self.insert(index, "separator", cnf, **kw)
+
+    def delete(self, index1, index2=None):
+        if index2 is None:
+            return self._call_widget("delete", index1)
+        return self._call_widget("delete", index1, index2)
+
+    def entrycget(self, index, option):
+        return self._call_widget("entrycget", index, _normalize_option_name(option))
+
+    def entryconfigure(self, index, cnf=None, **kw):
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "entryconfigure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "entryconfigure", index, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("entryconfigure", index)
+        return self._call_widget(
+            "entryconfigure", index, *_normalize_tk_options(cnf, **kw)
+        )
+
+    def index(self, index):
+        return self._call_widget("index", index)
+
+    def invoke(self, index):
+        return self._call_widget("invoke", index)
+
+    def post(self, x, y):
+        return self._call_widget("post", x, y)
+
+    def type(self, index):
+        return self._call_widget("type", index)
+
+    def unpost(self):
+        return self._call_widget("unpost")
+
+    def xposition(self, index):
+        return self.getint(self._call_widget("xposition", index))
+
+    def yposition(self, index):
+        return self.getint(self._call_widget("yposition", index))
+
+    entryconfig = entryconfigure
 
 
 class Scrollbar(_CoreWidget):
     _widget_command = "scrollbar"
+
+    def activate(self, index=None):
+        if index is None:
+            return self._call_widget("activate")
+        return self._call_widget("activate", index)
+
+    def delta(self, deltax, deltay):
+        return self.getdouble(self._call_widget("delta", deltax, deltay))
+
+    def fraction(self, x, y):
+        return self.getdouble(self._call_widget("fraction", x, y))
+
+    def identify(self, x, y):
+        return self._call_widget("identify", x, y)
+
+    def get(self):
+        result = self._call_widget("get")
+        return tuple(self.getdouble(part) for part in self.splitlist(result))
+
+    def set(self, first, last):
+        return self._call_widget("set", first, last)
 
 
 class Menubutton(_CoreWidget):
@@ -1388,21 +2780,203 @@ class Menubutton(_CoreWidget):
 class Checkbutton(_CoreWidget):
     _widget_command = "checkbutton"
 
+    def deselect(self):
+        return self._call_widget("deselect")
+
+    def flash(self):
+        return self._call_widget("flash")
+
+    def invoke(self):
+        return self._call_widget("invoke")
+
+    def select(self):
+        return self._call_widget("select")
+
+    def toggle(self):
+        return self._call_widget("toggle")
+
 
 class Radiobutton(_CoreWidget):
     _widget_command = "radiobutton"
+
+    def deselect(self):
+        return self._call_widget("deselect")
+
+    def flash(self):
+        return self._call_widget("flash")
+
+    def invoke(self):
+        return self._call_widget("invoke")
+
+    def select(self):
+        return self._call_widget("select")
 
 
 class Spinbox(_CoreWidget):
     _widget_command = "spinbox"
 
+    xview = XView.xview
+    xview_moveto = XView.xview_moveto
+    xview_scroll = XView.xview_scroll
+
+    def bbox(self, index):
+        result = self._call_widget("bbox", index)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def delete(self, first, last=None):
+        if last is None:
+            return self._call_widget("delete", first)
+        return self._call_widget("delete", first, last)
+
+    def get(self):
+        return self._call_widget("get")
+
+    def icursor(self, index):
+        return self._call_widget("icursor", index)
+
+    def identify(self, x, y):
+        return self._call_widget("identify", x, y)
+
+    def index(self, index):
+        return self.getint(self._call_widget("index", index))
+
+    def insert(self, index, s):
+        return self._call_widget("insert", index, s)
+
+    def invoke(self, element):
+        return self._call_widget("invoke", element)
+
+    def scan(self, *args):
+        return self._call_widget("scan", *args)
+
+    def scan_mark(self, x):
+        return self._call_widget("scan", "mark", x)
+
+    def scan_dragto(self, x):
+        return self._call_widget("scan", "dragto", x)
+
+    def selection(self, *args):
+        return self._call_widget("selection", *args)
+
+    def selection_adjust(self, index):
+        return self._call_widget("selection", "adjust", index)
+
+    def selection_clear(self):
+        return self._call_widget("selection", "clear")
+
+    def selection_element(self, element=None):
+        if element is None:
+            return self._call_widget("selection", "element")
+        return self._call_widget("selection", "element", element)
+
+    def selection_from(self, index):
+        return self._call_widget("selection", "from", index)
+
+    def selection_present(self):
+        return bool(self.getint(self._call_widget("selection", "present")))
+
+    def selection_range(self, start, end):
+        return self._call_widget("selection", "range", start, end)
+
+    def selection_to(self, index):
+        return self._call_widget("selection", "to", index)
+
 
 class Scale(_CoreWidget):
     _widget_command = "scale"
 
+    def get(self):
+        return self.getdouble(self._call_widget("get"))
+
+    def set(self, value):
+        return self._call_widget("set", value)
+
+    def coords(self, value=None):
+        if value is None:
+            result = self._call_widget("coords")
+        else:
+            result = self._call_widget("coords", value)
+        if not result:
+            return ()
+        return tuple(self.getdouble(part) for part in self.splitlist(result))
+
+    def identify(self, x, y):
+        return self._call_widget("identify", x, y)
+
 
 class PanedWindow(_CoreWidget):
     _widget_command = "panedwindow"
+
+    def add(self, child, **kw):
+        return self._call_widget(
+            "add", _normalize_bind_target(child), *_normalize_tk_options(None, **kw)
+        )
+
+    def remove(self, child):
+        return self._call_widget("forget", _normalize_bind_target(child))
+
+    forget = remove
+
+    def identify(self, x, y):
+        return self._call_widget("identify", x, y)
+
+    def proxy(self, *args):
+        result = self._call_widget("proxy", *args)
+        if not result:
+            return ()
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def proxy_coord(self):
+        return self.proxy("coord")
+
+    def proxy_forget(self):
+        return self.proxy("forget")
+
+    def proxy_place(self, x, y):
+        return self.proxy("place", x, y)
+
+    def sash(self, *args):
+        result = self._call_widget("sash", *args)
+        if not result:
+            return ()
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
+    def sash_coord(self, index):
+        return self.sash("coord", index)
+
+    def sash_mark(self, index):
+        return self.sash("mark", index)
+
+    def sash_place(self, index, x, y):
+        return self.sash("place", index, x, y)
+
+    def panecget(self, child, option):
+        return self._call_widget(
+            "panecget", _normalize_bind_target(child), _normalize_option_name(option)
+        )
+
+    def paneconfigure(self, tag_or_id, cnf=None, **kw):
+        target = _normalize_bind_target(tag_or_id)
+        if isinstance(cnf, str):
+            if kw:
+                raise TypeError(
+                    "paneconfigure() option query cannot be combined with updates"
+                )
+            return self._call_widget(
+                "paneconfigure", target, _normalize_option_name(cnf)
+            )
+        if cnf is None and not kw:
+            return self._call_widget("paneconfigure", target)
+        return self._call_widget(
+            "paneconfigure", target, *_normalize_tk_options(cnf, **kw)
+        )
+
+    paneconfig = paneconfigure
+
+    def panes(self):
+        return self.splitlist(self._call_widget("panes"))
 
 
 class LabelFrame(_CoreWidget):
@@ -1504,10 +3078,75 @@ class Image:
     def cget(self, key):
         return self.tk.call(self.name, "cget", _normalize_option_name(key))
 
+    def height(self):
+        return self.tk.getint(self.tk.call("image", "height", self.name))
+
+    def type(self):
+        return self.tk.call("image", "type", self.name)
+
+    def width(self):
+        return self.tk.getint(self.tk.call("image", "width", self.name))
+
 
 class PhotoImage(Image):
     def __init__(self, name=None, cnf=None, master=None, **kw):
         super().__init__("photo", name, cnf, master, **kw)
+
+    def blank(self):
+        return self.tk.call(self.name, "blank")
+
+    def cget(self, option):
+        return self.tk.call(self.name, "cget", _normalize_option_name(option))
+
+    def copy(self):
+        dest_image = PhotoImage(master=self.tk)
+        self.tk.call(dest_image, "copy", self.name)
+        return dest_image
+
+    def zoom(self, x, y=""):
+        if y == "":
+            y = x
+        dest_image = PhotoImage(master=self.tk)
+        self.tk.call(dest_image, "copy", self.name, "-zoom", x, y)
+        return dest_image
+
+    def subsample(self, x, y=""):
+        if y == "":
+            y = x
+        dest_image = PhotoImage(master=self.tk)
+        self.tk.call(dest_image, "copy", self.name, "-subsample", x, y)
+        return dest_image
+
+    def get(self, x, y):
+        return self.tk.call(self.name, "get", x, y)
+
+    def put(self, data, to=None):
+        if to is None:
+            return self.tk.call(self.name, "put", data)
+        return self.tk.call(self.name, "put", data, "-to", *to)
+
+    def write(self, filename, format=None, from_coords=None):
+        args = [filename]
+        if format is not None:
+            args.extend(("-format", format))
+        if from_coords is not None:
+            args.extend(("-from", *from_coords))
+        return self.tk.call(self.name, "write", *args)
+
+    def transparency_get(self, x, y):
+        return bool(
+            self.tk.getboolean(self.tk.call(self.name, "transparency", "get", x, y))
+        )
+
+    def transparency_set(self, x, y, boolean):
+        return self.tk.call(
+            self.name,
+            "transparency",
+            "set",
+            x,
+            y,
+            int(bool(boolean)),
+        )
 
 
 class BitmapImage(Image):
@@ -1534,7 +3173,6 @@ class Variable:
             raise TypeError("variable master must be a tkinter widget or root")
         self._root = parent.tk
         self._tk = parent.tk
-        self._trace_callbacks = {}
         if name is None:
             self._name = _next_variable_name()
         else:
@@ -1570,40 +3208,21 @@ class Variable:
                 return callback(*args)
             return callback(self._name, "", mode_name)
 
-        command_name = self._root._register_command("trace", wrapped)
-        try:
-            self._tk.call(
-                "trace",
-                "add",
-                "variable",
-                self._name,
-                mode_name,
-                command_name,
-            )
-        except Exception:
-            self._root._release_command(command_name)
-            raise
-        self._trace_callbacks[command_name] = mode_name
+        command_name = _TK_TRACE_ADD(self._tk._tk_app, self._name, mode_name, wrapped)
+        if hasattr(self._root, "_registered_commands"):
+            self._root._registered_commands.add(str(command_name))
         return command_name
 
     def trace_remove(self, mode, cbname):
         mode_name = _normalize_trace_mode(mode)
         command_name = str(cbname)
-        self._tk.call(
-            "trace",
-            "remove",
-            "variable",
-            self._name,
-            mode_name,
-            command_name,
-        )
-        self._trace_callbacks.pop(command_name, None)
-        self._root._release_command(command_name)
+        _TK_TRACE_REMOVE(self._tk._tk_app, self._name, mode_name, command_name)
+        if hasattr(self._root, "_registered_commands"):
+            self._root._registered_commands.discard(command_name)
+        return None
 
     def trace_info(self):
-        return self._tk.splitlist(
-            self._tk.call("trace", "info", "variable", self._name)
-        )
+        return _TK_TRACE_INFO(self._tk._tk_app, self._name)
 
     def trace(self, mode, callback):
         return self.trace_add(mode, callback)
@@ -1645,6 +3264,9 @@ class BooleanVar(Variable):
     def get(self):
         return self._tk.getboolean(super().get())
 
+    def set(self, value):
+        return super().set(bool(value))
+
 
 def mainloop(n=0):
     _get_default_root().mainloop(n)
@@ -1668,6 +3290,24 @@ def after_idle(callback, *args):
 
 def after_cancel(identifier):
     return _get_default_root().after_cancel(identifier)
+
+
+def bind_register(app, target_name, sequence, callback, add_prefix=""):
+    return _TK_BIND_REGISTER(app, target_name, sequence, callback, add_prefix)
+
+
+def bind_unregister(app, target_name, sequence, command_name):
+    return _TK_BIND_UNREGISTER(app, target_name, sequence, command_name)
+
+
+def treeview_tag_bind_register(app, treeview_path, tagname, sequence, callback):
+    register = _require_phase0_callable("treeview_tag_bind_register")
+    return register(app, treeview_path, tagname, sequence, callback)
+
+
+def treeview_tag_bind_unregister(app, treeview_path, tagname, sequence, command_name):
+    unregister = _require_phase0_callable("treeview_tag_bind_unregister")
+    return unregister(app, treeview_path, tagname, sequence, command_name)
 
 
 def getvar(name="PY_VAR"):
@@ -1766,6 +3406,8 @@ __all__ = [
     "after",
     "after_cancel",
     "after_idle",
+    "bind_register",
+    "bind_unregister",
     "dooneevent",
     "getboolean",
     "getdouble",
@@ -1779,6 +3421,8 @@ __all__ = [
     "setvar",
     "splitlist",
     "tk_available",
+    "treeview_tag_bind_register",
+    "treeview_tag_bind_unregister",
     "unsetvar",
     "image_names",
     "image_types",
@@ -1791,7 +3435,4 @@ for _name in tuple(globals()):
 
 
 def __getattr__(attr):
-    raise AttributeError(
-        f'module "{__name__}" has no attribute "{attr}"; '
-        "only the intrinsic-backed tkinter compatibility surface is implemented."
-    )
+    raise AttributeError(f'module "{__name__}" has no attribute "{attr}"')

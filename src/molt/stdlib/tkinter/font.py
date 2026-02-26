@@ -110,7 +110,8 @@ class Font:
             )
         return self._call("tkinter.font.Font.configure", "configure", self.name)
 
-    config = configure
+    def config(self, **options):
+        return self.configure(**options)
 
     def copy(self):
         copied_name = f"font{abs(hash((self.name, id(self))))}"
