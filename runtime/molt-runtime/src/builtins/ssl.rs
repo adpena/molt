@@ -11,7 +11,6 @@
 
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufReader, Read, Write};
@@ -20,6 +19,7 @@ use std::net::TcpStream;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 // ── Availability guard ─────────────────────────────────────────────────────
 // All public functions are present on all platforms (WASM stubs raise OSError).
@@ -114,13 +114,13 @@ struct SslSocketState {
     server_hostname: Option<String>,
 }
 
-// ── Thread-local handle storage ───────────────────────────────────────────
+// ── Process-wide handle storage ──────────────────────────────────────────
 
-thread_local! {
-    static CTX_MAP: RefCell<HashMap<i64, SslContextState>> = RefCell::new(HashMap::new());
-    #[cfg(not(target_arch = "wasm32"))]
-    static SOCK_MAP: RefCell<HashMap<i64, SslSocketState>> = RefCell::new(HashMap::new());
-}
+static CTX_REGISTRY: LazyLock<Mutex<HashMap<i64, SslContextState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(not(target_arch = "wasm32"))]
+static SOCK_REGISTRY: LazyLock<Mutex<HashMap<i64, SslSocketState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ── Helper: extract optional str ─────────────────────────────────────────
 
@@ -160,7 +160,7 @@ pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
         let purpose = to_i64(obj_from_bits(purpose_bits)).unwrap_or(PURPOSE_SERVER_AUTH);
         let state = SslContextState::new_client(purpose);
         let id = next_id();
-        CTX_MAP.with(|m| m.borrow_mut().insert(id, state));
+        CTX_REGISTRY.lock().unwrap().insert(id, state);
         int_bits_from_i64(_py, id)
     })
 }
@@ -171,7 +171,7 @@ pub extern "C" fn molt_ssl_context_new(protocol_bits: u64) -> u64 {
         let protocol = to_i64(obj_from_bits(protocol_bits)).unwrap_or(PROTOCOL_TLS_CLIENT);
         let state = SslContextState::new_with_protocol(protocol);
         let id = next_id();
-        CTX_MAP.with(|m| m.borrow_mut().insert(id, state));
+        CTX_REGISTRY.lock().unwrap().insert(id, state);
         int_bits_from_i64(_py, id)
     })
 }
@@ -191,8 +191,8 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
         };
         let certfile = opt_string_from_bits(certfile_bits);
         let keyfile = opt_string_from_bits(keyfile_bits);
-        let found = CTX_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let found = {
+            let mut map = CTX_REGISTRY.lock().unwrap();
             if let Some(ctx) = map.get_mut(&id) {
                 ctx.certfile = certfile;
                 ctx.keyfile = keyfile;
@@ -200,7 +200,7 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
         }
@@ -235,8 +235,8 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
                 None
             }
         };
-        let found = CTX_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let found = {
+            let mut map = CTX_REGISTRY.lock().unwrap();
             if let Some(ctx) = map.get_mut(&id) {
                 ctx.cafile = cafile;
                 ctx.cadata = cadata;
@@ -244,7 +244,7 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
         }
@@ -262,7 +262,7 @@ pub extern "C" fn molt_ssl_context_set_default_verify_paths(handle_bits: u64) ->
                 return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
             }
         };
-        let valid = CTX_MAP.with(|m| m.borrow().contains_key(&id));
+        let valid = CTX_REGISTRY.lock().unwrap().contains_key(&id);
         if !valid {
             return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
         }
@@ -280,15 +280,15 @@ pub extern "C" fn molt_ssl_context_set_ciphers(handle_bits: u64, cipherstring_bi
             }
         };
         let ciphers = opt_string_from_bits(cipherstring_bits);
-        let found = CTX_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let found = {
+            let mut map = CTX_REGISTRY.lock().unwrap();
             if let Some(ctx) = map.get_mut(&id) {
                 ctx.ciphers = ciphers;
                 true
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
         }
@@ -305,7 +305,11 @@ pub extern "C" fn molt_ssl_context_get_protocol(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
             }
         };
-        let proto = CTX_MAP.with(|m| m.borrow().get(&id).map(|ctx| ctx.protocol));
+        let proto = CTX_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|ctx| ctx.protocol);
         match proto {
             Some(p) => int_bits_from_i64(_py, p),
             None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
@@ -322,7 +326,11 @@ pub extern "C" fn molt_ssl_context_check_hostname_get(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
             }
         };
-        let val = CTX_MAP.with(|m| m.borrow().get(&id).map(|ctx| ctx.check_hostname));
+        let val = CTX_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|ctx| ctx.check_hostname);
         match val {
             Some(b) => MoltObject::from_bool(b).bits(),
             None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
@@ -343,8 +351,8 @@ pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bi
             let obj = obj_from_bits(value_bits);
             is_truthy(_py, obj)
         };
-        let found = CTX_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let found = {
+            let mut map = CTX_REGISTRY.lock().unwrap();
             if let Some(ctx) = map.get_mut(&id) {
                 ctx.check_hostname = flag;
                 // When check_hostname is enabled, CERT_REQUIRED is mandatory (CPython semantics).
@@ -355,7 +363,7 @@ pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bi
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
         }
@@ -372,7 +380,11 @@ pub extern "C" fn molt_ssl_context_verify_mode_get(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
             }
         };
-        let val = CTX_MAP.with(|m| m.borrow().get(&id).map(|ctx| ctx.verify_mode));
+        let val = CTX_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|ctx| ctx.verify_mode);
         match val {
             Some(v) => int_bits_from_i64(_py, v),
             None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
@@ -393,19 +405,20 @@ pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: 
         if !matches!(mode, CERT_NONE | CERT_OPTIONAL | CERT_REQUIRED) {
             return raise_exception::<u64>(_py, "ValueError", "invalid verify mode");
         }
-        let found = CTX_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let found = {
+            let mut map = CTX_REGISTRY.lock().unwrap();
             if let Some(ctx) = map.get_mut(&id) {
                 // CPython: setting CERT_NONE while check_hostname=True raises.
                 if mode == CERT_NONE && ctx.check_hostname {
-                    return false; // signal error
+                    false // signal error
+                } else {
+                    ctx.verify_mode = mode;
+                    true
                 }
-                ctx.verify_mode = mode;
-                true
             } else {
                 false
             }
-        });
+        };
         if !found {
             return raise_exception::<u64>(
                 _py,
@@ -421,7 +434,7 @@ pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: 
 pub extern "C" fn molt_ssl_context_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            CTX_MAP.with(|m| m.borrow_mut().remove(&id));
+            CTX_REGISTRY.lock().unwrap().remove(&id);
         }
         return_none()
     })
@@ -445,8 +458,11 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
             }
         };
-        let ctx_state = CTX_MAP.with(|m| {
-            m.borrow().get(&ctx_id).map(|ctx| SslContextState {
+        let ctx_state = CTX_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&ctx_id)
+            .map(|ctx| SslContextState {
                 protocol: ctx.protocol,
                 verify_mode: ctx.verify_mode,
                 check_hostname: ctx.check_hostname,
@@ -455,8 +471,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 cafile: ctx.cafile.clone(),
                 cadata: ctx.cadata.clone(),
                 ciphers: ctx.ciphers.clone(),
-            })
-        });
+            });
         let ctx_state = match ctx_state {
             Some(s) => s,
             None => return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
@@ -716,7 +731,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
         };
 
         let sock_id = next_id();
-        SOCK_MAP.with(|m| m.borrow_mut().insert(sock_id, socket_state));
+        SOCK_REGISTRY.lock().unwrap().insert(sock_id, socket_state);
         int_bits_from_i64(_py, sock_id)
     })
 }
@@ -744,8 +759,8 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
-        let result = SOCK_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let result = (|| -> Result<(), String> {
+            let mut map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
                 return Err("invalid ssl socket handle".to_string());
             };
@@ -792,7 +807,7 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
                 }
             }
             Ok(())
-        });
+        })();
         match result {
             Ok(()) => return_none(),
             Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
@@ -819,8 +834,8 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
             }
         };
         let max_len = to_i64(obj_from_bits(len_bits)).unwrap_or(4096).max(0) as usize;
-        let result = SOCK_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let result = (|| -> Result<Vec<u8>, String> {
+            let mut map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
                 return Err("invalid ssl socket handle".to_string());
             };
@@ -835,7 +850,7 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
             };
             buf.truncate(n);
             Ok(buf)
-        });
+        })();
         match result {
             Ok(data) => return_bytes_val(_py, &data),
             Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
@@ -879,8 +894,8 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
                 }
             }
         };
-        let result = SOCK_MAP.with(|m| {
-            let mut map = m.borrow_mut();
+        let result = (|| -> Result<usize, String> {
+            let mut map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
                 return Err("invalid ssl socket handle".to_string());
             };
@@ -895,7 +910,7 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
                 }
             };
             Ok(n)
-        });
+        })();
         match result {
             Ok(n) => int_bits_from_i64(_py, n as i64),
             Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
@@ -922,7 +937,11 @@ pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits
             }
         };
         let binary_form = is_truthy(_py, obj_from_bits(binary_form_bits));
-        let cert_der = SOCK_MAP.with(|m| m.borrow().get(&id).and_then(|s| s.peer_cert_der.clone()));
+        let cert_der = SOCK_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.peer_cert_der.clone());
         match cert_der {
             None => MoltObject::none().bits(),
             Some(der) => {
@@ -967,11 +986,11 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
-        let info = SOCK_MAP.with(|m| {
-            m.borrow()
-                .get(&id)
-                .map(|s| (s.cipher_name.clone(), s.protocol_version.clone()))
-        });
+        let info = SOCK_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| (s.cipher_name.clone(), s.protocol_version.clone()));
         match info {
             None => raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle"),
             Some((None, _)) => MoltObject::none().bits(),
@@ -1018,7 +1037,11 @@ pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
-        let ver = SOCK_MAP.with(|m| m.borrow().get(&id).and_then(|s| s.protocol_version.clone()));
+        let ver = SOCK_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|s| s.protocol_version.clone());
         match ver {
             None => MoltObject::none().bits(),
             Some(v) => return_str(_py, &v),
@@ -1046,7 +1069,7 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
         };
         #[cfg(all(not(target_arch = "wasm32"), unix))]
         {
-            let state = SOCK_MAP.with(|m| m.borrow_mut().remove(&id));
+            let state = SOCK_REGISTRY.lock().unwrap().remove(&id);
             match state {
                 None => raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle"),
                 Some(s) => {
@@ -1076,7 +1099,7 @@ pub extern "C" fn molt_ssl_socket_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             #[cfg(not(target_arch = "wasm32"))]
-            SOCK_MAP.with(|m| m.borrow_mut().remove(&id));
+            SOCK_REGISTRY.lock().unwrap().remove(&id);
             #[cfg(target_arch = "wasm32")]
             let _ = id;
         }

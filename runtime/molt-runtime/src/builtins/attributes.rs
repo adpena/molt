@@ -4184,8 +4184,7 @@ unsafe fn dataclass_setattr_inner(
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
             }
-            let field_names = &(*desc_ptr).field_names;
-            if let Some(index) = field_names.iter().position(|name| name == attr_name) {
+            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 let fields = dataclass_fields_mut(obj_ptr);
                 if index < fields.len() {
                     let old_bits = fields[index];
@@ -4444,8 +4443,7 @@ unsafe fn dataclass_delattr_inner(
                     "cannot delete frozen dataclass field",
                 );
             }
-            let field_names = &(*desc_ptr).field_names;
-            if let Some(index) = field_names.iter().position(|name| name == attr_name) {
+            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 let fields = dataclass_fields_mut(obj_ptr);
                 if index < fields.len() {
                     let old_bits = fields[index];

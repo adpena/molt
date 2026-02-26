@@ -539,19 +539,33 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
     })
 }
 
-fn c3_merge(mut seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
+fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
     let mut result = Vec::new();
+    let mut heads = vec![0usize; seqs.len()];
     loop {
-        seqs.retain(|seq| !seq.is_empty());
-        if seqs.is_empty() {
+        let mut remaining = 0usize;
+        for (idx, seq) in seqs.iter().enumerate() {
+            if heads[idx] < seq.len() {
+                remaining += 1;
+            }
+        }
+        if remaining == 0 {
             return Some(result);
         }
         let mut candidate = None;
-        'outer: for seq in &seqs {
-            let head = seq[0];
+        'outer: for (seq_idx, seq) in seqs.iter().enumerate() {
+            let head_idx = heads[seq_idx];
+            if head_idx >= seq.len() {
+                continue;
+            }
+            let head = seq[head_idx];
             let mut in_tail = false;
-            for other in &seqs {
-                if other.iter().skip(1).any(|val| *val == head) {
+            for (other_idx, other) in seqs.iter().enumerate() {
+                let other_head = heads[other_idx];
+                if other_head >= other.len() {
+                    continue;
+                }
+                if other[(other_head + 1)..].iter().any(|val| *val == head) {
                     in_tail = true;
                     break;
                 }
@@ -563,9 +577,10 @@ fn c3_merge(mut seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
         }
         let cand = candidate?;
         result.push(cand);
-        for seq in &mut seqs {
-            if !seq.is_empty() && seq[0] == cand {
-                seq.remove(0);
+        for (idx, seq) in seqs.iter().enumerate() {
+            let head_idx = heads[idx];
+            if head_idx < seq.len() && seq[head_idx] == cand {
+                heads[idx] += 1;
             }
         }
     }

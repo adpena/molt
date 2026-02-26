@@ -102,7 +102,30 @@ __all__ = [
     "orig_argv",
     "copyright",
     "displayhook",
+    "__displayhook__",
     "excepthook",
+    "__excepthook__",
+    "unraisablehook",
+    "__unraisablehook__",
+    "dont_write_bytecode",
+    "float_repr_style",
+    "pycache_prefix",
+    "warnoptions",
+    "_xoptions",
+    "get_int_max_str_digits",
+    "set_int_max_str_digits",
+    "is_finalizing",
+    "getrefcount",
+    "getswitchinterval",
+    "setswitchinterval",
+    "settrace",
+    "gettrace",
+    "setprofile",
+    "getprofile",
+    "call_tracing",
+    "exception",
+    "addaudithook",
+    "audit",
 ]
 
 _MOLT_GETARGV = _as_callable(_require_intrinsic("molt_getargv", globals()))
@@ -864,3 +887,233 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
         stderr.write(f"{type_name}: {detail}\n")
         return
     stderr.write(f"{type_name}\n")
+
+
+def unraisablehook(unraisable: object) -> None:
+    """Handle an unraisable exception (e.g. from __del__ or gc).
+
+    CPython 3.8+ (PEP 578).  The *unraisable* argument should be an
+    ``UnraisableHookArgs`` instance.
+    """
+    err_msg = getattr(unraisable, "err_msg", None)
+    obj = getattr(unraisable, "object", None)
+    exc_value = getattr(unraisable, "exc_value", None)
+    exc_type = getattr(unraisable, "exc_type", None)
+    exc_tb = getattr(unraisable, "exc_traceback", None)
+
+    if err_msg is None:
+        err_msg = "Exception ignored in"
+    if obj is not None:
+        stderr.write(f"{err_msg}: {obj!r}\n")
+    else:
+        stderr.write(f"{err_msg}\n")
+
+    if exc_value is not None:
+        try:
+            lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
+                exc_type, exc_value, exc_tb, None, True
+            )
+        except BaseException:  # noqa: BLE001
+            lines = None
+        if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
+            stderr.write("".join(lines))
+            return
+        type_name = getattr(exc_type, "__name__", None)
+        if not isinstance(type_name, str):
+            type_name = str(exc_type)
+        detail = str(exc_value) if exc_value is not None else ""
+        if detail:
+            stderr.write(f"{type_name}: {detail}\n")
+        else:
+            stderr.write(f"{type_name}\n")
+
+
+# --- Save original hooks (CPython 3.12 parity) ---
+__displayhook__ = displayhook
+__excepthook__ = excepthook
+__unraisablehook__ = unraisablehook
+
+
+# --- Compile-time constants (no intrinsic needed) ---
+
+# Molt never writes .pyc files; compiled binaries are self-contained.
+dont_write_bytecode = True
+
+# Python >= 3.1 always uses short repr for floats.
+float_repr_style = "short"
+
+# Molt has no bytecode cache; always None.
+pycache_prefix = None
+
+# Implementation detail of the warnings framework; always empty for Molt.
+warnoptions: list[str] = []
+
+# CPython -X options dict; Molt has none.
+_xoptions: dict[str, object] = {}
+
+
+# --- Integer string conversion length limitation (CPython 3.11+) ---
+
+# Pull defaults from int_info; int_info is already materialised above.
+_int_max_str_digits: int = int_info.default_max_str_digits  # type: ignore[assignment]
+
+
+def get_int_max_str_digits() -> int:
+    """Return the current integer string conversion length limit."""
+    return _int_max_str_digits
+
+
+def set_int_max_str_digits(maxdigits: int) -> None:
+    """Set the integer string conversion length limit.
+
+    *maxdigits* must be 0 (unlimited) or >= str_digits_check_threshold.
+    """
+    global _int_max_str_digits  # noqa: PLW0603
+    if not isinstance(maxdigits, int) or isinstance(maxdigits, bool):
+        raise TypeError(
+            "set_int_max_str_digits() argument must be a positive integer or zero"
+        )
+    threshold = int_info.str_digits_check_threshold  # type: ignore[attr-defined]
+    if maxdigits != 0 and maxdigits < threshold:
+        raise ValueError(f"maxdigits must be 0 or larger than {threshold}")
+    _int_max_str_digits = maxdigits
+
+
+# --- Interpreter state queries ---
+
+
+def is_finalizing() -> bool:
+    """Return True if the Python interpreter is shutting down.
+
+    Molt compiled binaries do not have a staged shutdown; this always
+    returns False during normal execution.
+    """
+    # TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:partial): Wire intrinsic when runtime shutdown state tracking is implemented.
+    return False
+
+
+def getrefcount(obj: object) -> int:
+    """Return the reference count of *obj*.
+
+    Molt uses its own RC/GC model; this returns a best-effort value.
+    The count includes the temporary reference as argument (matching CPython).
+    """
+    # TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:missing): Wire molt_sys_getrefcount intrinsic.
+    del obj
+    return 1
+
+
+# --- Thread switch interval (CPython GIL timeslice) ---
+
+_switch_interval: float = 0.005  # CPython default: 5 ms
+
+
+def getswitchinterval() -> float:
+    """Return the interpreter's thread switch interval in seconds."""
+    return _switch_interval
+
+
+def setswitchinterval(interval: float) -> None:
+    """Set the interpreter's thread switch interval (in seconds).
+
+    Molt does not have a GIL; this is a compatibility stub that stores
+    the value for callers that read it back.
+    """
+    global _switch_interval  # noqa: PLW0603
+    if not isinstance(interval, (int, float)):
+        raise TypeError("a float is required")
+    if interval <= 0:
+        raise ValueError("switch interval must be strictly positive")
+    _switch_interval = float(interval)
+
+
+# --- Trace and profile function stubs ---
+# Molt compiled binaries do not support CPython-style tracing/profiling.
+# These stubs exist for import compatibility.
+
+_trace_func: object = None
+_profile_func: object = None
+
+
+def settrace(tracefunc: object) -> None:
+    """Set the system's trace function.
+
+    Molt does not support frame-level tracing; the function is stored
+    but never invoked by the runtime.
+    """
+    # TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:missing): Wire intrinsic when runtime tracing support is implemented.
+    global _trace_func  # noqa: PLW0603
+    _trace_func = tracefunc
+
+
+def gettrace() -> object:
+    """Get the trace function as set by settrace()."""
+    return _trace_func
+
+
+def setprofile(profilefunc: object) -> None:
+    """Set the system's profile function.
+
+    Molt does not support frame-level profiling; the function is stored
+    but never invoked by the runtime.
+    """
+    # TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:missing): Wire intrinsic when runtime profiling support is implemented.
+    global _profile_func  # noqa: PLW0603
+    _profile_func = profilefunc
+
+
+def getprofile() -> object:
+    """Get the profiler function as set by setprofile()."""
+    return _profile_func
+
+
+def call_tracing(func: object, args: object) -> object:
+    """Call func(*args) while tracing is enabled.
+
+    Molt does not support tracing; this simply calls func(*args).
+    """
+    if not callable(func):
+        raise TypeError("call_tracing() argument 1 must be callable")
+    if not isinstance(args, tuple):
+        raise TypeError("call_tracing() argument 2 must be a tuple")
+    return func(*args)
+
+
+# --- Active exception accessor (CPython 3.11+) ---
+
+
+def exception() -> BaseException | None:
+    """Return the active exception instance being handled, or None."""
+    exc = _MOLT_EXCEPTION_ACTIVE()
+    if exc is None:
+        exc = _MOLT_EXCEPTION_LAST()
+    if isinstance(exc, BaseException):
+        return exc
+    return None
+
+
+# --- Audit hooks (CPython 3.8+, PEP 578) ---
+
+_audit_hooks: list[object] = []
+
+
+def addaudithook(hook: object) -> None:
+    """Append the callable *hook* to the list of active auditing hooks.
+
+    Molt does not raise audit events internally; hooks are stored for
+    compatibility with libraries that register them.
+    """
+    if not callable(hook):
+        raise TypeError("expected a callable object")
+    _audit_hooks.append(hook)
+
+
+def audit(event: str, *args: object) -> None:
+    """Raise an auditing event and trigger any active auditing hooks.
+
+    Molt invokes registered hooks with (event, args) for compatibility,
+    but the runtime does not raise its own internal audit events.
+    """
+    for hook in _audit_hooks:
+        if callable(hook):
+            hook(event, args)

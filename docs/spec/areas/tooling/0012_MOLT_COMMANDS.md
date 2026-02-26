@@ -276,12 +276,16 @@ Purpose: Emit shell completion scripts for bash/zsh/fish.
 ---
 
 ### 4.8 `molt verify`
-**Status:** Implemented (initial).
+**Status:** Implemented (package + extension metadata).
 
-Purpose: Validate package manifests and checksums (`.moltpkg` or manifest+artifact).
+Purpose: Validate package manifests/checksums (`.moltpkg` or manifest+artifact),
+including extension metadata policy checks when extension manifests are detected.
 
 Key flags:
 - `--require-checksum`
+- `--extension-metadata/--no-extension-metadata` (force extension metadata validation mode; default auto-detect)
+- `--require-extension-capabilities` (fail when extension capability list is empty)
+- `--require-extension-abi <ver>` (exact-match extension ABI requirement)
 - `--require-deterministic`
 - `--capabilities <file|profile|list>`
 - `--require-signature/--no-require-signature` (require a package signature)
@@ -343,6 +347,46 @@ Notes:
 - The shim forwards interpreter flags from regrtest to the Molt command.
 - `tools/cpython_regrtest_skip.txt` currently skips `test_future_stmt` until
   dynamic execution builtins (`eval`/`exec`/`compile`) land.
+
+### 4.10 `molt extension`
+**Status:** Implemented (cross-target build + verify/publish integration;
+runtime load-time metadata enforcement in progress).
+
+Purpose: build and audit C extensions recompiled against `libmolt`.
+
+Subcommands:
+- `molt extension build` compiles configured extension sources, links against
+  `libmolt`, emits a wheel, and writes `extension_manifest.json`.
+  Key flags:
+  - `--project <path>` (default: cwd)
+  - `--out-dir <path>` (default: `dist/`)
+  - `--molt-abi <ver>` (default: `tool.molt.extension.molt_c_api_version` or `MOLT_C_API_VERSION`)
+  - `--target <native|triple>` (default: host `native`; `wasm` rejected)
+  - `--capabilities <file|list|profiles>` (override metadata capabilities)
+  - `--deterministic/--no-deterministic`
+  - `--json`, `--verbose`
+- `molt extension audit` validates ABI/capability metadata and wheel tags.
+  Key flags:
+  - `--path <wheel|manifest|dir>`
+  - `--require-capabilities`
+  - `--require-abi <ver>`
+  - `--require-checksum`
+  - `--json`, `--verbose`
+
+Runtime behavior:
+- Extension import/load boundaries now require extension metadata checks (ABI
+  compatibility, declared capability coverage, and extension checksum integrity;
+  archive-backed loads also validate wheel checksum).
+
+Expected project metadata:
+
+```toml
+[tool.molt.extension]
+module = "mypkg._native"
+sources = ["src/native.c"]
+capabilities = ["fs.read"]
+molt_c_api_version = "1"
+```
 
 ## 5. Determinism and Security Flags
 All commands that produce artifacts must support:

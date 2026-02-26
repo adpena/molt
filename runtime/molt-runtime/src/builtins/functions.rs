@@ -5856,6 +5856,54 @@ pub extern "C" fn molt_pickle_loads_core(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_multiprocessing_codec_dumps(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let protocol_bits = MoltObject::from_int(PICKLE_PROTO_5).bits();
+        let true_bits = MoltObject::from_bool(true).bits();
+        let none_bits = MoltObject::none().bits();
+        molt_pickle_dumps_core(
+            obj_bits,
+            protocol_bits,
+            true_bits,
+            none_bits,
+            none_bits,
+            none_bits,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_multiprocessing_codec_loads(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let true_bits = MoltObject::from_bool(true).bits();
+        let none_bits = MoltObject::none().bits();
+        let encoding_ptr = alloc_string(_py, b"ASCII");
+        if encoding_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let errors_ptr = alloc_string(_py, b"strict");
+        if errors_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(encoding_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
+        let errors_bits = MoltObject::from_ptr(errors_ptr).bits();
+        let out_bits = molt_pickle_loads_core(
+            data_bits,
+            true_bits,
+            encoding_bits,
+            errors_bits,
+            none_bits,
+            none_bits,
+            none_bits,
+        );
+        dec_ref_bits(_py, encoding_bits);
+        dec_ref_bits(_py, errors_bits);
+        out_bits
+    })
+}
+
 fn shlex_is_safe(s: &str) -> bool {
     s.bytes().all(|b| {
         matches!(

@@ -45,9 +45,11 @@ const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 const INT_MASK: u64 = (1 << 47) - 1;
 const MAX_DB_FRAME_SIZE: usize = 64 * 1024 * 1024;
 const CANCEL_POLL_MS: u64 = 10;
+const CANCEL_POLL_BATCH: usize = 256;
 const IO_EVENT_READ: u32 = 1;
 const IO_EVENT_WRITE: u32 = 1 << 1;
 const IO_EVENT_ERROR: u32 = 1 << 2;
+const PROCESS_POLL_BATCH: usize = 128;
 const PROCESS_STDIO_PIPE: i32 = 1;
 const PROCESS_STDIO_DEVNULL: i32 = 2;
 const PROCESS_STDIO_STDOUT_REDIRECT: i32 = -2;
@@ -166,6 +168,7 @@ struct HostState {
     call_indirect: Arc<Mutex<HashMap<String, Option<Func>>>>,
     db_worker: Option<DbWorker>,
     db_pending: HashMap<u64, PendingDbRequest>,
+    db_cancel_queue: VecDeque<u64>,
     last_cancel_check: Option<Instant>,
     socket_manager: SocketManager,
     ws_manager: WebSocketManager,
@@ -246,6 +249,7 @@ struct WebSocketEntry {
 struct ProcessManager {
     next_id: u64,
     processes: HashMap<u64, ProcessEntry>,
+    poll_queue: VecDeque<u64>,
     events_tx: mpsc::Sender<ProcessEvent>,
     events_rx: mpsc::Receiver<ProcessEvent>,
 }
@@ -276,6 +280,7 @@ impl ProcessManager {
         Self {
             next_id: 1,
             processes: HashMap::new(),
+            poll_queue: VecDeque::new(),
             events_tx: tx,
             events_rx: rx,
         }
@@ -1561,6 +1566,22 @@ fn fail_pending_requests(
     }
 }
 
+fn drain_db_pending(state: &mut HostState) -> Vec<PendingDbRequest> {
+    state.db_cancel_queue.clear();
+    std::mem::take(&mut state.db_pending)
+        .into_values()
+        .collect::<Vec<_>>()
+}
+
+fn requeue_db_cancel(state: &mut HostState, req_id: u64) {
+    if let Some(pending) = state.db_pending.get(&req_id)
+        && pending.token_id != 0
+        && !pending.cancel_sent
+    {
+        state.db_cancel_queue.push_back(req_id);
+    }
+}
+
 fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
     let memory = match ensure_memory(&mut caller) {
         Ok(mem) => mem,
@@ -1582,14 +1603,13 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
     let mut drop_worker = false;
     {
         let state = caller.data_mut();
-        let Some(worker) = state.db_worker.as_mut() else {
-            return 0;
+        let worker_status = match state.db_worker.as_mut() {
+            Some(worker) => worker.child.try_wait(),
+            None => return 0,
         };
-        match worker.child.try_wait() {
+        match worker_status {
             Ok(Some(_)) | Err(_) => {
-                let pending = std::mem::take(&mut state.db_pending)
-                    .into_values()
-                    .collect::<Vec<_>>();
+                let pending = drain_db_pending(state);
                 failures = Some((pending, "db host worker exited".to_string()));
                 drop_worker = true;
             }
@@ -1597,25 +1617,25 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
         }
         if failures.is_none() {
             loop {
-                match worker.responses.try_recv() {
+                let message = match state.db_worker.as_mut() {
+                    Some(worker) => worker.responses.try_recv(),
+                    None => Err(mpsc::TryRecvError::Disconnected),
+                };
+                match message {
                     Ok(WorkerMessage::Response(resp)) => {
                         if let Some(pending) = state.db_pending.remove(&resp.request_id) {
                             deliveries.push((pending, resp));
                         }
                     }
                     Ok(WorkerMessage::Error(err)) => {
-                        let pending = std::mem::take(&mut state.db_pending)
-                            .into_values()
-                            .collect::<Vec<_>>();
+                        let pending = drain_db_pending(state);
                         failures = Some((pending, format!("db host error: {err}")));
                         drop_worker = true;
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        let pending = std::mem::take(&mut state.db_pending)
-                            .into_values()
-                            .collect::<Vec<_>>();
+                        let pending = drain_db_pending(state);
                         failures = Some((pending, "db host disconnected".to_string()));
                         drop_worker = true;
                         break;
@@ -1655,19 +1675,23 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
         let cancel_func = exports.cancel_is_cancelled;
         if let Some(cancel_func) = cancel_func {
             let candidates = {
-                let state = caller.data();
-                state
-                    .db_pending
-                    .iter()
-                    .filter_map(|(id, pending)| {
-                        if pending.token_id != 0 && !pending.cancel_sent {
-                            Some((*id, pending.token_id))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
+                let state = caller.data_mut();
+                let budget = state.db_cancel_queue.len().min(CANCEL_POLL_BATCH);
+                let mut batch = Vec::with_capacity(budget);
+                for _ in 0..budget {
+                    let Some(req_id) = state.db_cancel_queue.pop_front() else {
+                        break;
+                    };
+                    if let Some(pending) = state.db_pending.get(&req_id)
+                        && pending.token_id != 0
+                        && !pending.cancel_sent
+                    {
+                        batch.push((req_id, pending.token_id));
+                    }
+                }
+                batch
             };
+            let mut retry_ids = Vec::new();
             let mut cancel_ids = Vec::new();
             for (req_id, token_id) in candidates {
                 let boxed = box_int(token_id);
@@ -1675,17 +1699,38 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
                     let bits = bits as u64;
                     if is_bool_bits(bits) && unbox_bool(bits) {
                         cancel_ids.push(req_id);
+                        continue;
                     }
                 }
+                retry_ids.push(req_id);
             }
-            if !cancel_ids.is_empty() {
+            if !retry_ids.is_empty() || !cancel_ids.is_empty() {
                 let state = caller.data_mut();
-                if let Some(worker) = state.db_worker.as_ref() {
-                    for req_id in cancel_ids {
-                        if let Some(pending) = state.db_pending.get_mut(&req_id)
-                            && send_worker_cancel(&worker.stdin, req_id).is_ok()
-                        {
-                            pending.cancel_sent = true;
+                for req_id in retry_ids {
+                    requeue_db_cancel(state, req_id);
+                }
+                if !cancel_ids.is_empty() {
+                    let worker_stdin = state.db_worker.as_ref().map(|worker| worker.stdin.clone());
+                    if let Some(worker_stdin) = worker_stdin {
+                        for req_id in cancel_ids {
+                            let mut should_requeue = false;
+                            if let Some(pending) = state.db_pending.get_mut(&req_id)
+                                && pending.token_id != 0
+                                && !pending.cancel_sent
+                            {
+                                if send_worker_cancel(&worker_stdin, req_id).is_ok() {
+                                    pending.cancel_sent = true;
+                                } else {
+                                    should_requeue = true;
+                                }
+                            }
+                            if should_requeue {
+                                requeue_db_cancel(state, req_id);
+                            }
+                        }
+                    } else {
+                        for req_id in cancel_ids {
+                            requeue_db_cancel(state, req_id);
                         }
                     }
                 }
@@ -1920,6 +1965,9 @@ fn handle_db_host(
                         cancel_sent: false,
                     },
                 );
+                if token_id != 0 {
+                    state.db_cancel_queue.push_back(id);
+                }
                 Ok(id)
             }
             Err(err) => Err(WorkerError::SendFailed(err)),
@@ -3760,6 +3808,7 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                         exit_code: None,
                     },
                 );
+                state.process_manager.poll_queue.push_back(handle);
             }
             if let Some(reader) = merged_stdout_reader.take() {
                 let tx = caller.data().process_manager.events_tx.clone();
@@ -4032,13 +4081,35 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
         let mut exited = Vec::new();
         {
             let state = caller.data_mut();
-            for (handle, entry) in state.process_manager.processes.iter_mut() {
-                if entry.exit_code.is_none()
-                    && let Ok(Some(status)) = entry.child.try_wait()
+            let budget = state
+                .process_manager
+                .poll_queue
+                .len()
+                .min(PROCESS_POLL_BATCH);
+            for _ in 0..budget {
+                let Some(handle) = state.process_manager.poll_queue.pop_front() else {
+                    break;
+                };
+                let mut requeue = false;
+                let mut exit_code = None;
+                if let Some(entry) = state.process_manager.processes.get_mut(&handle)
+                    && entry.exit_code.is_none()
                 {
-                    let code = exit_code_from_status(status);
-                    entry.exit_code = Some(code);
-                    exited.push((*handle, code));
+                    match entry.child.try_wait() {
+                        Ok(Some(status)) => {
+                            let code = exit_code_from_status(status);
+                            entry.exit_code = Some(code);
+                            exit_code = Some(code);
+                        }
+                        Ok(None) | Err(_) => {
+                            requeue = true;
+                        }
+                    }
+                }
+                if let Some(code) = exit_code {
+                    exited.push((handle, code));
+                } else if requeue {
+                    state.process_manager.poll_queue.push_back(handle);
                 }
             }
         }
@@ -4266,6 +4337,7 @@ fn main() -> Result<()> {
             call_indirect: Arc::new(Mutex::new(HashMap::new())),
             db_worker: None,
             db_pending: HashMap::new(),
+            db_cancel_queue: VecDeque::new(),
             last_cancel_check: None,
             socket_manager: SocketManager::new(),
             ws_manager: WebSocketManager::new(),

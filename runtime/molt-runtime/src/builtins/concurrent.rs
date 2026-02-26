@@ -11,10 +11,9 @@
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -89,15 +88,15 @@ fn next_future_id() -> i64 {
     NEXT_FUTURE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-// ── Thread-local handle storage ───────────────────────────────────────────
+// ── Process-wide handle storage ──────────────────────────────────────────
 //
-// These maps are thread-local so that work submitted from the main thread
-// stays accessible from the main thread (which holds the GIL).
+// These maps are process-wide so that handles created on the main thread
+// are visible to worker threads (required for concurrent.futures).
 
-thread_local! {
-    static POOL_MAP: RefCell<HashMap<i64, ThreadPoolState>> = RefCell::new(HashMap::new());
-    static FUTURE_MAP: RefCell<HashMap<i64, SharedFuture>> = RefCell::new(HashMap::new());
-}
+static POOL_REGISTRY: LazyLock<Mutex<HashMap<i64, ThreadPoolState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static FUTURE_REGISTRY: LazyLock<Mutex<HashMap<i64, SharedFuture>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ── Worker thread loop ────────────────────────────────────────────────────
 //
@@ -204,17 +203,15 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
         }
 
         let id = next_pool_id();
-        POOL_MAP.with(|m| {
-            m.borrow_mut().insert(
-                id,
-                ThreadPoolState {
-                    sender,
-                    _workers: handles,
-                    max_workers: workers_capped,
-                    shutdown: false,
-                },
-            )
-        });
+        POOL_REGISTRY.lock().unwrap().insert(
+            id,
+            ThreadPoolState {
+                sender,
+                _workers: handles,
+                max_workers: workers_capped,
+                shutdown: false,
+            },
+        );
         int_bits_from_i64(_py, id)
     })
 }
@@ -236,22 +233,23 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
         let future_shared = Arc::new(Mutex::new(FutureState::new()));
         let future_id = next_future_id();
 
-        let sent = POOL_MAP.with(|m| {
-            let map = m.borrow();
+        let sent = {
+            let map = POOL_REGISTRY.lock().unwrap();
             if let Some(pool) = map.get(&pool_id) {
                 if pool.shutdown {
-                    return false;
+                    false
+                } else {
+                    let item = WorkItem {
+                        future: future_shared.clone(),
+                        fn_bits,
+                        args_bits,
+                    };
+                    pool.sender.send(Some(item)).is_ok()
                 }
-                let item = WorkItem {
-                    future: future_shared.clone(),
-                    fn_bits,
-                    args_bits,
-                };
-                pool.sender.send(Some(item)).is_ok()
             } else {
                 false
             }
-        });
+        };
 
         if !sent {
             return raise_exception::<u64>(
@@ -261,8 +259,11 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             );
         }
 
-        // Store in FUTURE_MAP keyed by future_id.
-        FUTURE_MAP.with(|m| m.borrow_mut().insert(future_id, future_shared));
+        // Store in FUTURE_REGISTRY keyed by future_id.
+        FUTURE_REGISTRY
+            .lock()
+            .unwrap()
+            .insert(future_id, future_shared);
         int_bits_from_i64(_py, future_id)
     })
 }
@@ -282,7 +283,7 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         };
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
 
-        let pool = POOL_MAP.with(|m| m.borrow_mut().remove(&pool_id));
+        let pool = POOL_REGISTRY.lock().unwrap().remove(&pool_id);
         if let Some(mut pool) = pool {
             pool.shutdown = true;
             // Send shutdown sentinels for each worker.
@@ -311,7 +312,7 @@ pub extern "C" fn molt_concurrent_threadpool_drop(handle_bits: u64) -> u64 {
 // ── Future intrinsics ─────────────────────────────────────────────────────
 
 fn get_future(id: i64) -> Option<SharedFuture> {
-    FUTURE_MAP.with(|m| m.borrow().get(&id).cloned())
+    FUTURE_REGISTRY.lock().unwrap().get(&id).cloned()
 }
 
 fn wait_for_future(future: &SharedFuture, timeout_secs: Option<f64>) -> Result<(), ()> {
@@ -519,7 +520,7 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
 pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            FUTURE_MAP.with(|m| m.borrow_mut().remove(&id));
+            FUTURE_REGISTRY.lock().unwrap().remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -575,7 +576,7 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
                 }
                 let mut still_pending = Vec::new();
                 for id in pending {
-                    let future = FUTURE_MAP.with(|m| m.borrow().get(&id).cloned());
+                    let future = FUTURE_REGISTRY.lock().unwrap().get(&id).cloned();
                     if let Some(f) = future {
                         let done = f.lock().unwrap().is_done();
                         if done {
@@ -653,22 +654,27 @@ pub extern "C" fn molt_concurrent_wait(
             let _release = GilReleaseGuard::new();
             loop {
                 let all_done = future_ids.iter().all(|id| {
-                    FUTURE_MAP
-                        .with(|m| m.borrow().get(id).map(|f| f.lock().unwrap().is_done()))
+                    FUTURE_REGISTRY
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|f| f.lock().unwrap().is_done())
                         .unwrap_or(true)
                 });
                 let any_done = future_ids.iter().any(|id| {
-                    FUTURE_MAP
-                        .with(|m| m.borrow().get(id).map(|f| f.lock().unwrap().is_done()))
+                    FUTURE_REGISTRY
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|f| f.lock().unwrap().is_done())
                         .unwrap_or(false)
                 });
                 let any_exception = future_ids.iter().any(|id| {
-                    FUTURE_MAP
-                        .with(|m| {
-                            m.borrow().get(id).map(|f| {
-                                matches!(f.lock().unwrap().outcome, FutureOutcome::Exception(_))
-                            })
-                        })
+                    FUTURE_REGISTRY
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|f| matches!(f.lock().unwrap().outcome, FutureOutcome::Exception(_)))
                         .unwrap_or(false)
                 });
 
@@ -691,8 +697,11 @@ pub extern "C" fn molt_concurrent_wait(
             done_ids = future_ids
                 .iter()
                 .filter(|id| {
-                    FUTURE_MAP
-                        .with(|m| m.borrow().get(id).map(|f| f.lock().unwrap().is_done()))
+                    FUTURE_REGISTRY
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|f| f.lock().unwrap().is_done())
                         .unwrap_or(false)
                 })
                 .copied()
@@ -700,8 +709,11 @@ pub extern "C" fn molt_concurrent_wait(
             not_done_ids = future_ids
                 .iter()
                 .filter(|id| {
-                    !FUTURE_MAP
-                        .with(|m| m.borrow().get(id).map(|f| f.lock().unwrap().is_done()))
+                    !FUTURE_REGISTRY
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|f| f.lock().unwrap().is_done())
                         .unwrap_or(true)
                 })
                 .copied()

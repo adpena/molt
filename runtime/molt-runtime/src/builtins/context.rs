@@ -5,14 +5,11 @@ use crate::{
     inc_ref_bits, intern_static_name, obj_from_bits, object_type_id, raise_exception,
     runtime_state, to_i64, type_of_bits,
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
 
-thread_local! {
-    static GENERATOR_CONTEXT_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
-        RefCell::new(HashMap::new());
-}
+static GENERATOR_CONTEXT_STACKS: LazyLock<Mutex<HashMap<usize, Vec<u64>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn context_debug_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -46,30 +43,34 @@ pub(crate) fn context_stack_store(values: Vec<u64>) {
 
 pub(crate) fn generator_context_stack_take(ptr: *mut u8) -> Vec<u64> {
     GENERATOR_CONTEXT_STACKS
-        .with(|map| map.borrow_mut().remove(&(ptr as usize)).unwrap_or_default())
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize))
+        .unwrap_or_default()
 }
 
 pub(crate) fn generator_context_stack_store(ptr: *mut u8, values: Vec<u64>) {
-    GENERATOR_CONTEXT_STACKS.with(|map| {
-        if values.is_empty() {
-            map.borrow_mut().remove(&(ptr as usize));
-        } else {
-            map.borrow_mut().insert(ptr as usize, values);
-        }
-    });
+    let mut map = GENERATOR_CONTEXT_STACKS.lock().unwrap();
+    if values.is_empty() {
+        map.remove(&(ptr as usize));
+    } else {
+        map.insert(ptr as usize, values);
+    }
 }
 
 pub(crate) fn generator_context_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
-    GENERATOR_CONTEXT_STACKS.with(|map| {
-        if let Some(values) = map.borrow_mut().remove(&(ptr as usize)) {
-            for bits in values {
-                if !obj_from_bits(bits).is_none() {
-                    dec_ref_bits(_py, bits);
-                }
+    if let Some(values) = GENERATOR_CONTEXT_STACKS
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize))
+    {
+        for bits in values {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
             }
         }
-    });
+    }
 }
 
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {

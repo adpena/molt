@@ -5,6 +5,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
     "%b",
@@ -182,6 +183,40 @@ def _split_pairs_to_dict(tk, value):
     return out
 
 
+def _convert_stringval(value):
+    text = str(value)
+    for converter in (int, float):
+        try:
+            return converter(text)
+        except (TypeError, ValueError):
+            pass
+    return text
+
+
+def _tclobj_to_py(value):
+    if isinstance(value, tuple):
+        if len(value) == 0:
+            return ""
+        return [_convert_stringval(item) for item in value]
+    if isinstance(value, list):
+        return [_convert_stringval(item) for item in value]
+    if hasattr(value, "typename"):
+        return _convert_stringval(value)
+    return value
+
+
+def tclobjs_to_py(adict):
+    for opt, value in adict.items():
+        adict[opt] = _tclobj_to_py(value)
+    return adict
+
+
+def setup_master(master=None):
+    if master is None:
+        return _tkinter._get_default_root()
+    return master
+
+
 class Widget(_tkinter.Widget):
     """Minimal ttk widget shell backed by tkinter.Widget/call routing."""
 
@@ -342,6 +377,7 @@ class OptionMenu(Menubutton):
         if default is not None:
             kw.setdefault("text", default)
         super().__init__(master, textvariable=variable, **kw)
+        self._variable = variable
         self.variable = variable
         self.default = default
         self.values = tuple(values)
@@ -349,13 +385,28 @@ class OptionMenu(Menubutton):
     def set_menu(self, default=None, *values):
         self.default = default
         self.values = tuple(values)
-        set_value = getattr(self.variable, "set", None)
+        set_value = getattr(self._variable, "set", None)
         if default is not None and callable(set_value):
             set_value(default)
+
+    def destroy(self):
+        try:
+            del self._variable
+        except AttributeError:
+            pass
+        try:
+            del self.variable
+        except AttributeError:
+            pass
+        super().destroy()
 
 
 class Panedwindow(Widget):
     _widget_command = "ttk::panedwindow"
+
+    def forget(self, pane):
+        _require_gui_capability()
+        return self.tk.call(self._w, "forget", pane)
 
     def insert(self, pos, child, cnf=None, **kw):
         _require_gui_capability()
@@ -416,11 +467,77 @@ class Radiobutton(Widget):
 class Scale(Widget):
     _widget_command = "ttk::scale"
 
+    def configure(self, cnf=None, **kw):
+        _require_gui_capability()
+        retval = super().configure(cnf, **kw)
+        updated = {}
+        if isinstance(cnf, dict):
+            updated.update(cnf)
+        if kw:
+            updated.update(kw)
+        if any(option in updated for option in ("from", "from_", "to")):
+            self.event_generate("<<RangeChanged>>")
+        return retval
+
     def get(self, x=None, y=None):
         _require_gui_capability()
         if x is None and y is None:
             return self.tk.call(self._w, "get")
         return self.tk.call(self._w, "get", x, y)
+
+
+class LabeledScale(Frame):
+    """Minimal ttk.LabeledScale compatibility wrapper."""
+
+    def __init__(self, master=None, variable=None, from_=0, to=10, **kw):
+        _require_gui_capability()
+        self._label_top = kw.pop("compound", "top") == "top"
+        super().__init__(master, **kw)
+        self._variable = variable or _tkinter.IntVar(setup_master(master))
+        self._variable.set(from_)
+
+        self.label = Label(self)
+        self.scale = Scale(self, variable=self._variable, from_=from_, to=to)
+
+        scale_side = "bottom" if self._label_top else "top"
+        label_side = "top" if self._label_top else "bottom"
+        self.label.pack(side=label_side)
+        self.scale.pack(side=scale_side, fill="x")
+
+        trace_add = getattr(self._variable, "trace_add", None)
+        self.__tracecb = None
+        if callable(trace_add):
+            self.__tracecb = trace_add("write", self._sync_label)
+        self._sync_label()
+
+    def destroy(self):
+        trace_remove = getattr(self._variable, "trace_remove", None)
+        if self.__tracecb is not None and callable(trace_remove):
+            try:
+                trace_remove("write", self.__tracecb)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            del self._variable
+        except AttributeError:
+            pass
+        super().destroy()
+        self.label = None
+        self.scale = None
+
+    def _sync_label(self, *_args):
+        if self.label is None:
+            return None
+        self.label.configure(text=self.value)
+        return None
+
+    @property
+    def value(self):
+        return self._variable.get()
+
+    @value.setter
+    def value(self, value):
+        self._variable.set(value)
 
 
 class Scrollbar(Widget):
@@ -636,15 +753,20 @@ class Treeview(Widget):
         if funcid is None:
             return self.tk.call(self._w, "tag", "bind", tagname, sequence, "")
         command_name = str(funcid)
-        script = self.tk.call(self._w, "tag", "bind", tagname, sequence)
-        replacement = ""
-        if isinstance(script, str):
-            prefix = f'if {{"[{command_name} '
-            kept = [line for line in script.split("\n") if not line.startswith(prefix)]
-            replacement = "\n".join(kept)
-            if not replacement.strip():
-                replacement = ""
-        self.tk.call(self._w, "tag", "bind", tagname, sequence, replacement)
+        try:
+            self.tk.call(self._w, "tag", "bind", tagname, sequence, "", command_name)
+        except Exception:  # noqa: BLE001
+            script = self.tk.call(self._w, "tag", "bind", tagname, sequence)
+            replacement = ""
+            if isinstance(script, str):
+                prefix = f'if {{"[{command_name} '
+                kept = [
+                    line for line in script.split("\n") if not line.startswith(prefix)
+                ]
+                replacement = "\n".join(kept)
+                if not replacement.strip():
+                    replacement = ""
+            self.tk.call(self._w, "tag", "bind", tagname, sequence, replacement)
         self._release_command(command_name)
         return None
 
@@ -673,7 +795,7 @@ class Style:
 
     def __init__(self, master=None):
         _require_gui_capability()
-        parent = _tkinter._get_default_root() if master is None else master
+        parent = setup_master(master)
         if not isinstance(parent, _tkinter.Misc):
             raise TypeError("style master must be a tkinter widget or root")
         self.master = parent
@@ -774,6 +896,7 @@ __all__ = [
     "Frame",
     "Label",
     "LabelFrame",
+    "LabeledScale",
     "Labelframe",
     "Menubutton",
     "Notebook",
@@ -790,6 +913,8 @@ __all__ = [
     "Style",
     "Treeview",
     "Widget",
+    "setup_master",
+    "tclobjs_to_py",
 ]
 
 

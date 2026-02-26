@@ -2,7 +2,8 @@
 
 use crate::{AsyncAcquireError, AsyncPool, AsyncPooled, CancelToken};
 use rustls::{ClientConfig, RootCertStore};
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -57,26 +58,56 @@ enum PgTls {
 
 struct StatementCache {
     capacity: usize,
-    order: VecDeque<String>,
-    entries: HashMap<String, Statement>,
+    clock: u64,
+    order: BinaryHeap<Reverse<(u64, String)>>,
+    entries: HashMap<String, (Statement, u64)>,
 }
 
 impl StatementCache {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            order: VecDeque::new(),
+            clock: 0,
+            order: BinaryHeap::new(),
             entries: HashMap::new(),
         }
     }
 
-    fn get(&mut self, key: &str) -> Option<Statement> {
-        if let Some(stmt) = self.entries.get(key) {
-            if let Some(pos) = self.order.iter().position(|entry| entry == key) {
-                self.order.remove(pos);
+    fn touch(&mut self, key: &str) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        let stamp = self.clock;
+        self.order.push(Reverse((stamp, key.to_string())));
+        stamp
+    }
+
+    fn evict_over_capacity(&mut self) {
+        while self.entries.len() > self.capacity {
+            let Some(Reverse((stamp, key))) = self.order.pop() else {
+                break;
+            };
+            let is_live = self.entries.get(&key).is_some_and(|(_, cur)| *cur == stamp);
+            if !is_live {
+                continue;
             }
-            self.order.push_back(key.to_string());
-            return Some(stmt.clone());
+            self.entries.remove(&key);
+        }
+        // Drop stale generations after enough churn.
+        if self.order.len() > self.entries.len().saturating_mul(8).saturating_add(32) {
+            let mut compacted = BinaryHeap::with_capacity(self.entries.len());
+            for (key, (_, stamp)) in &self.entries {
+                compacted.push(Reverse((*stamp, key.clone())));
+            }
+            self.order = compacted;
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<Statement> {
+        if let Some((stmt, _)) = self.entries.get(key).cloned() {
+            let stamp = self.touch(key);
+            if let Some((_, cur_stamp)) = self.entries.get_mut(key) {
+                *cur_stamp = stamp;
+            }
+            return Some(stmt);
         }
         None
     }
@@ -85,21 +116,9 @@ impl StatementCache {
         if self.capacity == 0 {
             return;
         }
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key.clone(), stmt);
-            if let Some(pos) = self.order.iter().position(|entry| entry == &key) {
-                self.order.remove(pos);
-            }
-            self.order.push_back(key);
-            return;
-        }
-        self.entries.insert(key.clone(), stmt);
-        self.order.push_back(key.clone());
-        if self.order.len() > self.capacity
-            && let Some(evict) = self.order.pop_front()
-        {
-            self.entries.remove(&evict);
-        }
+        let stamp = self.touch(&key);
+        self.entries.insert(key, (stmt, stamp));
+        self.evict_over_capacity();
     }
 }
 

@@ -1,9 +1,80 @@
 """Phase-0 intrinsic-backed `tkinter.filedialog` wrappers."""
 
+import fnmatch
+import os
+
+import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
+from tkinter import dialog as _dialog
 
-_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
+_MOLT_TK_FILEDIALOG_SHOW = _require_intrinsic("molt_tk_filedialog_show", globals())
+
+Dialog = _dialog.Dialog
+commondialog = _commondialog
+dialogstates = {}
+test = None
+
+Tk = getattr(_tkinter, "Tk", object)
+Toplevel = getattr(_tkinter, "Toplevel", object)
+Frame = getattr(_tkinter, "Frame", object)
+Button = getattr(_tkinter, "Button", object)
+Entry = getattr(_tkinter, "Entry", object)
+Listbox = getattr(_tkinter, "Listbox", object)
+Scrollbar = getattr(_tkinter, "Scrollbar", object)
+
+BOTH = getattr(_tkinter, "BOTH", "both")
+BOTTOM = getattr(_tkinter, "BOTTOM", "bottom")
+END = getattr(_tkinter, "END", "end")
+LEFT = getattr(_tkinter, "LEFT", "left")
+RIGHT = getattr(_tkinter, "RIGHT", "right")
+TOP = getattr(_tkinter, "TOP", "top")
+X = getattr(_tkinter, "X", "x")
+Y = getattr(_tkinter, "Y", "y")
+YES = getattr(_tkinter, "YES", 1)
+
+
+def _split_path(path):
+    text = str(path)
+    slash = text.rfind("/")
+    backslash = text.rfind("\\")
+    index = slash if slash > backslash else backslash
+    if index < 0:
+        return ("", text)
+    head = text[:index]
+    tail = text[index + 1 :]
+    if not head and index == 0:
+        head = text[:1]
+    return (head, tail)
+
+
+def _normalize_option_name(name):
+    return name if name.startswith("-") else f"-{name}"
+
+
+def _normalize_options(options):
+    normalized = []
+    for key, value in options.items():
+        if value is None:
+            continue
+        option_name = _normalize_option_name(str(key))
+        option_value = str(value) if option_name == "-parent" else value
+        normalized.append(option_name)
+        normalized.append(option_value)
+    return normalized
+
+
+def _resolve_master(master):
+    if master is None:
+        return _tkinter._get_default_root()
+    if not isinstance(master, _tkinter.Misc):
+        raise TypeError("filedialog master must be a tkinter widget or root")
+    return master
+
+
+def _app_handle(master):
+    app = master._tk_app
+    return getattr(app, "_handle", app)
 
 
 class _Dialog(_commondialog.Dialog):
@@ -14,15 +85,34 @@ class _Dialog(_commondialog.Dialog):
             self.options.update(options)
         if not self.command:
             raise RuntimeError("dialog command is not configured")
-        master = _commondialog._resolve_master(self.master)
+        master = _resolve_master(self.master)
         self._fixoptions()
-        result = _MOLT_TK_COMMONDIALOG_SHOW(
-            _commondialog._app_handle(master),
+        result = _MOLT_TK_FILEDIALOG_SHOW(
+            _app_handle(master),
             str(master),
             self.command,
-            _commondialog._normalize_options(self.options),
+            _normalize_options(self.options),
         )
         return self._fixresult(master, result)
+
+    def _fixoptions(self):
+        filetypes = self.options.get("filetypes")
+        if filetypes is not None:
+            self.options["filetypes"] = tuple(filetypes)
+
+    def _fixresult(self, widget, result):
+        del widget
+        if result:
+            value = getattr(result, "string", result)
+            value = str(value)
+            directory, filename = _split_path(value)
+            if directory:
+                self.options["initialdir"] = directory
+            if filename:
+                self.options["initialfile"] = filename
+            result = value
+        self.filename = result
+        return result
 
 
 class Open(_Dialog):
@@ -33,9 +123,15 @@ class Open(_Dialog):
             if not result:
                 return ()
             if isinstance(result, (tuple, list)):
-                return tuple(result)
-            return tuple(widget.splitlist(result))
-        return result
+                values = tuple(getattr(item, "string", item) for item in result)
+            else:
+                values = tuple(widget.splitlist(result))
+            if values:
+                directory, _ = _split_path(values[0])
+                if directory:
+                    self.options["initialdir"] = directory
+            return tuple(str(item) for item in values)
+        return super()._fixresult(widget, result)
 
 
 class SaveAs(_Dialog):
@@ -44,6 +140,147 @@ class SaveAs(_Dialog):
 
 class Directory(_Dialog):
     command = "tk_chooseDirectory"
+
+    def _fixresult(self, widget, result):
+        del widget
+        if result:
+            value = getattr(result, "string", result)
+            value = str(value)
+            self.options["initialdir"] = value
+            self.directory = value
+            return value
+        self.directory = result
+        return result
+
+
+class FileDialog:
+    """Compatibility shim that routes through native open-file dialogs."""
+
+    title = "File Selection Dialog"
+
+    def __init__(self, master, title=None):
+        self.master = master
+        self._title = self.title if title is None else str(title)
+        self.directory = None
+        self.pattern = "*"
+        self.selection = ""
+        self.filename = None
+        self.how = None
+
+    def _build_options(self):
+        options = {}
+        if self.master is not None:
+            options["parent"] = self.master
+        if self._title:
+            options["title"] = self._title
+        if self.directory:
+            options["initialdir"] = self.directory
+        if self.selection:
+            options["initialfile"] = self.selection
+        if self.pattern and self.pattern != "*":
+            options["filetypes"] = (("Files", self.pattern), ("All Files", "*"))
+        return options
+
+    def _show_filename(self):
+        return askopenfilename(**self._build_options())
+
+    def go(self, dir_or_file=".", pattern="*", default="", key=None):
+        if key and key in dialogstates:
+            self.directory, self.pattern = dialogstates[key]
+        else:
+            if dir_or_file not in (None, ""):
+                self.directory = str(dir_or_file)
+            self.pattern = "*" if pattern in (None, "") else str(pattern)
+        self.selection = "" if default is None else str(default)
+        result = self._show_filename()
+        self.filename = result
+        self.how = result if result else None
+        if key is not None:
+            dialogstates[key] = (self.directory, self.pattern)
+        return self.how
+
+    def quit(self, how=None):
+        self.how = how
+        self.filename = how
+        return None
+
+    def dirs_double_event(self, event=None):
+        del event
+        self.filter_command()
+        return None
+
+    def dirs_select_event(self, event=None):
+        del event
+        return None
+
+    def files_double_event(self, event=None):
+        del event
+        self.ok_command()
+        return None
+
+    def files_select_event(self, event=None):
+        del event
+        return None
+
+    def ok_event(self, event=None):
+        del event
+        self.ok_command()
+        return None
+
+    def ok_command(self):
+        self.quit(self.get_selection())
+        return None
+
+    def filter_command(self, event=None):
+        del event
+        return None
+
+    def get_filter(self):
+        return (self.directory or "", self.pattern or "*")
+
+    def get_selection(self):
+        return self.selection
+
+    def cancel_command(self, event=None):
+        del event
+        self.quit()
+        return None
+
+    def set_filter(self, directory, pattern):
+        self.directory = "" if directory is None else str(directory)
+        self.pattern = "*" if pattern in (None, "") else str(pattern)
+        return None
+
+    def set_selection(self, file):
+        self.selection = "" if file is None else str(file)
+        return None
+
+
+class LoadFileDialog(FileDialog):
+    title = "Load File Selection Dialog"
+
+    def go(self, dir_or_file=".", pattern="*", default="", key=None):
+        result = super().go(
+            dir_or_file=dir_or_file,
+            pattern=pattern,
+            default=default,
+            key=key,
+        )
+        if not result:
+            return None
+        try:
+            with open(result, "rb"):
+                pass
+        except OSError:
+            return None
+        return result
+
+
+class SaveFileDialog(FileDialog):
+    title = "Save File Selection Dialog"
+
+    def _show_filename(self):
+        return asksaveasfilename(**self._build_options())
 
 
 def askopenfilename(**options):
@@ -85,6 +322,26 @@ def asksaveasfile(mode="w", **options):
 
 
 __all__ = [
+    "BOTH",
+    "BOTTOM",
+    "Button",
+    "Dialog",
+    "END",
+    "Entry",
+    "FileDialog",
+    "Frame",
+    "LEFT",
+    "Listbox",
+    "LoadFileDialog",
+    "RIGHT",
+    "SaveFileDialog",
+    "Scrollbar",
+    "TOP",
+    "Tk",
+    "Toplevel",
+    "X",
+    "Y",
+    "YES",
     "Directory",
     "Open",
     "SaveAs",
@@ -95,4 +352,9 @@ __all__ = [
     "askopenfilenames",
     "asksaveasfile",
     "asksaveasfilename",
+    "commondialog",
+    "dialogstates",
+    "fnmatch",
+    "os",
+    "test",
 ]

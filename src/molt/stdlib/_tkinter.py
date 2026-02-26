@@ -26,6 +26,10 @@ _MOLT_TK_FILEHANDLER_DELETE = _require_intrinsic(
 )
 _MOLT_TK_DESTROY_WIDGET = _require_intrinsic("molt_tk_destroy_widget", globals())
 _MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error", globals())
+_MOLT_TK_GETBOOLEAN = _require_intrinsic("molt_tk_getboolean", globals())
+_MOLT_TK_GETDOUBLE = _require_intrinsic("molt_tk_getdouble", globals())
+_MOLT_TK_SPLITLIST = _require_intrinsic("molt_tk_splitlist", globals())
+_MOLT_TK_ERRORINFO_APPEND = _require_intrinsic("molt_tk_errorinfo_append", globals())
 
 # CPython exports these constants from `_tkinter`; phase-0 uses fixed values.
 TK_VERSION = "8.6"
@@ -331,16 +335,10 @@ def deletecommand(app, name):
 
 
 def getboolean(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-        raise TclError(f'invalid boolean value "{value}"')
-    return bool(value)
+    try:
+        return bool(_MOLT_TK_GETBOOLEAN(value))
+    except Exception as exc:  # noqa: BLE001
+        raise TclError(str(exc)) from exc
 
 
 def getint(value):
@@ -349,22 +347,13 @@ def getint(value):
 
 def getdouble(value):
     try:
-        return float(value)
+        return float(_MOLT_TK_GETDOUBLE(value))
     except Exception as exc:  # noqa: BLE001
         raise TclError(f'invalid floating-point value "{value}"') from exc
 
 
 def splitlist(value):
-    if isinstance(value, (tuple, list)):
-        return tuple(value)
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return ()
-        return tuple(part for part in value.split() if part)
-    return (value,)
+    return tuple(_MOLT_TK_SPLITLIST(value))
 
 
 def getvar(app, name):
@@ -526,17 +515,7 @@ class TkappType:
     def adderrorinfo(self, msg):
         if not isinstance(msg, str):
             msg = str(msg)
-        try:
-            current = call(self, "set", "errorInfo")
-        except Exception:  # noqa: BLE001
-            current = ""
-        if not isinstance(current, str) or not current:
-            merged = msg
-        elif msg.startswith("\n"):
-            merged = f"{current}{msg}"
-        else:
-            merged = f"{current}\n{msg}"
-        call(self, "set", "errorInfo", merged)
+        _MOLT_TK_ERRORINFO_APPEND(_unwrap_app(self), msg)
         return None
 
     def settrace(self, func):

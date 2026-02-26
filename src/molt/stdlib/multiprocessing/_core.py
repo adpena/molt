@@ -66,10 +66,17 @@ _MOLT_PENDING = _intrinsics_require("molt_pending", globals())
 _MOLT_CAP_REQUIRE = _intrinsics_require("molt_capabilities_require", globals())
 _MOLT_STRUCT_PACK = _intrinsics_require("molt_struct_pack", globals())
 _MOLT_STRUCT_UNPACK = _intrinsics_require("molt_struct_unpack", globals())
+_MOLT_MP_CODEC_DUMPS = _intrinsics_require(
+    "molt_multiprocessing_codec_dumps", globals()
+)
+_MOLT_MP_CODEC_LOADS = _intrinsics_require(
+    "molt_multiprocessing_codec_loads", globals()
+)
 _PENDING_SENTINEL: Any | None = None
 
 _MAX_MESSAGE = 64 * 1024 * 1024
 _MAX_DEPTH = 100
+_FAST_CODEC_PREFIX = b"\xffMP1"
 
 _TAG_NONE = 0x00
 _TAG_FALSE = 0x01
@@ -651,6 +658,17 @@ def _decode_value(
 
 
 def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
+    if _codec_fastpath_eligible(message, 0):
+        dumps = _require_intrinsic(
+            _MOLT_MP_CODEC_DUMPS, "molt_multiprocessing_codec_dumps"
+        )
+        payload = dumps(message)
+        if not isinstance(payload, (bytes, bytearray)):
+            raise RuntimeError("invalid multiprocessing codec payload")
+        out = _FAST_CODEC_PREFIX + bytes(payload)
+        if len(out) > _MAX_MESSAGE:
+            raise ValueError("message too large")
+        return out
     out = bytearray()
     _encode_value(message, out, hub, 0)
     if len(out) > _MAX_MESSAGE:
@@ -659,10 +677,41 @@ def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
 
 
 def _decode_message(data: bytes, hub: "_Hub | None") -> Any:
+    if data.startswith(_FAST_CODEC_PREFIX):
+        loads = _require_intrinsic(
+            _MOLT_MP_CODEC_LOADS, "molt_multiprocessing_codec_loads"
+        )
+        return loads(data[len(_FAST_CODEC_PREFIX) :])
     value, idx = _decode_value(data, 0, hub, 0)
     if idx != len(data):
         raise ValueError("trailing bytes")
     return value
+
+
+def _codec_fastpath_eligible(value: Any, depth: int) -> bool:
+    if depth > _MAX_DEPTH:
+        return False
+    if value is None or value is False or value is True:
+        return True
+    if isinstance(value, (int, float, bytes, str)):
+        return True
+    if _COMPLEX_TYPE is not None and isinstance(value, _COMPLEX_TYPE):
+        return True
+    if isinstance(value, list):
+        return all(_codec_fastpath_eligible(item, depth + 1) for item in value)
+    if isinstance(value, tuple):
+        return all(_codec_fastpath_eligible(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return all(
+            _codec_fastpath_eligible(key, depth + 1)
+            and _codec_fastpath_eligible(item, depth + 1)
+            for key, item in value.items()
+        )
+    if isinstance(value, set):
+        return all(_codec_fastpath_eligible(item, depth + 1) for item in value)
+    if isinstance(value, frozenset):
+        return all(_codec_fastpath_eligible(item, depth + 1) for item in value)
+    return False
 
 
 def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:

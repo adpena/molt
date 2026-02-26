@@ -1,13 +1,15 @@
 """_asyncio C-extension surface shim for Molt.
 
 Provides the same public API as CPython's ``_asyncio`` C module:
-running-loop accessors, task context helpers (``_enter_task``,
-``_leave_task``), and task registration (``_register_task``,
-``_unregister_task``).  ``Task`` and ``Future`` are not re-exported
-here because Molt's intrinsic-backed implementations already live in
-``asyncio/__init__.py``; CPython replaces its pure-Python versions
-at import time, but in Molt they are already native-backed from the
-start.
+running-loop accessors, ``Task`` and ``Future`` proxy classes,
+task context helpers (``_enter_task``, ``_leave_task``), and task
+registration (``_register_task``, ``_unregister_task``).
+
+CPython's ``_asyncio`` C extension exposes accelerated ``Task`` and
+``Future`` classes that override the pure-Python versions at import
+time.  Molt's implementations in ``asyncio/__init__.py`` are already
+intrinsic-backed; the proxies here re-export them so that code
+importing from ``_asyncio`` directly sees the correct types.
 """
 
 from __future__ import annotations
@@ -92,15 +94,18 @@ def get_event_loop():
 
 
 def current_task(loop=None):
-    """Return the currently running task for *loop*.
+    """Return the currently running task for *loop*, or ``None``.
 
-    When *loop* is omitted, this matches CPython by requiring an active running
-    loop and raising ``RuntimeError`` when called outside one.
+    When *loop* is ``None``, attempts to get the running loop.  If no loop
+    is running, returns ``None`` without raising — this matches CPython's
+    ``_asyncio.current_task()`` C implementation which clears the error
+    and returns ``None`` (unlike ``asyncio.current_task()`` which raises
+    via ``get_running_loop()``).
     """
     if loop is None:
         loop = _get_running_loop()
         if loop is None:
-            raise RuntimeError("no running event loop")
+            return None
         return _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT()
     return _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP(loop)
 
@@ -150,10 +155,75 @@ def _unregister_task(task):
 
 
 # ---------------------------------------------------------------------------
+# Task and Future proxy classes
+#
+# CPython's _asyncio C extension exposes accelerated Task and Future types.
+# Molt's canonical implementations live in asyncio/__init__.py; we re-export
+# them here so that ``from _asyncio import Task, Future`` works correctly.
+# ---------------------------------------------------------------------------
+
+# Lazy import to avoid circular dependency — asyncio/__init__.py imports
+# _intrinsics at module level, and _asyncio.py is loaded before asyncio.
+_Task = None
+_Future = None
+
+
+def _ensure_asyncio_types():
+    global _Task, _Future
+    if _Task is None:
+        import asyncio
+
+        _Task = asyncio.Task
+        _Future = asyncio.Future
+
+
+class Future:
+    """Proxy for ``asyncio.Future``.
+
+    On first instantiation the real asyncio.Future is resolved via lazy
+    import and all subsequent operations are forwarded.  This class also
+    serves as the type identity for ``isinstance`` checks performed by
+    code that imports from ``_asyncio`` directly.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        _ensure_asyncio_types()
+        return _Future(*args, **kwargs)
+
+    def __init_subclass__(cls, **kwargs):
+        _ensure_asyncio_types()
+        super().__init_subclass__(**kwargs)
+
+    @classmethod
+    def __class_getitem__(cls, item):
+        _ensure_asyncio_types()
+        return _Future.__class_getitem__(item)
+
+
+class Task(Future):
+    """Proxy for ``asyncio.Task``.
+
+    Mirrors CPython's ``_asyncio.Task`` which is the C-accelerated
+    implementation of ``asyncio.Task``.
+    """
+
+    def __new__(cls, coro, *, loop=None, name=None, context=None, eager_start=None):
+        _ensure_asyncio_types()
+        return _Task(coro, loop=loop, name=name, context=context)
+
+    @classmethod
+    def __class_getitem__(cls, item):
+        _ensure_asyncio_types()
+        return _Task.__class_getitem__(item)
+
+
+# ---------------------------------------------------------------------------
 # Module exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "Future",
+    "Task",
     "_get_running_loop",
     "_set_running_loop",
     "get_running_loop",

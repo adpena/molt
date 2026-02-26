@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -213,6 +214,7 @@ unsafe impl Sync for PtrSlot {}
 pub(crate) struct DataclassDesc {
     pub(crate) name: String,
     pub(crate) field_names: Vec<String>,
+    pub(crate) field_name_to_index: HashMap<String, usize>,
     pub(crate) frozen: bool,
     pub(crate) eq: bool,
     pub(crate) repr: bool,

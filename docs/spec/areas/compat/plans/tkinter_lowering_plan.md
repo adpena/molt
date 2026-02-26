@@ -1,6 +1,6 @@
 # Tkinter Lowering Plan (Intrinsic-First, Cross-Platform, CPython 3.12+)
 
-**Status:** In progress (Phase-0 intrinsic skeleton + focused deterministic differential coverage landed; native runtime now uses owned dynamic Tcl FFI with `useTk=False` app creation and native `loadtk` support; `tkinter.ttk` now includes broad constructor + common-method forwarding wrappers validated under headless intrinsic stubs)
+**Status:** In progress (Phase-0 intrinsic skeleton + focused deterministic differential coverage landed; native runtime now uses owned dynamic Tcl FFI with `useTk=False` app creation and native `loadtk` support; headless Rust runtime now lowers broad `tkinter.ttk` command families plus core `bind/event/wm/winfo/layout` command families with callback substitution dispatch, with focused runtime-semantics differential checks)
 **Owner:** stdlib + runtime + compiler + tooling + testing
 **Scope:** `_tkinter` + `tkinter` stdlib family on native targets (`linux`,
 `macos`, `windows`) with explicit capability-gated behavior on wasm targets.
@@ -50,17 +50,61 @@ Current implementation note:
   set `MOLT_RUNTIME_TK_NATIVE=0` to force the non-native fallback lane.
 - `quit` currently exits Molt’s Tk mainloop without force-destroying the app
   handle, aligning closer to CPython `_tkinter` lifecycle behavior.
-- `tkinter.ttk` Phase-0 wrappers now include constructor coverage plus thin
-  forwarding for common widget/style APIs (`Button/Checkbutton/Radiobutton.invoke`,
-  `Combobox.current/set`, `Entry.bbox/identify/validate`, notebook/panedwindow/
-  progressbar/scale/spinbox/treeview method families, and `Style` lookup/layout/
-  theme/element calls) with deterministic headless-stub verification.
+- `tkinter.ttk` Phase-0 wrappers include constructor coverage plus thin
+  forwarding for common widget/style APIs, and headless Rust runtime command
+  lowering now implements these major families for compiled execution:
+  `state`/`instate`/`identify` core widget semantics, `invoke`,
+  `Combobox.current/set`, `Entry.bbox/identify/validate`, notebook and
+  panedwindow container operations, progress/scale/spinbox helpers, Treeview
+  semantics, and top-level `ttk::style` + `ttk::notebook::enableTraversal`.
+- Headless `event generate` now dispatches stored bind scripts through Rust
+  callback routing with `%`-placeholder substitution (`%x/%y/%D/%K/%A/%#/%T/%X/%Y`),
+  and `tkinter.Misc.bind` now requests CPython-style substitution payloads so
+  callback event-object fidelity is preserved across headless/native lanes.
+- Headless runtime callback fidelity work now covers `after`/`trace`/`tkwait`
+  semantics end-to-end (`after cancel` token/script cleanup, variable-trace
+  callback dispatch ordering, and `wait_variable` progress through queued
+  events) in Rust runtime command handlers.
+- Headless/runtime `ttk.Treeview` semantics now enforce structural invariants
+  (duplicate-child rejection and cycle-safe move/children reparenting), and
+  `event generate` dispatch now includes `Treeview.tag_bind` script lanes for
+  tag-scoped callback firing fidelity.
+- Dialog/runtime parity tightening in Rust now includes command-specific
+  commondialog option validation (unknown-option rejection),
+  Tcl-compatible boolean prefix parsing for dialog booleans (for example
+  `t/f/y/n`), preserved filedialog whitespace in headless result synthesis, and
+  native-after token bookkeeping/cleanup so `after cancel` correctly drops
+  pending one-shot callback state.
+- Variable-trace registrations now preserve deterministic insertion ordering in
+  Rust (`trace add`/`trace remove`/`trace info`/callback dispatch), avoiding
+  hash-order drift across callback-mode combinations.
+- Live smoke coverage now includes OS-specific filehandler readiness behavior
+  (`createfilehandler` with real pipe FDs on linux/macos; Windows
+  `NotImplementedError` contract) together with runtime checks for `after`,
+  `trace`, and `wait_variable` callback fidelity.
+- Dedicated live filehandler smoke lanes are now split out per OS
+  (`test_tkinter_live_filehandler_smoke_{linux,macos,windows}`) so FD-readiness
+  regressions can be isolated from broader live GUI probes.
+- `molt_tk_commondialog_show` now uses a strict supported-command allowlist and
+  runtime-owned dispatch (`native` routes to real Tk, and non-native lanes use
+  deterministic headless semantics for the supported command family).
+- Dedicated Rust intrinsics now back higher-level dialog families:
+  `molt_tk_messagebox_show` and `molt_tk_filedialog_show` route
+  `tkinter.messagebox`/`tkinter.filedialog` through runtime-owned command
+  dispatch, and the non-native lane lowers deterministic headless results for
+  `tk_messageBox`, `tk_getOpenFile`, `tk_getSaveFile`, `tk_chooseDirectory`,
+  and `tk_chooseColor`.
+- Frontend direct-call allowlisting now includes `tkinter._support` helper
+  aliases so `tkinter.ttk` capability gates compile in Tier-0 mode; a focused
+  CLI compile regression test covers `import tkinter.ttk` + `ttk.Frame`.
 - Dialog-query lowering now has dedicated Rust intrinsic entry points
   (`molt_tk_dialog_show`, `molt_tk_simpledialog_query`) with `tkinter.dialog` and
   `tkinter.simpledialog` reduced to thin argument-wiring wrappers.
 - Native `molt_tk_simpledialog_query` now drives a real modal entry flow in Rust
   (`toplevel` + `entry` + `OK/Cancel` + `vwait` loop + validation/bell/retry),
   with deterministic headless behavior retained only for wasm/non-native lanes.
+- CPython version gating is explicit at the import boundary: `tkinter.tix` is
+  available for 3.12 and treated as absent (`ModuleNotFoundError`) for 3.13+.
 
 ## Cross-Platform Contract
 | Target | Contract | Notes |
@@ -152,11 +196,16 @@ Default stance:
    `_tkinter`/`tkinter` import + missing-attribute contracts, `_tkinter`
    core API surface checks, and wrapper-level submodule import/error-shape/
    capability-gate checks (`tkinter.__main__`, dialog/helper stubs, and
-   `tkinter.ttk`) without requiring a real GUI backend. `ttk` coverage now
-   includes constructor/alias export checks and common thin-forwarding method
-   routing assertions under headless intrinsic stubs.
-   Keep deep `tkinter.ttk` value-conversion, callback binding, and true Tk
-   behavior parity validation in a follow-on tranche.
+  `tkinter.ttk`) without requiring a real GUI backend. Coverage now includes
+  runtime-lowered headless semantics checks for both core Tk and ttk lanes
+  (`tkinter:runtime_core_semantics`, `tkinter.ttk:runtime_semantics`) across
+  bind/event, wm/winfo/layout, and Style/Notebook/Panedwindow/common-widget
+  paths.
+  Keep deep `tkinter.ttk` value-conversion, callback binding, and true Tk
+  behavior parity validation in a follow-on tranche.
+  Focused Phase-0 differential reruns currently require lock/watchdog-quiet
+  lanes plus elevated `MOLT_DIFF_BUILD_TIMEOUT` to avoid build-time aborts
+  during concurrent runtime rebuild contention.
 2. Capability-denied and capability-missing tests (native + wasm).
 3. Import-failure shape tests for unsupported hosts/targets.
 4. Memory and determinism checks under differential harness constraints.

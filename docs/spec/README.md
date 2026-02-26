@@ -48,6 +48,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
 - Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
+- C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, and CPython-compat shim coverage via `include/Python.h`, including `PyArg_ParseTupleAndKeywords`): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
+- Tkinter runtime semantics differential probe (`tkinter.ttk:runtime_semantics`): [tests/differential/stdlib/tkinter_phase0_core_semantics.py](../../tests/differential/stdlib/tkinter_phase0_core_semantics.py)
 - 0016 Args/kwargs call binding contract: [docs/spec/areas/compat/contracts/call_argument_binding_contract.md](docs/spec/areas/compat/contracts/call_argument_binding_contract.md)
 - 0018 Package ABI contract: [docs/spec/areas/compat/contracts/package_abi_contract.md](docs/spec/areas/compat/contracts/package_abi_contract.md)
 - 0210 CPython bridge policy: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](docs/spec/areas/compat/contracts/cpython_bridge_policy.md)
@@ -68,7 +70,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0013 Python Dependencies: [docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md](docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0200 Profile Artifact: [docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md](docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md)
-- 0215 Molt Extension Build Pipeline: [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
+- 0215 Molt Extension Build Pipeline (runtime metadata enforcement + native/cross-host CI matrix + verify/wasm policy checks): [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
 - 0602 When To Write Extensions Or Binaries: [docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md](docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md)
 
 ## Testing

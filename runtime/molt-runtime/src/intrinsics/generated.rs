@@ -98,6 +98,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_tk_messagebox_show",
+        symbol: "molt_tk_messagebox_show",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_filedialog_show",
+        symbol: "molt_tk_filedialog_show",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_tk_simpledialog_query",
         symbol: "molt_tk_simpledialog_query",
         arity: 8,
@@ -7368,9 +7378,19 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_csv_get_dialect",
+        symbol: "molt_csv_get_dialect",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_csv_has_header",
         symbol: "molt_csv_has_header",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_csv_list_dialects",
+        symbol: "molt_csv_list_dialects",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_csv_quote_all",
@@ -7403,6 +7423,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_csv_register_dialect",
+        symbol: "molt_csv_register_dialect",
+        arity: 9,
+    },
+    IntrinsicSpec {
         name: "molt_csv_reader_drop",
         symbol: "molt_csv_reader_drop",
         arity: 1,
@@ -7426,6 +7451,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_csv_sniff",
         symbol: "molt_csv_sniff",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_csv_unregister_dialect",
+        symbol: "molt_csv_unregister_dialect",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_csv_writer_drop",
@@ -8248,9 +8278,19 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_json_dumps_ex",
+        symbol: "molt_json_dumps_ex",
+        arity: 10,
+    },
+    IntrinsicSpec {
         name: "molt_json_loads",
         symbol: "molt_json_loads",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_json_loads_ex",
+        symbol: "molt_json_loads_ex",
+        arity: 7,
     },
     IntrinsicSpec {
         name: "molt_json_parse_int",
@@ -8261,6 +8301,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_json_parse_scalar",
         symbol: "molt_json_parse_scalar",
         arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_json_raw_decode_ex",
+        symbol: "molt_json_raw_decode_ex",
+        arity: 8,
     },
     IntrinsicSpec {
         name: "molt_lzma_check_crc32",
@@ -9927,6 +9972,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_dialog_show" => Some(crate::molt_tk_dialog_show as *const () as usize as u64),
         "molt_tk_commondialog_show" => {
             Some(crate::molt_tk_commondialog_show as *const () as usize as u64)
+        }
+        "molt_tk_messagebox_show" => {
+            Some(crate::molt_tk_messagebox_show as *const () as usize as u64)
+        }
+        "molt_tk_filedialog_show" => {
+            Some(crate::molt_tk_filedialog_show as *const () as usize as u64)
         }
         "molt_tk_simpledialog_query" => {
             Some(crate::molt_tk_simpledialog_query as *const () as usize as u64)
@@ -12960,7 +13011,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_csv_field_size_limit" => {
             Some(crate::molt_csv_field_size_limit as *const () as usize as u64)
         }
+        "molt_csv_get_dialect" => Some(crate::molt_csv_get_dialect as *const () as usize as u64),
         "molt_csv_has_header" => Some(crate::molt_csv_has_header as *const () as usize as u64),
+        "molt_csv_list_dialects" => {
+            Some(crate::molt_csv_list_dialects as *const () as usize as u64)
+        }
         "molt_csv_quote_all" => Some(crate::molt_csv_quote_all as *const () as usize as u64),
         "molt_csv_quote_minimal" => {
             Some(crate::molt_csv_quote_minimal as *const () as usize as u64)
@@ -12975,6 +13030,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_csv_quote_strings" => {
             Some(crate::molt_csv_quote_strings as *const () as usize as u64)
         }
+        "molt_csv_register_dialect" => {
+            Some(crate::molt_csv_register_dialect as *const () as usize as u64)
+        }
         "molt_csv_reader_drop" => Some(crate::molt_csv_reader_drop as *const () as usize as u64),
         "molt_csv_reader_new" => Some(crate::molt_csv_reader_new as *const () as usize as u64),
         "molt_csv_reader_parse_line" => {
@@ -12984,6 +13042,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_csv_reader_parse_lines as *const () as usize as u64)
         }
         "molt_csv_sniff" => Some(crate::molt_csv_sniff as *const () as usize as u64),
+        "molt_csv_unregister_dialect" => {
+            Some(crate::molt_csv_unregister_dialect as *const () as usize as u64)
+        }
         "molt_csv_writer_drop" => Some(crate::molt_csv_writer_drop as *const () as usize as u64),
         "molt_csv_writer_new" => Some(crate::molt_csv_writer_new as *const () as usize as u64),
         "molt_csv_writer_writerow" => {
@@ -13332,10 +13393,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_json_detect_encoding as *const () as usize as u64)
         }
         "molt_json_dumps" => Some(crate::molt_json_dumps as *const () as usize as u64),
+        "molt_json_dumps_ex" => Some(crate::molt_json_dumps_ex as *const () as usize as u64),
         "molt_json_loads" => Some(crate::molt_json_loads as *const () as usize as u64),
+        "molt_json_loads_ex" => Some(crate::molt_json_loads_ex as *const () as usize as u64),
         "molt_json_parse_int" => Some(crate::molt_json_parse_int as *const () as usize as u64),
         "molt_json_parse_scalar" => {
             Some(crate::molt_json_parse_scalar as *const () as usize as u64)
+        }
+        "molt_json_raw_decode_ex" => {
+            Some(crate::molt_json_raw_decode_ex as *const () as usize as u64)
         }
         "molt_lzma_check_crc32" => Some(crate::molt_lzma_check_crc32 as *const () as usize as u64),
         "molt_lzma_check_crc64" => Some(crate::molt_lzma_check_crc64 as *const () as usize as u64),
