@@ -374,7 +374,7 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK, TRACEBACK_SUPPRESS, molt_profile_enabled,
+    RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACEBACK_SUPPRESS, molt_profile_enabled,
     molt_profile_handle_resolve, molt_profile_struct_field_store, profile_enabled, profile_hit,
     profile_hit_unchecked, recursion_guard_enter, recursion_guard_exit, recursion_limit_get,
     recursion_limit_set, traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,

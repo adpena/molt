@@ -1421,23 +1421,46 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
         merged: list[str] = []
         working = [list(seq) for seq in seqs]
+        heads = [0] * len(working)
+        tail_counts: dict[str, int] = {}
+        for seq in working:
+            for name in seq[1:]:
+                tail_counts[name] = tail_counts.get(name, 0) + 1
+
         while True:
-            working = [seq for seq in working if seq]
-            if not working:
+            remaining = 0
+            for idx, seq in enumerate(working):
+                if heads[idx] < len(seq):
+                    remaining += 1
+            if remaining == 0:
                 return merged
-            candidate = None
-            for seq in working:
-                head = seq[0]
-                if any(head in tail[1:] for tail in working):
+
+            candidate: str | None = None
+            for idx, seq in enumerate(working):
+                head_idx = heads[idx]
+                if head_idx >= len(seq):
                     continue
-                candidate = head
-                break
+                head = seq[head_idx]
+                if tail_counts.get(head, 0) == 0:
+                    candidate = head
+                    break
+
             if candidate is None:
                 return None
+
             merged.append(candidate)
-            for seq in working:
-                if seq and seq[0] == candidate:
-                    seq.pop(0)
+            for idx, seq in enumerate(working):
+                head_idx = heads[idx]
+                if head_idx < len(seq) and seq[head_idx] == candidate:
+                    heads[idx] += 1
+                    next_head_idx = heads[idx]
+                    if next_head_idx < len(seq):
+                        next_head = seq[next_head_idx]
+                        count = tail_counts.get(next_head, 0)
+                        if count <= 1:
+                            tail_counts.pop(next_head, None)
+                        else:
+                            tail_counts[next_head] = count - 1
 
     def _class_mro_names(self, name: str) -> list[str]:
         if name == "object":

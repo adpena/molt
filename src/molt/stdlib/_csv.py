@@ -1,5 +1,6 @@
 """Intrinsic-backed `_csv` compatibility surface."""
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 from csv import Dialect
 from csv import Error
 from csv import QUOTE_ALL
@@ -15,6 +16,9 @@ from csv import reader
 from csv import register_dialect
 from csv import unregister_dialect
 from csv import writer
+
+_MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready", globals())
+_MOLT_CSV_RUNTIME_READY()
 
 __all__ = [
     "Dialect",
