@@ -1,12 +1,10 @@
-"""Phase-0 intrinsic-backed `tkinter` wrapper surface.
+"""Intrinsic-backed `tkinter` wrapper surface."""
 
-The module intentionally exposes only a minimal Tk core while broader tkinter
-lowering is in progress. All behavior routes through `_tkinter` intrinsics.
-"""
-
+import collections
+import re
 import sys
 
-import _tkinter as _phase0_tk
+import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
 from .constants import *  # noqa: F403
 
@@ -49,50 +47,53 @@ _SUBST_FORMAT = (
     "%D",
 )
 _SUBST_FORMAT_STR = " ".join(_SUBST_FORMAT)
+_MAGIC_RE = re.compile(r"([\\{}])")
+_SPACE_RE = re.compile(r"([\s])", re.ASCII)
 
 
-def _require_phase0_callable(attr):
+def _require_tk_callable(attr):
     try:
-        value = getattr(_phase0_tk, attr)
+        value = getattr(_tkimpl, attr)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            f"tkinter requires _tkinter.{attr} in the Phase-0 intrinsic surface"
+            f"tkinter requires _tkinter.{attr} in the intrinsic runtime surface"
         ) from exc
     if not callable(value):
         raise RuntimeError(
-            f"tkinter requires callable _tkinter.{attr} in the Phase-0 intrinsic surface"
+            f"tkinter requires callable _tkinter.{attr} in the intrinsic runtime surface"
         )
     return value
 
 
-_TK_AVAILABLE = _require_phase0_callable("tk_available")
-_HAS_GUI_CAPABILITY = _require_phase0_callable("has_gui_capability")
-_HAS_PROCESS_SPAWN_CAPABILITY = _require_phase0_callable("has_process_spawn_capability")
-_TK_CREATE = _require_phase0_callable("create")
-_TK_MAINLOOP = _require_phase0_callable("mainloop")
-_TK_DO_ONE_EVENT = _require_phase0_callable("dooneevent")
-_TK_QUIT = _require_phase0_callable("quit")
-_TK_AFTER = _require_phase0_callable("after")
-_TK_CALL = _require_phase0_callable("call")
-_TK_BIND_COMMAND = _require_phase0_callable("bind_command")
-_TK_BIND_REGISTER = _require_phase0_callable("bind_register")
-_TK_BIND_UNREGISTER = _require_phase0_callable("bind_unregister")
-_TK_DESTROY_WIDGET = _require_phase0_callable("destroy_widget")
-_TK_LAST_ERROR = _require_phase0_callable("last_error")
-_TK_TRACE_ADD = _require_phase0_callable("trace_add")
-_TK_TRACE_REMOVE = _require_phase0_callable("trace_remove")
-_TK_TRACE_INFO = _require_phase0_callable("trace_info")
-_TK_WAIT_VARIABLE = _require_phase0_callable("wait_variable")
-_TK_WAIT_WINDOW = _require_phase0_callable("wait_window")
-_TK_WAIT_VISIBILITY = _require_phase0_callable("wait_visibility")
+_TK_AVAILABLE = _require_tk_callable("tk_available")
+_HAS_GUI_CAPABILITY = _require_tk_callable("has_gui_capability")
+_HAS_PROCESS_SPAWN_CAPABILITY = _require_tk_callable("has_process_spawn_capability")
+_TK_CREATE = _require_tk_callable("create")
+_TK_MAINLOOP = _require_tk_callable("mainloop")
+_TK_DO_ONE_EVENT = _require_tk_callable("dooneevent")
+_TK_QUIT = _require_tk_callable("quit")
+_TK_AFTER = _require_tk_callable("after")
+_TK_CALL = _require_tk_callable("call")
+_TK_BIND_COMMAND = _require_tk_callable("bind_command")
+_TK_BIND_REGISTER = _require_tk_callable("bind_register")
+_TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
+_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_tk_callable("bind_script_remove_command")
+_TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")
+_TK_LAST_ERROR = _require_tk_callable("last_error")
+_TK_TRACE_ADD = _require_tk_callable("trace_add")
+_TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
+_TK_TRACE_INFO = _require_tk_callable("trace_info")
+_TK_WAIT_VARIABLE = _require_tk_callable("wait_variable")
+_TK_WAIT_WINDOW = _require_tk_callable("wait_window")
+_TK_WAIT_VISIBILITY = _require_tk_callable("wait_visibility")
 
-TclError = _phase0_tk.TclError
-wantobjects = 1 if bool(_phase0_tk.wantobjects()) else 0
-TkVersion = float(_phase0_tk.TK_VERSION)
-TclVersion = float(_phase0_tk.TCL_VERSION)
-READABLE = _phase0_tk.READABLE
-WRITABLE = _phase0_tk.WRITABLE
-EXCEPTION = _phase0_tk.EXCEPTION
+TclError = _tkimpl.TclError
+wantobjects = 1 if bool(_tkimpl.wantobjects()) else 0
+TkVersion = float(_tkimpl.TK_VERSION)
+TclVersion = float(_tkimpl.TCL_VERSION)
+READABLE = _tkimpl.READABLE
+WRITABLE = _tkimpl.WRITABLE
+EXCEPTION = _tkimpl.EXCEPTION
 
 
 def _has_any_capability(*names):
@@ -154,6 +155,82 @@ def _cnfmerge(cnfs):
     return merged
 
 
+def _join(value):
+    return " ".join(map(_stringify, value))
+
+
+def _stringify(value):
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            value = _stringify(value[0])
+            if _MAGIC_RE.search(value):
+                value = f"{{{value}}}"
+        else:
+            value = "{" + _join(value) + "}"
+    else:
+        if isinstance(value, bytes):
+            value = str(value, "latin1")
+        else:
+            value = str(value)
+        if not value:
+            value = "{}"
+        elif _MAGIC_RE.search(value):
+            value = _MAGIC_RE.sub(r"\\\1", value)
+            value = value.replace("\n", r"\n")
+            value = _SPACE_RE.sub(r"\\\1", value)
+            if value[0] == '"':
+                value = "\\" + value
+        elif value[0] == '"' or _SPACE_RE.search(value):
+            value = f"{{{value}}}"
+    return value
+
+
+def _splitdict(tk, v, cut_minus=True, conv=None):
+    items = tk.splitlist(v)
+    if len(items) % 2:
+        raise RuntimeError(
+            "Tcl list representing a dict is expected to contain an even number of elements"
+        )
+    out = {}
+    it = iter(items)
+    for key, value in zip(it, it):
+        text_key = str(key)
+        if cut_minus and text_key and text_key[0] == "-":
+            text_key = text_key[1:]
+        if conv is not None:
+            value = conv(value)
+        out[text_key] = value
+    return out
+
+
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)([ab.])(\d+)")
+
+
+class _VersionInfoType(
+    collections.namedtuple(
+        "_VersionInfoType", ("major", "minor", "micro", "releaselevel", "serial")
+    )
+):
+    def __str__(self):
+        if self.releaselevel == "final":
+            return f"{self.major}.{self.minor}.{self.micro}"
+        return f"{self.major}.{self.minor}{self.releaselevel[0]}{self.serial}"
+
+
+def _parse_version(version):
+    match = _VERSION_RE.fullmatch(version)
+    major, minor, releaselevel, serial = match.groups()
+    major, minor, serial = int(major), int(minor), int(serial)
+    if releaselevel == ".":
+        micro = serial
+        serial = 0
+        releaselevel = "final"
+    else:
+        micro = 0
+        releaselevel = {"a": "alpha", "b": "beta"}[releaselevel]
+    return _VersionInfoType(major, minor, micro, releaselevel, serial)
+
+
 def _normalize_delay_ms(delay_ms):
     try:
         return int(delay_ms)
@@ -188,21 +265,6 @@ def _next_command_name(prefix):
     return name
 
 
-def _pop_after_command(root, token):
-    key = str(token)
-    command_name = root._after_tokens.pop(key, None)
-    if command_name is None:
-        return None
-    aliases = [
-        alias
-        for alias, mapped in tuple(root._after_tokens.items())
-        if mapped == command_name
-    ]
-    for alias in aliases:
-        root._after_tokens.pop(alias, None)
-    return command_name
-
-
 def _set_default_root(root):
     global _default_root
     if _support_default_root and _default_root is None:
@@ -231,6 +293,43 @@ def _get_default_root(what=None):
             raise RuntimeError(f"Too early to {what}: no default root window")
         return Tk()
     return _default_root
+
+
+def _get_temp_root():
+    global _support_default_root
+    if not _support_default_root:
+        raise RuntimeError(
+            "No master specified and tkinter is configured to not support default root"
+        )
+    root = _default_root
+    if root is None:
+        _support_default_root = False
+        root = Tk()
+        _support_default_root = True
+        root.withdraw()
+        root._temporary = True
+    return root
+
+
+def _destroy_temp_root(master):
+    if getattr(master, "_temporary", False):
+        try:
+            master.destroy()
+        except TclError:
+            pass
+
+
+def _tkerror(err):
+    del err
+    return None
+
+
+def _exit(code=0):
+    try:
+        code = int(code)
+    except ValueError:
+        pass
+    raise SystemExit(code)
 
 
 def _next_variable_name():
@@ -364,7 +463,7 @@ class EventType(str, _EventTypeBase):
 
 
 class Misc:
-    """Shared Phase-0 object helpers for Tk and widgets."""
+    """Shared object helpers for Tk and widgets."""
 
     _last_child_ids = None
     _tclCommands = None
@@ -483,8 +582,8 @@ class Misc:
             def wrapped():
                 return callback(*args)
 
-            return _phase0_tk.after_idle(self._tk_app, wrapped)
-        return _phase0_tk.after_idle(self._tk_app, callback)
+            return _tkimpl.after_idle(self._tk_app, wrapped)
+        return _tkimpl.after_idle(self._tk_app, callback)
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
@@ -497,10 +596,7 @@ class Misc:
             return None
 
         token = getattr(identifier, "_token", identifier)
-        command_name = _pop_after_command(self.tk, token)
-        _phase0_tk.after_cancel(self._tk_app, token)
-        if command_name is not None:
-            self._release_command(command_name)
+        _tkimpl.after_cancel(self._tk_app, token)
         return None
 
     def bind_command(self, name, callback):
@@ -511,13 +607,13 @@ class Misc:
 
     def createcommand(self, name, callback):
         _require_gui_window_capability()
-        _phase0_tk.createcommand(self._tk_app, name, callback)
+        _tkimpl.createcommand(self._tk_app, name, callback)
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.add(str(name))
 
     def deletecommand(self, name):
-        value = _phase0_tk.deletecommand(self._tk_app, name)
+        value = _tkimpl.deletecommand(self._tk_app, name)
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.discard(str(name))
@@ -639,34 +735,34 @@ class Misc:
         return _TK_LAST_ERROR(self._tk_app)
 
     def getboolean(self, value):
-        return _phase0_tk.getboolean(value)
+        return _tkimpl.getboolean(value)
 
     def getint(self, value):
-        return _phase0_tk.getint(value)
+        return _tkimpl.getint(value)
 
     def getdouble(self, value):
-        return _phase0_tk.getdouble(value)
+        return _tkimpl.getdouble(value)
 
     def splitlist(self, value):
-        return _phase0_tk.splitlist(value)
+        return _tkimpl.splitlist(value)
 
     def getvar(self, name="PY_VAR"):
-        return _phase0_tk.getvar(self._tk_app, name)
+        return _tkimpl.getvar(self._tk_app, name)
 
     def setvar(self, name="PY_VAR", value="1"):
-        return _phase0_tk.setvar(self._tk_app, name, value)
+        return _tkimpl.setvar(self._tk_app, name, value)
 
     def unsetvar(self, name="PY_VAR"):
-        return _phase0_tk.unsetvar(self._tk_app, name)
+        return _tkimpl.unsetvar(self._tk_app, name)
 
     def globalgetvar(self, name="PY_VAR"):
-        return _phase0_tk.globalgetvar(self._tk_app, name)
+        return _tkimpl.globalgetvar(self._tk_app, name)
 
     def globalsetvar(self, name="PY_VAR", value="1"):
-        return _phase0_tk.globalsetvar(self._tk_app, name, value)
+        return _tkimpl.globalsetvar(self._tk_app, name, value)
 
     def globalunsetvar(self, name="PY_VAR"):
-        return _phase0_tk.globalunsetvar(self._tk_app, name)
+        return _tkimpl.globalunsetvar(self._tk_app, name)
 
     def wait_variable(self, name="PY_VAR"):
         _require_gui_window_capability()
@@ -1081,7 +1177,8 @@ class Misc:
         )
 
     def info_patchlevel(self):
-        return self.call("info", "patchlevel")
+        patchlevel = self.call("info", "patchlevel")
+        return _parse_version(patchlevel)
 
     def winfo_cells(self):
         return self.getint(self.call("winfo", "cells", self._w))
@@ -1605,7 +1702,7 @@ def Tcl(screenName=None, baseName=None, className="Tk", useTk=False):
 
 
 class Tk(Wm):
-    """Phase-0 root window wrapper backed by `_tkinter` intrinsics."""
+    """Root window wrapper backed by `_tkinter` intrinsics."""
 
     _w = "."
 
@@ -1630,7 +1727,6 @@ class Tk(Wm):
         }
         self._tk_app = _TK_CREATE(options=options)
         self._registered_commands = set()
-        self._after_tokens = {}
         self._protocol_commands = {}
         self.children = {}
         self._w = "."
@@ -1667,11 +1763,10 @@ class Tk(Wm):
     def _purge_registered_commands(self):
         for command_name in list(self._registered_commands):
             try:
-                _phase0_tk.deletecommand(self._tk_app, command_name)
+                _tkimpl.deletecommand(self._tk_app, command_name)
             except Exception:  # noqa: BLE001
                 pass
         self._registered_commands.clear()
-        self._after_tokens.clear()
         self._protocol_commands.clear()
 
     def wm_title(self, string=None):
@@ -1818,7 +1913,7 @@ class Tk(Wm):
 
 
 class Widget(Misc):
-    """Phase-0 widget shell used by tkinter/ttk wrappers."""
+    """Widget shell used by tkinter/ttk wrappers."""
 
     def __init__(self, master, widget_command, cnf=None, **kw):
         parent = _get_default_root() if master is None else master
@@ -1981,9 +2076,15 @@ class Canvas(_CoreWidget):
         return tuple(self.getint(part) for part in self.splitlist(result))
 
     def tag_unbind(self, tag_or_id, sequence, funcid=None):
-        if funcid is not None:
-            self._release_command(funcid)
-        return self._call_widget("bind", tag_or_id, sequence, "")
+        if funcid is None:
+            return self._call_widget("bind", tag_or_id, sequence, "")
+        command_name = str(funcid)
+        current = self._call_widget("bind", tag_or_id, sequence)
+        if current:
+            replacement = _TK_BIND_SCRIPT_REMOVE_COMMAND(current, command_name)
+            self._call_widget("bind", tag_or_id, sequence, replacement)
+        self._release_command(command_name)
+        return None
 
     def tag_bind(self, tag_or_id, sequence=None, func=None, add=None):
         if func is None:
@@ -2407,9 +2508,15 @@ class Text(_CoreWidget):
         return self._call_widget("tag", "add", tag_name, index1, *args)
 
     def tag_unbind(self, tag_name, sequence, funcid=None):
-        if funcid is not None:
-            self._release_command(funcid)
-        return self._call_widget("tag", "bind", tag_name, sequence, "")
+        if funcid is None:
+            return self._call_widget("tag", "bind", tag_name, sequence, "")
+        command_name = str(funcid)
+        current = self._call_widget("tag", "bind", tag_name, sequence)
+        if current:
+            replacement = _TK_BIND_SCRIPT_REMOVE_COMMAND(current, command_name)
+            self._call_widget("tag", "bind", tag_name, sequence, replacement)
+        self._release_command(command_name)
+        return None
 
     def tag_bind(self, tag_name, sequence=None, func=None, add=None):
         return self._tag_bind(tag_name, sequence, func, add)
@@ -2987,16 +3094,18 @@ class Message(_CoreWidget):
     _widget_command = "message"
 
 
-def _setit(variable, value, callback=None):
-    def setter(*_args):
-        if hasattr(variable, "set") and callable(variable.set):
-            variable.set(value)
-        else:
-            _get_default_root().setvar(str(variable), value)
-        if callback is not None:
-            callback(value)
+class _setit:
+    """Internal class. It wraps the command in the widget OptionMenu."""
 
-    return setter
+    def __init__(self, var, value, callback=None):
+        self.__value = value
+        self.__var = var
+        self.__callback = callback
+
+    def __call__(self, *args):
+        self.__var.set(self.__value)
+        if self.__callback is not None:
+            self.__callback(self.__value, *args)
 
 
 class OptionMenu(Menubutton):
@@ -3209,16 +3318,12 @@ class Variable:
             return callback(self._name, "", mode_name)
 
         command_name = _TK_TRACE_ADD(self._tk._tk_app, self._name, mode_name, wrapped)
-        if hasattr(self._root, "_registered_commands"):
-            self._root._registered_commands.add(str(command_name))
         return command_name
 
     def trace_remove(self, mode, cbname):
         mode_name = _normalize_trace_mode(mode)
         command_name = str(cbname)
         _TK_TRACE_REMOVE(self._tk._tk_app, self._name, mode_name, command_name)
-        if hasattr(self._root, "_registered_commands"):
-            self._root._registered_commands.discard(command_name)
         return None
 
     def trace_info(self):
@@ -3301,12 +3406,12 @@ def bind_unregister(app, target_name, sequence, command_name):
 
 
 def treeview_tag_bind_register(app, treeview_path, tagname, sequence, callback):
-    register = _require_phase0_callable("treeview_tag_bind_register")
+    register = _require_tk_callable("treeview_tag_bind_register")
     return register(app, treeview_path, tagname, sequence, callback)
 
 
 def treeview_tag_bind_unregister(app, treeview_path, tagname, sequence, command_name):
-    unregister = _require_phase0_callable("treeview_tag_bind_unregister")
+    unregister = _require_tk_callable("treeview_tag_bind_unregister")
     return unregister(app, treeview_path, tagname, sequence, command_name)
 
 
@@ -3339,19 +3444,46 @@ def tk_available():
 
 
 def getboolean(value):
-    return _phase0_tk.getboolean(value)
+    return _tkimpl.getboolean(value)
 
 
 def getint(value):
-    return _phase0_tk.getint(value)
+    return _tkimpl.getint(value)
 
 
 def getdouble(value):
-    return _phase0_tk.getdouble(value)
+    return _tkimpl.getdouble(value)
 
 
 def splitlist(value):
-    return _phase0_tk.splitlist(value)
+    return _tkimpl.splitlist(value)
+
+
+def _print_command(cmd, *, file=sys.stderr):
+    if not isinstance(cmd, tuple):
+        cmd = tuple(cmd)
+    print(_join(cmd), file=file)
+
+
+def _test():
+    root = Tk()
+    text = f"This is Tcl/Tk {root.globalgetvar('tk_patchLevel')}"
+    text += "\nThis should be a cedilla: \xe7"
+    label = Label(root, text=text)
+    label.pack()
+    test_button = Button(
+        root,
+        text="Click me!",
+        command=lambda root=root: root.test.configure(text=f"[{root.test['text']}]"),
+    )
+    test_button.pack()
+    root.test = test_button
+    quit_button = Button(root, text="QUIT", command=root.destroy)
+    quit_button.pack()
+    root.iconify()
+    root.update()
+    root.deiconify()
+    root.mainloop()
 
 
 __all__ = [

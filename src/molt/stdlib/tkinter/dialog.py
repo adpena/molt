@@ -1,4 +1,4 @@
-"""Phase-0 intrinsic-backed `tkinter.dialog` wrappers."""
+"""Intrinsic-backed `tkinter.dialog` wrappers."""
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -53,6 +53,21 @@ class Dialog:
     def destroy(self):
         self.num = None
         return None
+
+
+def _test():
+    dialog = Dialog(
+        None,
+        title="File Modified",
+        text=(
+            'File "Python.h" has been modified since the last time it was saved. '
+            "Do you want to save it before exiting the application."
+        ),
+        bitmap=DIALOG_ICON,
+        default=0,
+        strings=("Save File", "Discard Changes", "Return to Editor"),
+    )
+    print(dialog.num)
 
 
 __all__ = ["Dialog"]

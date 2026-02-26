@@ -1,6 +1,6 @@
-"""Phase-0 intrinsic-backed constants for `tkinter`."""
+"""Intrinsic-backed constants for `tkinter`."""
 
-import _tkinter as _phase0_tk
+import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import has_gui_capability as _has_gui_capability
 from ._support import tk_available as _tk_available
@@ -94,17 +94,17 @@ PIESLICE = "pieslice"
 CHORD = "chord"
 ARC = "arc"
 
-TK_VERSION = _phase0_tk.TK_VERSION
-TCL_VERSION = _phase0_tk.TCL_VERSION
-READABLE = _phase0_tk.READABLE
-WRITABLE = _phase0_tk.WRITABLE
-EXCEPTION = _phase0_tk.EXCEPTION
-DONT_WAIT = _phase0_tk.DONT_WAIT
-ALL_EVENTS = _phase0_tk.ALL_EVENTS
-FILE_EVENTS = _phase0_tk.FILE_EVENTS
-TIMER_EVENTS = _phase0_tk.TIMER_EVENTS
-IDLE_EVENTS = _phase0_tk.IDLE_EVENTS
-WINDOW_EVENTS = _phase0_tk.WINDOW_EVENTS
+TK_VERSION = _tkimpl.TK_VERSION
+TCL_VERSION = _tkimpl.TCL_VERSION
+READABLE = _tkimpl.READABLE
+WRITABLE = _tkimpl.WRITABLE
+EXCEPTION = _tkimpl.EXCEPTION
+DONT_WAIT = _tkimpl.DONT_WAIT
+ALL_EVENTS = _tkimpl.ALL_EVENTS
+FILE_EVENTS = _tkimpl.FILE_EVENTS
+TIMER_EVENTS = _tkimpl.TIMER_EVENTS
+IDLE_EVENTS = _tkimpl.IDLE_EVENTS
+WINDOW_EVENTS = _tkimpl.WINDOW_EVENTS
 
 TK_AVAILABLE = _tk_available()
 HAS_GUI_CAPABILITY = _has_gui_capability()
