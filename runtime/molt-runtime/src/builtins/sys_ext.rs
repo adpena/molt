@@ -8,6 +8,7 @@
 
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,62 @@ static INTERN_TABLE: OnceLock<Mutex<std::collections::HashMap<String, u64>>> = O
 
 fn intern_table() -> &'static Mutex<std::collections::HashMap<String, u64>> {
     INTERN_TABLE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+#[derive(Clone, Copy)]
+struct SysTraceProfileState {
+    trace_bits: u64,
+    profile_bits: u64,
+}
+
+static SYS_TRACE_PROFILE_STATE: OnceLock<Mutex<SysTraceProfileState>> = OnceLock::new();
+
+fn sys_trace_profile_state() -> &'static Mutex<SysTraceProfileState> {
+    SYS_TRACE_PROFILE_STATE.get_or_init(|| {
+        Mutex::new(SysTraceProfileState {
+            trace_bits: MoltObject::none().bits(),
+            profile_bits: MoltObject::none().bits(),
+        })
+    })
+}
+
+fn ensure_trace_or_profile_callable(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    api_name: &str,
+) -> Result<(), u64> {
+    if obj_from_bits(value_bits).is_none() {
+        return Ok(());
+    }
+    let is_callable = is_truthy(_py, obj_from_bits(molt_is_callable(value_bits)));
+    if !is_callable {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{api_name}() argument must be callable"),
+        ));
+    }
+    Ok(())
+}
+
+fn replace_optional_callable(_py: &PyToken<'_>, target: &mut u64, value_bits: u64) {
+    if *target == value_bits {
+        return;
+    }
+    if !obj_from_bits(value_bits).is_none() {
+        inc_ref_bits(_py, value_bits);
+    }
+    if !obj_from_bits(*target).is_none() {
+        dec_ref_bits(_py, *target);
+    }
+    *target = value_bits;
+}
+
+fn clone_optional_callable(_py: &PyToken<'_>, value_bits: u64) -> u64 {
+    if !obj_from_bits(value_bits).is_none() {
+        inc_ref_bits(_py, value_bits);
+    }
+    value_bits
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +282,80 @@ pub extern "C" fn molt_sys_thread_info() -> u64 {
 // ---------------------------------------------------------------------------
 // 4. Functions
 // ---------------------------------------------------------------------------
+
+/// `sys.is_finalizing()` -> `False` for active compiled execution.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_is_finalizing() -> u64 {
+    MoltObject::from_bool(false).bits()
+}
+
+/// `sys.getrefcount(obj)` -> best-effort runtime refcount, including call arg ref.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getrefcount(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(obj_bits);
+        let count = if let Some(ptr) = obj.as_ptr() {
+            let header = unsafe { header_from_obj_ptr(ptr) };
+            let rc = unsafe { (*header).ref_count.load(AtomicOrdering::Acquire) } as i64;
+            rc.saturating_add(1)
+        } else {
+            1
+        };
+        int_bits_from_i64(_py, count)
+    })
+}
+
+/// `sys.settrace(tracefunc)` -> store process-level trace hook (or None).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_settrace(tracefunc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(err) = ensure_trace_or_profile_callable(_py, tracefunc_bits, "settrace") {
+            return err;
+        }
+        let mut state = sys_trace_profile_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        replace_optional_callable(_py, &mut state.trace_bits, tracefunc_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// `sys.gettrace()` -> current process-level trace hook.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_gettrace() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = sys_trace_profile_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clone_optional_callable(_py, state.trace_bits)
+    })
+}
+
+/// `sys.setprofile(profilefunc)` -> store process-level profile hook (or None).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_setprofile(profilefunc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(err) = ensure_trace_or_profile_callable(_py, profilefunc_bits, "setprofile") {
+            return err;
+        }
+        let mut state = sys_trace_profile_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        replace_optional_callable(_py, &mut state.profile_bits, profilefunc_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// `sys.getprofile()` -> current process-level profile hook.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getprofile() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = sys_trace_profile_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clone_optional_callable(_py, state.profile_bits)
+    })
+}
 
 /// `sys.intern(string)` -> interned string
 #[unsafe(no_mangle)]

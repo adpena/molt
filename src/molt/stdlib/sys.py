@@ -168,6 +168,20 @@ _MOLT_SYS_FLAGS_PAYLOAD = _as_callable(
     _require_intrinsic("molt_sys_flags_payload", globals())
 )
 _MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform", globals()))
+_MOLT_SYS_IS_FINALIZING = _as_callable(
+    _require_intrinsic("molt_sys_is_finalizing", globals())
+)
+_MOLT_SYS_GETREFCOUNT = _as_callable(
+    _require_intrinsic("molt_sys_getrefcount", globals())
+)
+_MOLT_SYS_SETTRACE = _as_callable(_require_intrinsic("molt_sys_settrace", globals()))
+_MOLT_SYS_GETTRACE = _as_callable(_require_intrinsic("molt_sys_gettrace", globals()))
+_MOLT_SYS_SETPROFILE = _as_callable(
+    _require_intrinsic("molt_sys_setprofile", globals())
+)
+_MOLT_SYS_GETPROFILE = _as_callable(
+    _require_intrinsic("molt_sys_getprofile", globals())
+)
 _MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
 _MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
 _MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals()))
@@ -983,24 +997,19 @@ def set_int_max_str_digits(maxdigits: int) -> None:
 
 
 def is_finalizing() -> bool:
-    """Return True if the Python interpreter is shutting down.
-
-    Molt compiled binaries do not have a staged shutdown; this always
-    returns False during normal execution.
-    """
-    # TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:partial): Wire intrinsic when runtime shutdown state tracking is implemented.
-    return False
+    """Return True if the runtime is finalizing."""
+    value = _MOLT_SYS_IS_FINALIZING()
+    if not isinstance(value, bool):
+        raise RuntimeError("molt_sys_is_finalizing returned invalid value")
+    return value
 
 
 def getrefcount(obj: object) -> int:
-    """Return the reference count of *obj*.
-
-    Molt uses its own RC/GC model; this returns a best-effort value.
-    The count includes the temporary reference as argument (matching CPython).
-    """
-    # TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:missing): Wire molt_sys_getrefcount intrinsic.
-    del obj
-    return 1
+    """Return the runtime reference count of *obj* (best effort)."""
+    value = _MOLT_SYS_GETREFCOUNT(obj)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError("molt_sys_getrefcount returned invalid value")
+    return value
 
 
 # --- Thread switch interval (CPython GIL timeslice) ---
@@ -1027,44 +1036,24 @@ def setswitchinterval(interval: float) -> None:
     _switch_interval = float(interval)
 
 
-# --- Trace and profile function stubs ---
-# Molt compiled binaries do not support CPython-style tracing/profiling.
-# These stubs exist for import compatibility.
-
-_trace_func: object = None
-_profile_func: object = None
-
-
 def settrace(tracefunc: object) -> None:
-    """Set the system's trace function.
-
-    Molt does not support frame-level tracing; the function is stored
-    but never invoked by the runtime.
-    """
-    # TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:missing): Wire intrinsic when runtime tracing support is implemented.
-    global _trace_func  # noqa: PLW0603
-    _trace_func = tracefunc
+    """Set the system trace function."""
+    _MOLT_SYS_SETTRACE(tracefunc)
 
 
 def gettrace() -> object:
     """Get the trace function as set by settrace()."""
-    return _trace_func
+    return _MOLT_SYS_GETTRACE()
 
 
 def setprofile(profilefunc: object) -> None:
-    """Set the system's profile function.
-
-    Molt does not support frame-level profiling; the function is stored
-    but never invoked by the runtime.
-    """
-    # TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:missing): Wire intrinsic when runtime profiling support is implemented.
-    global _profile_func  # noqa: PLW0603
-    _profile_func = profilefunc
+    """Set the system profile function."""
+    _MOLT_SYS_SETPROFILE(profilefunc)
 
 
 def getprofile() -> object:
     """Get the profiler function as set by setprofile()."""
-    return _profile_func
+    return _MOLT_SYS_GETPROFILE()
 
 
 def call_tracing(func: object, args: object) -> object:
