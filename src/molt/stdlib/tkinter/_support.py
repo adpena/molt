@@ -44,3 +44,32 @@ def require_tk_runtime(operation):
     if tk_available():
         return
     raise RuntimeError(tk_unavailable_message(operation))
+
+
+# Frontend direct-call lowering may bind these underscore-prefixed symbols.
+def _has_gui_capability():
+    return has_gui_capability()
+
+
+def _has_process_spawn_capability():
+    return has_process_spawn_capability()
+
+
+def _require_gui_capability():
+    return require_gui_capability()
+
+
+def _require_process_spawn_capability():
+    return require_process_spawn_capability()
+
+
+def _tk_available():
+    return tk_available()
+
+
+def _tk_unavailable_message(operation):
+    return tk_unavailable_message(operation)
+
+
+def _require_tk_runtime(operation):
+    return require_tk_runtime(operation)

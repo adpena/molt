@@ -160,20 +160,85 @@ def _live_smoke_script(expected_platform: str) -> str:
                 break
             root.dooneevent(tk.DONT_WAIT)
 
+        def _normalize_trace_rows(rows):
+            normalized = []
+            for row in rows:
+                if not isinstance(row, (tuple, list)) or len(row) != 2:
+                    return None
+                mode_value = row[0]
+                if isinstance(mode_value, (tuple, list)):
+                    if len(mode_value) != 1:
+                        return None
+                    mode_value = mode_value[0]
+                mode_name = str(mode_value)
+                if mode_name == "w":
+                    mode_name = "write"
+                normalized.append((mode_name, str(row[1])))
+            return tuple(normalized)
+
         trace_events = []
         trace_var = tk.StringVar(root, value="seed")
-        trace_id = trace_var.trace_add(
+        trace_id_primary = trace_var.trace_add(
             "write",
-            lambda name, index, mode: trace_events.append((name, index, mode)),
+            lambda name, index, mode: trace_events.append(
+                ("primary", name, index, mode)
+            ),
         )
+        trace_id_secondary = trace_var.trace_add(
+            "write",
+            lambda name, index, mode: trace_events.append(
+                ("secondary", name, index, mode)
+            ),
+        )
+        trace_info_before = tuple(trace_var.trace_info())
         trace_var.set("seed-updated")
-        trace_var.trace_remove("write", trace_id)
+        trace_var.trace_remove("write", trace_id_primary)
+        trace_info_after_primary_remove = tuple(trace_var.trace_info())
+        trace_var.set("seed-final")
+        trace_var.trace_remove("write", trace_id_secondary)
         trace_info_after = tuple(trace_var.trace_info())
+        trace_info_before_rows = _normalize_trace_rows(trace_info_before)
+        trace_info_after_primary_rows = _normalize_trace_rows(
+            trace_info_after_primary_remove
+        )
+        trace_info_after_rows = _normalize_trace_rows(trace_info_after)
+        trace_event_labels = tuple(label for label, _name, _index, _mode in trace_events)
+        trace_event_names = tuple(name for _label, name, _index, _mode in trace_events)
+        trace_event_indexes = tuple(index for _label, _name, index, _mode in trace_events)
+        trace_event_modes = tuple(
+            "write" if str(mode) == "w" else str(mode)
+            for _label, _name, _index, mode in trace_events
+        )
 
         wait_var = tk.StringVar(root, value="pending")
         root.after(5, lambda: wait_var.set("ready"))
         root.wait_variable(wait_var)
         wait_var_value = wait_var.get()
+
+        wait_window_events = []
+        wait_window_target = tk.Frame(root)
+        wait_window_target.pack()
+        root.after(
+            5,
+            lambda: (
+                wait_window_events.append("destroyed"),
+                wait_window_target.destroy(),
+            ),
+        )
+        root.wait_window(wait_window_target)
+        wait_window_missing_result = root.wait_window(".__molt_missing_window__")
+
+        wait_visibility_events = []
+        root.after(5, lambda: (wait_visibility_events.append("visible"), root.deiconify()))
+        root.wait_visibility(root)
+        root.withdraw()
+        wait_visibility_error_type = ""
+        wait_visibility_error_text = ""
+        try:
+            root.wait_visibility(".__molt_missing_window__")
+        except Exception as exc:  # noqa: BLE001
+            wait_visibility_error_type = type(exc).__name__
+            wait_visibility_error_text = str(exc)
 
         after_cancel_hits = []
         cancel_token = root.after(50, lambda: after_cancel_hits.append("fired"))
@@ -339,6 +404,9 @@ def _live_smoke_script(expected_platform: str) -> str:
         bind_after = widget.bind("<KeyPress>")
         widget.unbind("<KeyPress>", bind_id_primary)
         bind_after_primary_unbind = widget.bind("<KeyPress>")
+        registered_after_bind_primary_unbind = set(
+            getattr(root, "_registered_commands", ())
+        )
         root.tk.call(
             bind_id_secondary,
             "57",
@@ -363,9 +431,13 @@ def _live_smoke_script(expected_platform: str) -> str:
         )
         widget.unbind("<KeyPress>", bind_id_secondary)
         bind_after_unbind = widget.bind("<KeyPress>")
+        registered_after_bind_unbind = set(getattr(root, "_registered_commands", ()))
         tree_query_after = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
         tree.tag_unbind(tree_tag, "<<TreeviewOpen>>", tree_bind_id_primary)
         tree_query_after_primary_unbind = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        registered_after_tag_primary_unbind = set(
+            getattr(root, "_registered_commands", ())
+        )
         root.tk.call(
             tree_bind_id_secondary,
             "9",
@@ -390,6 +462,7 @@ def _live_smoke_script(expected_platform: str) -> str:
         )
         tree.tag_unbind(tree_tag, "<<TreeviewOpen>>", tree_bind_id_secondary)
         tree_query_after_unbind = tree.tag_bind(tree_tag, "<<TreeviewOpen>>")
+        registered_after_tag_unbind = set(getattr(root, "_registered_commands", ()))
         children = tuple(root.winfo_children())
 
         def _drive_simpledialog_input(next_value):
@@ -450,6 +523,10 @@ def _live_smoke_script(expected_platform: str) -> str:
             and bind_id_primary not in bind_after_primary_unbind
             and bind_id_secondary in bind_after_primary_unbind
             and bind_after_unbind == ""
+            and bind_id_primary not in registered_after_bind_primary_unbind
+            and bind_id_secondary in registered_after_bind_primary_unbind
+            and bind_id_primary not in registered_after_bind_unbind
+            and bind_id_secondary not in registered_after_bind_unbind
             and isinstance(tree_bind_id_primary, str)
             and isinstance(tree_bind_id_secondary, str)
             and isinstance(tree_query_before, str)
@@ -459,11 +536,26 @@ def _live_smoke_script(expected_platform: str) -> str:
             and tree_bind_id_primary not in tree_query_after_primary_unbind
             and tree_bind_id_secondary in tree_query_after_primary_unbind
             and tree_query_after_unbind == ""
+            and tree_bind_id_primary not in registered_after_tag_primary_unbind
+            and tree_bind_id_secondary in registered_after_tag_primary_unbind
+            and tree_bind_id_primary not in registered_after_tag_unbind
+            and tree_bind_id_secondary not in registered_after_tag_unbind
             and state["timer_fired"] is True
             and dooneevent_ticks == ["fired"]
-            and trace_events == [(trace_var._name, "", "write")]
-            and trace_info_after == ()
+            and trace_event_labels == ("primary", "secondary", "secondary")
+            and trace_event_names == (trace_var._name, trace_var._name, trace_var._name)
+            and trace_event_indexes == ("", "", "")
+            and trace_event_modes == ("write", "write", "write")
+            and trace_info_before_rows
+            == (("write", trace_id_primary), ("write", trace_id_secondary))
+            and trace_info_after_primary_rows == (("write", trace_id_secondary),)
+            and trace_info_after_rows == ()
             and wait_var_value == "ready"
+            and wait_window_events == ["destroyed"]
+            and wait_window_missing_result is None
+            and wait_visibility_events == ["visible"]
+            and wait_visibility_error_type in ("TclError", "RuntimeError")
+            and "bad window path name" in wait_visibility_error_text
             and after_cancel_ok is True
             and filehandler_contract_ok is True
             and state["widget_payload_primary"]
@@ -500,6 +592,8 @@ def _live_smoke_script(expected_platform: str) -> str:
             f"bind_after={{bind_after!r}}",
             f"bind_after_primary_unbind={{bind_after_primary_unbind!r}}",
             f"bind_after_unbind={{bind_after_unbind!r}}",
+            f"registered_after_bind_primary_unbind={{registered_after_bind_primary_unbind!r}}",
+            f"registered_after_bind_unbind={{registered_after_bind_unbind!r}}",
             f"tree_bind_id_primary={{tree_bind_id_primary!r}}",
             f"tree_bind_id_secondary={{tree_bind_id_secondary!r}}",
             f"tree_query_before={{tree_query_before!r}}",
@@ -508,10 +602,19 @@ def _live_smoke_script(expected_platform: str) -> str:
             f"tree_query_after={{tree_query_after!r}}",
             f"tree_query_after_primary_unbind={{tree_query_after_primary_unbind!r}}",
             f"tree_query_after_unbind={{tree_query_after_unbind!r}}",
+            f"registered_after_tag_primary_unbind={{registered_after_tag_primary_unbind!r}}",
+            f"registered_after_tag_unbind={{registered_after_tag_unbind!r}}",
             f"dooneevent_ticks={{dooneevent_ticks!r}}",
             f"trace_events={{trace_events!r}}",
+            f"trace_info_before={{trace_info_before!r}}",
+            f"trace_info_after_primary_remove={{trace_info_after_primary_remove!r}}",
             f"trace_info_after={{trace_info_after!r}}",
             f"wait_var_value={{wait_var_value!r}}",
+            f"wait_window_events={{wait_window_events!r}}",
+            f"wait_window_missing_result={{wait_window_missing_result!r}}",
+            f"wait_visibility_events={{wait_visibility_events!r}}",
+            f"wait_visibility_error_type={{wait_visibility_error_type!r}}",
+            f"wait_visibility_error_text={{wait_visibility_error_text!r}}",
             f"after_cancel_ok={{after_cancel_ok!r}}",
             f"filehandler_events={{filehandler_events!r}}",
             f"filehandler_contract_ok={{filehandler_contract_ok!r}}",

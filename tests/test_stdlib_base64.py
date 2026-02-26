@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 import base64 as py_base64
+import builtins
+import codecs
 
 import pytest
 
-from molt.stdlib import base64 as molt_base64
+registry = getattr(builtins, "_molt_intrinsics", None)
+if not isinstance(registry, dict):
+    registry = {}
+    setattr(builtins, "_molt_intrinsics", registry)
+registry.setdefault("molt_stdlib_probe", lambda: True)
+registry.setdefault("molt_capabilities_has", lambda _name=None: True)
+registry.setdefault(
+    "molt_codecs_encode",
+    lambda data, encoding, errors="strict": codecs.encode(data, encoding, errors),
+)
+registry.setdefault(
+    "molt_codecs_decode",
+    lambda data, encoding, errors="strict": codecs.decode(data, encoding, errors),
+)
+
+from molt.stdlib import base64 as molt_base64  # noqa: E402
 
 
 @pytest.mark.parametrize(
