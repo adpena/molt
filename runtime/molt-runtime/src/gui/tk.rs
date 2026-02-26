@@ -516,6 +516,7 @@ const TK_FILE_EVENT_READABLE: i64 = 2;
 const TK_FILE_EVENT_WRITABLE: i64 = 4;
 const TK_FILE_EVENT_EXCEPTION: i64 = 8;
 const TK_DONT_WAIT_FLAG: i32 = 2;
+const TK_BIND_SUBST_FORMAT_STR: &str = "%# %b %f %h %k %s %t %w %x %y %A %E %K %N %W %T %X %Y %D";
 
 #[cfg(target_arch = "wasm32")]
 const TK_BACKEND_IMPLEMENTED: bool = false;
@@ -572,6 +573,8 @@ enum TkOperation {
     Mainloop,
     DoOneEvent,
     After,
+    AfterIdle,
+    AfterCancel,
     Call,
     BindCommand,
     UnbindCommand,
@@ -595,6 +598,8 @@ impl TkOperation {
             Self::Mainloop => "molt_tk_mainloop",
             Self::DoOneEvent => "molt_tk_do_one_event",
             Self::After => "molt_tk_after",
+            Self::AfterIdle => "molt_tk_after_idle",
+            Self::AfterCancel => "molt_tk_after_cancel",
             Self::Call => "molt_tk_call",
             Self::BindCommand => "molt_tk_bind_command",
             Self::UnbindCommand => "molt_tk_unbind_command",
@@ -618,6 +623,8 @@ impl TkOperation {
                 | Self::Mainloop
                 | Self::DoOneEvent
                 | Self::After
+                | Self::AfterIdle
+                | Self::AfterCancel
                 | Self::Call
                 | Self::BindCommand
                 | Self::UnbindCommand
@@ -690,6 +697,7 @@ struct TkAppState {
     next_atom_id: i64,
     last_error: Option<String>,
     next_after_id: u64,
+    next_callback_command_id: u64,
     quit_requested: bool,
     #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
     interpreter: Option<TclInterpreter>,
@@ -1201,6 +1209,7 @@ fn drop_app_state_refs(py: &PyToken<'_>, app: &mut TkAppState) {
     app.atoms_by_id.clear();
     app.next_atom_id = 0;
     app.last_error = None;
+    app.next_callback_command_id = 0;
     app.quit_requested = true;
     #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
     {
@@ -1217,6 +1226,117 @@ fn next_after_token(next_after_id: &mut u64) -> String {
 fn after_callback_name_from_token(token: &str) -> String {
     let suffix = token.strip_prefix("after#").unwrap_or(token);
     format!("::__molt_after_callback_{suffix}")
+}
+
+fn next_callback_command_name(app: &mut TkAppState, prefix: &str) -> String {
+    loop {
+        app.next_callback_command_id = app.next_callback_command_id.saturating_add(1);
+        if app.next_callback_command_id == 0 {
+            app.next_callback_command_id = 1;
+        }
+        let command_name = format!("::__molt_{prefix}_{}", app.next_callback_command_id);
+        if !app.callbacks.contains_key(&command_name)
+            && !app.filehandler_commands.contains_key(&command_name)
+        {
+            return command_name;
+        }
+    }
+}
+
+fn callback_is_callable(callback_bits: u64) -> bool {
+    let callable_check = crate::molt_is_callable(callback_bits);
+    to_i64(obj_from_bits(callable_check)) == Some(1)
+}
+
+fn register_callback_command(
+    py: &PyToken<'_>,
+    app: &mut TkAppState,
+    command_name: &str,
+    callback_bits: u64,
+    callback_label: &str,
+) -> Result<(), u64> {
+    if app.callbacks.contains_key(command_name)
+        || app.filehandler_commands.contains_key(command_name)
+    {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("{callback_label} name collision for \"{command_name}\""),
+        ));
+    }
+    if let Err(err) = register_tcl_callback_proc(app, command_name) {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("failed to register {callback_label} \"{command_name}\": {err}"),
+        ));
+    }
+    inc_ref_bits(py, callback_bits);
+    if let Some(old_bits) = app
+        .callbacks
+        .insert(command_name.to_string(), callback_bits)
+    {
+        dec_ref_bits(py, old_bits);
+    }
+    app.one_shot_callbacks.remove(command_name);
+    Ok(())
+}
+
+fn unregister_callback_command(py: &PyToken<'_>, app: &mut TkAppState, command_name: &str) {
+    app.one_shot_callbacks.remove(command_name);
+    unregister_tcl_callback_proc(app, command_name);
+    if let Some(callback_bits) = app.callbacks.remove(command_name) {
+        dec_ref_bits(py, callback_bits);
+    }
+}
+
+fn trace_callback_is_referenced(app: &TkAppState, callback_name: &str) -> bool {
+    app.traces.values().any(|registrations| {
+        registrations
+            .iter()
+            .any(|registration| registration.callback_name == callback_name)
+    })
+}
+
+fn normalize_bind_add_prefix(py: &PyToken<'_>, add_bits: u64) -> Result<String, u64> {
+    let add_obj = obj_from_bits(add_bits);
+    if add_obj.is_none() {
+        return Ok(String::new());
+    }
+    if add_obj.is_bool() {
+        return Ok(if add_obj.as_bool().unwrap_or(false) {
+            "+".to_string()
+        } else {
+            String::new()
+        });
+    }
+    if let Some(value) = to_i64(add_obj) {
+        return match value {
+            0 => Ok(String::new()),
+            1 => Ok("+".to_string()),
+            _ => Err(raise_exception::<u64>(
+                py,
+                "TypeError",
+                "bind add must be one of: None, '', False, True, or '+'",
+            )),
+        };
+    }
+    if let Some(value) = string_obj_to_owned(add_obj) {
+        return match value.as_str() {
+            "" => Ok(String::new()),
+            "+" => Ok("+".to_string()),
+            _ => Err(raise_exception::<u64>(
+                py,
+                "TypeError",
+                "bind add must be one of: None, '', False, True, or '+'",
+            )),
+        };
+    }
+    Err(raise_exception::<u64>(
+        py,
+        "TypeError",
+        "bind add must be one of: None, '', False, True, or '+'",
+    ))
 }
 
 fn register_after_command_token(app: &mut TkAppState, token: &str, command_name: &str, kind: &str) {
@@ -1274,6 +1394,12 @@ fn schedule_after_timer_token(app: &mut TkAppState, token: &str, delay_ms: i64) 
 }
 
 fn cleanup_after_tokens(py: &PyToken<'_>, app: &mut TkAppState, tokens: &HashSet<String>) {
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    if let Some(interp) = app.interpreter.as_ref() {
+        for token in tokens {
+            let _ = interp.eval(("after", "cancel", token.clone()));
+        }
+    }
     for token in tokens {
         let command_name = lookup_after_command_for_token(app, token);
         unregister_after_command_token(app, token);
@@ -3343,6 +3469,12 @@ fn call_tk_command_from_strings(
     out
 }
 
+fn release_result_bits(py: &PyToken<'_>, result_bits: u64) {
+    if !obj_from_bits(result_bits).is_none() {
+        dec_ref_bits(py, result_bits);
+    }
+}
+
 fn invoke_trace_callbacks(
     py: &PyToken<'_>,
     handle: i64,
@@ -4047,18 +4179,21 @@ fn bind_script_line_invokes_command(line: &str, command_name: &str) -> bool {
         return true;
     }
 
-    parse_bind_script_commands(normalized).into_iter().any(|words| {
-        let Some(first) = words.first() else {
-            return false;
-        };
-        let first = first.trim_start_matches('+');
-        if first == command_name {
-            return true;
-        }
-        first == "if" && words.iter().any(|word| {
-            word.contains(wrapped_prefix.as_str()) || word.contains(wrapped_exact.as_str())
+    parse_bind_script_commands(normalized)
+        .into_iter()
+        .any(|words| {
+            let Some(first) = words.first() else {
+                return false;
+            };
+            let first = first.trim_start_matches('+');
+            if first == command_name {
+                return true;
+            }
+            first == "if"
+                && words.iter().any(|word| {
+                    word.contains(wrapped_prefix.as_str()) || word.contains(wrapped_exact.as_str())
+                })
         })
-    })
 }
 
 fn remove_bind_script_command_invocations(script: &str, command_name: &str) -> String {
@@ -4435,6 +4570,59 @@ fn tkwait_visibility_reached_in_app(app: &TkAppState, target: &str) -> bool {
         .is_some_and(|widget| widget.manager.is_some())
 }
 
+fn handle_tkwait_variable_target(
+    py: &PyToken<'_>,
+    handle: i64,
+    variable_name: &str,
+) -> Result<u64, u64> {
+    let start_version = {
+        let mut registry = tk_registry().lock().unwrap();
+        let app = app_mut_from_registry(py, &mut registry, handle)?;
+        variable_version(app, variable_name)
+    };
+    wait_for_tk_condition(py, handle, |app| {
+        variable_version(app, variable_name) != start_version
+    })?;
+    Ok(MoltObject::none().bits())
+}
+
+fn handle_tkwait_window_target(py: &PyToken<'_>, handle: i64, target: &str) -> Result<u64, u64> {
+    let start_exists = {
+        let registry = tk_registry().lock().unwrap();
+        tkwait_window_exists(&registry, handle, target)
+    };
+    if !start_exists {
+        clear_last_error(handle);
+        return Ok(MoltObject::none().bits());
+    }
+    wait_for_tk_condition(py, handle, |app| !tkwait_window_exists_in_app(app, target))?;
+    Ok(MoltObject::none().bits())
+}
+
+fn handle_tkwait_visibility_target(
+    py: &PyToken<'_>,
+    handle: i64,
+    target: &str,
+) -> Result<u64, u64> {
+    if target != "." {
+        let exists_now = {
+            let registry = tk_registry().lock().unwrap();
+            tkwait_window_exists(&registry, handle, target)
+        };
+        if !exists_now {
+            return Err(raise_tcl_for_handle(
+                py,
+                handle,
+                format!("bad window path name \"{target}\""),
+            ));
+        }
+    }
+    wait_for_tk_condition(py, handle, |app| {
+        tkwait_visibility_reached_in_app(app, target)
+    })?;
+    Ok(MoltObject::none().bits())
+}
+
 fn handle_tkwait_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() != 3 {
         return Err(raise_tcl_for_handle(
@@ -4446,54 +4634,51 @@ fn handle_tkwait_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<
     let kind = get_string_arg(py, handle, args[1], "tkwait kind")?;
     let target = get_string_arg(py, handle, args[2], "tkwait target")?;
     match kind.as_str() {
-        "variable" => {
-            let start_version = {
-                let mut registry = tk_registry().lock().unwrap();
-                let app = app_mut_from_registry(py, &mut registry, handle)?;
-                variable_version(app, &target)
-            };
-            wait_for_tk_condition(py, handle, |app| {
-                variable_version(app, &target) != start_version
-            })?
-        }
-        "window" => {
-            let start_exists = {
-                let registry = tk_registry().lock().unwrap();
-                tkwait_window_exists(&registry, handle, &target)
-            };
-            if !start_exists {
-                clear_last_error(handle);
-                return Ok(MoltObject::none().bits());
-            }
-            wait_for_tk_condition(py, handle, |app| !tkwait_window_exists_in_app(app, &target))?;
-        }
-        "visibility" => {
-            if target != "." {
-                let exists_now = {
-                    let registry = tk_registry().lock().unwrap();
-                    tkwait_window_exists(&registry, handle, &target)
+        "variable" => handle_tkwait_variable_target(py, handle, &target),
+        "window" => handle_tkwait_window_target(py, handle, &target),
+        "visibility" => handle_tkwait_visibility_target(py, handle, &target),
+        _ => Err(raise_tcl_for_handle(
+            py,
+            handle,
+            format!("unsupported tkwait kind \"{kind}\""),
+        )),
+    }
+}
+
+fn alloc_trace_info(
+    py: &PyToken<'_>,
+    registrations: Option<&Vec<TkTraceRegistration>>,
+) -> Result<u64, u64> {
+    let mut info_rows = Vec::new();
+    if let Some(registrations) = registrations {
+        let mut ordered: Vec<&TkTraceRegistration> = registrations.iter().collect();
+        ordered.sort_by_key(|registration| registration.order);
+        for registration in ordered {
+            let mode_bits = alloc_string_bits(py, registration.mode_name.as_str())?;
+            let callback_bits = alloc_string_bits(py, registration.callback_name.as_str())?;
+            let pair = [mode_bits, callback_bits];
+            let row_bits =
+                match alloc_tuple_bits(py, &pair, "failed to allocate trace info row tuple") {
+                    Ok(bits) => bits,
+                    Err(bits) => {
+                        dec_ref_bits(py, mode_bits);
+                        dec_ref_bits(py, callback_bits);
+                        for owned_bits in info_rows {
+                            dec_ref_bits(py, owned_bits);
+                        }
+                        return Err(bits);
+                    }
                 };
-                if !exists_now {
-                    return Err(raise_tcl_for_handle(
-                        py,
-                        handle,
-                        format!("bad window path name \"{target}\""),
-                    ));
-                }
-            }
-            wait_for_tk_condition(py, handle, |app| {
-                tkwait_visibility_reached_in_app(app, &target)
-            })?;
-        }
-        _ => {
-            return Err(raise_tcl_for_handle(
-                py,
-                handle,
-                format!("unsupported tkwait kind \"{kind}\""),
-            ));
+            dec_ref_bits(py, mode_bits);
+            dec_ref_bits(py, callback_bits);
+            info_rows.push(row_bits);
         }
     }
-    Ok(MoltObject::none().bits())
+    let out = alloc_tuple_bits(py, info_rows.as_slice(), "failed to allocate trace info");
+    for bits in info_rows {
+        dec_ref_bits(py, bits);
+    }
+    out
 }
 
 fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
@@ -4600,40 +4785,8 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 ));
             }
             let variable_name = get_string_arg(py, handle, args[3], "trace variable name")?;
-            let mut info_rows = Vec::new();
-            if let Some(registrations) = app.traces.get(&variable_name) {
-                let mut ordered: Vec<&TkTraceRegistration> = registrations.iter().collect();
-                ordered.sort_by_key(|registration| registration.order);
-                for registration in ordered {
-                    let mode_bits = alloc_string_bits(py, registration.mode_name.as_str())?;
-                    let callback_bits = alloc_string_bits(py, registration.callback_name.as_str())?;
-                    let pair = [mode_bits, callback_bits];
-                    let row_bits = match alloc_tuple_bits(
-                        py,
-                        &pair,
-                        "failed to allocate trace info row tuple",
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(py, mode_bits);
-                            dec_ref_bits(py, callback_bits);
-                            for owned_bits in info_rows {
-                                dec_ref_bits(py, owned_bits);
-                            }
-                            return Err(bits);
-                        }
-                    };
-                    dec_ref_bits(py, mode_bits);
-                    dec_ref_bits(py, callback_bits);
-                    info_rows.push(row_bits);
-                }
-            }
             app.last_error = None;
-            let out = alloc_tuple_bits(py, info_rows.as_slice(), "failed to allocate trace info");
-            for bits in info_rows {
-                dec_ref_bits(py, bits);
-            }
-            out
+            alloc_trace_info(py, app.traces.get(&variable_name))
         }
         _ => Err(app_tcl_error_locked(
             py,
@@ -8468,6 +8621,122 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::AfterIdle) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let token = next_after_token(&mut app.next_after_id);
+        let callback_name = after_callback_name_from_token(&token);
+
+        inc_ref_bits(_py, callback_bits);
+        if let Some(old_bits) = app.callbacks.insert(callback_name.clone(), callback_bits) {
+            dec_ref_bits(_py, old_bits);
+        }
+        app.one_shot_callbacks.insert(callback_name.clone());
+
+        if let Err(err) = register_tcl_callback_proc(app, &callback_name) {
+            app.one_shot_callbacks.remove(&callback_name);
+            if let Some(bits) = app.callbacks.remove(&callback_name) {
+                dec_ref_bits(_py, bits);
+            }
+            return app_tcl_error_locked(
+                _py,
+                app,
+                format!("failed to register tkinter callback command \"{callback_name}\": {err}"),
+            );
+        }
+
+        #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+        {
+            let Some(interp) = app.interpreter.as_ref() else {
+                unregister_tcl_callback_proc(app, &callback_name);
+                app.one_shot_callbacks.remove(&callback_name);
+                if let Some(bits) = app.callbacks.remove(&callback_name) {
+                    dec_ref_bits(_py, bits);
+                }
+                return app_tcl_error_locked(_py, app, "tk runtime interpreter is unavailable");
+            };
+            let after_token = match interp.eval(("after", "idle", callback_name.clone())) {
+                Ok(value) => value.to_string(),
+                Err(err) => {
+                    unregister_tcl_callback_proc(app, &callback_name);
+                    app.one_shot_callbacks.remove(&callback_name);
+                    if let Some(bits) = app.callbacks.remove(&callback_name) {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
+                }
+            };
+            register_after_command_token(app, &after_token, &callback_name, "idle");
+            app.last_error = None;
+            drop(registry);
+            return match alloc_string_bits(_py, &after_token) {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
+        }
+
+        #[cfg(any(target_arch = "wasm32", not(feature = "molt_tk_native")))]
+        {
+            register_after_command_token(app, &token, &callback_name, "idle");
+            app.event_queue.push_back(TkEvent::Callback {
+                token: token.clone(),
+            });
+            app.last_error = None;
+            drop(registry);
+            match alloc_string_bits(_py, &token) {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::AfterCancel) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        if obj_from_bits(identifier_bits).is_none() {
+            clear_last_error(handle);
+            return MoltObject::none().bits();
+        }
+        let key = match get_text_arg(_py, handle, identifier_bits, "after cancel token") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let mut tokens = HashSet::new();
+        if app.after_command_tokens.contains_key(&key) {
+            tokens.insert(key.clone());
+        } else {
+            tokens.extend(tokens_for_after_command(app, &key));
+            if tokens.is_empty() && key.starts_with("after#") {
+                tokens.insert(key);
+            }
+        }
+        cleanup_after_tokens(_py, app, &tokens);
+        app.last_error = None;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -8489,6 +8758,505 @@ pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(bits) => bits,
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_trace_add(
+    app_bits: u64,
+    variable_name_bits: u64,
+    mode_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let variable_name =
+            match get_string_arg(_py, handle, variable_name_bits, "trace variable name") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let mode_name_raw = match get_string_arg(_py, handle, mode_bits, "trace mode") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mode_name = match normalize_trace_mode_name(&mode_name_raw) {
+            Ok(value) => value,
+            Err(message) => return raise_tcl_for_handle(_py, handle, message),
+        };
+        if !callback_is_callable(callback_bits) {
+            return raise_exception::<u64>(_py, "TypeError", "trace callback must be callable");
+        }
+
+        let command_name = {
+            let mut registry = tk_registry().lock().unwrap();
+            let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+                return raise_invalid_handle_error(_py);
+            };
+            let command_name = next_callback_command_name(app, "trace_callback");
+            if let Err(bits) = register_callback_command(
+                _py,
+                app,
+                &command_name,
+                callback_bits,
+                "tkinter trace callback command",
+            ) {
+                return bits;
+            }
+            let registrations = app.traces.entry(variable_name).or_default();
+            app.next_trace_order = app.next_trace_order.saturating_add(1);
+            if app.next_trace_order == 0 {
+                app.next_trace_order = 1;
+            }
+            registrations.push(TkTraceRegistration {
+                mode_name,
+                callback_name: command_name.clone(),
+                order: app.next_trace_order,
+            });
+            app.last_error = None;
+            command_name
+        };
+
+        match alloc_string_bits(_py, &command_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_trace_remove(
+    app_bits: u64,
+    variable_name_bits: u64,
+    mode_bits: u64,
+    cbname_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let variable_name =
+            match get_string_arg(_py, handle, variable_name_bits, "trace variable name") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let mode_name_raw = match get_string_arg(_py, handle, mode_bits, "trace mode") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mode_name = match normalize_trace_mode_name(&mode_name_raw) {
+            Ok(value) => value,
+            Err(message) => return raise_tcl_for_handle(_py, handle, message),
+        };
+        let callback_name = match get_string_arg(_py, handle, cbname_bits, "trace callback") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        if let Some(registrations) = app.traces.get_mut(&variable_name) {
+            registrations.retain(|registration| {
+                !(registration.mode_name == mode_name
+                    && registration.callback_name == callback_name)
+            });
+            if registrations.is_empty() {
+                app.traces.remove(&variable_name);
+            }
+        }
+        if !trace_callback_is_referenced(app, &callback_name) {
+            unregister_callback_command(_py, app, &callback_name);
+        }
+        app.last_error = None;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let variable_name =
+            match get_string_arg(_py, handle, variable_name_bits, "trace variable name") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        app.last_error = None;
+        match alloc_trace_info(_py, app.traces.get(&variable_name)) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_tkwait_variable(app_bits: u64, variable_name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let variable_name = match get_string_arg(_py, handle, variable_name_bits, "tkwait target") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        match handle_tkwait_variable_target(_py, handle, &variable_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_tkwait_window(app_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let target = match get_string_arg(_py, handle, target_bits, "tkwait target") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        match handle_tkwait_window_target(_py, handle, &target) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_tkwait_visibility(app_bits: u64, target_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let target = match get_string_arg(_py, handle, target_bits, "tkwait target") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        match handle_tkwait_visibility_target(_py, handle, &target) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_bind_callback_register(
+    app_bits: u64,
+    target_bits: u64,
+    sequence_bits: u64,
+    callback_bits: u64,
+    add_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let target_name = match get_string_arg(_py, handle, target_bits, "bind target") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if !callback_is_callable(callback_bits) {
+            return raise_exception::<u64>(_py, "TypeError", "bind callback must be callable");
+        }
+        let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name = {
+            let mut registry = tk_registry().lock().unwrap();
+            let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+                return raise_invalid_handle_error(_py);
+            };
+            let command_name = next_callback_command_name(app, "bind_callback");
+            if let Err(bits) = register_callback_command(
+                _py,
+                app,
+                &command_name,
+                callback_bits,
+                "tkinter bind callback command",
+            ) {
+                return bits;
+            }
+            app.last_error = None;
+            command_name
+        };
+
+        let bind_script =
+            format!("if {{\"[{command_name} {TK_BIND_SUBST_FORMAT_STR}]\" == \"break\"}} break\n");
+        let merged_script = if add_prefix.is_empty() {
+            bind_script
+        } else {
+            format!("{add_prefix}{bind_script}")
+        };
+        let set_bind_argv = vec!["bind".to_string(), target_name, sequence, merged_script];
+        let bind_result = call_tk_command_from_strings(_py, handle, &set_bind_argv);
+        match bind_result {
+            Ok(result_bits) => {
+                release_result_bits(_py, result_bits);
+            }
+            Err(bits) => {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    unregister_callback_command(_py, app, &command_name);
+                }
+                return bits;
+            }
+        }
+        match alloc_string_bits(_py, &command_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_bind_callback_unregister(
+    app_bits: u64,
+    target_bits: u64,
+    sequence_bits: u64,
+    command_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let target_name = match get_string_arg(_py, handle, target_bits, "bind target") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence = match get_string_arg(_py, handle, sequence_bits, "bind sequence") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let command_name = match get_string_arg(_py, handle, command_name_bits, "bind callback id")
+        {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+
+        let get_bind_argv = vec!["bind".to_string(), target_name.clone(), sequence.clone()];
+        let current_script_bits = match call_tk_command_from_strings(_py, handle, &get_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let current_script =
+            string_obj_to_owned(obj_from_bits(current_script_bits)).unwrap_or_default();
+        release_result_bits(_py, current_script_bits);
+        let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
+
+        let set_bind_argv = vec!["bind".to_string(), target_name, sequence, replacement];
+        let set_bits = match call_tk_command_from_strings(_py, handle, &set_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        release_result_bits(_py, set_bits);
+
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        unregister_callback_command(_py, app, &command_name);
+        app.last_error = None;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
+    app_bits: u64,
+    widget_path_bits: u64,
+    tagname_bits: u64,
+    sequence_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path =
+            match get_string_arg(_py, handle, widget_path_bits, "treeview widget path") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let tagname = match get_string_arg(_py, handle, tagname_bits, "treeview tag name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence =
+            match get_string_arg(_py, handle, sequence_bits, "treeview tag bind sequence") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        if !callback_is_callable(callback_bits) {
+            return raise_exception::<u64>(_py, "TypeError", "tag_bind callback must be callable");
+        }
+
+        let command_name = {
+            let mut registry = tk_registry().lock().unwrap();
+            let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+                return raise_invalid_handle_error(_py);
+            };
+            let command_name = next_callback_command_name(app, "treeview_tag_bind_callback");
+            if let Err(bits) = register_callback_command(
+                _py,
+                app,
+                &command_name,
+                callback_bits,
+                "tkinter treeview tag bind callback command",
+            ) {
+                return bits;
+            }
+            app.last_error = None;
+            command_name
+        };
+
+        let bind_script =
+            format!("if {{\"[{command_name} {TK_BIND_SUBST_FORMAT_STR}]\" == \"break\"}} break\n");
+        let set_bind_argv = vec![
+            widget_path,
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname,
+            sequence,
+            bind_script,
+        ];
+        let bind_result = call_tk_command_from_strings(_py, handle, &set_bind_argv);
+        match bind_result {
+            Ok(result_bits) => {
+                release_result_bits(_py, result_bits);
+            }
+            Err(bits) => {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    unregister_callback_command(_py, app, &command_name);
+                }
+                return bits;
+            }
+        }
+        match alloc_string_bits(_py, &command_name) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
+    app_bits: u64,
+    widget_path_bits: u64,
+    tagname_bits: u64,
+    sequence_bits: u64,
+    command_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
+            return bits;
+        }
+        let Ok(handle) = parse_app_handle(_py, app_bits) else {
+            return raise_invalid_handle_error(_py);
+        };
+        let widget_path =
+            match get_string_arg(_py, handle, widget_path_bits, "treeview widget path") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let tagname = match get_string_arg(_py, handle, tagname_bits, "treeview tag name") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let sequence =
+            match get_string_arg(_py, handle, sequence_bits, "treeview tag bind sequence") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let command_name = match get_string_arg(
+            _py,
+            handle,
+            command_name_bits,
+            "treeview tag bind callback id",
+        ) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+
+        let get_bind_argv = vec![
+            widget_path.clone(),
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname.clone(),
+            sequence.clone(),
+        ];
+        let current_script_bits = match call_tk_command_from_strings(_py, handle, &get_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let current_script =
+            string_obj_to_owned(obj_from_bits(current_script_bits)).unwrap_or_default();
+        release_result_bits(_py, current_script_bits);
+        let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
+
+        let set_bind_argv = vec![
+            widget_path,
+            "tag".to_string(),
+            "bind".to_string(),
+            tagname,
+            sequence,
+            replacement,
+        ];
+        let set_bits = match call_tk_command_from_strings(_py, handle, &set_bind_argv) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        release_result_bits(_py, set_bits);
+
+        let mut registry = tk_registry().lock().unwrap();
+        let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
+            return raise_invalid_handle_error(_py);
+        };
+        unregister_callback_command(_py, app, &command_name);
+        app.last_error = None;
+        MoltObject::none().bits()
     })
 }
 

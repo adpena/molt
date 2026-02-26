@@ -53,9 +53,69 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_tk_after_idle",
+        symbol: "molt_tk_after_idle",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_after_cancel",
+        symbol: "molt_tk_after_cancel",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_tk_call",
         symbol: "molt_tk_call",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_trace_add",
+        symbol: "molt_tk_trace_add",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_trace_remove",
+        symbol: "molt_tk_trace_remove",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_trace_info",
+        symbol: "molt_tk_trace_info",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_tkwait_variable",
+        symbol: "molt_tk_tkwait_variable",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_tkwait_window",
+        symbol: "molt_tk_tkwait_window",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_tkwait_visibility",
+        symbol: "molt_tk_tkwait_visibility",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_bind_callback_register",
+        symbol: "molt_tk_bind_callback_register",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_bind_callback_unregister",
+        symbol: "molt_tk_bind_callback_unregister",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_treeview_tag_bind_callback_register",
+        symbol: "molt_tk_treeview_tag_bind_callback_register",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_treeview_tag_bind_callback_unregister",
+        symbol: "molt_tk_treeview_tag_bind_callback_unregister",
+        arity: 5,
     },
     IntrinsicSpec {
         name: "molt_tk_bind_command",
@@ -5933,6 +5993,36 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_sys_is_finalizing",
+        symbol: "molt_sys_is_finalizing",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_getrefcount",
+        symbol: "molt_sys_getrefcount",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_settrace",
+        symbol: "molt_sys_settrace",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_gettrace",
+        symbol: "molt_sys_gettrace",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_setprofile",
+        symbol: "molt_sys_setprofile",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_getprofile",
+        symbol: "molt_sys_getprofile",
+        arity: 0,
+    },
+    IntrinsicSpec {
         name: "molt_sys_bootstrap_path",
         symbol: "molt_sys_bootstrap_path",
         arity: 1,
@@ -9984,7 +10074,31 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_mainloop" => Some(crate::molt_tk_mainloop as *const () as usize as u64),
         "molt_tk_do_one_event" => Some(crate::molt_tk_do_one_event as *const () as usize as u64),
         "molt_tk_after" => Some(crate::molt_tk_after as *const () as usize as u64),
+        "molt_tk_after_idle" => Some(crate::molt_tk_after_idle as *const () as usize as u64),
+        "molt_tk_after_cancel" => Some(crate::molt_tk_after_cancel as *const () as usize as u64),
         "molt_tk_call" => Some(crate::molt_tk_call as *const () as usize as u64),
+        "molt_tk_trace_add" => Some(crate::molt_tk_trace_add as *const () as usize as u64),
+        "molt_tk_trace_remove" => Some(crate::molt_tk_trace_remove as *const () as usize as u64),
+        "molt_tk_trace_info" => Some(crate::molt_tk_trace_info as *const () as usize as u64),
+        "molt_tk_tkwait_variable" => {
+            Some(crate::molt_tk_tkwait_variable as *const () as usize as u64)
+        }
+        "molt_tk_tkwait_window" => Some(crate::molt_tk_tkwait_window as *const () as usize as u64),
+        "molt_tk_tkwait_visibility" => {
+            Some(crate::molt_tk_tkwait_visibility as *const () as usize as u64)
+        }
+        "molt_tk_bind_callback_register" => {
+            Some(crate::molt_tk_bind_callback_register as *const () as usize as u64)
+        }
+        "molt_tk_bind_callback_unregister" => {
+            Some(crate::molt_tk_bind_callback_unregister as *const () as usize as u64)
+        }
+        "molt_tk_treeview_tag_bind_callback_register" => {
+            Some(crate::molt_tk_treeview_tag_bind_callback_register as *const () as usize as u64)
+        }
+        "molt_tk_treeview_tag_bind_callback_unregister" => {
+            Some(crate::molt_tk_treeview_tag_bind_callback_unregister as *const () as usize as u64)
+        }
         "molt_tk_bind_command" => Some(crate::molt_tk_bind_command as *const () as usize as u64),
         "molt_tk_unbind_command" => {
             Some(crate::molt_tk_unbind_command as *const () as usize as u64)
@@ -12476,6 +12590,14 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_sys_flags_payload as *const () as usize as u64)
         }
         "molt_sys_platform" => Some(crate::molt_sys_platform as *const () as usize as u64),
+        "molt_sys_is_finalizing" => {
+            Some(crate::molt_sys_is_finalizing as *const () as usize as u64)
+        }
+        "molt_sys_getrefcount" => Some(crate::molt_sys_getrefcount as *const () as usize as u64),
+        "molt_sys_settrace" => Some(crate::molt_sys_settrace as *const () as usize as u64),
+        "molt_sys_gettrace" => Some(crate::molt_sys_gettrace as *const () as usize as u64),
+        "molt_sys_setprofile" => Some(crate::molt_sys_setprofile as *const () as usize as u64),
+        "molt_sys_getprofile" => Some(crate::molt_sys_getprofile as *const () as usize as u64),
         "molt_sys_bootstrap_path" => {
             Some(crate::molt_sys_bootstrap_path as *const () as usize as u64)
         }
