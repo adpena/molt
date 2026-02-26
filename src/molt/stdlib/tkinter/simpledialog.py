@@ -1,25 +1,12 @@
 """Phase-0 intrinsic-backed `tkinter.simpledialog` wrappers."""
 
-import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
+from tkinter import commondialog as _commondialog
 from tkinter import dialog as _dialog
 
 _MOLT_TK_SIMPLEDIALOG_QUERY = _require_intrinsic(
     "molt_tk_simpledialog_query", globals()
 )
-
-
-def _resolve_parent(parent):
-    if parent is None:
-        return _tkinter._get_default_root()
-    if not isinstance(parent, _tkinter.Misc):
-        raise TypeError("simpledialog parent must be a tkinter widget or root")
-    return parent
-
-
-def _app_handle(widget):
-    app = widget._tk_app
-    return getattr(app, "_handle", app)
 
 
 def _query(
@@ -32,9 +19,12 @@ def _query(
     minvalue=None,
     maxvalue=None,
 ):
-    parent_widget = _resolve_parent(parent)
+    parent_widget = _commondialog._resolve_master(
+        parent,
+        role="simpledialog parent",
+    )
     return _MOLT_TK_SIMPLEDIALOG_QUERY(
-        _app_handle(parent_widget),
+        _commondialog._app_handle(parent_widget),
         str(parent_widget),
         "" if title is None else str(title),
         str(prompt),

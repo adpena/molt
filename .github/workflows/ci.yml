@@ -149,6 +149,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

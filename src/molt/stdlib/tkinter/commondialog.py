@@ -6,27 +6,24 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
 
 
-def _normalize_option_name(name):
-    return name if name.startswith("-") else f"-{name}"
-
-
-def _normalize_options(options):
-    normalized = []
-    for key, value in options.items():
-        if value is None:
+def _prepare_intrinsic_options(options):
+    if not options:
+        return {}
+    prepared = dict(options)
+    for key in ("parent", "-parent"):
+        if key not in prepared:
             continue
-        option_name = _normalize_option_name(str(key))
-        option_value = str(value) if option_name == "-parent" else value
-        normalized.append(option_name)
-        normalized.append(option_value)
-    return normalized
+        parent = prepared[key]
+        if parent is not None:
+            prepared[key] = str(parent)
+    return prepared
 
 
-def _resolve_master(master):
+def _resolve_master(master, *, role="dialog master"):
     if master is None:
         return _tkinter._get_default_root()
     if not isinstance(master, _tkinter.Misc):
-        raise TypeError("dialog master must be a tkinter widget or root")
+        raise TypeError(f"{role} must be a tkinter widget or root")
     return master
 
 
@@ -60,14 +57,14 @@ class Dialog:
             self.options.update(options)
         if not self.command:
             raise RuntimeError("dialog command is not configured")
-        master = _resolve_master(self.master)
+        master = _resolve_master(self.master, role="dialog master")
         self._fixoptions()
         self._test_callback(master)
         result = _MOLT_TK_COMMONDIALOG_SHOW(
             _app_handle(master),
             str(master),
             self.command,
-            _normalize_options(self.options),
+            _prepare_intrinsic_options(self.options),
         )
         return self._fixresult(master, result)
 

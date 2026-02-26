@@ -384,6 +384,77 @@ fn build_dense_state_remap_table(state_map: &HashMap<i64, usize>) -> Option<Vec<
     Some(bytes)
 }
 
+fn build_sparse_state_remap_entries(state_map: &HashMap<i64, usize>) -> Vec<(i64, i64)> {
+    let mut entries = Vec::with_capacity(state_map.len());
+    for (&state_id, &target_idx) in state_map {
+        if state_id < 0 {
+            continue;
+        }
+        entries.push((state_id, target_idx as i64));
+    }
+    entries.sort_unstable_by_key(|(state_id, _)| *state_id);
+    entries
+}
+
+fn emit_sparse_state_remap_lookup(
+    func: &mut Function,
+    state_local: u32,
+    sorted_entries: &[(i64, i64)],
+) {
+    fn emit_node(func: &mut Function, state_local: u32, entries: &[(i64, i64)]) {
+        if entries.is_empty() {
+            return;
+        }
+
+        let mid = entries.len() / 2;
+        let (state_id, target_idx) = entries[mid];
+        let left = &entries[..mid];
+        let right = &entries[mid + 1..];
+
+        func.instruction(&Instruction::LocalGet(state_local));
+        func.instruction(&Instruction::I64Const(state_id));
+        func.instruction(&Instruction::I64Eq);
+        func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&Instruction::I64Const(target_idx));
+        func.instruction(&Instruction::LocalSet(state_local));
+        if !left.is_empty() || !right.is_empty() {
+            func.instruction(&Instruction::Else);
+            match (!left.is_empty(), !right.is_empty()) {
+                (true, true) => {
+                    func.instruction(&Instruction::LocalGet(state_local));
+                    func.instruction(&Instruction::I64Const(state_id));
+                    func.instruction(&Instruction::I64LtS);
+                    func.instruction(&Instruction::If(BlockType::Empty));
+                    emit_node(func, state_local, left);
+                    func.instruction(&Instruction::Else);
+                    emit_node(func, state_local, right);
+                    func.instruction(&Instruction::End);
+                }
+                (true, false) => {
+                    func.instruction(&Instruction::LocalGet(state_local));
+                    func.instruction(&Instruction::I64Const(state_id));
+                    func.instruction(&Instruction::I64LtS);
+                    func.instruction(&Instruction::If(BlockType::Empty));
+                    emit_node(func, state_local, left);
+                    func.instruction(&Instruction::End);
+                }
+                (false, true) => {
+                    func.instruction(&Instruction::LocalGet(state_local));
+                    func.instruction(&Instruction::I64Const(state_id));
+                    func.instruction(&Instruction::I64GtS);
+                    func.instruction(&Instruction::If(BlockType::Empty));
+                    emit_node(func, state_local, right);
+                    func.instruction(&Instruction::End);
+                }
+                (false, false) => {}
+            }
+        }
+        func.instruction(&Instruction::End);
+    }
+
+    emit_node(func, state_local, sorted_entries);
+}
+
 pub struct WasmBackend {
     module: Module,
     types: TypeSection,
@@ -7930,6 +8001,9 @@ impl WasmBackend {
                 .as_ref()
                 .expect("state resume maps missing for stateful wasm");
             let state_remap_table_entries = state_remap_table.as_ref().map(|(entries, _)| *entries);
+            let sparse_state_remap_entries = state_remap_table_entries
+                .is_none()
+                .then(|| build_sparse_state_remap_entries(state_map));
 
             func.instruction(&Instruction::LocalGet(self_param));
             func.instruction(&Instruction::LocalSet(self_ptr_local));
@@ -7991,15 +8065,13 @@ impl WasmBackend {
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::End);
             } else {
-                for (state_id, target_idx) in &state_map {
-                    func.instruction(&Instruction::LocalGet(state_local));
-                    func.instruction(&Instruction::I64Const(*state_id));
-                    func.instruction(&Instruction::I64Eq);
-                    func.instruction(&Instruction::If(BlockType::Empty));
-                    func.instruction(&Instruction::I64Const(*target_idx as i64));
-                    func.instruction(&Instruction::LocalSet(state_local));
-                    func.instruction(&Instruction::End);
-                }
+                emit_sparse_state_remap_lookup(
+                    func,
+                    state_local,
+                    sparse_state_remap_entries
+                        .as_deref()
+                        .expect("sparse state remap entries missing for stateful wasm"),
+                );
             }
             func.instruction(&Instruction::End);
 

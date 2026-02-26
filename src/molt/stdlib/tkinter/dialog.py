@@ -2,6 +2,7 @@
 
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
+from tkinter import commondialog as _commondialog
 
 _MOLT_TK_DIALOG_SHOW = _require_intrinsic("molt_tk_dialog_show", globals())
 
@@ -10,19 +11,6 @@ Widget = getattr(_tkinter, "Widget", object)
 Button = getattr(_tkinter, "Button", object)
 Pack = getattr(_tkinter, "Pack", object)
 DIALOG_ICON = "questhead"
-
-
-def _resolve_master(master):
-    if master is None:
-        return _tkinter._get_default_root()
-    if not isinstance(master, _tkinter.Misc):
-        raise TypeError("dialog master must be a tkinter widget or root")
-    return master
-
-
-def _app_handle(master):
-    app = master._tk_app
-    return getattr(app, "_handle", app)
 
 
 class Dialog:
@@ -46,9 +34,9 @@ class Dialog:
         self.num = None
 
     def show(self):
-        master = _resolve_master(self.master)
+        master = _commondialog._resolve_master(self.master, role="dialog master")
         result = _MOLT_TK_DIALOG_SHOW(
-            _app_handle(master),
+            _commondialog._app_handle(master),
             str(master),
             self.title,
             self.text,
