@@ -3591,10 +3591,16 @@ def _discover_module_graph(
     stdlib_allowlist: set[str],
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
+    nested_stdlib_scan_modules: set[str] | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
+    nested_stdlib_scan_modules = (
+        STDLIB_NESTED_IMPORT_SCAN_MODULES
+        if nested_stdlib_scan_modules is None
+        else nested_stdlib_scan_modules
+    )
     explicit_imports: set[str] = set()
     queue = [entry_path]
     queued_paths = {entry_path}
@@ -3638,7 +3644,7 @@ def _discover_module_graph(
         is_package = path.name == "__init__.py"
         include_nested_imports = (
             not _is_stdlib_path(path, stdlib_root)
-            or module_name in STDLIB_NESTED_IMPORT_SCAN_MODULES
+            or module_name in nested_stdlib_scan_modules
         )
         for name in _collect_imports(
             tree,
@@ -7360,6 +7366,7 @@ def build(
             stdlib_allowlist,
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
+            nested_stdlib_scan_modules=set(),
         )
         if diagnostics_enabled:
             _merge_module_graph_with_reason(

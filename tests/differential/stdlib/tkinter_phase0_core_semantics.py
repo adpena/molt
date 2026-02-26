@@ -651,6 +651,9 @@ def _probe_core_runtime_semantics(
         bind_after = frame.bind("<KeyPress>")
         frame.unbind("<KeyPress>", bind_id_primary)
         bind_after_primary_unbind = frame.bind("<KeyPress>")
+        bind_registered_after_primary_unbind = set(
+            getattr(root, "_registered_commands", ())
+        )
         root.tk.call(
             bind_id_secondary,
             "57",
@@ -675,6 +678,7 @@ def _probe_core_runtime_semantics(
         )
         frame.unbind("<KeyPress>", bind_id_secondary)
         bind_after_unbind = frame.bind("<KeyPress>")
+        bind_registered_after_unbind = set(getattr(root, "_registered_commands", ()))
 
         frame.event_add("<<ProbeVirtual>>", "<KeyPress>")
         virtuals_before = tuple(frame.event_info())
@@ -710,21 +714,80 @@ def _probe_core_runtime_semantics(
         containing = root.winfo_containing(0, 0)
         winfo_children = tuple(root.winfo_children())
 
+        def _normalize_trace_info_rows(rows):
+            normalized = []
+            for row in rows:
+                if not isinstance(row, (tuple, list)) or len(row) != 2:
+                    return None
+                mode_value = row[0]
+                if isinstance(mode_value, (tuple, list)):
+                    if len(mode_value) != 1:
+                        return None
+                    mode_value = mode_value[0]
+                mode_name = str(mode_value)
+                if mode_name == "w":
+                    mode_name = "write"
+                normalized.append((mode_name, str(row[1])))
+            return tuple(normalized)
+
         trace_events = []
         trace_var = tkinter_module.StringVar(root, value="seed")
-        trace_id = trace_var.trace_add(
-            "write",
-            lambda name, index, mode: trace_events.append((name, index, mode)),
+
+        def _make_trace_callback(label):
+            def _callback(name, index, mode):
+                trace_events.append((label, name, index, mode))
+
+            return _callback
+
+        trace_id_primary = trace_var.trace_add("write", _make_trace_callback("primary"))
+        trace_id_secondary = trace_var.trace_add(
+            "write", _make_trace_callback("secondary")
         )
+        trace_info_before = tuple(trace_var.trace_info())
         trace_var.set("seed-updated")
-        trace_var.trace_remove("write", trace_id)
+        trace_var.trace_remove("write", trace_id_primary)
+        trace_info_after_primary_remove = tuple(trace_var.trace_info())
+        trace_var.set("seed-final")
+        trace_var.trace_remove("write", trace_id_secondary)
         trace_info_after = tuple(trace_var.trace_info())
-        trace_mode = trace_events[0][2] if trace_events else None
+        trace_info_before_rows = _normalize_trace_info_rows(trace_info_before)
+        trace_info_after_primary_rows = _normalize_trace_info_rows(
+            trace_info_after_primary_remove
+        )
+        trace_info_after_rows = _normalize_trace_info_rows(trace_info_after)
+        trace_event_labels = tuple(label for label, _name, _index, _mode in trace_events)
+        trace_event_names = tuple(name for _label, name, _index, _mode in trace_events)
+        trace_event_indexes = tuple(index for _label, _name, index, _mode in trace_events)
+        trace_event_modes = tuple(
+            "write" if str(mode) == "w" else str(mode)
+            for _label, _name, _index, mode in trace_events
+        )
 
         wait_var = tkinter_module.StringVar(root, value="pending")
         root.after(5, lambda: wait_var.set("ready"))
         root.wait_variable(wait_var)
         wait_var_value = wait_var.get()
+
+        wait_window_events = []
+        wait_window_target = tkinter_module.Frame(root)
+        wait_window_target.pack()
+        root.after(5, lambda: (wait_window_events.append("destroyed"), wait_window_target.destroy()))
+        root.wait_window(wait_window_target)
+        wait_window_missing_result = root.wait_window(".__molt_missing_window__")
+
+        wait_visibility_events = []
+        wait_visibility_target = tkinter_module.Frame(root)
+        root.after(5, lambda: (wait_visibility_events.append("visible"), wait_visibility_target.pack()))
+        root.wait_visibility(wait_visibility_target)
+        wait_visibility_target.pack_forget()
+
+        wait_visibility_error_type = ""
+        wait_visibility_error_text = ""
+        try:
+            root.wait_visibility(".__molt_missing_window__")
+        except BaseException as exc:  # noqa: BLE001
+            wait_visibility_error_type = type(exc).__name__
+            wait_visibility_error_text = str(exc)
 
         after_cancel_hits = []
         cancel_token = root.after(50, lambda: after_cancel_hits.append("fired"))
@@ -735,7 +798,6 @@ def _probe_core_runtime_semantics(
 
         root.update()
         root.update_idletasks()
-        root.wait_visibility(frame)
 
         root.destroy()
         root = None
@@ -769,6 +831,10 @@ def _probe_core_runtime_semantics(
             and bind_id_primary not in str(bind_after_primary_unbind)
             and bind_id_secondary in str(bind_after_primary_unbind)
             and bind_after_unbind == ""
+            and bind_id_primary not in bind_registered_after_primary_unbind
+            and bind_id_secondary in bind_registered_after_primary_unbind
+            and bind_id_primary not in bind_registered_after_unbind
+            and bind_id_secondary not in bind_registered_after_unbind
             and key_payload_primary == [
                 (True, 15, 16, 120, "K", "A", 55, "KeyPress", 115, 116)
             ]
@@ -798,12 +864,20 @@ def _probe_core_runtime_semantics(
             and atom_name == "MOLT_PROBE_ATOM"
             and isinstance(containing, str)
             and str(frame) in tuple(str(x) for x in winfo_children)
-            and len(trace_events) == 1
-            and trace_events[0][0] == trace_var._name
-            and trace_events[0][1] == ""
-            and trace_mode in {"write", "w"}
-            and trace_info_after == ()
+            and trace_event_labels == ("primary", "secondary", "secondary")
+            and trace_event_names == (trace_var._name, trace_var._name, trace_var._name)
+            and trace_event_indexes == ("", "", "")
+            and trace_event_modes == ("write", "write", "write")
+            and trace_info_before_rows
+            == (("write", trace_id_primary), ("write", trace_id_secondary))
+            and trace_info_after_primary_rows == (("write", trace_id_secondary),)
+            and trace_info_after_rows == ()
             and wait_var_value == "ready"
+            and wait_window_events == ["destroyed"]
+            and wait_window_missing_result is None
+            and wait_visibility_events == ["visible"]
+            and wait_visibility_error_type in ("TclError", "RuntimeError")
+            and "bad window path name" in wait_visibility_error_text
             and after_cancel_ok is True
         )
     except BaseException:  # noqa: BLE001
@@ -1067,6 +1141,7 @@ def _probe_ttk_treeview_headless_semantics(
         )
         tree.tag_unbind("tag1", "<<TreeviewOpen>>", funcid_primary)
         query_after_primary_unbind = tree.tag_bind("tag1", "<<TreeviewOpen>>")
+        commands_after_primary_unbind = set(root._tk_app._handle["commands"])
         cmd_secondary(
             "9",
             "1",
@@ -1090,9 +1165,10 @@ def _probe_ttk_treeview_headless_semantics(
         )
         tree.tag_unbind("tag1", "<<TreeviewOpen>>", funcid_secondary)
         query_after = tree.tag_bind("tag1", "<<TreeviewOpen>>")
+        commands_after_unbind = set(root._tk_app._handle["commands"])
 
         calls = root._tk_app._handle["calls"]
-        registered_commands = root._tk_app._handle["commands"]
+        registered_commands = set(root._tk_app._handle["commands"])
         root.destroy()
         root = None
         return (
@@ -1118,6 +1194,10 @@ def _probe_ttk_treeview_headless_semantics(
             and funcid_primary not in query_after_primary_unbind
             and funcid_secondary in query_after_primary_unbind
             and query_after == ""
+            and funcid_primary not in commands_after_primary_unbind
+            and funcid_secondary in commands_after_primary_unbind
+            and funcid_primary not in commands_after_unbind
+            and funcid_secondary not in commands_after_unbind
             and funcid_primary not in registered_commands
             and funcid_secondary not in registered_commands
             and tag_primary == [

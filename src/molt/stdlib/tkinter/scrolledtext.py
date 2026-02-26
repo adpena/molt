@@ -43,4 +43,15 @@ class ScrolledText(_tkinter.Widget):
 
 Text = ScrolledText
 
-__all__ = ["ScrolledText", "Text"]
+
+def example():
+    root = _tkinter.Tk()
+    try:
+        text = ScrolledText(root)
+        text.insert("end", "ScrolledText example")
+        return text
+    finally:
+        root.destroy()
+
+
+__all__ = ["ScrolledText", "Text", "example"]

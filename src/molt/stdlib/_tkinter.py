@@ -15,7 +15,27 @@ _MOLT_TK_QUIT = _require_intrinsic("molt_tk_quit", globals())
 _MOLT_TK_MAINLOOP = _require_intrinsic("molt_tk_mainloop", globals())
 _MOLT_TK_DO_ONE_EVENT = _require_intrinsic("molt_tk_do_one_event", globals())
 _MOLT_TK_AFTER = _require_intrinsic("molt_tk_after", globals())
+_MOLT_TK_AFTER_IDLE = _require_intrinsic("molt_tk_after_idle", globals())
+_MOLT_TK_AFTER_CANCEL = _require_intrinsic("molt_tk_after_cancel", globals())
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
+_MOLT_TK_TRACE_ADD = _require_intrinsic("molt_tk_trace_add", globals())
+_MOLT_TK_TRACE_REMOVE = _require_intrinsic("molt_tk_trace_remove", globals())
+_MOLT_TK_TRACE_INFO = _require_intrinsic("molt_tk_trace_info", globals())
+_MOLT_TK_TKWAIT_VARIABLE = _require_intrinsic("molt_tk_tkwait_variable", globals())
+_MOLT_TK_TKWAIT_WINDOW = _require_intrinsic("molt_tk_tkwait_window", globals())
+_MOLT_TK_TKWAIT_VISIBILITY = _require_intrinsic("molt_tk_tkwait_visibility", globals())
+_MOLT_TK_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_bind_callback_register", globals()
+)
+_MOLT_TK_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_bind_callback_unregister", globals()
+)
+_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_treeview_tag_bind_callback_register", globals()
+)
+_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_treeview_tag_bind_callback_unregister", globals()
+)
 _MOLT_TK_BIND_COMMAND = _require_intrinsic("molt_tk_bind_command", globals())
 _MOLT_TK_UNBIND_COMMAND = _require_intrinsic("molt_tk_unbind_command", globals())
 _MOLT_TK_FILEHANDLER_CREATE = _require_intrinsic(
@@ -239,7 +259,9 @@ def after(app, delay_ms, callback):
 
 
 def after_idle(app, callback):
-    return after(app, 0, callback)
+    if not callable(callback):
+        raise TypeError("after callback must be callable")
+    return _MOLT_TK_AFTER_IDLE(_unwrap_app(app), callback)
 
 
 def _normalize_after_cancel_identifier(identifier):
@@ -264,11 +286,7 @@ def after_cancel(app, identifier):
     if token is None:
         return None
 
-    try:
-        call(app, "after", "cancel", token)
-    except Exception:  # noqa: BLE001
-        # Keep timer cancellation idempotent if the callback already fired.
-        pass
+    _MOLT_TK_AFTER_CANCEL(_unwrap_app(app), token)
     return None
 
 
@@ -305,6 +323,86 @@ def createtimerhandler(app, milliseconds, callback):
 
 def call(app, *argv):
     return _MOLT_TK_CALL(_unwrap_app(app), list(argv))
+
+
+def trace_add(app, variable_name, mode, callback):
+    if not callable(callback):
+        raise TypeError("trace callback must be callable")
+    return _MOLT_TK_TRACE_ADD(_unwrap_app(app), str(variable_name), str(mode), callback)
+
+
+def trace_remove(app, variable_name, mode, cbname):
+    _MOLT_TK_TRACE_REMOVE(_unwrap_app(app), str(variable_name), str(mode), str(cbname))
+    return None
+
+
+def trace_info(app, variable_name):
+    return tuple(_MOLT_TK_TRACE_INFO(_unwrap_app(app), str(variable_name)))
+
+
+def wait_variable(app, variable_name):
+    return _MOLT_TK_TKWAIT_VARIABLE(_unwrap_app(app), str(variable_name))
+
+
+def wait_window(app, target):
+    return _MOLT_TK_TKWAIT_WINDOW(_unwrap_app(app), str(target))
+
+
+def wait_visibility(app, target):
+    return _MOLT_TK_TKWAIT_VISIBILITY(_unwrap_app(app), str(target))
+
+
+def bind_register(app, target_name, sequence, callback, add_prefix):
+    if add_prefix not in ("", "+"):
+        raise TypeError("bind add prefix must be '' or '+'")
+    if not callable(callback):
+        raise TypeError("bind callback must be callable")
+    return _MOLT_TK_BIND_CALLBACK_REGISTER(
+        _unwrap_app(app),
+        str(target_name),
+        str(sequence),
+        callback,
+        add_prefix,
+    )
+
+
+def bind_unregister(app, target_name, sequence, command_name):
+    _MOLT_TK_BIND_CALLBACK_UNREGISTER(
+        _unwrap_app(app),
+        str(target_name),
+        str(sequence),
+        str(command_name),
+    )
+    return None
+
+
+def treeview_tag_bind_register(
+    app,
+    treeview_path,
+    tagname,
+    sequence,
+    callback,
+):
+    if not callable(callback):
+        raise TypeError("tag_bind callback must be callable")
+    return _MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_REGISTER(
+        _unwrap_app(app),
+        str(treeview_path),
+        str(tagname),
+        str(sequence),
+        callback,
+    )
+
+
+def treeview_tag_bind_unregister(app, treeview_path, tagname, sequence, command_name):
+    _MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_UNREGISTER(
+        _unwrap_app(app),
+        str(treeview_path),
+        str(tagname),
+        str(sequence),
+        str(command_name),
+    )
+    return None
 
 
 def bind_command(app, name, callback):
@@ -560,6 +658,8 @@ __all__ = [
     "after",
     "after_cancel",
     "after_idle",
+    "bind_register",
+    "bind_unregister",
     "bind_command",
     "call",
     "create",
@@ -586,14 +686,19 @@ __all__ = [
     "setbusywaitinterval",
     "setvar",
     "splitlist",
+    "trace_add",
+    "trace_info",
+    "trace_remove",
     "tk_available",
+    "treeview_tag_bind_register",
+    "treeview_tag_bind_unregister",
     "unsetvar",
+    "wait_variable",
+    "wait_visibility",
+    "wait_window",
     "wantobjects",
 ]
 
 
 def __getattr__(attr):
-    raise AttributeError(
-        f'module "{__name__}" has no attribute "{attr}"; '
-        "only the Phase-0 _tkinter surface is implemented."
-    )
+    raise AttributeError(f'module "{__name__}" has no attribute "{attr}"')

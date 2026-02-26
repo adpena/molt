@@ -50,5 +50,9 @@ class Dialog:
             self.num = result
         return self.num
 
+    def destroy(self):
+        self.num = None
+        return None
+
 
 __all__ = ["Dialog"]

@@ -2653,9 +2653,9 @@ fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
     })? {
         values.push(decode_pg_raw_value(element_type, raw_val)?);
     }
-    let mut cursor = 0usize;
-    let nested = build_pg_array(&dimensions, &values, &mut cursor)?;
-    if cursor != values.len() {
+    let mut values_iter = values.into_iter();
+    let nested = build_pg_array(&dimensions, &mut values_iter)?;
+    if values_iter.next().is_some() {
         return Err(ExecError {
             status: "InternalError",
             message: "Postgres array decode mismatch (extra values)".to_string(),
@@ -2673,8 +2673,7 @@ fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError>
 
 fn build_pg_array(
     dimensions: &[ArrayDimension],
-    values: &[DbRowValue],
-    cursor: &mut usize,
+    values: &mut std::vec::IntoIter<DbRowValue>,
 ) -> Result<Vec<DbRowValue>, ExecError> {
     if dimensions.is_empty() {
         return Ok(Vec::new());
@@ -2689,18 +2688,17 @@ fn build_pg_array(
     let mut out = Vec::with_capacity(len);
     if dimensions.len() == 1 {
         for _ in 0..len {
-            let Some(value) = values.get(*cursor).cloned() else {
+            let Some(value) = values.next() else {
                 return Err(ExecError {
                     status: "InternalError",
                     message: "Postgres array decode mismatch (missing values)".to_string(),
                 });
             };
-            *cursor += 1;
             out.push(value);
         }
     } else {
         for _ in 0..len {
-            let nested = build_pg_array(&dimensions[1..], values, cursor)?;
+            let nested = build_pg_array(&dimensions[1..], values)?;
             out.push(DbRowValue::Array(nested));
         }
     }

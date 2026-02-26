@@ -40,6 +40,11 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = [
+    "--ignore=tests/differential",
+    "--ignore=tests/molt_only",
+    "--ignore=tests/compliance",
+]
 norecursedirs = ["third_party", ".git", ".venv", "dist", "build", "logs"]
 
 [tool.molt.deps]

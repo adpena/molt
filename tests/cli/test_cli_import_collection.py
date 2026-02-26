@@ -78,6 +78,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
+            nested_stdlib_scan_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
@@ -205,6 +206,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
+            nested_stdlib_scan_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)

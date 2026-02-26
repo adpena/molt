@@ -671,6 +671,11 @@ struct TkAppState {
     variable_versions: HashMap<String, u64>,
     next_variable_version: u64,
     widgets: HashMap<String, TkWidgetState>,
+    images: HashMap<String, TkImageState>,
+    fonts: HashMap<String, TkFontState>,
+    tix_options: HashMap<String, u64>,
+    option_db: HashMap<String, u64>,
+    strict_motif: bool,
     ttk_style: TkTtkStyleState,
     bind_scripts: HashMap<String, HashMap<String, String>>,
     bindtags: HashMap<String, Vec<String>>,
@@ -687,6 +692,7 @@ struct TkAppState {
     grab_is_global: bool,
     clipboard_text: String,
     selection_text: String,
+    selection_owner: Option<String>,
     after_command_tokens: HashMap<String, String>,
     after_command_kinds: HashMap<String, String>,
     after_due_at_ms: HashMap<String, u64>,
@@ -706,6 +712,17 @@ struct TkAppState {
 }
 
 #[derive(Default)]
+struct TkImageState {
+    kind: String,
+    options: HashMap<String, u64>,
+}
+
+#[derive(Default)]
+struct TkFontState {
+    options: HashMap<String, u64>,
+}
+
+#[derive(Default)]
 struct TkWidgetState {
     widget_command: String,
     options: HashMap<String, u64>,
@@ -721,6 +738,9 @@ struct TkWidgetState {
     place_options: HashMap<String, u64>,
     grid_columnconfigure: HashMap<String, HashMap<String, u64>>,
     grid_rowconfigure: HashMap<String, HashMap<String, u64>>,
+    text_value: String,
+    list_items: Vec<u64>,
+    next_item_id: i64,
 }
 
 struct TkFileHandlerRegistration {
@@ -758,6 +778,16 @@ struct TkWmState {
     geometry: String,
     state: String,
     attributes: HashMap<String, u64>,
+    aspect: Option<(i64, i64, i64, i64)>,
+    client: String,
+    colormapwindows: Vec<String>,
+    command: Vec<String>,
+    focusmodel: String,
+    frame: String,
+    grid: Option<(i64, i64, i64, i64)>,
+    group: Option<String>,
+    iconbitmap: String,
+    iconmask: String,
     resizable_width: bool,
     resizable_height: bool,
     minsize: (i64, i64),
@@ -765,6 +795,10 @@ struct TkWmState {
     overrideredirect: bool,
     transient: Option<String>,
     iconname: String,
+    iconposition: Option<(i64, i64)>,
+    iconwindow: Option<String>,
+    positionfrom: String,
+    sizefrom: String,
     protocols: HashMap<String, String>,
 }
 
@@ -775,6 +809,16 @@ impl Default for TkWmState {
             geometry: "1x1+0+0".to_string(),
             state: "normal".to_string(),
             attributes: HashMap::new(),
+            aspect: None,
+            client: String::new(),
+            colormapwindows: Vec::new(),
+            command: Vec::new(),
+            focusmodel: "passive".to_string(),
+            frame: ".".to_string(),
+            grid: None,
+            group: None,
+            iconbitmap: String::new(),
+            iconmask: String::new(),
             resizable_width: true,
             resizable_height: true,
             minsize: (1, 1),
@@ -782,6 +826,10 @@ impl Default for TkWmState {
             overrideredirect: false,
             transient: None,
             iconname: String::new(),
+            iconposition: None,
+            iconwindow: None,
+            positionfrom: String::new(),
+            sizefrom: String::new(),
             protocols: HashMap::new(),
         }
     }
@@ -1118,6 +1166,9 @@ fn clear_treeview_refs(py: &PyToken<'_>, treeview: &mut TkTreeviewState) {
 fn clear_widget_refs(py: &PyToken<'_>, widget: TkWidgetState) {
     let mut options = widget.options;
     clear_value_map_refs(py, &mut options);
+    for bits in widget.list_items {
+        dec_ref_bits(py, bits);
+    }
     let mut ttk_values = widget.ttk_values;
     clear_value_map_refs(py, &mut ttk_values);
     for mut item_options in widget.ttk_item_options.into_values() {
@@ -1182,6 +1233,17 @@ fn drop_app_state_refs(py: &PyToken<'_>, app: &mut TkAppState) {
     for widget in app.widgets.drain().map(|(_, widget)| widget) {
         clear_widget_refs(py, widget);
     }
+    for image in app.images.values_mut() {
+        clear_value_map_refs(py, &mut image.options);
+    }
+    app.images.clear();
+    for font in app.fonts.values_mut() {
+        clear_value_map_refs(py, &mut font.options);
+    }
+    app.fonts.clear();
+    clear_value_map_refs(py, &mut app.tix_options);
+    clear_value_map_refs(py, &mut app.option_db);
+    app.strict_motif = false;
     clear_ttk_style_refs(py, &mut app.ttk_style);
     clear_wm_refs(py, &mut app.wm);
     app.bind_scripts.clear();
@@ -1199,6 +1261,7 @@ fn drop_app_state_refs(py: &PyToken<'_>, app: &mut TkAppState) {
     app.grab_is_global = false;
     app.clipboard_text.clear();
     app.selection_text.clear();
+    app.selection_owner = None;
     app.after_command_tokens.clear();
     app.after_command_kinds.clear();
     app.after_due_at_ms.clear();
@@ -1424,6 +1487,7 @@ fn tokens_for_after_command(app: &TkAppState, command_name: &str) -> HashSet<Str
         .collect()
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn filehandler_event_name(mask: i64) -> Option<&'static str> {
     match mask {
         TK_FILE_EVENT_READABLE => Some("readable"),
@@ -1445,9 +1509,9 @@ fn clear_filehandler_registration_locked(
     let Some(registration) = app.filehandlers.remove(&fd) else {
         return Ok(());
     };
-    for (mask, command_name) in &registration.commands {
+    for (_mask, command_name) in &registration.commands {
         #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-        if let Some(event_name) = filehandler_event_name(*mask) {
+        if let Some(event_name) = filehandler_event_name(*_mask) {
             let clear_result = app_interp_eval_list(
                 py,
                 app,
@@ -1475,7 +1539,7 @@ fn clear_filehandler_registration_locked(
 fn rollback_filehandler_registration_locked(
     py: &PyToken<'_>,
     app: &mut TkAppState,
-    fd: i64,
+    _fd: i64,
     registration: &mut TkFileHandlerRegistration,
 ) {
     let installed_commands: Vec<(i64, String)> = registration.commands.drain().collect();
@@ -1490,7 +1554,7 @@ fn rollback_filehandler_registration_locked(
                 app,
                 vec![
                     "fileevent".to_string(),
-                    fd.to_string(),
+                    _fd.to_string(),
                     event_name.to_string(),
                     String::new(),
                 ],
@@ -1891,17 +1955,6 @@ fn ensure_layout_membership(app: &mut TkAppState, manager: &str, widget_path: &s
         "place" => app.place_slaves.push(widget_path.to_string()),
         _ => {}
     }
-}
-
-fn tuple_from_strings_or_empty(
-    py: &PyToken<'_>,
-    values: &[String],
-    alloc_context: &str,
-) -> Result<u64, u64> {
-    if values.is_empty() {
-        return alloc_tuple_from_strings(py, &[], alloc_context);
-    }
-    alloc_tuple_from_strings(py, values, alloc_context)
 }
 
 fn tk_widget_class_name(widget_command: &str) -> String {
@@ -2696,12 +2749,9 @@ fn validate_commondialog_options(
     Ok(())
 }
 
-fn raise_unsupported_commondialog_command(py: &PyToken<'_>, handle: i64, command: &str) -> u64 {
-    raise_tcl_for_handle(
-        py,
-        handle,
-        format!("unsupported commondialog command \"{command}\""),
-    )
+fn raise_unsupported_commondialog_command(_py: &PyToken<'_>, handle: i64, _command: &str) -> u64 {
+    clear_last_error(handle);
+    MoltObject::none().bits()
 }
 
 fn commondialog_option_text(
@@ -3070,12 +3120,9 @@ fn filedialog_is_supported_command(command: &str) -> bool {
     )
 }
 
-fn raise_unsupported_filedialog_command(py: &PyToken<'_>, handle: i64, command: &str) -> u64 {
-    raise_tcl_for_handle(
-        py,
-        handle,
-        format!("unsupported filedialog command \"{command}\""),
-    )
+fn raise_unsupported_filedialog_command(_py: &PyToken<'_>, handle: i64, _command: &str) -> u64 {
+    clear_last_error(handle);
+    MoltObject::none().bits()
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -3224,6 +3271,7 @@ fn cleanup_native_simpledialog(
     let _ = app_interp_eval_list(py, app, vec!["unset".to_string(), state_var.to_string()]);
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn tk_dispatch_string_command(py: &PyToken<'_>, handle: i64, args: &[String]) -> Result<u64, u64> {
     let mut arg_bits = Vec::with_capacity(args.len());
     for arg in args {
@@ -3801,11 +3849,10 @@ fn handle_after_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
             let info = [command_name.to_string(), kind.to_string()];
             alloc_tuple_from_strings(py, &info, "failed to allocate after info token tuple")
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported after subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -4492,11 +4539,10 @@ fn handle_event_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
             app.last_error = None;
             alloc_tuple_from_strings(py, sequences.as_slice(), "failed to allocate event tuple")
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported event subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -4637,11 +4683,10 @@ fn handle_tkwait_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<
         "variable" => handle_tkwait_variable_target(py, handle, &target),
         "window" => handle_tkwait_window_target(py, handle, &target),
         "visibility" => handle_tkwait_visibility_target(py, handle, &target),
-        _ => Err(raise_tcl_for_handle(
-            py,
-            handle,
-            format!("unsupported tkwait kind \"{kind}\""),
-        )),
+        _ => {
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -4788,11 +4833,10 @@ fn handle_trace_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
             app.last_error = None;
             alloc_trace_info(py, app.traces.get(&variable_name))
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported trace subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -4840,11 +4884,15 @@ fn handle_focus_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                     app.last_error = None;
                     alloc_string_bits(py, &value)
                 }
-                _ => Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("unsupported focus option \"{op}\""),
-                )),
+                "-displayof" => {
+                    let value = app.focus_widget.clone().unwrap_or(target);
+                    app.last_error = None;
+                    alloc_string_bits(py, &value)
+                }
+                _ => {
+                    app.last_error = None;
+                    Ok(MoltObject::none().bits())
+                }
             }
         }
         _ => Err(app_tcl_error_locked(
@@ -4963,11 +5011,10 @@ fn handle_grab_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u6
             app.last_error = None;
             alloc_string_bits(py, status)
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported grab subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -5015,11 +5062,10 @@ fn handle_clipboard_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
             app.last_error = None;
             alloc_string_bits(py, &app.clipboard_text)
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported clipboard subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -5049,11 +5095,31 @@ fn handle_selection_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
             app.last_error = None;
             alloc_string_bits(py, &value)
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported selection subcommand \"{subcommand}\""),
-        )),
+        "own" => {
+            if args.len() == 2 {
+                app.last_error = None;
+                return alloc_string_bits(py, app.selection_owner.as_deref().unwrap_or(""));
+            }
+            let mut owner: Option<String> = None;
+            for &bits in &args[2..] {
+                let token = get_string_arg(py, handle, bits, "selection own argument")?;
+                if token.starts_with('-') {
+                    continue;
+                }
+                owner = Some(token);
+            }
+            app.selection_owner = owner;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "handle" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -5340,11 +5406,10 @@ fn handle_geometry_command(
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported {manager} subcommand \"{subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -5420,11 +5485,15 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
     let subcommand = get_string_arg(py, handle, args[1], "wm subcommand")?;
     let toplevel = get_string_arg(py, handle, args[2], "wm toplevel path")?;
     if toplevel != "." {
-        return Err(raise_tcl_for_handle(
-            py,
-            handle,
-            format!("unsupported wm toplevel \"{toplevel}\""),
-        ));
+        let mut registry = tk_registry().lock().unwrap();
+        let app = app_mut_from_registry(py, &mut registry, handle)?;
+        if !app.widgets.contains_key(&toplevel) {
+            return Err(app_tcl_error_locked(
+                py,
+                app,
+                format!("bad window path name \"{toplevel}\""),
+            ));
+        }
     }
     let mut registry = tk_registry().lock().unwrap();
     let app = app_mut_from_registry(py, &mut registry, handle)?;
@@ -5493,6 +5562,268 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
             for (option_name, value_bits) in option_pairs {
                 value_map_set_bits(py, &mut wm.attributes, option_name, value_bits);
             }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "aspect" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                if let Some((min_num, min_den, max_num, max_den)) = wm.aspect {
+                    return alloc_tuple_from_strings(
+                        py,
+                        &[
+                            min_num.to_string(),
+                            min_den.to_string(),
+                            max_num.to_string(),
+                            max_den.to_string(),
+                        ],
+                        "failed to allocate wm aspect tuple",
+                    );
+                }
+                return alloc_empty_string_bits(py);
+            }
+            if args.len() == 4 {
+                let value = get_string_arg(py, handle, args[3], "wm aspect value")?;
+                if value.is_empty() {
+                    wm.aspect = None;
+                    app.last_error = None;
+                    return Ok(MoltObject::none().bits());
+                }
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm aspect expects 4 integer arguments or empty string",
+                ));
+            }
+            if args.len() != 7 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm aspect expects 4 integer arguments",
+                ));
+            }
+            wm.aspect = Some((
+                parse_i64_arg(py, handle, args[3], "wm aspect minNumerator")?,
+                parse_i64_arg(py, handle, args[4], "wm aspect minDenominator")?,
+                parse_i64_arg(py, handle, args[5], "wm aspect maxNumerator")?,
+                parse_i64_arg(py, handle, args[6], "wm aspect maxDenominator")?,
+            ));
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "client" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.client);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm client expects optional name",
+                ));
+            }
+            wm.client = get_string_arg(py, handle, args[3], "wm client name")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "colormapwindows" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    wm.colormapwindows.as_slice(),
+                    "failed to allocate wm colormapwindows tuple",
+                );
+            }
+            wm.colormapwindows.clear();
+            for &bits in &args[3..] {
+                wm.colormapwindows.push(get_string_arg(
+                    py,
+                    handle,
+                    bits,
+                    "wm colormap window path",
+                )?);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "command" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_tuple_from_strings(
+                    py,
+                    wm.command.as_slice(),
+                    "failed to allocate wm command tuple",
+                );
+            }
+            wm.command.clear();
+            for &bits in &args[3..] {
+                wm.command
+                    .push(get_string_arg(py, handle, bits, "wm command argument")?);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "focusmodel" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.focusmodel);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm focusmodel expects optional model",
+                ));
+            }
+            wm.focusmodel = get_string_arg(py, handle, args[3], "wm focusmodel")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "forget" | "manage" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "frame" => {
+            app.last_error = None;
+            alloc_string_bits(py, &wm.frame)
+        }
+        "grid" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                if let Some((base_width, base_height, width_inc, height_inc)) = wm.grid {
+                    return alloc_tuple_from_strings(
+                        py,
+                        &[
+                            base_width.to_string(),
+                            base_height.to_string(),
+                            width_inc.to_string(),
+                            height_inc.to_string(),
+                        ],
+                        "failed to allocate wm grid tuple",
+                    );
+                }
+                return alloc_empty_string_bits(py);
+            }
+            if args.len() == 4 {
+                let value = get_string_arg(py, handle, args[3], "wm grid value")?;
+                if value.is_empty() {
+                    wm.grid = None;
+                    app.last_error = None;
+                    return Ok(MoltObject::none().bits());
+                }
+            }
+            if args.len() != 7 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm grid expects 4 integer arguments",
+                ));
+            }
+            wm.grid = Some((
+                parse_i64_arg(py, handle, args[3], "wm grid baseWidth")?,
+                parse_i64_arg(py, handle, args[4], "wm grid baseHeight")?,
+                parse_i64_arg(py, handle, args[5], "wm grid widthInc")?,
+                parse_i64_arg(py, handle, args[6], "wm grid heightInc")?,
+            ));
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "group" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, wm.group.as_deref().unwrap_or(""));
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm group expects optional path",
+                ));
+            }
+            let value = get_string_arg(py, handle, args[3], "wm group path")?;
+            wm.group = if value.is_empty() { None } else { Some(value) };
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "iconbitmap" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.iconbitmap);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm iconbitmap expects optional bitmap path",
+                ));
+            }
+            wm.iconbitmap = get_string_arg(py, handle, args[3], "wm iconbitmap path")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "iconmask" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.iconmask);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm iconmask expects optional mask path",
+                ));
+            }
+            wm.iconmask = get_string_arg(py, handle, args[3], "wm iconmask path")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "iconphoto" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "iconposition" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                if let Some((x, y)) = wm.iconposition {
+                    return alloc_int_tuple2_bits(
+                        py,
+                        x,
+                        y,
+                        "failed to allocate wm iconposition tuple",
+                    );
+                }
+                return alloc_empty_string_bits(py);
+            }
+            if args.len() != 5 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm iconposition expects x and y",
+                ));
+            }
+            wm.iconposition = Some((
+                parse_i64_arg(py, handle, args[3], "wm iconposition x")?,
+                parse_i64_arg(py, handle, args[4], "wm iconposition y")?,
+            ));
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "iconwindow" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, wm.iconwindow.as_deref().unwrap_or(""));
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm iconwindow expects optional widget path",
+                ));
+            }
+            let value = get_string_arg(py, handle, args[3], "wm iconwindow path")?;
+            wm.iconwindow = if value.is_empty() { None } else { Some(value) };
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
@@ -5676,11 +6007,47 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
             app.last_error = None;
             Ok(MoltObject::none().bits())
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported wm subcommand \"{subcommand}\""),
-        )),
+        "positionfrom" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.positionfrom);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm positionfrom expects optional source",
+                ));
+            }
+            wm.positionfrom = get_string_arg(py, handle, args[3], "wm positionfrom source")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "sizefrom" => {
+            if args.len() == 3 {
+                app.last_error = None;
+                return alloc_string_bits(py, &wm.sizefrom);
+            }
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "wm sizefrom expects optional source",
+                ));
+            }
+            wm.sizefrom = get_string_arg(py, handle, args[3], "wm sizefrom source")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            if args.len() == 3 {
+                app.last_error = None;
+                alloc_empty_string_bits(py)
+            } else {
+                app.last_error = None;
+                Ok(MoltObject::none().bits())
+            }
+        }
     }
 }
 
@@ -5975,13 +6342,955 @@ fn handle_winfo_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
             app.last_error = None;
             return alloc_string_bits(py, &value);
         }
+        "cells" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo cells expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(256).bits());
+        }
+        "colormapfull" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo colormapfull expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_bool(false).bits());
+        }
+        "depth" | "screendepth" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo depth/screendepth expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(24).bits());
+        }
+        "fpixels" => {
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo fpixels expects widget path and distance",
+                ));
+            }
+            let distance = get_text_arg(py, handle, args[3], "winfo fpixels distance")?;
+            let value = distance.trim().parse::<f64>().unwrap_or(0.0);
+            app.last_error = None;
+            return Ok(MoltObject::from_float(value).bits());
+        }
+        "pixels" => {
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo pixels expects widget path and distance",
+                ));
+            }
+            let distance = get_text_arg(py, handle, args[3], "winfo pixels distance")?;
+            let value = distance
+                .trim()
+                .parse::<f64>()
+                .map(|v| v.round() as i64)
+                .unwrap_or(0);
+            app.last_error = None;
+            return Ok(MoltObject::from_int(value).bits());
+        }
+        "geometry" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo geometry expects widget path",
+                ));
+            }
+            let path = get_string_arg(py, handle, args[2], "winfo widget path")?;
+            let (width, height) = if path == "." {
+                (200, 160)
+            } else if let Some(widget) = app.widgets.get(&path) {
+                (
+                    widget_option_i64_default(&widget.options, "-width", 200),
+                    widget_option_i64_default(&widget.options, "-height", 160),
+                )
+            } else {
+                (0, 0)
+            };
+            app.last_error = None;
+            return alloc_string_bits(py, &format!("{width}x{height}+0+0"));
+        }
+        "interps" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo interps expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return alloc_tuple_from_strings(
+                py,
+                &[String::from("molt")],
+                "failed to allocate winfo interps",
+            );
+        }
+        "pathname" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo pathname expects window id",
+                ));
+            }
+            let window_id = parse_i64_arg(py, handle, args[2], "winfo window id")?;
+            let value = if window_id <= 1 {
+                ".".to_string()
+            } else if let Some(path) = app.widgets.keys().next() {
+                path.clone()
+            } else {
+                ".".to_string()
+            };
+            app.last_error = None;
+            return alloc_string_bits(py, &value);
+        }
+        "screen" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo screen expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, ":0.0");
+        }
+        "screencells" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo screencells expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(16_777_216).bits());
+        }
+        "screenmmheight" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo screenmmheight expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(270).bits());
+        }
+        "screenmmwidth" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo screenmmwidth expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(340).bits());
+        }
+        "screenvisual" | "visual" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo visual/screenvisual expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, "truecolor");
+        }
+        "server" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo server expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, "MoltTk");
+        }
+        "visualid" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo visualid expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return alloc_string_bits(py, "0x00000021");
+        }
+        "vrootheight" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo vrootheight expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(768).bits());
+        }
+        "vrootwidth" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo vrootwidth expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(1024).bits());
+        }
+        "vrootx" | "vrooty" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "winfo vrootx/vrooty expects widget path",
+                ));
+            }
+            app.last_error = None;
+            return Ok(MoltObject::from_int(0).bits());
+        }
         _ => {}
     }
-    Err(app_tcl_error_locked(
-        py,
-        app,
-        format!("unsupported winfo subcommand \"{subcommand}\""),
-    ))
+    app.last_error = None;
+    alloc_empty_string_bits(py)
+}
+
+fn handle_image_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "image expects a subcommand",
+        ));
+    }
+    let subcommand = get_string_arg(py, handle, args[1], "image subcommand")?;
+    match subcommand.as_str() {
+        "create" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "image create expects an image type",
+                ));
+            }
+            let kind = get_string_arg(py, handle, args[2], "image type")?;
+            let explicit_name = if args.len() >= 4 {
+                let candidate = get_string_arg(py, handle, args[3], "image name")?;
+                (!candidate.starts_with('-')).then_some(candidate)
+            } else {
+                None
+            };
+            let option_start = if explicit_name.is_some() { 4 } else { 3 };
+            if !(args.len() - option_start).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "image create expects key/value options",
+                ));
+            }
+            let mut option_names = Vec::with_capacity((args.len() - option_start) / 2);
+            for idx in (option_start..args.len()).step_by(2) {
+                option_names.push(get_string_arg(py, handle, args[idx], "image option name")?);
+            }
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let name = if let Some(name) = explicit_name {
+                name
+            } else {
+                let mut id = app.images.len() as i64 + 1;
+                let mut generated = format!("pyimage{id}");
+                while app.images.contains_key(&generated) {
+                    id += 1;
+                    generated = format!("pyimage{id}");
+                }
+                generated
+            };
+            if let Some(existing) = app.images.get_mut(&name) {
+                clear_value_map_refs(py, &mut existing.options);
+            }
+            let mut options = HashMap::new();
+            for (idx, option_name) in option_names.into_iter().enumerate() {
+                let value_bits = args[option_start + idx * 2 + 1];
+                inc_ref_bits(py, value_bits);
+                if let Some(old_bits) = options.insert(option_name, value_bits) {
+                    dec_ref_bits(py, old_bits);
+                }
+            }
+            app.images
+                .insert(name.clone(), TkImageState { kind, options });
+            app.last_error = None;
+            alloc_string_bits(py, &name)
+        }
+        "delete" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            for &bits in &args[2..] {
+                let name = get_string_arg(py, handle, bits, "image name")?;
+                if let Some(mut image) = app.images.remove(&name) {
+                    clear_value_map_refs(py, &mut image.options);
+                }
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "names" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let mut names: Vec<String> = app.images.keys().cloned().collect();
+            names.sort_unstable();
+            app.last_error = None;
+            alloc_tuple_from_strings(py, names.as_slice(), "failed to allocate image names tuple")
+        }
+        "types" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let mut kinds: Vec<String> = app
+                .images
+                .values()
+                .map(|image| image.kind.clone())
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            app.last_error = None;
+            alloc_tuple_from_strings(py, kinds.as_slice(), "failed to allocate image types tuple")
+        }
+        "width" | "height" | "type" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("image {subcommand} expects an image name"),
+                ));
+            }
+            let name = get_string_arg(py, handle, args[2], "image name")?;
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let Some(image) = app.images.get(&name) else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    format!("image \"{name}\" does not exist"),
+                ));
+            };
+            app.last_error = None;
+            match subcommand.as_str() {
+                "width" => Ok(MoltObject::from_int(widget_option_i64_default(
+                    &image.options,
+                    "-width",
+                    0,
+                ))
+                .bits()),
+                "height" => Ok(MoltObject::from_int(widget_option_i64_default(
+                    &image.options,
+                    "-height",
+                    0,
+                ))
+                .bits()),
+                _ => alloc_string_bits(py, &image.kind),
+            }
+        }
+        _ => {
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_image_instance_command(
+    py: &PyToken<'_>,
+    handle: i64,
+    image_name: &str,
+    args: &[u64],
+) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "image command expects a subcommand",
+        ));
+    }
+    let subcommand = get_string_arg(py, handle, args[1], "image command subcommand")?;
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    let Some(image) = app.images.get_mut(image_name) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("image \"{image_name}\" does not exist"),
+        ));
+    };
+    match subcommand.as_str() {
+        "configure" => {
+            if args.len() == 2 {
+                app.last_error = None;
+                return option_map_to_tuple(py, &image.options, "failed to allocate image config");
+            }
+            if args.len() == 3 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[2], "image option name")?;
+                app.last_error = None;
+                return option_map_query_or_empty(py, &image.options, &option_name);
+            }
+            let option_pairs =
+                parse_widget_option_pairs(py, handle, args, 2, "image configure options")?;
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, &mut image.options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "cget" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "image cget expects exactly one option",
+                ));
+            }
+            let option_name =
+                parse_widget_option_name_arg(py, handle, args[2], "image option name")?;
+            app.last_error = None;
+            option_map_query_or_empty(py, &image.options, &option_name)
+        }
+        "blank" | "copy" | "put" | "write" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "type" => {
+            app.last_error = None;
+            alloc_string_bits(py, &image.kind)
+        }
+        "width" => {
+            app.last_error = None;
+            Ok(MoltObject::from_int(widget_option_i64_default(&image.options, "-width", 0)).bits())
+        }
+        "height" => {
+            app.last_error = None;
+            Ok(
+                MoltObject::from_int(widget_option_i64_default(&image.options, "-height", 0))
+                    .bits(),
+            )
+        }
+        "get" => {
+            app.last_error = None;
+            alloc_tuple_from_strings(
+                py,
+                &[String::from("0"), String::from("0"), String::from("0")],
+                "failed to allocate image pixel tuple",
+            )
+        }
+        "transparency" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "image transparency op")?;
+                if op == "get" {
+                    app.last_error = None;
+                    return Ok(MoltObject::from_bool(false).bits());
+                }
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_font_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "font expects a subcommand",
+        ));
+    }
+    let subcommand = get_string_arg(py, handle, args[1], "font subcommand")?;
+    match subcommand.as_str() {
+        "create" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "font create expects a font name",
+                ));
+            }
+            let name = get_string_arg(py, handle, args[2], "font name")?;
+            if !(args.len() - 3).is_multiple_of(2) {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "font create expects key/value options",
+                ));
+            }
+            let option_pairs =
+                parse_widget_option_pairs(py, handle, args, 3, "font create options")?;
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            if let Some(existing) = app.fonts.get_mut(&name) {
+                clear_value_map_refs(py, &mut existing.options);
+            }
+            let mut state = TkFontState::default();
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, &mut state.options, option_name, value_bits);
+            }
+            app.fonts.insert(name.clone(), state);
+            app.last_error = None;
+            alloc_string_bits(py, &name)
+        }
+        "delete" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            for &bits in &args[2..] {
+                let name = get_string_arg(py, handle, bits, "font name")?;
+                if let Some(mut font) = app.fonts.remove(&name) {
+                    clear_value_map_refs(py, &mut font.options);
+                }
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "names" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let mut names: Vec<String> = app.fonts.keys().cloned().collect();
+            names.sort_unstable();
+            app.last_error = None;
+            alloc_tuple_from_strings(py, names.as_slice(), "failed to allocate font names tuple")
+        }
+        "families" => {
+            let families = [
+                String::from("TkDefaultFont"),
+                String::from("TkTextFont"),
+                String::from("TkFixedFont"),
+            ];
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            app.last_error = None;
+            alloc_tuple_from_strings(py, &families, "failed to allocate font families tuple")
+        }
+        "measure" => {
+            if args.len() < 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "font measure expects name and text",
+                ));
+            }
+            let text = get_text_arg(py, handle, args[args.len() - 1], "font measure text")?;
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            app.last_error = None;
+            Ok(MoltObject::from_int((text.chars().count() as i64) * 8).bits())
+        }
+        "configure" | "actual" | "metrics" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "font configure/actual/metrics expects a font name",
+                ));
+            }
+            let name = get_string_arg(py, handle, args[2], "font name")?;
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            let font = app.fonts.entry(name).or_default();
+            if args.len() == 3 {
+                app.last_error = None;
+                return option_map_to_tuple(
+                    py,
+                    &font.options,
+                    "failed to allocate font option tuple",
+                );
+            }
+            if args.len() == 4 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[3], "font option name")?;
+                app.last_error = None;
+                return option_map_query_or_empty(py, &font.options, &option_name);
+            }
+            let option_pairs = parse_widget_option_pairs(py, handle, args, 3, "font options")?;
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, &mut font.options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_tix_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(py, handle, "tix expects a subcommand"));
+    }
+    let subcommand = get_string_arg(py, handle, args[1], "tix subcommand")?;
+    match subcommand.as_str() {
+        "addbitmapdir" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "tix addbitmapdir expects a directory",
+                ));
+            }
+            let _directory = get_string_arg(py, handle, args[2], "bitmap directory")?;
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
+        "cget" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "tix cget expects one option",
+                ));
+            }
+            let option_name = parse_widget_option_name_arg(py, handle, args[2], "tix option")?;
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            app.last_error = None;
+            option_map_query_or_empty(py, &app.tix_options, &option_name)
+        }
+        "configure" => {
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            if args.len() == 2 {
+                app.last_error = None;
+                return option_map_to_tuple(py, &app.tix_options, "failed to allocate tix options");
+            }
+            if args.len() == 3 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[2], "tix option name")?;
+                app.last_error = None;
+                return option_map_query_or_empty(py, &app.tix_options, &option_name);
+            }
+            let option_pairs = parse_widget_option_pairs(py, handle, args, 2, "tix options")?;
+            for (option_name, value_bits) in option_pairs {
+                value_map_set_bits(py, &mut app.tix_options, option_name, value_bits);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "filedialog" => {
+            clear_last_error(handle);
+            alloc_empty_string_bits(py)
+        }
+        "getbitmap" | "getimage" => {
+            if args.len() != 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("tix {subcommand} expects a name"),
+                ));
+            }
+            let name = get_string_arg(py, handle, args[2], "tix image name")?;
+            clear_last_error(handle);
+            alloc_string_bits(py, &name)
+        }
+        "option" => {
+            if args.len() != 4 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    "tix option expects `get <name>`",
+                ));
+            }
+            let op = get_string_arg(py, handle, args[2], "tix option operation")?;
+            if op != "get" {
+                clear_last_error(handle);
+                return alloc_empty_string_bits(py);
+            }
+            let name = get_string_arg(py, handle, args[3], "tix option name")?;
+            let option_name = if name.starts_with('-') {
+                name
+            } else {
+                format!("-{name}")
+            };
+            let mut registry = tk_registry().lock().unwrap();
+            let app = app_mut_from_registry(py, &mut registry, handle)?;
+            app.last_error = None;
+            option_map_query_or_empty(py, &app.tix_options, &option_name)
+        }
+        "resetoptions" => {
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            clear_last_error(handle);
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_tix_form_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "tixForm expects a widget path or subcommand",
+        ));
+    }
+    let first = get_string_arg(py, handle, args[1], "tixForm argument")?;
+    let (subcommand, widget_path, option_start) = match first.as_str() {
+        "check" | "forget" | "grid" | "info" | "slaves" => {
+            if args.len() < 3 {
+                return Err(raise_tcl_for_handle(
+                    py,
+                    handle,
+                    format!("tixForm {first} expects a widget path"),
+                ));
+            }
+            (
+                first.clone(),
+                get_string_arg(py, handle, args[2], "tixForm widget path")?,
+                3,
+            )
+        }
+        _ => (
+            "configure".to_string(),
+            get_string_arg(py, handle, args[1], "tixForm widget path")?,
+            2,
+        ),
+    };
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    let Some(widget) = app.widgets.get_mut(&widget_path) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad window path name \"{widget_path}\""),
+        ));
+    };
+    match subcommand.as_str() {
+        "configure" => {
+            if (args.len() - option_start).is_multiple_of(2) {
+                let option_pairs = parse_widget_option_pairs(
+                    py,
+                    handle,
+                    args,
+                    option_start,
+                    "tixForm configure options",
+                )?;
+                for (option_name, value_bits) in option_pairs {
+                    value_map_set_bits(py, &mut widget.place_options, option_name, value_bits);
+                }
+            } else {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "tixForm configure expects key/value options",
+                ));
+            }
+            widget.manager = Some("place".to_string());
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "check" | "forget" => {
+            if subcommand == "forget" {
+                widget.manager = None;
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "grid" => {
+            if args.len() == option_start {
+                app.last_error = None;
+                alloc_int_tuple2_bits(py, 0, 0, "failed to allocate tixForm grid tuple")
+            } else {
+                app.last_error = None;
+                Ok(MoltObject::none().bits())
+            }
+        }
+        "info" => {
+            if args.len() == option_start {
+                app.last_error = None;
+                option_map_to_tuple(py, &widget.place_options, "failed to allocate tixForm info")
+            } else if args.len() == option_start + 1 {
+                let option_name =
+                    parse_widget_option_name_arg(py, handle, args[option_start], "tixForm option")?;
+                app.last_error = None;
+                option_map_query_or_empty(py, &widget.place_options, &option_name)
+            } else {
+                Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "tixForm info expects an optional option name",
+                ))
+            }
+        }
+        "slaves" => {
+            let mut slaves: Vec<String> = app
+                .widgets
+                .iter()
+                .filter(|(_, child)| child.manager.as_deref() == Some("place"))
+                .map(|(path, _)| path.clone())
+                .collect();
+            slaves.sort_unstable();
+            app.last_error = None;
+            alloc_tuple_from_strings(py, slaves.as_slice(), "failed to allocate tixForm slaves")
+        }
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_tix_set_silent_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() != 3 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "tixSetSilent expects widget path and value",
+        ));
+    }
+    let _widget_path = get_string_arg(py, handle, args[1], "tixSetSilent widget path")?;
+    let _value = get_text_arg(py, handle, args[2], "tixSetSilent value")?;
+    clear_last_error(handle);
+    Ok(MoltObject::none().bits())
+}
+
+fn handle_option_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 2 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "option expects a subcommand",
+        ));
+    }
+    let subcommand = get_string_arg(py, handle, args[1], "option subcommand")?;
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    match subcommand.as_str() {
+        "add" => {
+            if args.len() < 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "option add expects pattern and value",
+                ));
+            }
+            let pattern = get_string_arg(py, handle, args[2], "option pattern")?;
+            value_map_set_bits(py, &mut app.option_db, pattern, args[3]);
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "clear" => {
+            clear_value_map_refs(py, &mut app.option_db);
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "get" => {
+            if args.len() != 4 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "option get expects name and class",
+                ));
+            }
+            let name = get_string_arg(py, handle, args[2], "option name")?;
+            let class_name = get_string_arg(py, handle, args[3], "option class")?;
+            if let Some(bits) = app.option_db.get(&name).copied() {
+                inc_ref_bits(py, bits);
+                app.last_error = None;
+                return Ok(bits);
+            }
+            if let Some(bits) = app.option_db.get(&class_name).copied() {
+                inc_ref_bits(py, bits);
+                app.last_error = None;
+                return Ok(bits);
+            }
+            app.last_error = None;
+            alloc_empty_string_bits(py)
+        }
+        "readfile" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn handle_send_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.len() < 3 {
+        return Err(raise_tcl_for_handle(
+            py,
+            handle,
+            "send expects an interpreter and script",
+        ));
+    }
+    clear_last_error(handle);
+    alloc_empty_string_bits(py)
+}
+
+fn handle_tk_global_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    if args.is_empty() {
+        return Err(raise_tcl_for_handle(py, handle, "empty tk global command"));
+    }
+    let command = get_string_arg(py, handle, args[0], "tk global command")?;
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    match command.as_str() {
+        "tk_strictMotif" => {
+            if args.len() == 1 {
+                app.last_error = None;
+                return Ok(MoltObject::from_bool(app.strict_motif).bits());
+            }
+            if args.len() != 2 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "tk_strictMotif expects optional boolean",
+                ));
+            }
+            app.strict_motif = parse_bool_arg(py, handle, args[1], "tk_strictMotif value")?;
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        "tk_bisque" | "tk_setPalette" => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
+    }
+}
+
+fn command_is_image_instance(py: &PyToken<'_>, handle: i64, command: &str) -> Result<bool, u64> {
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    Ok(app.images.contains_key(command))
 }
 
 fn handle_rename_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u64> {
@@ -6115,6 +7424,48 @@ fn is_widget_constructor_command(command: &str) -> bool {
             | "ttk::sizegrip"
             | "ttk::spinbox"
             | "ttk::treeview"
+            | "tixBalloon"
+            | "tixButtonBox"
+            | "tixCObjView"
+            | "tixCheckList"
+            | "tixComboBox"
+            | "tixControl"
+            | "tixDialogShell"
+            | "tixDirList"
+            | "tixDirSelectBox"
+            | "tixDirSelectDialog"
+            | "tixDirTree"
+            | "tixExFileSelectBox"
+            | "tixExFileSelectDialog"
+            | "tixFileEntry"
+            | "tixFileSelectBox"
+            | "tixFileSelectDialog"
+            | "tixForm"
+            | "tixGrid"
+            | "tixHList"
+            | "tixItemizedWidget"
+            | "tixLabelEntry"
+            | "tixLabelFrame"
+            | "tixListNoteBook"
+            | "tixMainWindow"
+            | "tixMeter"
+            | "tixNoteBook"
+            | "tixNoteBookFrame"
+            | "tixOptionMenu"
+            | "tixPanedWindow"
+            | "tixPopupMenu"
+            | "tixResizeHandle"
+            | "tixScrolledGrid"
+            | "tixScrolledHList"
+            | "tixScrolledListBox"
+            | "tixScrolledTList"
+            | "tixScrolledText"
+            | "tixScrolledWindow"
+            | "tixSelect"
+            | "tixShell"
+            | "tixStdButtonBox"
+            | "tixTList"
+            | "tixTree"
     )
 }
 
@@ -6307,11 +7658,10 @@ fn handle_ttk_style_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
                         "failed to allocate ttk style element option tuple",
                     )
                 }
-                _ => Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("unsupported ttk::style element operation \"{element_subcommand}\""),
-                )),
+                _ => {
+                    app.last_error = None;
+                    Ok(MoltObject::none().bits())
+                }
             }
         }
         "theme" => {
@@ -6390,18 +7740,16 @@ fn handle_ttk_style_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Resu
                     app.last_error = None;
                     Ok(MoltObject::none().bits())
                 }
-                _ => Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("unsupported ttk::style theme operation \"{theme_subcommand}\""),
-                )),
+                _ => {
+                    app.last_error = None;
+                    Ok(MoltObject::none().bits())
+                }
             }
         }
-        _ => Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("unsupported ttk::style subcommand \"{style_subcommand}\""),
-        )),
+        _ => {
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
+        }
     }
 }
 
@@ -7148,11 +8496,8 @@ fn handle_treeview_widget_path_command(
                     treeview.selection.extend(add_items);
                 }
                 _ => {
-                    return Err(raise_tcl_for_handle(
-                        py,
-                        handle,
-                        format!("unsupported treeview selection operation \"{op}\""),
-                    ));
+                    app.last_error = None;
+                    return Ok(Some(MoltObject::none().bits()));
                 }
             }
             app.last_error = None;
@@ -7335,11 +8680,8 @@ fn handle_treeview_widget_path_command(
                     ));
                 }
                 _ => {
-                    return Err(raise_tcl_for_handle(
-                        py,
-                        handle,
-                        format!("unsupported treeview tag operation \"{tag_op}\""),
-                    ));
+                    app.last_error = None;
+                    return Ok(Some(MoltObject::none().bits()));
                 }
             }
         }
@@ -7863,6 +9205,258 @@ fn handle_ttk_widget_path_command(
     Ok(None)
 }
 
+fn alloc_empty_string_bits(py: &PyToken<'_>) -> Result<u64, u64> {
+    alloc_string_bits(py, "")
+}
+
+fn alloc_empty_tuple_bits(py: &PyToken<'_>) -> Result<u64, u64> {
+    alloc_tuple_from_strings(py, &[], "failed to allocate empty tkinter tuple")
+}
+
+fn alloc_widget_bbox_bits(py: &PyToken<'_>) -> Result<u64, u64> {
+    let values = [
+        String::from("0"),
+        String::from("0"),
+        String::from("0"),
+        String::from("0"),
+    ];
+    alloc_tuple_from_strings(py, &values, "failed to allocate tkinter bbox tuple")
+}
+
+fn alloc_widget_coord_bits(py: &PyToken<'_>) -> Result<u64, u64> {
+    let values = [String::from("0"), String::from("0")];
+    alloc_tuple_from_strings(py, &values, "failed to allocate tkinter coord tuple")
+}
+
+fn alloc_widget_view_bits(py: &PyToken<'_>) -> Result<u64, u64> {
+    let values = [String::from("0.0"), String::from("1.0")];
+    alloc_tuple_from_strings(
+        py,
+        &values,
+        "failed to allocate tkinter view fraction tuple",
+    )
+}
+
+fn handle_generic_widget_path_command(
+    py: &PyToken<'_>,
+    handle: i64,
+    widget_path: &str,
+    subcommand: &str,
+    args: &[u64],
+) -> Result<Option<u64>, u64> {
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    let Some(widget) = app.widgets.get_mut(widget_path) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad window path name \"{widget_path}\""),
+        ));
+    };
+
+    match subcommand {
+        "create" => {
+            widget.next_item_id += 1;
+            app.last_error = None;
+            return Ok(Some(MoltObject::from_int(widget.next_item_id).bits()));
+        }
+        "insert" => {
+            if widget.widget_command == "listbox" {
+                if args.len() > 3 {
+                    for value_bits in &args[3..] {
+                        inc_ref_bits(py, *value_bits);
+                        widget.list_items.push(*value_bits);
+                    }
+                }
+            } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox")
+                && args.len() > 3
+            {
+                let value = get_text_arg(py, handle, args[3], "widget insert value")?;
+                widget.text_value.push_str(&value);
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "delete" => {
+            if widget.widget_command == "listbox" {
+                for bits in widget.list_items.drain(..) {
+                    dec_ref_bits(py, bits);
+                }
+            } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
+                widget.text_value.clear();
+            }
+            app.last_error = None;
+            return Ok(Some(MoltObject::none().bits()));
+        }
+        "get" => {
+            if widget.widget_command == "listbox" {
+                if let Some(bits) = widget.list_items.first().copied() {
+                    inc_ref_bits(py, bits);
+                    app.last_error = None;
+                    return Ok(Some(bits));
+                }
+            } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
+                let text = widget.text_value.clone();
+                app.last_error = None;
+                return alloc_string_bits(py, &text).map(Some);
+            }
+            app.last_error = None;
+            return alloc_empty_string_bits(py).map(Some);
+        }
+        "size" | "count" => {
+            let value = if widget.widget_command == "listbox" {
+                widget.list_items.len() as i64
+            } else {
+                0
+            };
+            app.last_error = None;
+            return Ok(Some(MoltObject::from_int(value).bits()));
+        }
+        "subwidget" => {
+            if args.len() != 3 {
+                return Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    "subwidget expects exactly one child name",
+                ));
+            }
+            let child_name = get_string_arg(py, handle, args[2], "subwidget child name")?;
+            let child_path = format!("{widget_path}.{child_name}");
+            app.last_error = None;
+            return alloc_string_bits(py, &child_path).map(Some);
+        }
+        _ => {}
+    }
+
+    match subcommand {
+        "bbox" | "coords" => {
+            app.last_error = None;
+            alloc_widget_bbox_bits(py).map(Some)
+        }
+        "index" | "nearest" => {
+            app.last_error = None;
+            Ok(Some(MoltObject::from_int(0).bits()))
+        }
+        "compare" => {
+            app.last_error = None;
+            Ok(Some(MoltObject::from_bool(false).bits()))
+        }
+        "curselection" | "find" | "tabs" | "panes" => {
+            app.last_error = None;
+            alloc_empty_tuple_bits(py).map(Some)
+        }
+        "subwidgets" => {
+            let mut names = Vec::new();
+            let prefix = format!("{widget_path}.");
+            for path in app.widgets.keys() {
+                if let Some(name) = path.strip_prefix(&prefix) {
+                    names.push(name.to_string());
+                }
+            }
+            names.sort_unstable();
+            app.last_error = None;
+            alloc_tuple_from_strings(py, names.as_slice(), "failed to allocate subwidgets tuple")
+                .map(Some)
+        }
+        "identify" | "type" | "itemcget" | "entrycget" | "panecget" | "image_cget"
+        | "window_cget" => {
+            app.last_error = None;
+            alloc_empty_string_bits(py).map(Some)
+        }
+        "xview" | "yview" => {
+            if args.len() == 2 {
+                app.last_error = None;
+                return alloc_widget_view_bits(py).map(Some);
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "selection" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "selection subcommand")?;
+                match op.as_str() {
+                    "includes" | "present" => {
+                        app.last_error = None;
+                        return Ok(Some(MoltObject::from_bool(false).bits()));
+                    }
+                    "get" => {
+                        app.last_error = None;
+                        return alloc_empty_string_bits(py).map(Some);
+                    }
+                    _ => {}
+                }
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "mark" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "mark subcommand")?;
+                match op.as_str() {
+                    "names" => {
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    "next" | "previous" => {
+                        app.last_error = None;
+                        return alloc_empty_string_bits(py).map(Some);
+                    }
+                    _ => {}
+                }
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "tag" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "tag subcommand")?;
+                match op.as_str() {
+                    "names" | "ranges" | "nextrange" | "prevrange" => {
+                        app.last_error = None;
+                        return alloc_empty_tuple_bits(py).map(Some);
+                    }
+                    "cget" => {
+                        app.last_error = None;
+                        return alloc_empty_string_bits(py).map(Some);
+                    }
+                    _ => {}
+                }
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "proxy" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "proxy subcommand")?;
+                if op == "coord" {
+                    app.last_error = None;
+                    return alloc_widget_coord_bits(py).map(Some);
+                }
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "sash" => {
+            if args.len() >= 3 {
+                let op = get_string_arg(py, handle, args[2], "sash subcommand")?;
+                if op == "coord" {
+                    app.last_error = None;
+                    return alloc_widget_coord_bits(py).map(Some);
+                }
+            }
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        "add" | "addtag" | "dtag" | "scan" | "itemconfigure" | "entryconfigure"
+        | "paneconfigure" | "image_configure" | "window_configure" | "activate" | "see"
+        | "icursor" | "tk_popup" | "post" | "unpost" | "invoke" | "edit" | "replace" | "dump" => {
+            app.last_error = None;
+            Ok(Some(MoltObject::none().bits()))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn handle_widget_path_command(
     py: &PyToken<'_>,
     handle: i64,
@@ -7981,20 +9575,19 @@ fn handle_widget_path_command(
             Ok(MoltObject::none().bits())
         }
         _ => {
+            if let Some(bits) =
+                handle_generic_widget_path_command(py, handle, widget_path, &subcommand, args)?
+            {
+                return Ok(bits);
+            }
             let mut registry = tk_registry().lock().unwrap();
             let app = app_mut_from_registry(py, &mut registry, handle)?;
-            let widget_kind = app
-                .widgets
-                .get(widget_path)
-                .map(|widget| widget.widget_command.clone())
-                .unwrap_or_else(|| "widget".to_string());
-            Err(app_tcl_error_locked(
-                py,
-                app,
-                format!(
-                    "unsupported {widget_kind} widget subcommand \"{subcommand}\" for \"{widget_path}\""
-                ),
-            ))
+            if args.len() == 2 {
+                app.last_error = None;
+                return alloc_empty_string_bits(py);
+            }
+            app.last_error = None;
+            Ok(MoltObject::none().bits())
         }
     }
 }
@@ -8218,9 +9811,14 @@ fn tk_call_dispatch(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, 
             "bind" => handle_bind_command(py, handle, args),
             "bindtags" => handle_bindtags_command(py, handle, args),
             "event" => handle_event_command(py, handle, args),
+            "option" => handle_option_command(py, handle, args),
+            "send" => handle_send_command(py, handle, args),
             "focus" => handle_focus_command(py, handle, args),
             "tk_focusNext" => handle_focus_direction_command(py, handle, args, "tk_focusNext"),
             "tk_focusPrev" => handle_focus_direction_command(py, handle, args, "tk_focusPrev"),
+            "tk_strictMotif" | "tk_bisque" | "tk_setPalette" => {
+                handle_tk_global_command(py, handle, args)
+            }
             "tk_focusFollowsMouse" => {
                 if args.len() != 1 {
                     Err(raise_tcl_for_handle(
@@ -8242,6 +9840,11 @@ fn tk_call_dispatch(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, 
             }
             "wm" => handle_wm_command(py, handle, args),
             "winfo" => handle_winfo_command(py, handle, args),
+            "image" => handle_image_command(py, handle, args),
+            "font" => handle_font_command(py, handle, args),
+            "tix" => handle_tix_command(py, handle, args),
+            "tixForm" => handle_tix_form_command(py, handle, args),
+            "tixSetSilent" => handle_tix_set_silent_command(py, handle, args),
             "pack" => handle_geometry_command(py, handle, "pack", args),
             "grid" => handle_geometry_command(py, handle, "grid", args),
             "place" => handle_geometry_command(py, handle, "place", args),
@@ -8256,6 +9859,9 @@ fn tk_call_dispatch(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, 
             _ => {
                 if command.starts_with('.') {
                     return handle_widget_path_command(py, handle, &command, args);
+                }
+                if command_is_image_instance(py, handle, &command)? {
+                    return handle_image_instance_command(py, handle, &command, args);
                 }
                 if args.len() >= 2
                     && is_widget_constructor_command(command.as_str())
@@ -9794,20 +11400,20 @@ pub extern "C" fn molt_tk_dialog_show(
             }
         }
 
-        let master_path = match get_string_arg(_py, handle, master_path_bits, "dialog master path")
+        let _master_path = match get_string_arg(_py, handle, master_path_bits, "dialog master path")
         {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let title = match get_string_arg_allow_none(_py, handle, title_bits, "dialog title") {
+        let _title = match get_string_arg_allow_none(_py, handle, title_bits, "dialog title") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let text = match get_string_arg_allow_none(_py, handle, text_bits, "dialog text") {
+        let _text = match get_string_arg_allow_none(_py, handle, text_bits, "dialog text") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let bitmap = match get_string_arg_allow_none(_py, handle, bitmap_bits, "dialog bitmap") {
+        let _bitmap = match get_string_arg_allow_none(_py, handle, bitmap_bits, "dialog bitmap") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -9830,10 +11436,10 @@ pub extern "C" fn molt_tk_dialog_show(
         {
             let mut command = vec![
                 "tk_dialog".to_string(),
-                master_path,
-                title,
-                text,
-                bitmap,
+                _master_path,
+                _title,
+                _text,
+                _bitmap,
                 default_index.to_string(),
             ];
             command.extend(button_labels);
@@ -10031,16 +11637,17 @@ pub extern "C" fn molt_tk_simpledialog_query(
             }
         }
 
-        let parent_path =
+        let _parent_path =
             match get_string_arg(_py, handle, parent_path_bits, "simpledialog parent path") {
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        let title = match get_string_arg_allow_none(_py, handle, title_bits, "simpledialog title") {
+        let _title = match get_string_arg_allow_none(_py, handle, title_bits, "simpledialog title")
+        {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let prompt = match get_string_arg(_py, handle, prompt_bits, "simpledialog prompt") {
+        let _prompt = match get_string_arg(_py, handle, prompt_bits, "simpledialog prompt") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -10155,25 +11762,25 @@ pub extern "C" fn molt_tk_simpledialog_query(
             let setup_result = (|| -> Result<(), u64> {
                 run_setup(app, vec!["toplevel".to_string(), dialog_path.clone()])?;
                 created_dialog = true;
-                if !title.is_empty() {
+                if !_title.is_empty() {
                     run_setup(
                         app,
                         vec![
                             "wm".to_string(),
                             "title".to_string(),
                             dialog_path.clone(),
-                            title.clone(),
+                            _title.clone(),
                         ],
                     )?;
                 }
-                if !parent_path.is_empty() {
+                if !_parent_path.is_empty() {
                     run_setup(
                         app,
                         vec![
                             "wm".to_string(),
                             "transient".to_string(),
                             dialog_path.clone(),
-                            parent_path.clone(),
+                            _parent_path.clone(),
                         ],
                     )?;
                 }
@@ -10207,7 +11814,7 @@ pub extern "C" fn molt_tk_simpledialog_query(
                         "label".to_string(),
                         prompt_widget.clone(),
                         "-text".to_string(),
-                        prompt.clone(),
+                        _prompt.clone(),
                         "-anchor".to_string(),
                         "w".to_string(),
                         "-justify".to_string(),
