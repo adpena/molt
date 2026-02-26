@@ -1,6 +1,5 @@
 """Phase-0 intrinsic-backed `tkinter.messagebox` wrappers."""
 
-import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
@@ -34,41 +33,15 @@ class Message(_commondialog.Dialog):
     def show(self, **options):
         if options:
             self.options.update(options)
-        master = _resolve_master(self.master)
-        return _MOLT_TK_MESSAGEBOX_SHOW(
-            _app_handle(master),
-            str(master),
-            _normalize_options(self.options),
+        master = _commondialog._resolve_master(
+            self.master,
+            role="messagebox master",
         )
-
-
-def _normalize_option_name(name):
-    return name if name.startswith("-") else f"-{name}"
-
-
-def _normalize_options(options):
-    normalized = []
-    for key, value in options.items():
-        if value is None:
-            continue
-        option_name = _normalize_option_name(str(key))
-        option_value = str(value) if option_name == "-parent" else value
-        normalized.append(option_name)
-        normalized.append(option_value)
-    return normalized
-
-
-def _resolve_master(master):
-    if master is None:
-        return _tkinter._get_default_root()
-    if not isinstance(master, _tkinter.Misc):
-        raise TypeError("messagebox master must be a tkinter widget or root")
-    return master
-
-
-def _app_handle(master):
-    app = master._tk_app
-    return getattr(app, "_handle", app)
+        return _MOLT_TK_MESSAGEBOX_SHOW(
+            _commondialog._app_handle(master),
+            str(master),
+            _commondialog._prepare_intrinsic_options(self.options),
+        )
 
 
 def _show(title=None, message=None, _icon=None, _type=None, **options):

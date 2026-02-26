@@ -1,8 +1,8 @@
 use cranelift::codegen::Context;
 use cranelift::codegen::ir::{FuncRef, Function};
 use cranelift::codegen::isa;
+use cranelift::frontend::Switch;
 use cranelift::prelude::*;
-use cranelift_frontend::Switch;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
@@ -1626,21 +1626,21 @@ impl SimpleBackend {
             let op = ops[op_idx].clone();
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
-                if op.kind == "if" {
-                    if let Some(&end_if_idx) = if_to_end_if.get(&op_idx) {
-                        for idx in op_idx..=end_if_idx {
-                            skip_ops.insert(idx);
-                        }
-                        let mut phi_idx = end_if_idx + 1;
-                        while phi_idx < ops.len() {
-                            if ops[phi_idx].kind != "phi" {
-                                break;
-                            }
-                            skip_ops.insert(phi_idx);
-                            phi_idx += 1;
-                        }
-                        continue;
+                if op.kind == "if"
+                    && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
+                {
+                    for idx in op_idx..=end_if_idx {
+                        skip_ops.insert(idx);
                     }
+                    let mut phi_idx = end_if_idx + 1;
+                    while phi_idx < ops.len() {
+                        if ops[phi_idx].kind != "phi" {
+                            break;
+                        }
+                        skip_ops.insert(phi_idx);
+                        phi_idx += 1;
+                    }
+                    continue;
                 }
                 match op.kind.as_str() {
                     "label" | "state_label" | "else" | "end_if" | "loop_end" => {}

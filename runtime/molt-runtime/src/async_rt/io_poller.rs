@@ -154,7 +154,7 @@ struct IoSocketEntry {
     token: Token,
     interests: Interest,
     waiters: WaiterList,
-    blocking_waiters: Vec<Arc<BlockingWaiter>>,
+    blocking_waiters: BlockingWaiterList,
     source: IoSource,
     debug_fd: i64,
 }
@@ -329,6 +329,80 @@ struct BlockingWaiter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct BlockingWaiterList {
+    order: Vec<Arc<BlockingWaiter>>,
+    index: HashMap<usize, usize>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn blocking_waiter_id(waiter: &Arc<BlockingWaiter>) -> usize {
+    Arc::as_ptr(waiter) as usize
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BlockingWaiterList {
+    fn insert(&mut self, waiter: Arc<BlockingWaiter>) -> bool {
+        let waiter_id = blocking_waiter_id(&waiter);
+        if self.index.contains_key(&waiter_id) {
+            return false;
+        }
+        let next = self.order.len();
+        self.order.push(waiter);
+        self.index.insert(waiter_id, next);
+        true
+    }
+
+    fn pop_at(&mut self, idx: usize) -> Option<Arc<BlockingWaiter>> {
+        if idx >= self.order.len() {
+            return None;
+        }
+        let removed = self.order.swap_remove(idx);
+        self.index.remove(&blocking_waiter_id(&removed));
+        if idx < self.order.len() {
+            let moved_id = blocking_waiter_id(&self.order[idx]);
+            self.index.insert(moved_id, idx);
+        }
+        Some(removed)
+    }
+
+    fn remove(&mut self, waiter_id: usize) -> bool {
+        let Some(idx) = self.index.get(&waiter_id).copied() else {
+            return false;
+        };
+        self.pop_at(idx).is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    fn drain(&mut self) -> Vec<Arc<BlockingWaiter>> {
+        self.index.clear();
+        std::mem::take(&mut self.order)
+    }
+
+    fn drain_ready(&mut self, ready_mask: u32) -> Vec<Arc<BlockingWaiter>> {
+        let mut ready = Vec::new();
+        let mut idx = 0usize;
+        while idx < self.order.len() {
+            if (self.order[idx].events & ready_mask) != 0 {
+                if let Some(waiter) = self.pop_at(idx) {
+                    ready.push(waiter);
+                }
+            } else {
+                idx += 1;
+            }
+        }
+        ready
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl IoPoller {
     pub(crate) fn new() -> Self {
         let poll = Poll::new().expect("io poller");
@@ -409,7 +483,7 @@ impl IoPoller {
                         token,
                         interests: Interest::READABLE,
                         waiters: WaiterList::default(),
-                        blocking_waiters: Vec::new(),
+                        blocking_waiters: BlockingWaiterList::default(),
                         source: IoSource::Socket(PtrSlot(socket_ptr)),
                         debug_fd,
                     },
@@ -514,7 +588,7 @@ impl IoPoller {
                         token,
                         interests: Interest::READABLE,
                         waiters: WaiterList::default(),
-                        blocking_waiters: Vec::new(),
+                        blocking_waiters: BlockingWaiterList::default(),
                         source: IoSource::WebSocket(stream),
                         debug_fd,
                     },
@@ -645,8 +719,7 @@ impl IoPoller {
                 waiters.remove(&waiter);
                 ready_futures.push(waiter);
             }
-            let blocking_waiters = std::mem::take(&mut entry.blocking_waiters);
-            for waiter in blocking_waiters {
+            for waiter in entry.blocking_waiters.drain() {
                 let mut guard = waiter.ready.lock().unwrap();
                 *guard = Some(IO_EVENT_ERROR);
                 drop(guard);
@@ -698,7 +771,7 @@ impl IoPoller {
                         token,
                         interests: Interest::READABLE,
                         waiters: WaiterList::default(),
-                        blocking_waiters: Vec::new(),
+                        blocking_waiters: BlockingWaiterList::default(),
                         source: IoSource::Socket(PtrSlot(socket_ptr)),
                         debug_fd,
                     },
@@ -707,7 +780,7 @@ impl IoPoller {
                 token
             });
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
-        entry.blocking_waiters.push(Arc::clone(&waiter));
+        entry.blocking_waiters.insert(Arc::clone(&waiter));
         let interest = interest_from_events(events);
         let mut updated = false;
         let needs_register = entry.waiters.is_empty() && entry.blocking_waiters.len() == 1;
@@ -752,9 +825,7 @@ impl IoPoller {
                 drop(guard);
                 let mut sockets = self.sockets.lock().unwrap();
                 if let Some(entry) = sockets.get_mut(&socket_id) {
-                    entry
-                        .blocking_waiters
-                        .retain(|candidate| Arc::as_ptr(candidate) as usize != waiter_id);
+                    entry.blocking_waiters.remove(waiter_id);
                     if entry.waiters.is_empty() && entry.blocking_waiters.is_empty() {
                         let token = entry.token;
                         sockets.remove(&socket_id);
@@ -788,9 +859,7 @@ impl IoPoller {
         drop(guard);
         let mut sockets = self.sockets.lock().unwrap();
         if let Some(entry) = sockets.get_mut(&socket_id) {
-            entry
-                .blocking_waiters
-                .retain(|candidate| Arc::as_ptr(candidate) as usize != waiter_id);
+            entry.blocking_waiters.remove(waiter_id);
             if entry.waiters.is_empty() && entry.blocking_waiters.is_empty() {
                 let token = entry.token;
                 sockets.remove(&socket_id);
@@ -886,19 +955,12 @@ fn io_worker(poller: Arc<IoPoller>) {
                 }
                 entry.waiters.replace_with(remaining);
                 if !entry.blocking_waiters.is_empty() {
-                    let mut remaining_blocking: Vec<Arc<BlockingWaiter>> =
-                        Vec::with_capacity(entry.blocking_waiters.len());
-                    for waiter in entry.blocking_waiters.drain(..) {
-                        if (waiter.events & ready_mask) != 0 {
-                            let mut guard = waiter.ready.lock().unwrap();
-                            *guard = Some(ready_mask);
-                            drop(guard);
-                            waiter.condvar.notify_all();
-                        } else {
-                            remaining_blocking.push(waiter);
-                        }
+                    for waiter in entry.blocking_waiters.drain_ready(ready_mask) {
+                        let mut guard = waiter.ready.lock().unwrap();
+                        *guard = Some(ready_mask);
+                        drop(guard);
+                        waiter.condvar.notify_all();
                     }
-                    entry.blocking_waiters = remaining_blocking;
                 }
             }
         }

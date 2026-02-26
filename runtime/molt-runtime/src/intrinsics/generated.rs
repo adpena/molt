@@ -88,6 +88,26 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_tk_getboolean",
+        symbol: "molt_tk_getboolean",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_getdouble",
+        symbol: "molt_tk_getdouble",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_splitlist",
+        symbol: "molt_tk_splitlist",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_tk_errorinfo_append",
+        symbol: "molt_tk_errorinfo_append",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_tk_dialog_show",
         symbol: "molt_tk_dialog_show",
         arity: 7,
@@ -9969,6 +9989,12 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_tk_destroy_widget as *const () as usize as u64)
         }
         "molt_tk_last_error" => Some(crate::molt_tk_last_error as *const () as usize as u64),
+        "molt_tk_getboolean" => Some(crate::molt_tk_getboolean as *const () as usize as u64),
+        "molt_tk_getdouble" => Some(crate::molt_tk_getdouble as *const () as usize as u64),
+        "molt_tk_splitlist" => Some(crate::molt_tk_splitlist as *const () as usize as u64),
+        "molt_tk_errorinfo_append" => {
+            Some(crate::molt_tk_errorinfo_append as *const () as usize as u64)
+        }
         "molt_tk_dialog_show" => Some(crate::molt_tk_dialog_show as *const () as usize as u64),
         "molt_tk_commondialog_show" => {
             Some(crate::molt_tk_commondialog_show as *const () as usize as u64)

@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-25
+Last updated: 2026-02-26
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -619,7 +619,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   capability-gated sinks; `logging.config` and `logging.handlers` remain pending.
   (TODO(async-runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)
 - C API: bootstrap `libmolt` C-extension surface is landed (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`) for runtime/GIL, errors, scalar constructors/accessors (`none`/bool/int/float), object protocol (including bytes-name attribute helpers + compare/contains bool helpers), numerics, sequence/mapping, array-to-container constructors, buffer/bytes wrappers, plus type/module parity wrappers (`molt_type_ready`, module create/add/get APIs). A CPython-style source-compat shim header is now available at `include/Python.h` / `include/molt/Python.h` (including partial `PyErr_*`, `PySequence_*`/`PyMapping_*`, `PyArg_ParseTuple`, and O(n + k) `PyArg_ParseTupleAndKeywords` coverage for the current core format subset).
-- Tooling/runtime: `molt publish` hard-verifies extension wheels (`.whl`) as extension metadata (`extension_manifest.json`) with required checksums/capabilities before publish, and import/load boundaries now enforce extension metadata ABI/capability/checksum checks in runtime extension loader lanes with fingerprint-aware validation caching for replaced artifacts; CI includes an extension build/audit/verify/publish dry-run matrix (`linux native`, `linux cross-target`, `macos native`, `windows native`) and a wasm-target rejection contract check on the `linux native` lane.
+- Tooling/runtime: `molt publish` hard-verifies extension wheels (`.whl`) as extension metadata (`extension_manifest.json`) with required checksums/capabilities before publish, and runtime now enforces extension metadata ABI/capability/checksum checks across import spec-discovery boundaries and load/exec boundaries (finder + loader lanes) with fingerprint-aware validation caching for replaced artifacts; CI includes an extension build/audit/verify/publish dry-run matrix (`linux native`, `linux cross-target`, `macos native`, `windows native`) and a wasm-target rejection contract check on the `linux native` lane.
 - Policy: Molt binaries never fall back to CPython; C-extension compatibility is planned via `libmolt` (primary) with an explicit, capability-gated bridge as a non-default escape hatch.
   (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:partial): extend the initial C API shim from bootstrap wrappers to broader source-compat and ABI coverage).
 - Intrinsics registry is runtime-owned and strict; CPython shims have been removed from tooling/tests. `molt_json` and `molt_msgpack` now require runtime intrinsics (no Python-library fallback).
