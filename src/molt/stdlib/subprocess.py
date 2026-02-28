@@ -801,3 +801,10 @@ __all__ = [
     "getstatusoutput",
     "run",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's subprocess API.
+# ---------------------------------------------------------------------------
+for _name in ("Any",):
+    globals().pop(_name, None)

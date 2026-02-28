@@ -70,6 +70,7 @@ class LoopBoundFact:
 
 _SCCP_OVERDEFINED = object()
 _SCCP_UNKNOWN = object()
+_SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
 
 
 MidendProfile = Literal["dev", "release"]
@@ -29416,13 +29417,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         }:
             self.midend_stats["midend_module_skips"] += 1
             return ops
-        # Correctness gate: keep dev-profile mid-end passes opt-in until the
-        # missing-value miscompile cluster is fully closed (tracked in ROADMAP TL2).
-        if self.optimization_profile == "dev" and os.getenv(
-            "MOLT_MIDEND_DEV_ENABLE", ""
-        ).strip().lower() not in {"1", "true", "yes", "on"}:
-            self.midend_stats["midend_module_skips"] += 1
-            return ops
+        # Dev-profile mid-end gate removed: MISSING-value miscompile fixes
+        # (SCCP non-propagation, DCE protection, definite-assignment hardening)
+        # are now in place (ROADMAP TL2).  MOLT_MIDEND_DEV_ENABLE is no longer
+        # required — mid-end runs for both dev and release profiles.
         # Correctness gate: keep stdlib modules out of mid-end canonicalization
         # until canonicalized stdlib lowering is proven stable (ROADMAP TL2).
         if self._source_is_stdlib_module:
@@ -31495,6 +31493,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return []
         all_defs = self._collect_defined_value_names(ops).union(predefined)
 
+        # Track which value names are produced by MISSING ops so we can
+        # verify they haven't been eliminated by a prior pass.
+        missing_value_defs: set[str] = set()
+        for op in ops:
+            if op.kind == "MISSING" and op.result.name != "none":
+                missing_value_defs.add(op.result.name)
+
         block_defs: dict[int, set[str]] = {}
         for block in cfg.blocks:
             defs: set[str] = set()
@@ -31550,6 +31555,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             definition_index[out_name] = op_idx
             definition_block[out_name] = cfg.index_to_block[op_idx]
 
+        # Collect which value names are consumed by GETATTR/CALL/LOOKUP ops
+        # as default or sentinel arguments — these are the critical consumers
+        # of MISSING sentinels.
+        _missing_sentinel_consumer_ops = {
+            "GETATTR_NAME_DEFAULT",
+            "CALL",
+            "CALL_INDIRECT",
+            "CALL_INTERNAL",
+            "DICT_UPDATE_MISSING",
+        }
+
         for block in cfg.blocks:
             block_id = block.id
             if block_id not in cfg.reachable:
@@ -31568,6 +31584,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         continue
                     def_idx = definition_index.get(name)
                     if def_idx is None:
+                        # Value is used but has no definition at all — if it
+                        # was originally a MISSING sentinel that got removed,
+                        # flag this as a failure.
+                        if name in missing_value_defs:
+                            failures.append((op_idx, op.kind, name))
                         continue
                     def_block = definition_block[name]
                     if def_block not in cfg.dominators.get(block_id, set()):
@@ -31575,6 +31596,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         continue
                     if def_block == block_id and def_idx >= op_idx:
                         failures.append((op_idx, op.kind, name))
+                # Extra check: ops that consume MISSING-produced values
+                # (sentinel consumers) must have those definitions still
+                # present and dominating.
+                if op.kind in _missing_sentinel_consumer_ops:
+                    for arg in op.args:
+                        if (
+                            isinstance(arg, MoltValue)
+                            and arg.name in missing_value_defs
+                        ):
+                            if arg.name not in local_defs:
+                                failures.append((op_idx, op.kind, arg.name))
                 out_name = op.result.name
                 if out_name != "none":
                     local_defs.add(out_name)
@@ -31698,6 +31730,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 if is_dead_const and out_name in preserve_anchor_results:
                     is_dead_const = False
+                # MISSING ops are runtime sentinels (uninitialized locals,
+                # optional defaults) that downstream GETATTR/CALL sites
+                # depend on — never eliminate them.
+                if is_dead_const and op.kind == "MISSING":
+                    is_dead_const = False
                 if is_dead_const:
                     removed_count += 1
                     pure_removed += 1
@@ -31802,7 +31839,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         def is_overdefined(value: Any) -> bool:
             return value is _SCCP_OVERDEFINED
 
+        def is_missing_sentinel(value: Any) -> bool:
+            return value is _SCCP_MISSING
+
         def merge_lattice(left: Any, right: Any) -> Any:
+            # MISSING sentinels must never fold: if either side is MISSING,
+            # the merge is overdefined so downstream operations cannot
+            # constant-fold through a MISSING value.
+            if is_missing_sentinel(left) or is_missing_sentinel(right):
+                return _SCCP_OVERDEFINED
             if left is _SCCP_UNKNOWN:
                 return right
             if right is _SCCP_UNKNOWN:
@@ -31838,7 +31883,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(fact, int):
                 return fact
             value = value_lattice(name, known)
-            if value is _SCCP_UNKNOWN or is_overdefined(value):
+            if (
+                value is _SCCP_UNKNOWN
+                or is_overdefined(value)
+                or is_missing_sentinel(value)
+            ):
                 return None
             return self._const_type_tag_for_lattice_value(value)
 
@@ -31858,6 +31907,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
 
         def eval_lattice_value(op: MoltOp, known: dict[str, Any], op_index: int) -> Any:
+            # MISSING ops produce runtime sentinel values that must never be
+            # constant-folded or propagated.  Return _SCCP_MISSING so that
+            # any downstream consumer goes to overdefined via merge_lattice.
+            if op.kind == "MISSING":
+                return _SCCP_MISSING
             if op.kind == "CONST":
                 return op.args[0]
             if op.kind == "CONST_BOOL":
@@ -32202,6 +32256,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     known.pop(type_fact_key(out_name), None)
                     known.pop(dict_shape_fact_key(out_name), None)
                     lattice_value = eval_lattice_value(op, known, op_idx)
+                    # Promote MISSING sentinels to overdefined in try analysis too.
+                    if is_missing_sentinel(lattice_value):
+                        lattice_value = _SCCP_OVERDEFINED
                     if (
                         lattice_value is not _SCCP_UNKNOWN
                         and lattice_value is not _SCCP_OVERDEFINED
@@ -32412,6 +32469,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 lattice_value = eval_lattice_value(op, known, op_idx)
                 if lattice_value is _SCCP_UNKNOWN:
                     continue
+                # MISSING sentinels must not propagate as constants through
+                # the lattice — promote to overdefined so no downstream op
+                # can constant-fold through a MISSING value.
+                if is_missing_sentinel(lattice_value):
+                    lattice_value = _SCCP_OVERDEFINED
                 known[out_name] = lattice_value
                 tag = self._const_type_tag_for_lattice_value(lattice_value)
                 if tag is not None:

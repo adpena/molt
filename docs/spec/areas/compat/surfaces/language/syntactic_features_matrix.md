@@ -7,16 +7,24 @@
 ## 1. Syntax (Python 3.12+)
 
 ### 1.1 Structural Pattern Matching (`match` / `case`)
-**Status:** Missing (Milestone 3)
-**Complexity:** High (requires decision tree compilation).
-- [ ] Match Literal (case 1:)
-- [ ] Match Variable (case x:)
-- [ ] Match Sequence (case [a, b]:)
-- [ ] Match Mapping (case {k: v}:)
-- [ ] Match Class (case Point(x=1):)
-- [ ] Match Or (case A | B:)
-- [ ] Match As (case A as x:)
-- [ ] Match Guard (case A if x:)
+**Status:** Supported (PEP 634, implemented via AST-to-IR desugaring)
+**Complexity:** High (cell-based decision tree compilation).
+- [x] Match Literal (case 1:)
+- [x] Match Variable (case x:)
+- [x] Match Sequence (case [a, b]:)
+- [x] Match Mapping (case {k: v}:)
+- [x] Match Class (case Point(x=1):)
+- [x] Match Or (case A | B:)
+- [x] Match As (case A as x:)
+- [x] Match Guard (case A if x:)
+- [x] Match Star (case [a, *rest]:)
+- [x] Match Singleton (case None:, case True:)
+- [x] Nested patterns (arbitrary depth)
+- [x] Or pattern binding consistency validation
+- [x] __match_args__ protocol support
+- [x] Irrefutable pattern detection (SyntaxError)
+
+Differential coverage: 24 test files (~565 lines) in `tests/differential/basic/pattern_matching_*.py` and `tests/differential/basic/match_*.py`.
 
 ### 1.2 Async / Await
 **Status:** Supported (Milestone 2)
@@ -77,7 +85,7 @@ Molt uses `ruff-ast` (Rust) which supports Python 3.12 syntax.
 The gap is primarily in **Lowering** (AST -> HIR), not Parsing.
 
 ## 3. TODOs
-- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
+- ~~TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering~~ — **Implemented**: full PEP 634 match/case lowering via cell-based AST-to-IR desugaring with 24 differential test files.
 - Implemented: `f-string` format specifiers + conversion flags + debug spec.
 
 
