@@ -46,11 +46,7 @@ fn is_atomic_type_id(type_id: u32) -> bool {
     // never reach type_id checks — they're handled before as_ptr() returns.
     matches!(
         type_id,
-        TYPE_ID_STRING
-            | TYPE_ID_BYTES
-            | TYPE_ID_RANGE
-            | TYPE_ID_NOT_IMPLEMENTED
-            | TYPE_ID_ELLIPSIS
+        TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_RANGE | TYPE_ID_NOT_IMPLEMENTED | TYPE_ID_ELLIPSIS
     )
 }
 
@@ -324,8 +320,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     memo_put(memo_handle, obj_id, bits);
                     return bits;
                 }
-                let new_ptr =
-                    alloc_set_like_with_entries(_py, &copied_elems, TYPE_ID_FROZENSET);
+                let new_ptr = alloc_set_like_with_entries(_py, &copied_elems, TYPE_ID_FROZENSET);
                 if new_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
@@ -363,9 +358,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
 /// same element references. For immutable/atomic types, returns the same object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_copy(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        shallow_copy_bits(_py, obj_bits)
-    })
+    crate::with_gil_entry!(_py, { shallow_copy_bits(_py, obj_bits) })
 }
 
 /// Deep copy of a Python object with a memo dictionary.

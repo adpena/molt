@@ -19,6 +19,11 @@
 //   extra inc_ref (caller takes ownership of the reference the queue held).
 // - Waiter bits (Future objects) are inc_ref'd on registration, dec_ref'd on
 //   notification or cleanup.
+//
+// WASM compatibility: ALL intrinsics in this module are pure data structure
+// operations with no I/O, no file descriptors, no platform-specific syscalls,
+// and no std::time usage. They compile and run correctly on all targets
+// including wasm32-wasi and wasm32-unknown-unknown — no `#[cfg]` gating required.
 
 use crate::*;
 use std::cmp::Ordering as CmpOrdering;
@@ -190,7 +195,7 @@ impl QueueState {
         match self.queue_type {
             QueueType::Fifo => self.fifo_items.pop_front(),
             QueueType::Lifo => self.lifo_items.pop(),
-            QueueType::Priority => self.priority_items.pop().map(|r| r.0 .0),
+            QueueType::Priority => self.priority_items.pop().map(|r| r.0.0),
         }
     }
 
@@ -199,11 +204,7 @@ impl QueueState {
         match self.queue_type {
             QueueType::Fifo => self.fifo_items.drain(..).collect(),
             QueueType::Lifo => self.lifo_items.drain(..).collect(),
-            QueueType::Priority => self
-                .priority_items
-                .drain()
-                .map(|r| r.0 .0)
-                .collect(),
+            QueueType::Priority => self.priority_items.drain().map(|r| r.0.0).collect(),
         }
     }
 }
@@ -342,9 +343,7 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
 
         match result {
             None => raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found"),
-            Some(Err("QueueShutDown")) => {
-                raise_exception::<u64>(_py, "asyncio.QueueShutDown", "")
-            }
+            Some(Err("QueueShutDown")) => raise_exception::<u64>(_py, "asyncio.QueueShutDown", ""),
             Some(Err(_)) => {
                 // QueueEmpty
                 raise_exception::<u64>(_py, "asyncio.QueueEmpty", "")
@@ -513,10 +512,7 @@ pub extern "C" fn molt_asyncio_queue_add_getter(handle_bits: u64, waiter_bits: u
 ///
 /// Returns the number of putters actually notified (NaN-boxed int).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_notify_putters(
-    handle_bits: u64,
-    count_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_asyncio_queue_notify_putters(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = handle_from_bits(handle_bits);
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;
@@ -544,10 +540,7 @@ pub extern "C" fn molt_asyncio_queue_notify_putters(
 ///
 /// Returns the number of getters actually notified (NaN-boxed int).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_notify_getters(
-    handle_bits: u64,
-    count_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_asyncio_queue_notify_getters(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = handle_from_bits(handle_bits);
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;

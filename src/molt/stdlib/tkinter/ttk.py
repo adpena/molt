@@ -6,6 +6,7 @@ from ._support import require_gui_capability as _require_gui_capability
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_molt_tk_convert_stringval = _require_intrinsic("molt_tk_convert_stringval", globals())
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
@@ -391,13 +392,7 @@ def _split_pairs_to_dict(tk, value):
 
 
 def _convert_stringval(value):
-    text = str(value)
-    if text.lstrip("-").isdigit():
-        return int(text)
-    stripped = text.lstrip("-")
-    if stripped and stripped.replace(".", "", 1).isdigit():
-        return float(text)
-    return text
+    return _molt_tk_convert_stringval(value)
 
 
 def _tclobj_to_py(value):

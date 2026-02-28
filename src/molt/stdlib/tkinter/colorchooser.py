@@ -4,17 +4,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
 _MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
+_molt_tk_hex_to_rgb = _require_intrinsic("molt_tk_hex_to_rgb", globals())
 
 Dialog = _commondialog.Dialog
 
 
 def _hex_to_rgb(color):
-    if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
-        return None
-    hex_part = color[1:]
-    if not all(c in "0123456789abcdefABCDEF" for c in hex_part):
-        return None
-    return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+    return _molt_tk_hex_to_rgb(color)
 
 
 class Chooser(_commondialog.Dialog):

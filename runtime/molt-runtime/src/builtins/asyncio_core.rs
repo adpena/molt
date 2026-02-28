@@ -12,6 +12,11 @@
 //
 // All stored u64 bits that may point to heap objects are inc_ref'd on store
 // and dec_ref'd on removal/drop to maintain correct refcounts.
+//
+// WASM compatibility: ALL intrinsics in this module are pure state machines
+// with no I/O, no file descriptors, no platform-specific syscalls, and no
+// std::time usage. They compile and run correctly on all targets including
+// wasm32-wasi and wasm32-unknown-unknown — no `#[cfg]` gating required.
 
 use crate::*;
 use std::collections::HashMap;
@@ -234,10 +239,7 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
 /// Atomic: set result + mark done + return callbacks count as int bits.
 /// Raises InvalidStateError if already done.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_set_result_fast(
-    handle_bits: u64,
-    result_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = handle_from_bits(handle_bits);
         let mut map = FUTURES.lock().unwrap();
@@ -263,10 +265,7 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(
 /// Raises InvalidStateError if already done. If the exception is a
 /// CancelledError, also marks the future as cancelled.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_set_exception_fast(
-    handle_bits: u64,
-    exc_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = handle_from_bits(handle_bits);
         let mut map = FUTURES.lock().unwrap();
@@ -297,10 +296,7 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(
 ///
 /// msg_bits: cancel message (may be None for no message).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_cancel_fast(
-    handle_bits: u64,
-    msg_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = handle_from_bits(handle_bits);
         let mut map = FUTURES.lock().unwrap();
@@ -681,14 +677,12 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
         } else {
             // No waiters — increment counter.
             // BoundedSemaphore check: if max_value is set, verify we don't exceed it.
-            if let Some(max) = max_value {
-                if state.value >= max {
-                    return raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        "BoundedSemaphore released too many times",
-                    );
-                }
+            if max_value.is_some_and(|max| state.value >= max) {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "BoundedSemaphore released too many times",
+                );
             }
             state.value += 1;
             MoltObject::from_int(0).bits()
