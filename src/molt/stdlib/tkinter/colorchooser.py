@@ -11,10 +11,10 @@ Dialog = _commondialog.Dialog
 def _hex_to_rgb(color):
     if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
         return None
-    try:
-        return tuple(int(color[idx : idx + 2], 16) for idx in (1, 3, 5))
-    except ValueError:
+    hex_part = color[1:]
+    if not all(c in "0123456789abcdefABCDEF" for c in hex_part):
         return None
+    return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
 
 
 class Chooser(_commondialog.Dialog):
@@ -30,11 +30,11 @@ class Chooser(_commondialog.Dialog):
             return (None, None)
         if isinstance(result, tuple) and len(result) == 2:
             return result
-        try:
-            red, green, blue = widget.winfo_rgb(result)
+        winfo_rgb = getattr(widget, "winfo_rgb", None)
+        if callable(winfo_rgb):
+            red, green, blue = winfo_rgb(result)
             return ((red // 256, green // 256, blue // 256), str(result))
-        except Exception:  # noqa: BLE001
-            return (_hex_to_rgb(str(result)), str(result))
+        return (_hex_to_rgb(str(result)), str(result))
 
 
 def askcolor(color=None, **options):

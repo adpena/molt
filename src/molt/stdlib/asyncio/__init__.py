@@ -2109,6 +2109,38 @@ class _Timeout:
         self._handle: TimerHandle | None = None
         self._timed_out = False
 
+    def when(self) -> float | None:
+        """Return the current deadline, or ``None`` if not set."""
+        return self._when
+
+    def reschedule(self, when: float | None) -> None:
+        """Reschedule the timeout to *when* (absolute loop time), or disable if ``None``."""
+        if self._task is None:
+            raise RuntimeError("Timeout has not been entered")
+        self._when = when
+        # Cancel the old timer if one is pending.
+        if self._handle is not None:
+            cancel = getattr(self._handle, "cancel", None)
+            if callable(cancel):
+                cancel()
+            self._handle = None
+        # If no deadline, nothing more to do.
+        if when is None:
+            return
+        loop = self._loop
+        if loop is None:
+            return
+        delay = when - loop.time()
+        if delay <= 0:
+            self._timed_out = True
+            self._task.cancel()
+        else:
+            self._handle = loop.call_later(delay, self._on_timeout)
+
+    def expired(self) -> bool:
+        """Return ``True`` if the timeout has expired (the inner body was cancelled)."""
+        return self._timed_out
+
     def _on_timeout(self) -> None:
         if self._task is None or self._timed_out:
             return
@@ -2989,6 +3021,9 @@ class _EventLoop(AbstractEventLoop):
         self._default_executor: Any | None = None
         self._selector = selector
         self._time_origin = _time.monotonic()
+        self._signal_handlers: dict[
+            int, tuple[Callable[..., Any], tuple[Any, ...]]
+        ] = {}
 
     def create_future(self) -> Future:
         return Future()
@@ -3350,6 +3385,76 @@ class _EventLoop(AbstractEventLoop):
             if submit is None or not callable(submit):
                 raise TypeError("executor must define submit()")
         self._default_executor = executor
+
+    def add_signal_handler(
+        self, sig: int, callback: Callable[..., Any], /, *args: Any
+    ) -> None:
+        """Register *callback* to be called when signal *sig* is received.
+
+        On WASM platforms signals are not supported and this raises
+        ``NotImplementedError``.
+        """
+        _platform = _sys.platform
+        if _platform in ("emscripten", "wasi"):
+            raise NotImplementedError(
+                "signal handlers are not supported on this platform"
+            )
+        if not callable(callback):
+            raise TypeError(f"callback must be callable, got {type(callback).__name__}")
+        # Validate the signal number early.
+        _signal.getsignal(sig)  # raises ValueError/OSError for invalid sigs
+        self._signal_handlers[sig] = (callback, args)
+
+        def _handle_sig(signum: int, frame: Any) -> None:
+            self.call_soon_threadsafe(callback, *args)
+
+        _signal.signal(sig, _handle_sig)
+
+    def remove_signal_handler(self, sig: int) -> bool:
+        """Remove signal handler for signal *sig*.
+
+        Returns ``True`` if a handler was removed, ``False`` if no handler
+        was installed for *sig*.
+
+        On WASM platforms signals are not supported and this raises
+        ``NotImplementedError``.
+        """
+        _platform = _sys.platform
+        if _platform in ("emscripten", "wasi"):
+            raise NotImplementedError(
+                "signal handlers are not supported on this platform"
+            )
+        entry = self._signal_handlers.pop(sig, None)
+        if entry is None:
+            return False
+        _signal.signal(sig, _signal.SIG_DFL)
+        return True
+
+    async def connect_read_pipe(
+        self, protocol_factory: Callable[[], Protocol], pipe: Any
+    ) -> tuple[Transport, Protocol]:
+        """Create a read connection to *pipe*.
+
+        Not yet implemented -- raises ``NotImplementedError`` until the
+        full pipe transport layer lands.
+        """
+        # TODO(async-runtime, owner:runtime, milestone:RT4, priority:P2, status:planned): implement pipe transport read lane
+        raise NotImplementedError(
+            "connect_read_pipe is not yet supported by Molt's asyncio runtime"
+        )
+
+    async def connect_write_pipe(
+        self, protocol_factory: Callable[[], Protocol], pipe: Any
+    ) -> tuple[Transport, Protocol]:
+        """Create a write connection to *pipe*.
+
+        Not yet implemented -- raises ``NotImplementedError`` until the
+        full pipe transport layer lands.
+        """
+        # TODO(async-runtime, owner:runtime, milestone:RT4, priority:P2, status:planned): implement pipe transport write lane
+        raise NotImplementedError(
+            "connect_write_pipe is not yet supported by Molt's asyncio runtime"
+        )
 
     async def create_connection(
         self,
