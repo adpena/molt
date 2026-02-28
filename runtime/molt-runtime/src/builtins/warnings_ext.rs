@@ -563,7 +563,13 @@ pub extern "C" fn molt_warnings_filters_get() -> u64 {
 
             let lineno_bits = MoltObject::from_int(filter.lineno).bits();
 
-            let elems = [action_bits, message_bits, category_bits, module_bits, lineno_bits];
+            let elems = [
+                action_bits,
+                message_bits,
+                category_bits,
+                module_bits,
+                lineno_bits,
+            ];
             let tuple_ptr = alloc_tuple(_py, &elems);
             if tuple_ptr.is_null() {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");

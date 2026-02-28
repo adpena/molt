@@ -3,8 +3,7 @@ use crate::*;
 // ─── Standard base64 alphabet ───────────────────────────────────────────────
 
 const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const B64_URLSAFE: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const B64_URLSAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 const B32_STD: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const B32_HEX: &[u8; 32] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
@@ -57,9 +56,7 @@ fn bytes_like_arg(_py: &PyToken<'_>, bits: u64, _func: &str) -> Result<Vec<u8>, 
         }
     }
     let type_label = type_name(_py, obj);
-    let msg = format!(
-        "argument should be a bytes-like object or ASCII string, not '{type_label}'"
-    );
+    let msg = format!("argument should be a bytes-like object or ASCII string, not '{type_label}'");
     Err(raise_exception::<_>(_py, "TypeError", &msg))
 }
 
@@ -128,8 +125,16 @@ fn b64_encode(input: &[u8], alphabet: &[u8; 64]) -> Vec<u8> {
     let mut idx = 0usize;
     while idx < input.len() {
         let b0 = input[idx];
-        let b1 = if idx + 1 < input.len() { input[idx + 1] } else { 0 };
-        let b2 = if idx + 2 < input.len() { input[idx + 2] } else { 0 };
+        let b1 = if idx + 1 < input.len() {
+            input[idx + 1]
+        } else {
+            0
+        };
+        let b2 = if idx + 2 < input.len() {
+            input[idx + 2]
+        } else {
+            0
+        };
         let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
         out.push(alphabet[((n >> 18) & 0x3f) as usize]);
         out.push(alphabet[((n >> 12) & 0x3f) as usize]);
@@ -163,10 +168,14 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
         // In validate mode, reject any whitespace or non-base64 characters
         for &b in input {
             if b == b'\n' || b == b'\r' || b == b'\t' || b == b' ' {
-                return Err("Invalid base64-encoded string: number of data characters (0) cannot be 1 more than a multiple of 4");
+                return Err(
+                    "Invalid base64-encoded string: number of data characters (0) cannot be 1 more than a multiple of 4",
+                );
             }
             if table[b as usize].is_none() && b != b'=' {
-                return Err("Invalid base64-encoded string: number of data characters (0) cannot be 1 more than a multiple of 4");
+                return Err(
+                    "Invalid base64-encoded string: number of data characters (0) cannot be 1 more than a multiple of 4",
+                );
             }
         }
         input.to_vec()
@@ -451,8 +460,10 @@ fn a85_encode(input: &[u8], foldspaces: bool, wrapcol: usize, pad: bool, adobe: 
 
     let mut encoded = Vec::with_capacity(padded.len() * 5 / 4 + 16);
     for chunk in padded.chunks(4) {
-        let word =
-            ((chunk[0] as u32) << 24) | ((chunk[1] as u32) << 16) | ((chunk[2] as u32) << 8) | (chunk[3] as u32);
+        let word = ((chunk[0] as u32) << 24)
+            | ((chunk[1] as u32) << 16)
+            | ((chunk[2] as u32) << 8)
+            | (chunk[3] as u32);
         if word == 0 {
             encoded.push(b'z');
             continue;
@@ -614,8 +625,10 @@ fn b85_encode(input: &[u8], pad: bool) -> Vec<u8> {
 
     let mut out = Vec::with_capacity(padded.len() * 5 / 4 + 1);
     for chunk in padded.chunks(4) {
-        let word =
-            ((chunk[0] as u32) << 24) | ((chunk[1] as u32) << 16) | ((chunk[2] as u32) << 8) | (chunk[3] as u32);
+        let word = ((chunk[0] as u32) << 24)
+            | ((chunk[1] as u32) << 16)
+            | ((chunk[2] as u32) << 8)
+            | (chunk[3] as u32);
         let mut digits = [0u8; 5];
         let mut v = word;
         for i in (0..5).rev() {
@@ -738,11 +751,7 @@ pub extern "C" fn molt_base64_b64decode(
         let decoded = match b64_decode(&raw, B64_STD, validate) {
             Ok(v) => v,
             Err(msg) => {
-                return raise_exception::<_>(
-                    _py,
-                    "binascii.Error",
-                    msg,
-                );
+                return raise_exception::<_>(_py, "binascii.Error", msg);
             }
         };
         alloc_bytes_result(_py, &decoded)
