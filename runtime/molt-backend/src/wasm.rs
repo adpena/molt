@@ -8161,6 +8161,11 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(future));
                             emit_call(func, reloc_enabled, import_ids["future_poll"]);
                             func.instruction(&Instruction::LocalSet(out));
+                            // Store pending return value before the
+                            // conditional so the If block does not
+                            // leave values on the stack.
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::LocalSet(return_local));
                             func.instruction(&Instruction::LocalGet(out));
                             func.instruction(&Instruction::I64Const(box_pending()));
                             func.instruction(&Instruction::I64Eq);
@@ -8171,8 +8176,6 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                             emit_call(func, reloc_enabled, import_ids["sleep_register"]);
                             func.instruction(&Instruction::Drop);
-                            func.instruction(&Instruction::I64Const(box_pending()));
-                            func.instruction(&Instruction::LocalSet(return_local));
                             func.instruction(&Instruction::Br(return_depth));
                             func.instruction(&Instruction::End);
                             if let Some(slot) = slot_bits {

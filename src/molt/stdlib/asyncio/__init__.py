@@ -3643,8 +3643,8 @@ class AbstractEventLoopPolicy:
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def get_event_loop(self) -> EventLoop:
         loop = molt_asyncio_event_loop_get_current()
-        if TYPE_CHECKING:
-            return cast(EventLoop, loop)
+        if _TYPE_CHECKING:
+            return _cast(EventLoop, loop)
         return loop
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
@@ -5761,3 +5761,22 @@ if _EXPOSE_GRAPH:
     _builtin_targets.extend([future_add_to_awaited_by, future_discard_from_awaited_by])
 for _fn in _builtin_targets:
     _mark_builtin(_fn)
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's asyncio API.
+# ---------------------------------------------------------------------------
+# Preserve private aliases for names still needed at call-time inside methods.
+_TYPE_CHECKING = TYPE_CHECKING
+_cast = cast
+for _name in (
+    "TYPE_CHECKING",
+    "Any",
+    "Callable",
+    "Iterable",
+    "Iterator",
+    "cast",
+    "dataclass",
+    "typing",
+):
+    globals().pop(_name, None)
