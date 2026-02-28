@@ -10,32 +10,32 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `877`
-- `intrinsic-backed`: `8`
-- `intrinsic-partial`: `869`
+- `intrinsic-backed`: `32`
+- `intrinsic-partial`: `845`
 - `probe-only`: `0`
 - `python-only`: `0`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
-- `socket`: `intrinsic-partial`
-- `select`: `intrinsic-partial`
-- `selectors`: `intrinsic-partial`
+- `socket`: `intrinsic-backed`
+- `select`: `intrinsic-backed`
+- `selectors`: `intrinsic-backed`
 - `threading`: `intrinsic-partial`
 - `asyncio`: `intrinsic-partial`
 
 ### P1 queue (Phase 3: core-adjacent stdlib)
 - `builtins`: `intrinsic-partial`
-- `types`: `intrinsic-partial`
-- `weakref`: `intrinsic-partial`
-- `math`: `intrinsic-partial`
+- `types`: `intrinsic-backed`
+- `weakref`: `intrinsic-backed`
+- `math`: `intrinsic-backed`
 - `re`: `intrinsic-partial`
-- `struct`: `intrinsic-partial`
-- `time`: `intrinsic-partial`
+- `struct`: `intrinsic-backed`
+- `time`: `intrinsic-backed`
 - `inspect`: `intrinsic-partial`
-- `functools`: `intrinsic-partial`
-- `itertools`: `intrinsic-partial`
-- `operator`: `intrinsic-partial`
-- `contextlib`: `intrinsic-partial`
+- `functools`: `intrinsic-backed`
+- `itertools`: `intrinsic-backed`
+- `operator`: `intrinsic-backed`
+- `contextlib`: `intrinsic-backed`
 
 ### P2 queue (Phase 4: import/data/network long tail)
 - `pathlib`: `intrinsic-partial`
@@ -61,42 +61,58 @@
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
-- `_opcode`
-- `_opcode_metadata`
-- `email.quoprimime`
-- `encodings.quopri_codec`
-- `imghdr`
-- `opcode`
-- `quopri`
-- `this`
-
-### Intrinsic-backed modules (partial lowering pending)
 - `__future__`
 - `_abc`
+- `_asyncio`
+- `_bisect`
+- `_codecs`
+- `_collections`
+- `_collections_abc`
+- `_csv`
+- `_json`
+- `_opcode`
+- `_opcode_metadata`
+- `_operator`
+- `_pickle`
+- `_queue`
+- `contextlib`
+- `email.quoprimime`
+- `encodings.quopri_codec`
+- `functools`
+- `imghdr`
+- `itertools`
+- `math`
+- `opcode`
+- `operator`
+- `quopri`
+- `select`
+- `selectors`
+- `socket`
+- `struct`
+- `this`
+- `time`
+- `types`
+- `weakref`
+
+### Intrinsic-backed modules (partial lowering pending)
 - `_aix_support`
 - `_android_support`
 - `_apple_support`
 - `_ast`
 - `_ast_unparse`
-- `_asyncio`
-- `_bisect`
 - `_blake2`
 - `_bz2`
-- `_codecs`
 - `_codecs_cn`
 - `_codecs_hk`
 - `_codecs_iso2022`
 - `_codecs_jp`
 - `_codecs_kr`
 - `_codecs_tw`
-- `_collections`
-- `_collections_abc`
 - `_colorize`
 - `_compat_pickle`
 - `_compression`
 - `_contextvars`
 - `_crypt`
-- `_csv`
 - `_ctypes`
 - `_curses`
 - `_curses_panel`
@@ -118,7 +134,6 @@
 - `_intrinsics`
 - `_io`
 - `_ios_support`
-- `_json`
 - `_locale`
 - `_lsprof`
 - `_lzma`
@@ -127,10 +142,8 @@
 - `_msi`
 - `_multibytecodec`
 - `_multiprocessing`
-- `_operator`
 - `_osx_support`
 - `_overlapped`
-- `_pickle`
 - `_posixshmem`
 - `_posixsubprocess`
 - `_py_abc`
@@ -166,7 +179,6 @@
 - `_pyrepl.utils`
 - `_pyrepl.windows_console`
 - `_pyrepl.windows_eventqueue`
-- `_queue`
 - `_random`
 - `_remote_debugging`
 - `_scproxy`
@@ -285,7 +297,6 @@
 - `concurrent.interpreters._crossinterp`
 - `concurrent.interpreters._queues`
 - `configparser`
-- `contextlib`
 - `contextvars`
 - `copy`
 - `copyreg`
@@ -479,7 +490,6 @@
 - `fnmatch`
 - `fractions`
 - `ftplib`
-- `functools`
 - `gc`
 - `genericpath`
 - `getopt`
@@ -590,7 +600,6 @@
 - `inspect`
 - `io`
 - `ipaddress`
-- `itertools`
 - `json`
 - `json.__main__`
 - `json.decoder`
@@ -680,7 +689,6 @@
 - `mailbox`
 - `mailcap`
 - `marshal`
-- `math`
 - `mimetypes`
 - `mmap`
 - `modulefinder`
@@ -719,7 +727,6 @@
 - `ntpath`
 - `nturl2path`
 - `numbers`
-- `operator`
 - `optparse`
 - `os`
 - `ossaudiodev`
@@ -764,8 +771,6 @@
 - `runpy`
 - `sched`
 - `secrets`
-- `select`
-- `selectors`
 - `shelve`
 - `shlex`
 - `shutil`
@@ -773,7 +778,6 @@
 - `site`
 - `smtplib`
 - `sndhdr`
-- `socket`
 - `socketserver`
 - `spwd`
 - `sqlite3`
@@ -789,7 +793,6 @@
 - `string`
 - `string.templatelib`
 - `stringprep`
-- `struct`
 - `subprocess`
 - `sunau`
 - `symtable`
@@ -815,7 +818,6 @@
 - `test.tokenizedata.badsyntax_pep3120`
 - `textwrap`
 - `threading`
-- `time`
 - `timeit`
 - `tkinter`
 - `tkinter.__main__`
@@ -864,7 +866,6 @@
 - `turtledemo.tree`
 - `turtledemo.two_canvases`
 - `turtledemo.yinyang`
-- `types`
 - `typing`
 - `unicodedata`
 - `unittest`
@@ -892,7 +893,6 @@
 - `venv.__main__`
 - `warnings`
 - `wave`
-- `weakref`
 - `webbrowser`
 - `winreg`
 - `winsound`

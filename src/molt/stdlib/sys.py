@@ -79,7 +79,6 @@ __all__ = [
     "getdefaultencoding",
     "getfilesystemencoding",
     "getfilesystemencodeerrors",
-    "asyncgen_hooks",
     "get_asyncgen_hooks",
     "set_asyncgen_hooks",
     "exit",
@@ -849,7 +848,7 @@ def get_asyncgen_hooks() -> object:
     if not isinstance(hooks, tuple) or len(hooks) != 2:
         raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
     firstiter, finalizer = hooks
-    return asyncgen_hooks(firstiter, finalizer)
+    return _asyncgen_hooks(firstiter, finalizer)
 
 
 def set_asyncgen_hooks(
@@ -1106,3 +1105,24 @@ def audit(event: str, *args: object) -> None:
     for hook in _audit_hooks:
         if callable(hook):
             hook(event, args)
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's sys public API.
+# These are needed for type annotations, casting helpers, and intermediate
+# variables but must not appear in the module __dict__ as non-underscore
+# public names.
+# ---------------------------------------------------------------------------
+# Keep asyncgen_hooks reachable for get_asyncgen_hooks() via a private alias.
+_asyncgen_hooks = asyncgen_hooks
+for _name in (
+    "TYPE_CHECKING",
+    "cast",
+    "Callable",
+    "Iterable",
+    "raw_argv",
+    "version_obj",
+    "abiflags_obj",
+    "asyncgen_hooks",
+):
+    globals().pop(_name, None)

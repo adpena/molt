@@ -107,10 +107,10 @@
 ### 2.10 Pattern Matching (3.10+)
 | Opcode | Semantics | Status | Tier | Notes |
 | --- | --- | --- | --- | --- |
-| `MATCH_CLASS` | case C() | Missing | - | Structural matching. |
-| `MATCH_MAPPING` | case {} | Missing | - | Mapping check. |
-| `MATCH_SEQUENCE` | case [] | Missing | - | Sequence check. |
-| `MATCH_KEYS` | case {k:v} | Missing | - | Key subset check. |
+| `MATCH_CLASS` | case C() | Implemented | T1 | AST-desugared via ISINSTANCE + GETATTR + __match_args__. |
+| `MATCH_MAPPING` | case {} | Implemented | T1 | AST-desugared via ISINSTANCE(dict) + DICT_GET + sentinel checks. |
+| `MATCH_SEQUENCE` | case [] | Implemented | T1 | AST-desugared via ISINSTANCE + LEN + INDEX + SLICE. |
+| `MATCH_KEYS` | case {k:v} | Implemented | T1 | AST-desugared via DICT_GET with sentinel-based key presence checks. |
 
 ## 3. Optimization Intrinsics (Superinstructions)
 Molt may fuse ops.
@@ -118,7 +118,7 @@ Molt may fuse ops.
 - `LOAD_GLOBAL_MODULE`: Global from module dict (immutable).
 
 ## 4. TODOs
-- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): Complete `MATCH_*` lowering (Milestone 3).
+- ~~TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): Complete `MATCH_*` lowering~~ — **Implemented**: all MATCH_* semantics covered via AST desugaring (24 differential test files).
 - TODO(opcode-matrix, owner:frontend, milestone:M2, priority:P3, status:planned): Optimize `SETUP_WITH` to inline `__enter__` (Milestone 2).
 - TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): Add async generator op coverage (e.g., `ASYNC_GEN_WRAP`) and confirm lowering gaps.
 

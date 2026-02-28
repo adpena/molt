@@ -2200,6 +2200,7 @@ def _run_batch_compile_build(
     strict_mode: bool,
     extra_params: dict[str, object] | None = None,
 ) -> tuple[int, str, str, str | None]:
+    diff_caps = env.get("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
     params: dict[str, object] = {
         "file_path": file_path,
         "profile": build_profile,
@@ -2212,6 +2213,8 @@ def _run_batch_compile_build(
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
+    if diff_caps:
+        params["capabilities"] = diff_caps
     if extra_params:
         params.update(extra_params)
     attempts = 2 if strict_mode else 1
@@ -2587,6 +2590,13 @@ def _run_molt(
             "--output",
             str(output_binary),
         ]
+        # Grant standard capabilities for CPython parity in differential tests.
+        # Without these, compiled binaries cannot access the filesystem (tempfile,
+        # pathlib, os.path), environment variables, or time functions — causing
+        # spurious failures unrelated to the tested semantics.
+        diff_caps = env.get("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
+        if diff_caps:
+            build_cmd.extend(["--capabilities", diff_caps])
         if no_cache:
             build_cmd.append("--no-cache")
         if rebuild:

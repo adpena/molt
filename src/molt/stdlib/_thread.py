@@ -255,3 +255,10 @@ def interrupt_main(signum: int = 2) -> None:
     The default *signum* is ``SIGINT`` (2).
     """
     _signal_raise_signal(int(signum))
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's _thread API.
+# ---------------------------------------------------------------------------
+for _name in ("Any",):
+    globals().pop(_name, None)

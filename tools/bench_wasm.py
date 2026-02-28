@@ -678,9 +678,16 @@ def _open_log(log_path: Path | None) -> TextIO | None:
 
 
 def _python_cmd() -> list[str]:
+    """Return the command prefix for invoking Python in a uv-managed env.
+
+    Hardcodes ``--python 3.12`` to match the project's target version
+    policy and ensure ``packaging`` and other build-time dependencies
+    are available even when the harness itself runs under a bare
+    uv-managed interpreter.
+    """
     uv = shutil.which("uv")
     if uv:
-        return [uv, "run", "--python", platform.python_version(), "python3"]
+        return [uv, "run", "--python", "3.12", "python3"]
     exe = Path(sys.executable)
     if exe.exists():
         return [sys.executable]

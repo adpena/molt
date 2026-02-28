@@ -277,3 +277,10 @@ def sigwait(sigset: Iterable[int]) -> int:
     """Wait for a signal."""
     _require_cap()
     return int(_MOLT_SIGNAL_SIGWAIT(list(sigset)))
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's signal API.
+# ---------------------------------------------------------------------------
+for _name in ("Iterable",):
+    globals().pop(_name, None)

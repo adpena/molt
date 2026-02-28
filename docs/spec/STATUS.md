@@ -491,7 +491,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Generator introspection: `gi_code` is still stubbed and frame objects only expose `f_lasti`.
   (TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): implement `gi_code` + full frame objects.)
 - Comprehensions: list/set/dict comprehensions, generator expressions, and async comprehensions (async for/await) are supported.
-- Differential tests: core-language basic includes pattern matching, async generator finalization, and `while`-`else` probes; failures are expected for pattern matching/async gen until the features are implemented.
+- Implemented: structural pattern matching (`match`/`case`) via cell-based AST-to-IR desugaring — all PEP 634 pattern types (literal, variable, sequence, mapping, class, or, as, star, singleton, guard) with 24 differential test files.
+- Differential tests: core-language basic includes pattern matching, async generator finalization, and `while`-`else` probes; pattern matching is implemented; async gen finalization gaps remain.
 - Augmented assignment: slice targets (`seq[a:b] += ...`) are supported, including extended-slice length checks.
 - Exceptions: `try/except/else/finally` + `raise`/reraise + `except*` (ExceptionGroup matching/splitting/combining); `__traceback__` now returns
   traceback objects (`tb_frame`/`tb_lineno`/`tb_next`) with frame objects carrying `f_code`/`f_lineno` (see
@@ -698,7 +699,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   intrinsics (`molt_asyncio_running_loop_get`/`set`,
   `molt_asyncio_event_loop_get`/`set`,
   `molt_asyncio_event_loop_policy_get`/`set`) rather than Python globals.
-- TODO(compiler, owner:compiler, milestone:TC2, priority:P0, status:partial): fix async lowering/back-end verifier for `asyncio.gather` poll paths (dominance issues) and wasm stack-balance errors; async protocol parity tests currently fail.
+- TODO(compiler, owner:compiler, milestone:TC2, priority:P0, status:implemented): fix async lowering/back-end verifier for `asyncio.gather` poll paths — native backend now inserts pending/ready blocks in dominance-compatible order with all target blocks registered before branch emission; WASM backend pre-stores the pending return value before the If block so the conditional body has a clean stack profile.
 - Implemented: generator/async poll trampolines are task-aware (generator/coroutine/asyncgen) so wasm no longer relies on arity overrides.
 - TODO(perf, owner:compiler, milestone:TC2, priority:P2, status:planned): optimize wasm trampolines with bulk payload initialization and shared helpers to cut code size and call overhead.
 - Implemented: cached task-trampoline eligibility on function headers to avoid per-call attribute lookups.
@@ -950,9 +951,9 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (profile plumbing into frontend policy is landed; CLI diagnostics sink expansion remains).
 - TODO(compiler, owner:compiler, milestone:RT2, priority:P2, status:planned): canonical loop lowering).
 - TODO(compiler, owner:compiler, milestone:RT2, priority:P2, status:planned): dict version tag guards).
-- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (temporary hard safety gates keep dev-profile mid-end off by default unless `MOLT_MIDEND_DEV_ENABLE=1`, and keep stdlib modules out of canonicalization by default in all profiles).
-- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned): root-cause and fix stdlib mid-end miscompiles that can route missing values into runtime lookups/call sites; keep this hard safety gate until canonicalized stdlib lowering is proven stable.
-- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:planned): root-cause/fix dev-profile mid-end miscompiles before re-enabling by default; `MOLT_MIDEND_DEV_ENABLE=1` is the explicit opt-in escape hatch.
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:implemented): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (SCCP treats MISSING as non-propagatable via _SCCP_MISSING sentinel, DCE protects MISSING ops from elimination, definite-assignment verifier tracks MISSING definitions explicitly; dev-profile gate removed — mid-end runs for both dev and release profiles; stdlib gate remains until canonicalized stdlib lowering is proven stable).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause and fix stdlib mid-end miscompiles that can route missing values into runtime lookups/call sites; keep this hard safety gate until canonicalized stdlib lowering is proven stable (user-code MISSING-value fixes landed; stdlib gate remains active).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:implemented): root-cause/fix dev-profile mid-end miscompiles before re-enabling by default (SCCP/DCE/verifier hardening landed; dev-profile gate removed — mid-end enabled by default for all profiles).
 - TODO(compiler, owner:compiler, milestone:TL2, priority:P1, status:partial): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
 - TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): missing-data promotion rules).
 - TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): nullable dtype missing-data semantics)
@@ -992,8 +993,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
 - TODO(offload, owner:runtime, milestone:SL1, priority:P2, status:planned): adapter/DB contract path).
 - TODO(opcode-matrix, owner:frontend, milestone:M2, priority:P3, status:planned): Optimize `SETUP_WITH` to inline `__enter__` (Milestone 2).
-- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): Complete `MATCH_*` lowering (Milestone 3).
-- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): `MATCH_*` opcode coverage for pattern matching (see [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)).
+- Implemented: `MATCH_*` semantics via AST desugaring (PEP 634 full coverage, 24 differential test files).
+- Implemented: pattern matching (`match`/`case`) lowering with all PEP 634 pattern types.
 - TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:missing): awaitable `__aiter__` support). |
 - TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): Add async generator op coverage (e.g., `ASYNC_GEN_WRAP`) and confirm lowering gaps.
 - TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator coverage). |
@@ -1078,7 +1079,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains).
-- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:partial): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (temporary hard safety gates keep dev-profile mid-end off by default unless `MOLT_MIDEND_DEV_ENABLE=1`, and keep stdlib modules out of canonicalization by default in all profiles).
+- TODO(compiler, owner:compiler, milestone:TL2, priority:P0, status:implemented): root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (SCCP treats MISSING as non-propagatable via _SCCP_MISSING sentinel, DCE protects MISSING ops from elimination, definite-assignment verifier tracks MISSING definitions explicitly; dev-profile gate removed — mid-end runs for both dev and release profiles; stdlib gate remains until canonicalized stdlib lowering is proven stable).
 - TODO(compiler, owner:compiler, milestone:TL2, priority:P1, status:partial): restore PHI-based bool-op lowering once PHI merge semantics preserve operand objects exactly for short-circuit expressions.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): full extension/sourceless execution parity beyond capability-gated restricted-source shim hooks.)
@@ -1639,8 +1640,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(syntax, owner:frontend, milestone:LF2, priority:P2, status:planned): class lowering for `__init__` and factory classmethods (dataclass defaults now wired in stdlib).
 - TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:missing): full `with`/contextlib lowering with exception flow.
 - TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): f-string format specifiers and debug spec (`f"{x:.2f}"`, `f"{x=}"`) parity (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
-- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
-- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): structural pattern matching (`match`/`case`) lowering and semantics (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
+- Implemented: `match`/`case` lowering via cell-based PEP 634 desugaring (24 differential test files).
+- Implemented: structural pattern matching with all PEP 634 pattern types (literal, variable, sequence, mapping, class, or, as, star, singleton, guard).
 - TODO(syntax, owner:frontend, milestone:M3, priority:P3, status:missing): type alias statement (`type X = ...`) and generic class syntax (`class C[T]: ...`) coverage (see [docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md](docs/spec/areas/compat/surfaces/language/syntactic_features_matrix.md)).
 - TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
 - TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes.
