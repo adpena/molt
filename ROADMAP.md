@@ -1137,9 +1137,9 @@ Sign-off criteria:
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `aifc` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `annotationlib` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `antigravity` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.tools` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.windows_events` module stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `asyncio.windows_utils` module stub with full intrinsic-backed lowering.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio.tools re-exports graph introspection functions from asyncio; full parity pending deeper runtime integration.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio.windows_events provides ProactorEventLoop, IocpProactor, and policy re-exports; platform-gated for win32.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio.windows_utils provides PipeHandle/pipe/Popen wrappers; overlapped I/O semantics are simplified.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `audioop` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `cgi` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `cgitb` top-level stub with full intrinsic-backed lowering.
