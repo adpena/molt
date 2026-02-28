@@ -101,6 +101,7 @@ class MidendFunctionPolicy:
     enable_licm: bool
     enable_guard_hoist: bool
     budget_ms: float
+    allow_hot_promotion: bool
 
 
 @dataclass
@@ -29794,6 +29795,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             enable_licm=bool(selected["enable_licm"]),
             enable_guard_hoist=bool(selected["enable_guard_hoist"]),
             budget_ms=float(budget_ms),
+            allow_hot_promotion=bool(
+                tier_classification.allow_hot_promotion and hot_promotion_enabled
+            ),
         )
 
     def _record_midend_pass_sample(
@@ -29837,6 +29841,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         spent_ms: float,
         degraded: bool,
         degrade_events: list[dict[str, Any]],
+        round_snapshots: list[dict[str, Any]] | None = None,
     ) -> None:
         self.midend_policy_outcomes_by_function[self._active_midend_function_name] = {
             "profile": policy.profile,
@@ -29847,10 +29852,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "promoted": policy.promoted,
             "promotion_source": policy.promotion_source,
             "promotion_signal": policy.promotion_signal,
+            "allow_hot_promotion": policy.allow_hot_promotion,
             "budget_ms": round(policy.budget_ms, 3),
             "spent_ms": round(max(0.0, spent_ms), 3),
             "degraded": degraded,
             "degrade_events": list(degrade_events),
+            "round_snapshots": list(round_snapshots) if round_snapshots else [],
         }
 
     def _maybe_report_midend_stats(self) -> None:
@@ -34547,6 +34554,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         converged = False
         round_index = 0
+        round_snapshots: list[dict[str, Any]] = []
         while round_index < max_rounds:
             round_index += 1
             maybe_apply_budget_degrade(
@@ -34908,7 +34916,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
 
             rewritten_ops = step_ops
-            if rewritten_ops == step_before:
+            round_passes_run: list[str] = [
+                "simplify",
+                "sccp_edge_thread",
+                "join_canonicalize",
+            ]
+            if enable_guard_hoist:
+                round_passes_run.append("guard_hoist")
+            if enable_licm:
+                round_passes_run.append("licm")
+            round_passes_run.append("prune")
+            round_passes_run.append("verifier")
+            if not round_failures:
+                round_passes_run.append("dce")
+                if enable_cse:
+                    round_passes_run.append("cse")
+            round_changed = rewritten_ops != step_before
+            round_snapshots.append(
+                {
+                    "round": round_index,
+                    "spent_ms": round(max(0.0, spent_midend_ms()), 3),
+                    "passes_run": round_passes_run,
+                    "changed": round_changed,
+                }
+            )
+            if not round_changed:
                 converged = True
                 break
 
@@ -34928,6 +34960,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     spent_ms=spent_midend_ms(),
                     degraded=degraded,
                     degrade_events=degrade_events,
+                    round_snapshots=round_snapshots,
                 )
                 raise RuntimeError(
                     "midend deterministic fixed-point failed to converge within "
@@ -34964,6 +34997,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         spent_ms=spent_midend_ms(),
                         degraded=degraded,
                         degrade_events=degrade_events,
+                        round_snapshots=round_snapshots,
                     )
                     raise RuntimeError(
                         "midend idempotence check failed after convergence for "
@@ -35051,6 +35085,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             spent_ms=spent_midend_ms(),
             degraded=degraded,
             degrade_events=degrade_events,
+            round_snapshots=round_snapshots,
         )
         return rewritten_ops
 
