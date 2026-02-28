@@ -3,6 +3,7 @@
 import collections
 import re
 import sys
+import warnings
 
 import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -787,6 +788,56 @@ class Misc:
         if kw:
             return self.call("tk_setPalette", *_normalize_tk_options(None, **kw))
         return self.call("tk_setPalette", *args)
+
+    if sys.version_info >= (3, 13):
+
+        def tk_busy_hold(self, **kw):
+            """Indicate that the widget is busy."""
+            args = _normalize_tk_options(None, **kw) if kw else []
+            self.call("tk", "busy", "hold", self._w, *args)
+
+        tk_busy = tk_busy_hold
+
+        def tk_busy_configure(self, cnf=None, **kw):
+            """Query or modify busy options."""
+            if cnf is not None and not isinstance(cnf, dict):
+                if kw:
+                    raise TypeError(
+                        "tk_busy_configure() option query cannot be combined with "
+                        "update options"
+                    )
+                return self.call(
+                    "tk", "busy", "configure", self._w, _normalize_option_name(cnf)
+                )
+            if cnf is None and not kw:
+                return self.call("tk", "busy", "configure", self._w)
+            return self.call(
+                "tk",
+                "busy",
+                "configure",
+                self._w,
+                *_normalize_tk_options(cnf, **kw),
+            )
+
+        def tk_busy_cget(self, option):
+            """Return the value of a busy option."""
+            return self.call(
+                "tk", "busy", "cget", self._w, _normalize_option_name(option)
+            )
+
+        def tk_busy_forget(self):
+            """Release the busy hold."""
+            self.call("tk", "busy", "forget", self._w)
+
+        def tk_busy_current(self, pattern=None):
+            """Return list of widgets with busy hold."""
+            if pattern is not None:
+                return self.splitlist(self.call("tk", "busy", "current", pattern))
+            return self.splitlist(self.call("tk", "busy", "current"))
+
+        def tk_busy_status(self):
+            """Return True if widget has a busy hold."""
+            return self.getboolean(self.call("tk", "busy", "status", self._w))
 
     def focus_set(self):
         return self.call("focus", self._w)
@@ -3260,6 +3311,40 @@ class PhotoImage(Image):
             int(bool(boolean)),
         )
 
+    if sys.version_info >= (3, 13):
+
+        def copy_replace(
+            self,
+            sourceImage,
+            from_coords=None,
+            to=None,
+            shrink=False,
+            zoom=None,
+            subsample=None,
+            compositingrule=None,
+        ):
+            """Copy a region from a source image into this image."""
+            args = [str(sourceImage)]
+            if from_coords is not None:
+                args.extend(["-from"] + [str(c) for c in from_coords])
+            if to is not None:
+                args.extend(["-to"] + [str(c) for c in to])
+            if shrink:
+                args.append("-shrink")
+            if zoom is not None:
+                if isinstance(zoom, (list, tuple)):
+                    args.extend(["-zoom"] + [str(z) for z in zoom])
+                else:
+                    args.extend(["-zoom", str(zoom)])
+            if subsample is not None:
+                if isinstance(subsample, (list, tuple)):
+                    args.extend(["-subsample"] + [str(s) for s in subsample])
+                else:
+                    args.extend(["-subsample", str(subsample)])
+            if compositingrule is not None:
+                args.extend(["-compositingrule", str(compositingrule)])
+            self.tk.call(self.name, "copy", *args)
+
 
 class BitmapImage(Image):
     def __init__(self, name=None, cnf=None, master=None, **kw):
@@ -3386,12 +3471,30 @@ class Variable:
         return self.trace_add(mode, callback)
 
     def trace_variable(self, mode, callback):
+        if sys.version_info >= (3, 14):
+            warnings.warn(
+                "trace_variable() is deprecated, use trace_add() instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         return self.trace_add(mode, callback)
 
     def trace_vdelete(self, mode, cbname):
+        if sys.version_info >= (3, 14):
+            warnings.warn(
+                "trace_vdelete() is deprecated, use trace_remove() instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         return self.trace_remove(mode, cbname)
 
     def trace_vinfo(self):
+        if sys.version_info >= (3, 14):
+            warnings.warn(
+                "trace_vinfo() is deprecated, use trace_info() instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         return self.trace_info()
 
 
