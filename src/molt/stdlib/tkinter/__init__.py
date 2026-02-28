@@ -15,6 +15,20 @@ _EventTypeBase = _enum.Enum
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_molt_tk_event_int = _require_intrinsic("molt_tk_event_int", globals())
+_molt_tk_event_build_from_args = _require_intrinsic(
+    "molt_tk_event_build_from_args", globals()
+)
+_molt_tk_event_state_decode = _require_intrinsic(
+    "molt_tk_event_state_decode", globals()
+)
+_molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict", globals())
+_molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args", globals())
+_molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge", globals())
+_molt_tk_normalize_option = _require_intrinsic("molt_tk_normalize_option", globals())
+_molt_tk_normalize_delay_ms = _require_intrinsic(
+    "molt_tk_normalize_delay_ms", globals()
+)
 
 
 NO_VALUE = object()
@@ -113,7 +127,7 @@ def _require_process_spawn_capability():
 
 
 def _normalize_option_name(name):
-    return name if name.startswith("-") else f"-{name}"
+    return _molt_tk_normalize_option(name)
 
 
 def _normalize_tk_options(cnf=None, **kw):
@@ -134,25 +148,11 @@ def _normalize_tk_options(cnf=None, **kw):
 
 
 def _flatten(seq):
-    out = []
-    for item in seq:
-        if isinstance(item, (tuple, list)):
-            out.extend(_flatten(item))
-        elif item is not None:
-            out.append(item)
-    return tuple(out)
+    return _molt_tk_flatten_args(seq)
 
 
 def _cnfmerge(cnfs):
-    if isinstance(cnfs, dict):
-        return cnfs
-    if cnfs is None or isinstance(cnfs, str):
-        return cnfs
-    merged = {}
-    for cfg in _flatten(cnfs):
-        if isinstance(cfg, dict):
-            merged.update(cfg)
-    return merged
+    return _molt_tk_cnfmerge(cnfs, None)
 
 
 def _join(value):
@@ -186,20 +186,9 @@ def _stringify(value):
 
 
 def _splitdict(tk, v, cut_minus=True, conv=None):
-    items = tk.splitlist(v)
-    if len(items) % 2:
-        raise RuntimeError(
-            "Tcl list representing a dict is expected to contain an even number of elements"
-        )
-    out = {}
-    it = iter(items)
-    for key, value in zip(it, it):
-        text_key = str(key)
-        if cut_minus and text_key and text_key[0] == "-":
-            text_key = text_key[1:]
-        if conv is not None:
-            value = conv(value)
-        out[text_key] = value
+    out = _molt_tk_splitdict(v, cut_minus)
+    if conv is not None:
+        out = {k: conv(val) for k, val in out.items()}
     return out
 
 
@@ -232,11 +221,7 @@ def _parse_version(version):
 
 
 def _normalize_delay_ms(delay_ms):
-    if isinstance(delay_ms, (int, float)):
-        return int(delay_ms)
-    if isinstance(delay_ms, str) and delay_ms.isdigit():
-        return int(delay_ms)
-    raise TypeError("after delay must be an integer")
+    return _molt_tk_normalize_delay_ms(delay_ms)
 
 
 def _normalize_bind_add(add):
@@ -340,77 +325,24 @@ def _next_variable_name():
 
 
 def _event_int(widget, value):
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.lstrip("-").isdigit():
-        return widget.tk.getint(value)
-    return value
+    return _molt_tk_event_int(value)
 
 
 def _event_from_subst_args(widget, event_args):
-    args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
-    if args is None:
+    widget_path = getattr(widget, "_w", "")
+    result = _molt_tk_event_build_from_args(widget_path, event_args)
+    if result is None:
         return None
-
-    if isinstance(args, list):
-        args = tuple(args)
-    if not isinstance(args, tuple) or len(args) != len(_SUBST_FORMAT):
-        return None
-
-    (
-        nsign,
-        b,
-        f,
-        h,
-        k,
-        s,
-        t,
-        w,
-        x,
-        y,
-        a,
-        e_send,
-        keysym,
-        keysym_num,
-        widget_path,
-        ev_type,
-        x_root,
-        y_root,
-        delta,
-    ) = args
-
     event = Event()
-    event.serial = _event_int(widget, nsign)
-    event.num = _event_int(widget, b)
-    if f not in ("", None):
-        getboolean = getattr(widget.tk, "getboolean", None)
-        if callable(getboolean):
-            event.focus = getboolean(f)
-    event.height = _event_int(widget, h)
-    event.keycode = _event_int(widget, k)
-    event.state = _event_int(widget, s)
-    event.time = _event_int(widget, t)
-    event.width = _event_int(widget, w)
-    event.x = _event_int(widget, x)
-    event.y = _event_int(widget, y)
-    event.char = a
-    if e_send not in ("", None):
-        getboolean = getattr(widget.tk, "getboolean", None)
-        if callable(getboolean):
-            event.send_event = getboolean(e_send)
-    event.keysym = keysym
-    event.keysym_num = _event_int(widget, keysym_num)
-    event.type = ev_type
-    if isinstance(widget_path, str) and widget_path:
-        event.widget = widget if widget_path == widget._w else widget_path
+    for key, value in result.items():
+        setattr(event, key, value)
+    # Resolve widget reference: if the event's widget path matches
+    # this widget, use the widget object instead of the path string.
+    evt_widget = getattr(event, "widget", None)
+    if isinstance(evt_widget, str) and evt_widget:
+        event.widget = widget if evt_widget == widget_path else evt_widget
     else:
         event.widget = widget
-    event.x_root = _event_int(widget, x_root)
-    event.y_root = _event_int(widget, y_root)
-    if delta in ("", None):
-        event.delta = 0
-    else:
-        event.delta = _event_int(widget, delta)
     return event
 
 
@@ -433,29 +365,7 @@ class Event:
         if state_value == 0:
             attrs.pop("state", None)
         elif isinstance(state_value, int):
-            mods = (
-                "Shift",
-                "Lock",
-                "Control",
-                "Mod1",
-                "Mod2",
-                "Mod3",
-                "Mod4",
-                "Mod5",
-                "Button1",
-                "Button2",
-                "Button3",
-                "Button4",
-                "Button5",
-            )
-            state_bits = state_value
-            parts = []
-            for index, name in enumerate(mods):
-                if state_bits & (1 << index):
-                    parts.append(name)
-            state_bits = state_bits & ~((1 << len(mods)) - 1)
-            if state_bits or not parts:
-                parts.append(hex(state_bits))
+            parts = _molt_tk_event_state_decode(state_value)
             attrs["state"] = "|".join(parts)
 
         if attrs.get("delta") == 0:

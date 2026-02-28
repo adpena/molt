@@ -241,7 +241,11 @@ fn safe_repr_inner(
                     })
                     .collect();
                 repr_elems.sort();
-                (format!("{{{}}}", repr_elems.join(", ")), readable, recursive)
+                (
+                    format!("{{{}}}", repr_elems.join(", ")),
+                    readable,
+                    recursive,
+                )
             }
         }
         TYPE_ID_FROZENSET => {
@@ -614,11 +618,7 @@ fn format_int_underscored(i: i64) -> String {
         }
         result.push(*ch);
     }
-    if i < 0 {
-        format!("-{result}")
-    } else {
-        result
-    }
+    if i < 0 { format!("-{result}") } else { result }
 }
 
 // ─── public intrinsics ──────────────────────────────────────────────────────
@@ -650,7 +650,14 @@ pub extern "C" fn molt_pprint_format(
         let depth_val = i64_from_bits_default(depth, -1);
         let compact_val = bool_from_bits_default(compact, false);
         let result = pformat_impl(
-            _py, obj_bits, indent_val, width_val, depth_val, compact_val, true, false,
+            _py,
+            obj_bits,
+            indent_val,
+            width_val,
+            depth_val,
+            compact_val,
+            true,
+            false,
         );
         alloc_string_result(_py, &result)
     })

@@ -134,8 +134,7 @@ impl LevelNames {
     }
 }
 
-static LEVEL_NAMES: LazyLock<Mutex<LevelNames>> =
-    LazyLock::new(|| Mutex::new(LevelNames::new()));
+static LEVEL_NAMES: LazyLock<Mutex<LevelNames>> = LazyLock::new(|| Mutex::new(LevelNames::new()));
 
 // ── LogRecord ────────────────────────────────────────────────────────────────
 
@@ -404,10 +403,7 @@ impl FormatterState {
         let result = self.apply_format(record, &message, &asctime);
 
         let mut s = result;
-        if !record.exc_info.is_empty()
-            && record.exc_info != "None"
-            && record.exc_info != "False"
-        {
+        if !record.exc_info.is_empty() && record.exc_info != "None" && record.exc_info != "False" {
             if let Some(ref exc_text) = record.exc_text {
                 if !exc_text.is_empty() {
                     s.push('\n');
@@ -424,33 +420,17 @@ impl FormatterState {
         s
     }
 
-    fn apply_format(
-        &self,
-        record: &LogRecordState,
-        message: &str,
-        asctime: &str,
-    ) -> String {
+    fn apply_format(&self, record: &LogRecordState, message: &str, asctime: &str) -> String {
         match self.style {
-            FormatStyle::Percent => {
-                percent_format(&self.fmt, record, message, asctime)
-            }
-            FormatStyle::StrFormat => {
-                strformat_format(&self.fmt, record, message, asctime)
-            }
-            FormatStyle::Dollar => {
-                dollar_format(&self.fmt, record, message, asctime)
-            }
+            FormatStyle::Percent => percent_format(&self.fmt, record, message, asctime),
+            FormatStyle::StrFormat => strformat_format(&self.fmt, record, message, asctime),
+            FormatStyle::Dollar => dollar_format(&self.fmt, record, message, asctime),
         }
     }
 }
 
 /// Apply CPython-style `%(key)s` / `%(key)d` / `%(key)f` formatting for log records.
-fn percent_format(
-    fmt: &str,
-    record: &LogRecordState,
-    message: &str,
-    asctime: &str,
-) -> String {
+fn percent_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
     let mut out = String::with_capacity(fmt.len() + message.len());
     let chars: Vec<char> = fmt.chars().collect();
     let mut idx = 0;
@@ -521,12 +501,7 @@ fn percent_format(
 }
 
 /// Apply `{key}` style formatting for log records.
-fn strformat_format(
-    fmt: &str,
-    record: &LogRecordState,
-    message: &str,
-    asctime: &str,
-) -> String {
+fn strformat_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
     let mut out = String::with_capacity(fmt.len() + message.len());
     let chars: Vec<char> = fmt.chars().collect();
     let mut idx = 0;
@@ -573,12 +548,7 @@ fn strformat_format(
 }
 
 /// Apply `$key` / `${key}` style formatting for log records.
-fn dollar_format(
-    fmt: &str,
-    record: &LogRecordState,
-    message: &str,
-    asctime: &str,
-) -> String {
+fn dollar_format(fmt: &str, record: &LogRecordState, message: &str, asctime: &str) -> String {
     let mut out = String::with_capacity(fmt.len() + message.len());
     let chars: Vec<char> = fmt.chars().collect();
     let mut idx = 0;
@@ -605,7 +575,10 @@ fn dollar_format(
                 out.push(chars[idx]);
                 idx += 1;
             }
-        } else if chars[idx] == '$' && idx + 1 < chars.len() && (chars[idx + 1].is_alphanumeric() || chars[idx + 1] == '_') {
+        } else if chars[idx] == '$'
+            && idx + 1 < chars.len()
+            && (chars[idx + 1].is_alphanumeric() || chars[idx + 1] == '_')
+        {
             // $key form — consume identifier chars
             let start = idx + 1;
             let mut end = start;
@@ -624,12 +597,7 @@ fn dollar_format(
     out
 }
 
-fn lookup_record_field(
-    record: &LogRecordState,
-    key: &str,
-    message: &str,
-    asctime: &str,
-) -> String {
+fn lookup_record_field(record: &LogRecordState, key: &str, message: &str, asctime: &str) -> String {
     match key {
         "name" => record.name.clone(),
         "msg" => record.msg.clone(),
@@ -778,11 +746,7 @@ pub extern "C" fn molt_logging_formatter_new(
             "{" => FormatStyle::StrFormat,
             "$" => FormatStyle::Dollar,
             _ => {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "Style must be one of: %, {, $",
-                );
+                return raise_exception::<u64>(_py, "ValueError", "Style must be one of: %, {, $");
             }
         };
 
@@ -807,10 +771,7 @@ pub extern "C" fn molt_logging_formatter_new(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_formatter_format(
-    formatter_bits: u64,
-    record_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_formatter_format(formatter_bits: u64, record_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fmt_id) = handle_from_bits(_py, formatter_bits, "Formatter") else {
             return MoltObject::none().bits();
@@ -1086,10 +1047,7 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
 // ── StreamHandler intrinsics ─────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_new(
-    stream_bits: u64,
-    level_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let stream_target = if obj_from_bits(stream_bits).is_none() {
@@ -1114,10 +1072,7 @@ pub extern "C" fn molt_logging_stream_handler_new(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_emit(
-    handler_bits: u64,
-    record_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "StreamHandler") else {
             return MoltObject::none().bits();
@@ -1163,11 +1118,9 @@ pub extern "C" fn molt_logging_stream_handler_emit(
                                 &crate::runtime_state(_py).interned.write_name,
                                 b"write",
                             );
-                            if let Some(write_fn) = crate::attr_lookup_ptr_allow_missing(
-                                _py,
-                                stream_ptr,
-                                write_name,
-                            ) {
+                            if let Some(write_fn) =
+                                crate::attr_lookup_ptr_allow_missing(_py, stream_ptr, write_name)
+                            {
                                 let result = crate::call_callable1(_py, write_fn, msg_bits);
                                 if !obj_from_bits(result).is_none() {
                                     dec_ref_bits(_py, result);
@@ -1267,10 +1220,7 @@ pub extern "C" fn molt_logging_logger_set_level(handle_bits: u64, level_bits: u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_logger_add_handler(
-    logger_bits: u64,
-    handler_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_logger_add_handler(logger_bits: u64, handler_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::none().bits();
@@ -1291,10 +1241,7 @@ pub extern "C" fn molt_logging_logger_add_handler(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_logger_remove_handler(
-    logger_bits: u64,
-    handler_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_logger_remove_handler(logger_bits: u64, handler_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::none().bits();
@@ -1413,7 +1360,11 @@ pub extern "C" fn molt_logging_logger_log(
                     continue;
                 }
                 let formatted = handler.format_record(record);
-                (formatted, handler.stream_target, handler.kind == HandlerKind::Stream)
+                (
+                    formatted,
+                    handler.stream_target,
+                    handler.kind == HandlerKind::Stream,
+                )
             };
 
             if is_stream {
@@ -1433,11 +1384,10 @@ pub extern "C" fn molt_logging_logger_log(
                                         b"write",
                                     );
                                     if let Some(write_fn) = crate::attr_lookup_ptr_allow_missing(
-                                        _py,
-                                        stream_ptr,
-                                        write_name,
+                                        _py, stream_ptr, write_name,
                                     ) {
-                                        let result = crate::call_callable1(_py, write_fn, msg_bits_val);
+                                        let result =
+                                            crate::call_callable1(_py, write_fn, msg_bits_val);
                                         if !obj_from_bits(result).is_none() {
                                             dec_ref_bits(_py, result);
                                         }
@@ -1469,10 +1419,7 @@ pub extern "C" fn molt_logging_logger_log(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_logger_is_enabled_for(
-    logger_bits: u64,
-    level_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_logger_is_enabled_for(logger_bits: u64, level_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::from_bool(false).bits();
@@ -1516,8 +1463,7 @@ pub extern "C" fn molt_logging_logger_drop(handle_bits: u64) -> u64 {
 // ── Manager / root logger ────────────────────────────────────────────────────
 
 /// The root logger handle.  Created lazily on first access.
-static ROOT_LOGGER_HANDLE: LazyLock<Mutex<Option<i64>>> =
-    LazyLock::new(|| Mutex::new(None));
+static ROOT_LOGGER_HANDLE: LazyLock<Mutex<Option<i64>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Named logger cache: name -> handle.
 static LOGGER_CACHE: LazyLock<Mutex<HashMap<String, i64>>> =
