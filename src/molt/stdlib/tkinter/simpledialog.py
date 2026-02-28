@@ -11,45 +11,41 @@ _MOLT_TK_SIMPLEDIALOG_QUERY = _require_intrinsic(
 
 
 def _place_window(w, parent=None):
-    try:
-        w.wm_withdraw()
-        w.update_idletasks()
-        minwidth = w.winfo_reqwidth()
-        minheight = w.winfo_reqheight()
-        maxwidth = w.winfo_vrootwidth()
-        maxheight = w.winfo_vrootheight()
-        if parent is not None and parent.winfo_ismapped():
-            x = parent.winfo_rootx() + (parent.winfo_width() - minwidth) // 2
-            y = parent.winfo_rooty() + (parent.winfo_height() - minheight) // 2
-            vrootx = w.winfo_vrootx()
-            vrooty = w.winfo_vrooty()
-            x = min(x, vrootx + maxwidth - minwidth)
-            x = max(x, vrootx)
-            y = min(y, vrooty + maxheight - minheight)
-            y = max(y, vrooty)
-            if getattr(w, "_windowingsystem", "") == "aqua":
-                y = max(y, 22)
-        else:
-            x = (w.winfo_screenwidth() - minwidth) // 2
-            y = (w.winfo_screenheight() - minheight) // 2
-        w.wm_maxsize(maxwidth, maxheight)
-        w.wm_geometry(f"+{x}+{y}")
-        w.wm_deiconify()
-    except Exception:  # noqa: BLE001
-        pass
+    w.wm_withdraw()
+    w.update_idletasks()
+    minwidth = w.winfo_reqwidth()
+    minheight = w.winfo_reqheight()
+    maxwidth = w.winfo_vrootwidth()
+    maxheight = w.winfo_vrootheight()
+    if parent is not None and parent.winfo_ismapped():
+        x = parent.winfo_rootx() + (parent.winfo_width() - minwidth) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - minheight) // 2
+        vrootx = w.winfo_vrootx()
+        vrooty = w.winfo_vrooty()
+        x = min(x, vrootx + maxwidth - minwidth)
+        x = max(x, vrootx)
+        y = min(y, vrooty + maxheight - minheight)
+        y = max(y, vrooty)
+        if getattr(w, "_windowingsystem", "") == "aqua":
+            y = max(y, 22)
+    else:
+        x = (w.winfo_screenwidth() - minwidth) // 2
+        y = (w.winfo_screenheight() - minheight) // 2
+    w.wm_maxsize(maxwidth, maxheight)
+    w.wm_geometry(f"+{x}+{y}")
+    w.wm_deiconify()
     return None
 
 
 def _setup_dialog(w):
-    try:
-        if getattr(w, "_windowingsystem", "") == "aqua":
-            w.tk.call(
-                "::tk::unsupported::MacWindowStyle", "style", w, "moveableModal", ""
-            )
-        elif getattr(w, "_windowingsystem", "") == "x11":
-            w.wm_attributes("-type", "dialog")
-    except Exception:  # noqa: BLE001
-        pass
+    if getattr(w, "_windowingsystem", "") == "aqua":
+        call = getattr(getattr(w, "tk", None), "call", None)
+        if callable(call):
+            call("::tk::unsupported::MacWindowStyle", "style", w, "moveableModal", "")
+    elif getattr(w, "_windowingsystem", "") == "x11":
+        wm_attributes = getattr(w, "wm_attributes", None)
+        if callable(wm_attributes):
+            wm_attributes("-type", "dialog")
     return None
 
 
