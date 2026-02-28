@@ -25,6 +25,7 @@ struct OnceKey {
 
 /// Key for the "default" / "module" registry:
 ///   (message_text, category_name, lineno).
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DefaultKey {
     message: String,

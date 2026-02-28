@@ -49,40 +49,35 @@ class DndHandler:
         if root is None:
             return
 
-        try:
-            root.__dnd  # noqa: B018
+        if hasattr(root, "_DndHandler__dnd"):
             return
-        except AttributeError:
-            root.__dnd = self
-            self.root = root
+        root.__dnd = self
+        self.root = root
 
         button = self.initial_button
         if button is None:
             return
 
         self.release_pattern = f"<B{button}-ButtonRelease-{button}>"
-        try:
-            self.save_cursor = widget["cursor"] or ""
-        except Exception:  # noqa: BLE001
+        getitem = getattr(widget, "__getitem__", None)
+        if callable(getitem):
+            self.save_cursor = getitem("cursor") or ""
+        else:
             self.save_cursor = ""
 
         bind = getattr(widget, "bind", None)
         if callable(bind):
             bind(self.release_pattern, self.on_release)
             bind("<Motion>", self.on_motion)
-        try:
-            widget["cursor"] = "hand2"
-        except Exception:  # noqa: BLE001
-            pass
+        setitem = getattr(widget, "__setitem__", None)
+        if callable(setitem):
+            setitem("cursor", "hand2")
 
     def __del__(self):
         root = self.root
         self.root = None
-        if root is not None:
-            try:
-                del root.__dnd
-            except AttributeError:
-                pass
+        if root is not None and hasattr(root, "_DndHandler__dnd"):
+            del root.__dnd
 
     def on_motion(self, event):
         widget = self.initial_widget
@@ -135,41 +130,36 @@ class DndHandler:
         widget = self.initial_widget
         root = self.root
 
-        try:
-            if root is not None:
-                try:
-                    del root.__dnd
-                except AttributeError:
-                    pass
-            if widget is not None:
-                unbind = getattr(widget, "unbind", None)
-                if callable(unbind):
-                    if self.release_pattern:
-                        unbind(self.release_pattern)
-                    unbind("<Motion>")
-                try:
-                    widget["cursor"] = self.save_cursor
-                except Exception:  # noqa: BLE001
-                    pass
+        if root is not None and hasattr(root, "_DndHandler__dnd"):
+            del root.__dnd
+        if widget is not None:
+            unbind = getattr(widget, "unbind", None)
+            if callable(unbind):
+                if self.release_pattern:
+                    unbind(self.release_pattern)
+                unbind("<Motion>")
+            setitem = getattr(widget, "__setitem__", None)
+            if callable(setitem):
+                setitem("cursor", self.save_cursor)
 
-            self.target = None
-            self.source = None
-            self.initial_widget = None
-            self.root = None
+        self.target = None
+        self.source = None
+        self.initial_widget = None
+        self.root = None
 
-            if target is not None:
-                if commit:
-                    commit_fn = getattr(target, "dnd_commit", None)
-                    if callable(commit_fn):
-                        commit_fn(source, event)
-                else:
-                    leave = getattr(target, "dnd_leave", None)
-                    if callable(leave):
-                        leave(source, event)
-        finally:
-            end = getattr(source, "dnd_end", None)
-            if callable(end):
-                end(target, event)
+        if target is not None:
+            if commit:
+                commit_fn = getattr(target, "dnd_commit", None)
+                if callable(commit_fn):
+                    commit_fn(source, event)
+            else:
+                leave = getattr(target, "dnd_leave", None)
+                if callable(leave):
+                    leave(source, event)
+
+        end = getattr(source, "dnd_end", None)
+        if callable(end):
+            end(target, event)
         return target
 
 

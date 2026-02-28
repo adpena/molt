@@ -8,12 +8,9 @@ import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
 from .constants import *  # noqa: F403
 
-try:
-    import enum as _enum
-except Exception:  # noqa: BLE001
-    _enum = None
+import enum as _enum
 
-_EventTypeBase = _enum.Enum if _enum is not None else object
+_EventTypeBase = _enum.Enum
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
@@ -52,12 +49,11 @@ _SPACE_RE = re.compile(r"([\s])", re.ASCII)
 
 
 def _require_tk_callable(attr):
-    try:
-        value = getattr(_tkimpl, attr)
-    except Exception as exc:  # noqa: BLE001
+    value = getattr(_tkimpl, attr, None)
+    if value is None:
         raise RuntimeError(
             f"tkinter requires _tkinter.{attr} in the intrinsic runtime surface"
-        ) from exc
+        )
     if not callable(value):
         raise RuntimeError(
             f"tkinter requires callable _tkinter.{attr} in the intrinsic runtime surface"
@@ -236,10 +232,11 @@ def _parse_version(version):
 
 
 def _normalize_delay_ms(delay_ms):
-    try:
+    if isinstance(delay_ms, (int, float)):
         return int(delay_ms)
-    except Exception as exc:  # noqa: BLE001
-        raise TypeError("after delay must be an integer") from exc
+    if isinstance(delay_ms, str) and delay_ms.isdigit():
+        return int(delay_ms)
+    raise TypeError("after delay must be an integer")
 
 
 def _normalize_bind_add(add):
@@ -317,10 +314,9 @@ def _get_temp_root():
 
 def _destroy_temp_root(master):
     if getattr(master, "_temporary", False):
-        try:
-            master.destroy()
-        except TclError:
-            pass
+        destroy = getattr(master, "destroy", None)
+        if callable(destroy):
+            destroy()
 
 
 def _tkerror(err):
@@ -329,10 +325,10 @@ def _tkerror(err):
 
 
 def _exit(code=0):
-    try:
+    if isinstance(code, (int, float)):
         code = int(code)
-    except ValueError:
-        pass
+    elif isinstance(code, str) and code.lstrip("-").isdigit():
+        code = int(code)
     raise SystemExit(code)
 
 
@@ -344,16 +340,16 @@ def _next_variable_name():
 
 
 def _event_int(widget, value):
-    try:
-        return widget.tk.getint(value)
-    except Exception:  # noqa: BLE001
+    if isinstance(value, int):
         return value
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return widget.tk.getint(value)
+    return value
 
 
 def _event_from_subst_args(widget, event_args):
-    try:
-        args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
-    except Exception:  # noqa: BLE001
+    args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
+    if args is None:
         return None
 
     if isinstance(args, list):
@@ -386,10 +382,10 @@ def _event_from_subst_args(widget, event_args):
     event = Event()
     event.serial = _event_int(widget, nsign)
     event.num = _event_int(widget, b)
-    try:
-        event.focus = widget.tk.getboolean(f)
-    except Exception:  # noqa: BLE001
-        pass
+    if f not in ("", None):
+        getboolean = getattr(widget.tk, "getboolean", None)
+        if callable(getboolean):
+            event.focus = getboolean(f)
     event.height = _event_int(widget, h)
     event.keycode = _event_int(widget, k)
     event.state = _event_int(widget, s)
@@ -398,10 +394,10 @@ def _event_from_subst_args(widget, event_args):
     event.x = _event_int(widget, x)
     event.y = _event_int(widget, y)
     event.char = a
-    try:
-        event.send_event = widget.tk.getboolean(e_send)
-    except Exception:  # noqa: BLE001
-        pass
+    if e_send not in ("", None):
+        getboolean = getattr(widget.tk, "getboolean", None)
+        if callable(getboolean):
+            event.send_event = getboolean(e_send)
     event.keysym = keysym
     event.keysym_num = _event_int(widget, keysym_num)
     event.type = ev_type
@@ -411,10 +407,10 @@ def _event_from_subst_args(widget, event_args):
         event.widget = widget
     event.x_root = _event_int(widget, x_root)
     event.y_root = _event_int(widget, y_root)
-    try:
-        event.delta = widget.tk.getint(delta)
-    except Exception:  # noqa: BLE001
-        event.delta = 0 if delta in ("", None) else delta
+    if delta in ("", None):
+        event.delta = 0
+    else:
+        event.delta = _event_int(widget, delta)
     return event
 
 
@@ -559,9 +555,10 @@ class Misc:
         if command_name is None:
             return None
         name = str(command_name)
-        try:
-            self.deletecommand(name)
-        except Exception:  # noqa: BLE001
+        deletecommand = getattr(self, "deletecommand", None)
+        if callable(deletecommand):
+            deletecommand(name)
+        else:
             root = getattr(self, "tk", None)
             if root is not None and hasattr(root, "_registered_commands"):
                 root._registered_commands.discard(name)
@@ -1420,17 +1417,9 @@ class CallWrapper:
         self.widget = widget
 
     def __call__(self, *args):
-        try:
-            if self.subst:
-                args = self.subst(*args)
-            return self.func(*args)
-        except SystemExit:
-            raise
-        except Exception:  # noqa: BLE001
-            reporter = getattr(self.widget, "_report_exception", None)
-            if callable(reporter):
-                reporter()
-            return None
+        if self.subst:
+            args = self.subst(*args)
+        return self.func(*args)
 
 
 class XView:
@@ -1838,12 +1827,9 @@ class Tk(Wm):
         return None
 
     def report_callback_exception(self, exc, val, tb):
-        try:
-            import traceback as _traceback
+        import traceback as _traceback
 
-            _traceback.print_exception(exc, val, tb, file=sys.stderr)
-        except Exception:  # noqa: BLE001
-            return None
+        _traceback.print_exception(exc, val, tb, file=sys.stderr)
 
     def _next_widget_path(self, widget_command):
         base = widget_command.replace("::", "_").replace("-", "_")
@@ -1856,11 +1842,10 @@ class Tk(Wm):
         return self.call("wm", command, self._w, *args)
 
     def _purge_registered_commands(self):
-        for command_name in list(self._registered_commands):
-            try:
-                _tkimpl.deletecommand(self._tk_app, command_name)
-            except Exception:  # noqa: BLE001
-                pass
+        deletecommand = getattr(_tkimpl, "deletecommand", None)
+        if callable(deletecommand):
+            for command_name in list(self._registered_commands):
+                deletecommand(self._tk_app, command_name)
         self._registered_commands.clear()
         self._protocol_commands.clear()
 
@@ -2328,10 +2313,11 @@ class Canvas(_CoreWidget):
 
     def index(self, *args):
         result = self._call_widget("index", *args)
-        try:
-            return self.getint(result)
-        except Exception:  # noqa: BLE001
+        if isinstance(result, int):
             return result
+        if isinstance(result, str) and result.lstrip("-").isdigit():
+            return self.getint(result)
+        return result
 
     def insert(self, *args):
         return self._call_widget("insert", *args)
@@ -3274,10 +3260,11 @@ class Image:
 
     def __del__(self):
         if getattr(self, "name", None):
-            try:
-                self.tk.call("image", "delete", self.name)
-            except Exception:  # noqa: BLE001
-                pass
+            tk = getattr(self, "tk", None)
+            if tk is not None:
+                call = getattr(tk, "call", None)
+                if callable(call):
+                    call("image", "delete", self.name)
 
     def __setitem__(self, key, value):
         self.tk.call(self.name, "configure", _normalize_option_name(key), value)
@@ -3408,21 +3395,19 @@ class Variable:
         name = getattr(self, "_name", None)
         if tk is None or name is None:
             return
-        try:
-            _TK_TRACE_CLEAR(tk._tk_app, name)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if tk.getboolean(tk.call("info", "exists", name)):
+        tk_app = getattr(tk, "_tk_app", None)
+        if tk_app is not None:
+            _TK_TRACE_CLEAR(tk_app, name)
+        getboolean = getattr(tk, "getboolean", None)
+        call = getattr(tk, "call", None)
+        if callable(getboolean) and callable(call):
+            if getboolean(call("info", "exists", name)):
                 tk.globalunsetvar(name)
-        except Exception:  # noqa: BLE001
-            pass
         if self._tclCommands is not None:
-            for command_name in self._tclCommands:
-                try:
-                    tk.deletecommand(command_name)
-                except Exception:  # noqa: BLE001
-                    pass
+            deletecommand = getattr(tk, "deletecommand", None)
+            if callable(deletecommand):
+                for command_name in self._tclCommands:
+                    deletecommand(command_name)
             self._tclCommands = None
 
     def __str__(self):
@@ -3448,14 +3433,12 @@ class Variable:
     def _register(self, callback):
         wrapped = CallWrapper(callback, None, self._root).__call__
         command_name = repr(id(wrapped))
-        try:
-            callback = callback.__func__
-        except AttributeError:
-            pass
-        try:
-            command_name = command_name + callback.__name__
-        except AttributeError:
-            pass
+        func = getattr(callback, "__func__", None)
+        if func is not None:
+            callback = func
+        cb_name = getattr(callback, "__name__", None)
+        if cb_name is not None:
+            command_name = command_name + cb_name
         self._tk.createcommand(command_name, wrapped)
         if self._tclCommands is None:
             self._tclCommands = []
@@ -3479,11 +3462,8 @@ class Variable:
         mode_name = _normalize_trace_mode(mode)
         command_name = str(cbname)
         _TK_TRACE_REMOVE(self._tk._tk_app, self._name, mode_name, command_name)
-        if self._tclCommands is not None:
-            try:
-                self._tclCommands.remove(command_name)
-            except ValueError:
-                pass
+        if self._tclCommands is not None and command_name in self._tclCommands:
+            self._tclCommands.remove(command_name)
         return None
 
     def trace_info(self):
