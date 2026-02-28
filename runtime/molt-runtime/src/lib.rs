@@ -218,6 +218,8 @@ pub(crate) use crate::builtins::io::{
 pub use crate::builtins::ipaddress::*;
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
+pub use crate::builtins::asyncio_core::*;
+pub use crate::builtins::asyncio_queue::*;
 pub use crate::builtins::base64_mod::*;
 pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::logging_ext::*;
@@ -257,6 +259,7 @@ pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
+pub use crate::builtins::tkinter_core::*;
 pub use crate::builtins::warnings_ext::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
