@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-26
+Last updated: 2026-02-28
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -12,6 +12,26 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
+
+## Asyncio & Tkinter Parity Sprint (2026-02-28)
+- Completed: asyncio pipe transports (`connect_read_pipe`/`connect_write_pipe`)
+  implemented with 11 new pipe transport Rust intrinsics.
+- Completed: 42 new Rust intrinsics for asyncio Future/Event/Lock/Semaphore/Queue
+  state machines, eliminating all 97 bare `except` blocks from asyncio shim.
+- Completed: WASM capability gating for 6 asyncio I/O operations
+  (`connect_read_pipe`, `connect_write_pipe`, `create_unix_connection`,
+  `create_unix_server`, `open_unix_connection`, `start_unix_server`).
+- Completed: Transport/Protocol base classes added to asyncio surface.
+- Completed: 3.13 version-specific APIs (`as_completed` async iter,
+  `Queue.shutdown`) and 3.14 version-specific APIs (`get_event_loop`
+  `RuntimeError`, child watcher removal, policy deprecation) added with
+  explicit version gating.
+- Completed: tkinter 10 Rust intrinsics wired (event parsing, Tcl list/dict
+  conversion, hex color validation, option normalization).
+- Completed: all tkinter strict mode violations resolved.
+- Completed: tkinter 3.13 (`tk_busy_*`, `PhotoImage.copy_replace`) and 3.14
+  (`trace_variable` deprecation) version-specific APIs added.
+- Completed: tkinter 100% submodule coverage achieved.
 
 ## Stdlib Intrinsics Sprint (2026-02-25)
 - Completed: major stdlib intrinsics sprint adding ~85 new Rust intrinsics across
@@ -259,6 +279,14 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   surface (`TkappType`, call/event helpers, variable helpers, conversion
   helpers, and config helpers) directly to `molt_tk_*` intrinsics with no
   host-Python fallback path.
+- Implemented: 10 Rust intrinsics wired for tkinter (event parsing, Tcl
+  list/dict conversion, hex color validation, option normalization); all strict
+  mode violations resolved.
+- Implemented: tkinter 3.13 version-gated APIs (`tk_busy_*`,
+  `PhotoImage.copy_replace`) and 3.14 version-gated APIs (`trace_variable`
+  deprecation) added with explicit version gating.
+- Implemented: tkinter 100% submodule coverage achieved across all
+  `tkinter.*` submodules.
 - Implemented: headless Rust Tk command lowering now covers major `tkinter.ttk`
   execution lanes (Treeview semantics, `ttk::style` configure/map/lookup/layout/
   element/theme paths, notebook + panedwindow container operations,
@@ -600,8 +628,13 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:planned): method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding).
 - Asyncio: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `Event`, `wait`, `wait_for`, `shield`, basic `gather`,
-  stream helpers (`open_connection`/`start_server`), and `add_reader`/`add_writer`; advanced loop APIs, task groups, and full
-  transport/protocol adapters remain pending. Asyncio subprocess stdio now supports `stderr=STDOUT` and fd-based redirection,
+  stream helpers (`open_connection`/`start_server`), `add_reader`/`add_writer`, pipe transports
+  (`connect_read_pipe`/`connect_write_pipe` via 11 new pipe transport intrinsics), and
+  Transport/Protocol base classes; 42 new Rust intrinsics cover Future/Event/Lock/Semaphore/Queue
+  state machines; all 97 bare `except` blocks eliminated from asyncio shim; WASM capability gating
+  complete for 6 I/O operations; 3.13 version-gated APIs (`as_completed` async iter,
+  `Queue.shutdown`) and 3.14 version-gated APIs (`get_event_loop` `RuntimeError`, child watcher
+  removal, policy deprecation) added. Asyncio subprocess stdio now supports `stderr=STDOUT` and fd-based redirection,
   with mode normalization/runtime validation lowered into Rust intrinsic `molt_asyncio_subprocess_stdio_normalize`.
   Timer and fd-watcher teardown now lower through `molt_asyncio_timer_handle_cancel` and `molt_asyncio_fd_watcher_unregister`.
   Runtime capability gates for SSL transport, Unix sockets, and child-watchers are intrinsic-owned
@@ -766,6 +799,13 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
+- Asyncio & tkinter parity sprint (2026-02-28): asyncio pipe transports
+  implemented (11 new pipe transport intrinsics), 42 new Rust intrinsics for
+  Future/Event/Lock/Semaphore/Queue state machines, all 97 bare `except`
+  blocks eliminated, WASM capability gating for 6 I/O ops, Transport/Protocol
+  base classes added, 3.13/3.14 version-specific APIs gated; tkinter 10 Rust
+  intrinsics wired, all strict mode violations resolved, 3.13/3.14
+  version-gated APIs added, 100% submodule coverage achieved.
 - Stdlib intrinsics sprint (2026-02-25): ~85 new Rust intrinsics landed across
   `os` (~40 APIs total), `sys` (~20 new), `signal` (12 constant + 5 function
   intrinsics), `_thread` (full rewrite on existing thread intrinsics),
