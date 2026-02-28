@@ -1,5 +1,6 @@
 pub(crate) mod cancellation;
 pub(crate) mod channels;
+pub(crate) mod event_loop;
 pub(crate) mod generators;
 pub(crate) mod io_poller;
 pub(crate) mod poll;

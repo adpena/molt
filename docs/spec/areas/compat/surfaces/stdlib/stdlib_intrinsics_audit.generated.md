@@ -10,8 +10,8 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `877`
-- `intrinsic-backed`: `32`
-- `intrinsic-partial`: `845`
+- `intrinsic-backed`: `41`
+- `intrinsic-partial`: `836`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -75,16 +75,25 @@
 - `_operator`
 - `_pickle`
 - `_queue`
+- `ast`
+- `binascii`
+- `colorsys`
 - `contextlib`
+- `difflib`
 - `email.quoprimime`
 - `encodings.quopri_codec`
+- `fractions`
 - `functools`
+- `graphlib`
+- `hashlib`
+- `hmac`
 - `imghdr`
 - `itertools`
 - `math`
 - `opcode`
 - `operator`
 - `quopri`
+- `secrets`
 - `select`
 - `selectors`
 - `socket`
@@ -220,7 +229,6 @@
 - `antigravity`
 - `argparse`
 - `array`
-- `ast`
 - `asyncio`
 - `asyncio.__main__`
 - `asyncio.base_events`
@@ -260,7 +268,6 @@
 - `audioop`
 - `base64`
 - `bdb`
-- `binascii`
 - `bisect`
 - `builtins`
 - `bz2`
@@ -276,7 +283,6 @@
 - `codeop`
 - `collections`
 - `collections.abc`
-- `colorsys`
 - `compileall`
 - `compression`
 - `compression._common`
@@ -325,7 +331,6 @@
 - `dbm.ndbm`
 - `dbm.sqlite3`
 - `decimal`
-- `difflib`
 - `dis`
 - `doctest`
 - `email`
@@ -488,7 +493,6 @@
 - `filecmp`
 - `fileinput`
 - `fnmatch`
-- `fractions`
 - `ftplib`
 - `gc`
 - `genericpath`
@@ -496,12 +500,9 @@
 - `getpass`
 - `gettext`
 - `glob`
-- `graphlib`
 - `grp`
 - `gzip`
-- `hashlib`
 - `heapq`
-- `hmac`
 - `html`
 - `html.entities`
 - `html.parser`
@@ -770,7 +771,6 @@
 - `rlcompleter`
 - `runpy`
 - `sched`
-- `secrets`
 - `shelve`
 - `shlex`
 - `shutil`
