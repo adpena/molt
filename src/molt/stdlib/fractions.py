@@ -29,6 +29,9 @@ _MOLT_FRACTION_HASH = _require_intrinsic("molt_fraction_hash", globals())
 _MOLT_FRACTION_LIMIT_DENOMINATOR = _require_intrinsic(
     "molt_fraction_limit_denominator", globals()
 )
+_MOLT_FRACTION_AS_INTEGER_RATIO = _require_intrinsic(
+    "molt_fraction_as_integer_ratio", globals()
+)
 _MOLT_FRACTION_DROP = _require_intrinsic("molt_fraction_drop", globals())
 
 
@@ -116,6 +119,9 @@ class Fraction:
     @property
     def denominator(self):
         return int(_MOLT_FRACTION_DENOMINATOR(self._handle))
+
+    def as_integer_ratio(self):
+        return _MOLT_FRACTION_AS_INTEGER_RATIO(self._handle)
 
     def limit_denominator(self, max_denominator=10**6):
         result = Fraction.__new__(Fraction)

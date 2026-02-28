@@ -77,6 +77,7 @@ pub(crate) use molt_obj_model::MoltObject;
 pub use crate::async_rt::cancellation::*;
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
+pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]
 pub use crate::async_rt::generators::*;
 pub(crate) use crate::async_rt::io_poller::IoPoller;
@@ -217,6 +218,9 @@ pub(crate) use crate::builtins::io::{
 pub use crate::builtins::ipaddress::*;
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
+pub use crate::builtins::base64_mod::*;
+pub use crate::builtins::copy_mod::*;
+pub use crate::builtins::logging_ext::*;
 pub use crate::builtins::lzma::*;
 pub use crate::builtins::math::*;
 pub(crate) use crate::builtins::methods::*;
@@ -233,6 +237,7 @@ pub use crate::builtins::operator::*;
 pub use crate::builtins::os_ext::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
+pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::regex::*;
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
@@ -252,6 +257,7 @@ pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
+pub use crate::builtins::warnings_ext::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
     issubclass_bits, issubclass_runtime, type_of_bits,

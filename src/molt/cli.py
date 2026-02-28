@@ -3003,16 +3003,89 @@ def _emit_build_diagnostics(
                     f"action={action} spent_ms={spent_ms:.3f}",
                     file=sys.stderr,
                 )
+        budget_util_avg = midend.get("budget_utilization_avg")
+        budget_util_p95 = midend.get("budget_utilization_p95")
+        over_budget = midend.get("functions_over_budget")
+        under_50 = midend.get("functions_under_50pct_budget")
+        if isinstance(budget_util_avg, (int, float)):
+            print(
+                f"- midend.budget_utilization_avg: {budget_util_avg:.4f}",
+                file=sys.stderr,
+            )
+        if isinstance(budget_util_p95, (int, float)):
+            print(
+                f"- midend.budget_utilization_p95: {budget_util_p95:.4f}",
+                file=sys.stderr,
+            )
+        if isinstance(over_budget, int):
+            print(
+                f"- midend.functions_over_budget: {over_budget}",
+                file=sys.stderr,
+            )
+        if isinstance(under_50, int):
+            print(
+                f"- midend.functions_under_50pct_budget: {under_50}",
+                file=sys.stderr,
+            )
+        budget_ranked_functions: list[dict[str, Any]] = []
+        if isinstance(function_hotspots, list):
+            for item in function_hotspots:
+                if not isinstance(item, dict):
+                    continue
+                b_ms = float(item.get("budget_ms", 0.0))
+                s_ms = float(item.get("spent_ms", 0.0))
+                if b_ms > 0.0:
+                    budget_ranked_functions.append(
+                        {
+                            "module": str(item.get("module", "")),
+                            "function": str(item.get("function", "")),
+                            "ratio": s_ms / b_ms,
+                            "spent_ms": s_ms,
+                            "budget_ms": b_ms,
+                        }
+                    )
+            budget_ranked_functions.sort(key=lambda x: -x["ratio"])
+            for idx, item in enumerate(budget_ranked_functions[:5], start=1):
+                print(
+                    "- midend.budget_top."
+                    f"{idx}: {item['module']}::{item['function']} "
+                    f"ratio={item['ratio']:.4f} "
+                    f"spent_ms={item['spent_ms']:.3f} "
+                    f"budget_ms={item['budget_ms']:.3f}",
+                    file=sys.stderr,
+                )
+        pass_wall_ranked = midend.get("pass_wall_time_ranked")
+        if isinstance(pass_wall_ranked, list):
+            for idx, item in enumerate(pass_wall_ranked[:3], start=1):
+                if not isinstance(item, dict):
+                    continue
+                pass_name = str(item.get("pass", ""))
+                ms_total = float(item.get("ms_total", 0.0))
+                print(
+                    "- midend.pass_wall_top."
+                    f"{idx}: {pass_name} ms_total={ms_total:.3f}",
+                    file=sys.stderr,
+                )
+        promo_candidates = midend.get("promotion_candidates")
+        if isinstance(promo_candidates, list) and promo_candidates:
+            print(
+                f"- midend.promotion_candidates: {len(promo_candidates)}",
+                file=sys.stderr,
+            )
     if diagnostics_path is not None:
         print(f"- wrote: {diagnostics_path}", file=sys.stderr)
 
 
-def _midend_sample_p95(samples: list[float]) -> float:
+def _midend_sample_percentile(samples: list[float], pct: float) -> float:
     if not samples:
         return 0.0
     ordered = sorted(samples)
-    idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+    idx = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * pct)))
     return float(ordered[idx])
+
+
+def _midend_sample_p95(samples: list[float]) -> float:
+    return _midend_sample_percentile(samples, 0.95)
 
 
 def _duration_ms_from_ns(start_ns: Any, end_ns: Any) -> float:
@@ -3041,7 +3114,11 @@ def _normalize_midend_pass_stat(raw: dict[str, Any]) -> dict[str, Any]:
         "degraded": int(raw.get("degraded", 0)),
         "ms_total": round(max(0.0, ms_total), 6),
         "ms_max": round(max(0.0, ms_max), 6),
-        "ms_p95": round(_midend_sample_p95(samples), 6),
+        "ms_p50": round(_midend_sample_percentile(samples, 0.50), 6),
+        "ms_p75": round(_midend_sample_percentile(samples, 0.75), 6),
+        "ms_p90": round(_midend_sample_percentile(samples, 0.90), 6),
+        "ms_p95": round(_midend_sample_percentile(samples, 0.95), 6),
+        "ms_p99": round(_midend_sample_percentile(samples, 0.99), 6),
         "sample_count": len(samples),
     }
 
@@ -3233,6 +3310,62 @@ def _build_midend_diagnostics_payload(
             item["tier_effective"],
         )
     )
+
+    promotion_candidates: list[dict[str, Any]] = []
+    budget_utilizations: list[float] = []
+    functions_over_budget = 0
+    functions_under_50pct_budget = 0
+    for function_key in sorted(policy_outcomes_by_function):
+        raw_outcome = policy_outcomes_by_function[function_key]
+        module_name, _, function_name = function_key.partition("::")
+        allow_hot = bool(raw_outcome.get("allow_hot_promotion", False))
+        was_promoted = bool(raw_outcome.get("promoted", False))
+        if allow_hot and not was_promoted:
+            promotion_candidates.append(
+                {
+                    "module": module_name,
+                    "function": function_name or module_name,
+                    "tier": str(raw_outcome.get("tier", "")),
+                    "budget_ms": round(
+                        max(0.0, float(raw_outcome.get("budget_ms", 0.0))), 6
+                    ),
+                    "spent_ms": round(
+                        max(0.0, float(raw_outcome.get("spent_ms", 0.0))), 6
+                    ),
+                }
+            )
+        s_ms = max(0.0, float(raw_outcome.get("spent_ms", 0.0)))
+        b_ms = max(0.0, float(raw_outcome.get("budget_ms", 0.0)))
+        if b_ms > 0.0:
+            utilization = s_ms / b_ms
+            budget_utilizations.append(utilization)
+            if s_ms > b_ms:
+                functions_over_budget += 1
+            if s_ms < 0.5 * b_ms:
+                functions_under_50pct_budget += 1
+    promotion_candidates.sort(
+        key=lambda item: (
+            -float(item["spent_ms"]),
+            item["module"],
+            item["function"],
+        )
+    )
+    budget_utilization_avg = 0.0
+    budget_utilization_p95 = 0.0
+    if budget_utilizations:
+        budget_utilization_avg = sum(budget_utilizations) / len(budget_utilizations)
+        budget_utilization_p95 = _midend_sample_percentile(budget_utilizations, 0.95)
+
+    pass_aggregate_wall_ms: dict[str, float] = {}
+    for function_key in pass_stats_by_function:
+        per_pass = pass_stats_by_function[function_key]
+        for pass_name, raw_stat in per_pass.items():
+            ms_total = float(raw_stat.get("ms_total", 0.0))
+            pass_aggregate_wall_ms[pass_name] = pass_aggregate_wall_ms.get(
+                pass_name, 0.0
+            ) + max(0.0, ms_total)
+    pass_wall_ranked = sorted(pass_aggregate_wall_ms.items(), key=lambda kv: -kv[1])
+
     return {
         "requested_profile": requested_profile,
         "effective_profiles": sorted(effective_profiles),
@@ -3253,6 +3386,14 @@ def _build_midend_diagnostics_payload(
         "degrade_reason_summary": {
             name: reason_summary[name] for name in sorted(reason_summary)
         },
+        "budget_utilization_avg": round(budget_utilization_avg, 6),
+        "budget_utilization_p95": round(budget_utilization_p95, 6),
+        "functions_over_budget": functions_over_budget,
+        "functions_under_50pct_budget": functions_under_50pct_budget,
+        "promotion_candidates": promotion_candidates[:20],
+        "pass_wall_time_ranked": [
+            {"pass": name, "ms_total": round(ms, 6)} for name, ms in pass_wall_ranked
+        ],
         "policy_outcomes_by_function": normalized_policy,
         "pass_stats_by_function": normalized_pass_stats,
         "function_hotspots_top": function_hotspots[:10],
