@@ -23,16 +23,6 @@ struct OnceKey {
     category: String,
 }
 
-/// Key for the "default" / "module" registry:
-///   (message_text, category_name, lineno).
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct DefaultKey {
-    message: String,
-    category: String,
-    lineno: i64,
-}
-
 /// Global warnings state. Protected by a Mutex for cross-thread safety.
 /// The GIL serializes all Python-level access, so the Mutex is always
 /// uncontended.
