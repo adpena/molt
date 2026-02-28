@@ -70,9 +70,6 @@ impl Ord for TimerEntry {
 
 struct IoCallbackEntry {
     callback_bits: u64,
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(dead_code)]
-    fd: i64,
 }
 
 // --- Event loop state ---
@@ -87,9 +84,7 @@ struct EventLoopState {
     timer_seq: AtomicU64,
     start_instant: Instant,
     debug: bool,
-    #[allow(dead_code)]
     exception_handler_bits: u64,
-    #[allow(dead_code)]
     task_factory_bits: u64,
 }
 
@@ -302,11 +297,7 @@ pub extern "C" fn molt_event_loop_add_reader(
             inc_ref_bits(_py, callback_bits);
             state.readers.insert(
                 fd,
-                IoCallbackEntry {
-                    callback_bits,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    fd,
-                },
+                IoCallbackEntry { callback_bits },
             );
         }) else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
@@ -356,11 +347,7 @@ pub extern "C" fn molt_event_loop_add_writer(
             inc_ref_bits(_py, callback_bits);
             state.writers.insert(
                 fd,
-                IoCallbackEntry {
-                    callback_bits,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    fd,
-                },
+                IoCallbackEntry { callback_bits },
             );
         }) else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
@@ -669,6 +656,68 @@ pub extern "C" fn molt_event_loop_get_debug(loop_handle: u64) -> u64 {
             return MoltObject::from_bool(false).bits();
         };
         MoltObject::from_bool(debug).bits()
+    })
+}
+
+/// Set the event loop's exception handler callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_event_loop_set_exception_handler(
+    loop_handle: u64,
+    handler_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(old) = with_loop(loop_handle, |state| {
+            let old = state.exception_handler_bits;
+            inc_ref_bits(_py, handler_bits);
+            state.exception_handler_bits = handler_bits;
+            old
+        }) else {
+            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+        };
+        dec_ref_bits(_py, old);
+        MoltObject::none().bits()
+    })
+}
+
+/// Get the event loop's exception handler callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_event_loop_get_exception_handler(loop_handle: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(bits) = with_loop(loop_handle, |state| state.exception_handler_bits) else {
+            return MoltObject::none().bits();
+        };
+        bits
+    })
+}
+
+/// Set the event loop's task factory callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_event_loop_set_task_factory(
+    loop_handle: u64,
+    factory_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(old) = with_loop(loop_handle, |state| {
+            let old = state.task_factory_bits;
+            inc_ref_bits(_py, factory_bits);
+            state.task_factory_bits = factory_bits;
+            old
+        }) else {
+            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+        };
+        dec_ref_bits(_py, old);
+        MoltObject::none().bits()
+    })
+}
+
+/// Get the event loop's task factory callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(bits) = with_loop(loop_handle, |state| state.task_factory_bits) else {
+            return MoltObject::none().bits();
+        };
+        bits
     })
 }
 
