@@ -8,6 +8,18 @@
 //! All public functions follow the Molt intrinsic ABI:
 //!   `#[unsafe(no_mangle)] pub extern "C" fn name(args: u64...) -> u64`
 //! where all values are NaN-boxed u64 bits (MoltObject).
+//!
+//! WASM compatibility: All intrinsics in this module are **parsing-only** —
+//! pure string/numeric operations with no I/O, no display server interaction,
+//! and no platform-specific syscalls. They compile and run correctly on all
+//! targets including wasm32-wasi and wasm32-unknown-unknown.
+//!
+//! Note: tkinter as a whole is NOT available on WASM (no display server / Tcl/Tk
+//! runtime). These parsing intrinsics are safe on WASM, but the actual Tk widget
+//! operations (which live in the Python shim layer and communicate with a Tcl
+//! interpreter) are gated at the Python import level — `import tkinter` raises
+//! `ImportError` on WASM targets. This module does not need `#[cfg]` gating
+//! because it never touches the display server or Tcl interpreter directly.
 
 use crate::object::ops::string_obj_to_owned;
 use crate::*;
@@ -141,11 +153,14 @@ fn event_int_convert(bits: u64) -> u64 {
     // String of digits (possibly with leading minus)?
     if let Some(text) = bits_to_string(bits) {
         let trimmed = text.trim();
-        if !trimmed.is_empty() && trimmed.trim_start_matches('-').chars().all(|c| c.is_ascii_digit())
+        if !trimmed.is_empty()
+            && trimmed
+                .trim_start_matches('-')
+                .chars()
+                .all(|c| c.is_ascii_digit())
+            && let Ok(i) = trimmed.parse::<i64>()
         {
-            if let Ok(i) = trimmed.parse::<i64>() {
-                return MoltObject::from_int(i).bits();
-            }
+            return MoltObject::from_int(i).bits();
         }
     }
     // Return original value unchanged
@@ -184,10 +199,10 @@ fn event_bool_convert(bits: u64) -> u64 {
     if let Some(i) = to_i64(obj) {
         return MoltObject::from_bool(i != 0).bits();
     }
-    if let Some(text) = string_obj_to_owned(obj) {
-        if let Some(b) = parse_tcl_bool(&text) {
-            return MoltObject::from_bool(b).bits();
-        }
+    if let Some(text) = string_obj_to_owned(obj)
+        && let Some(b) = parse_tcl_bool(&text)
+    {
+        return MoltObject::from_bool(b).bits();
     }
     if let Some(f) = to_f64(obj) {
         return MoltObject::from_bool(f != 0.0).bits();
@@ -217,10 +232,7 @@ const MODIFIER_NAMES: &[&str] = &[
 ///
 /// Returns None on malformed input.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_event_build_from_args(
-    _widget_path_bits: u64,
-    args_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(elems) = read_seq_elements(args_bits) else {
             return MoltObject::none().bits();
@@ -256,25 +268,25 @@ pub extern "C" fn molt_tk_event_build_from_args(
         };
 
         let payload = [
-            event_int_convert(elems[0]),       // serial
-            event_int_convert(elems[1]),       // num
-            event_bool_convert(elems[2]),      // focus
-            event_int_convert(elems[3]),       // height
-            event_int_convert(elems[4]),       // keycode
-            event_int_convert(elems[5]),       // state
-            event_int_convert(elems[6]),       // time
-            event_int_convert(elems[7]),       // width
-            event_int_convert(elems[8]),       // x
-            event_int_convert(elems[9]),       // y
-            elems[10],                         // char (pass-through)
-            event_bool_convert(elems[11]),     // send_event
-            elems[12],                         // keysym (pass-through)
-            event_int_convert(elems[13]),      // keysym_num
-            elems[14],                         // widget_path (pass-through)
-            elems[15],                         // type (pass-through)
-            event_int_convert(elems[16]),      // x_root
-            event_int_convert(elems[17]),      // y_root
-            delta,                             // delta
+            event_int_convert(elems[0]),   // serial
+            event_int_convert(elems[1]),   // num
+            event_bool_convert(elems[2]),  // focus
+            event_int_convert(elems[3]),   // height
+            event_int_convert(elems[4]),   // keycode
+            event_int_convert(elems[5]),   // state
+            event_int_convert(elems[6]),   // time
+            event_int_convert(elems[7]),   // width
+            event_int_convert(elems[8]),   // x
+            event_int_convert(elems[9]),   // y
+            elems[10],                     // char (pass-through)
+            event_bool_convert(elems[11]), // send_event
+            elems[12],                     // keysym (pass-through)
+            event_int_convert(elems[13]),  // keysym_num
+            elems[14],                     // widget_path (pass-through)
+            elems[15],                     // type (pass-through)
+            event_int_convert(elems[16]),  // x_root
+            event_int_convert(elems[17]),  // y_root
+            delta,                         // delta
         ];
 
         match alloc_list_bits(_py, &payload) {
@@ -293,9 +305,7 @@ pub extern "C" fn molt_tk_event_build_from_args(
 ///   - Otherwise return value unchanged.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        event_int_convert(value_bits)
-    })
+    crate::with_gil_entry!(_py, { event_int_convert(value_bits) })
 }
 
 /// Decode an event state bitmask into a list of modifier name strings.
@@ -375,7 +385,11 @@ pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
 pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(tcl_str) = bits_to_string(tcl_str_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "splitdict requires a string argument");
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "splitdict requires a string argument",
+            );
         };
 
         // Determine cut_minus flag
@@ -392,7 +406,7 @@ pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u
         // Split by whitespace into tokens, handling Tcl brace quoting
         let items = split_tcl_list(&tcl_str);
 
-        if items.len() % 2 != 0 {
+        if !items.len().is_multiple_of(2) {
             return raise_exception::<u64>(
                 _py,
                 "RuntimeError",
@@ -620,48 +634,45 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
         let mut out: Vec<u64> = Vec::new();
 
         // Process cnf dict
-        if !bits_is_none(cnf_bits) {
-            if let Some(ptr) = obj_from_bits(cnf_bits).as_ptr() {
-                let type_id = unsafe { object_type_id(ptr) };
-                if type_id == TYPE_ID_DICT {
-                    // Snapshot dict order to avoid aliasing issues
-                    let order_snapshot = unsafe { dict_order(ptr) }.clone();
-                    let mut i = 0;
-                    while i + 1 < order_snapshot.len() {
-                        let key_bits = order_snapshot[i];
-                        let value_bits = order_snapshot[i + 1];
-                        if !bits_is_none(value_bits) {
-                            if let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
-                            {
-                                cleanup_list(_py, &out);
-                                return bits;
-                            }
-                        }
-                        i += 2;
+        if !bits_is_none(cnf_bits)
+            && let Some(ptr) = obj_from_bits(cnf_bits).as_ptr()
+        {
+            let type_id = unsafe { object_type_id(ptr) };
+            if type_id == TYPE_ID_DICT {
+                let order_snapshot = unsafe { dict_order(ptr) }.clone();
+                let mut i = 0;
+                while i + 1 < order_snapshot.len() {
+                    let key_bits = order_snapshot[i];
+                    let value_bits = order_snapshot[i + 1];
+                    if !bits_is_none(value_bits)
+                        && let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
+                    {
+                        cleanup_list(_py, &out);
+                        return bits;
                     }
+                    i += 2;
                 }
             }
         }
 
         // Process kw dict
-        if !bits_is_none(kw_bits) {
-            if let Some(ptr) = obj_from_bits(kw_bits).as_ptr() {
-                let type_id = unsafe { object_type_id(ptr) };
-                if type_id == TYPE_ID_DICT {
-                    let order_snapshot = unsafe { dict_order(ptr) }.clone();
-                    let mut i = 0;
-                    while i + 1 < order_snapshot.len() {
-                        let key_bits = order_snapshot[i];
-                        let value_bits = order_snapshot[i + 1];
-                        if !bits_is_none(value_bits) {
-                            if let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
-                            {
-                                cleanup_list(_py, &out);
-                                return bits;
-                            }
-                        }
-                        i += 2;
+        if !bits_is_none(kw_bits)
+            && let Some(ptr) = obj_from_bits(kw_bits).as_ptr()
+        {
+            let type_id = unsafe { object_type_id(ptr) };
+            if type_id == TYPE_ID_DICT {
+                let order_snapshot = unsafe { dict_order(ptr) }.clone();
+                let mut i = 0;
+                while i + 1 < order_snapshot.len() {
+                    let key_bits = order_snapshot[i];
+                    let value_bits = order_snapshot[i + 1];
+                    if !bits_is_none(value_bits)
+                        && let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
+                    {
+                        cleanup_list(_py, &out);
+                        return bits;
                     }
+                    i += 2;
                 }
             }
         }
@@ -843,27 +854,27 @@ pub extern "C" fn molt_tk_normalize_delay_ms(delay_bits: u64) -> u64 {
             return MoltObject::from_int(i).bits();
         }
         // Float?
-        if let Some(f) = bits_as_f64(delay_bits) {
-            if f.is_finite() {
-                return MoltObject::from_int(f as i64).bits();
-            }
+        if let Some(f) = bits_as_f64(delay_bits)
+            && f.is_finite()
+        {
+            return MoltObject::from_int(f as i64).bits();
         }
         // String of digits?
         if let Some(text) = bits_to_string(delay_bits) {
             let trimmed = text.trim();
-            if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-                if let Ok(i) = trimmed.parse::<i64>() {
-                    return MoltObject::from_int(i).bits();
-                }
+            if !trimmed.is_empty()
+                && trimmed.chars().all(|c| c.is_ascii_digit())
+                && let Ok(i) = trimmed.parse::<i64>()
+            {
+                return MoltObject::from_int(i).bits();
             }
             // Also handle negative digit strings
             if trimmed.starts_with('-')
                 && trimmed.len() > 1
                 && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+                && let Ok(i) = trimmed.parse::<i64>()
             {
-                if let Ok(i) = trimmed.parse::<i64>() {
-                    return MoltObject::from_int(i).bits();
-                }
+                return MoltObject::from_int(i).bits();
             }
         }
         // Cannot convert
@@ -910,10 +921,10 @@ pub extern "C" fn molt_tk_convert_stringval(text_bits: u64) -> u64 {
         }
 
         // Try float parsing
-        if let Ok(float_val) = trimmed.parse::<f64>() {
-            if float_val.is_finite() {
-                return MoltObject::from_float(float_val).bits();
-            }
+        if let Ok(float_val) = trimmed.parse::<f64>()
+            && float_val.is_finite()
+        {
+            return MoltObject::from_float(float_val).bits();
         }
 
         // Keep as original string
@@ -945,20 +956,28 @@ fn try_parse_tcl_int(text: &str) -> Option<i64> {
         return None;
     }
 
-    let value = if let Some(hex) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X"))
+    let value = if let Some(hex) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
     {
         // Hex
         if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
         i64::from_str_radix(hex, 16).ok()?
-    } else if let Some(oct) = unsigned.strip_prefix("0o").or_else(|| unsigned.strip_prefix("0O")) {
+    } else if let Some(oct) = unsigned
+        .strip_prefix("0o")
+        .or_else(|| unsigned.strip_prefix("0O"))
+    {
         // Octal
         if oct.is_empty() || !oct.chars().all(|c| matches!(c, '0'..='7')) {
             return None;
         }
         i64::from_str_radix(oct, 8).ok()?
-    } else if let Some(bin) = unsigned.strip_prefix("0b").or_else(|| unsigned.strip_prefix("0B")) {
+    } else if let Some(bin) = unsigned
+        .strip_prefix("0b")
+        .or_else(|| unsigned.strip_prefix("0B"))
+    {
         // Binary
         if bin.is_empty() || !bin.chars().all(|c| c == '0' || c == '1') {
             return None;
