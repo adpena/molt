@@ -45,6 +45,7 @@ _EXPOSE_EVENT_LOOP = _VERSION_INFO >= (3, 13)
 _EXPOSE_WINDOWS_POLICIES = _IS_WINDOWS
 _EXPOSE_QUEUE_SHUTDOWN = _VERSION_INFO >= (3, 13)
 _EXPOSE_GRAPH = _VERSION_INFO >= (3, 14)
+_EXPOSE_CHILD_WATCHERS = _VERSION_INFO < (3, 14)
 
 _BASE_ALL = [
     "AbstractEventLoop",
@@ -95,7 +96,6 @@ _BASE_ALL = [
     "gather",
     "get_event_loop",
     "get_event_loop_policy",
-    "get_child_watcher",
     "get_running_loop",
     "isfuture",
     "iscoroutine",
@@ -118,15 +118,21 @@ _BASE_ALL = [
     "wrap_future",
     "wait",
     "wait_for",
-    "set_child_watcher",
-    "AbstractChildWatcher",
-    "FastChildWatcher",
-    "PidfdChildWatcher",
-    "SafeChildWatcher",
-    "ThreadedChildWatcher",
 ]
 
 __all__ = list(_BASE_ALL)
+if _EXPOSE_CHILD_WATCHERS:
+    __all__.extend(
+        [
+            "get_child_watcher",
+            "set_child_watcher",
+            "AbstractChildWatcher",
+            "FastChildWatcher",
+            "PidfdChildWatcher",
+            "SafeChildWatcher",
+            "ThreadedChildWatcher",
+        ]
+    )
 if _EXPOSE_EVENT_LOOP:
     __all__.append("EventLoop")
 if _EXPOSE_QUEUE_SHUTDOWN:
@@ -4147,6 +4153,12 @@ def get_running_loop() -> EventLoop:
 
 
 def get_event_loop_policy() -> AbstractEventLoopPolicy:
+    if _VERSION_INFO >= (3, 14):
+        _warnings.warn(
+            "get_event_loop_policy() is deprecated and will be removed in Python 3.16",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     policy = molt_asyncio_event_loop_policy_get()
     if policy is None:
         policy = _default_event_loop_policy()
@@ -4155,12 +4167,26 @@ def get_event_loop_policy() -> AbstractEventLoopPolicy:
 
 
 def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
+    if _VERSION_INFO >= (3, 14):
+        _warnings.warn(
+            "set_event_loop_policy() is deprecated and will be removed in Python 3.16",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if policy is None:
         policy = _default_event_loop_policy()
     molt_asyncio_event_loop_policy_set(policy)
 
 
 def get_event_loop() -> EventLoop:
+    if _VERSION_INFO >= (3, 14):
+        loop = _get_running_loop()
+        if loop is not None:
+            return loop
+        raise RuntimeError(
+            "There is no current event loop in thread %r."
+            % _threading.current_thread().name
+        )
     return get_event_loop_policy().get_event_loop()
 
 
@@ -5012,6 +5038,25 @@ class _AsCompletedIterator:
                 timeout = 0.0
         return _wait_one(self._queue, timeout)
 
+    # --- async iterator protocol (CPython 3.13+) ---
+    if _VERSION_INFO >= (3, 13):
+
+        def __aiter__(self) -> "_AsCompletedIterator":
+            return self
+
+        async def __anext__(self) -> Any:
+            if self._remaining <= 0:
+                raise StopAsyncIteration
+            self._remaining -= 1
+            timeout: float | None
+            if self._deadline is None:
+                timeout = None
+            else:
+                timeout = self._deadline - _time.monotonic()
+                if timeout < 0.0:
+                    timeout = 0.0
+            return await _wait_one(self._queue, timeout)
+
 
 def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[Any]:
     tasks = [ensure_future(aw) for aw in aws]
@@ -5758,55 +5803,63 @@ trsock = _module(
 setattr(selector_events, "trsock", trsock)
 
 if not _IS_WINDOWS:
-    unix_events = _module(
-        "asyncio.unix_events",
-        {
-            "__all__": (
-                "SelectorEventLoop",
-                "AbstractChildWatcher",
-                "SafeChildWatcher",
-                "FastChildWatcher",
-                "PidfdChildWatcher",
-                "MultiLoopChildWatcher",
-                "ThreadedChildWatcher",
-                "DefaultEventLoopPolicy",
-            ),
-            "AbstractChildWatcher": AbstractChildWatcher,
-            "BaseChildWatcher": BaseChildWatcher,
-            "DefaultEventLoopPolicy": _UnixDefaultEventLoopPolicy,
-            "FastChildWatcher": FastChildWatcher,
-            "MultiLoopChildWatcher": MultiLoopChildWatcher,
-            "PidfdChildWatcher": PidfdChildWatcher,
-            "SafeChildWatcher": SafeChildWatcher,
-            "SelectorEventLoop": SelectorEventLoop,
-            "ThreadedChildWatcher": ThreadedChildWatcher,
-            "base_events": base_events,
-            "base_subprocess": base_subprocess,
-            "can_use_pidfd": can_use_pidfd,
-            "constants": constants,
-            "coroutines": coroutines,
-            "errno": _errno,
-            "events": events,
-            "exceptions": exceptions,
-            "futures": futures,
-            "io": _io,
-            "itertools": _itertools,
-            "logger": _logging.getLogger("asyncio"),
-            "os": _os,
-            "selector_events": selector_events,
-            "selectors": _selectors,
-            "signal": _signal,
-            "socket": _socket,
-            "stat": _stat,
-            "subprocess": _subprocess,
-            "sys": _sys,
-            "tasks": tasks,
-            "threading": _threading,
-            "transports": transports,
-            "waitstatus_to_exitcode": waitstatus_to_exitcode,
-            "warnings": _warnings,
-        },
-    )
+    _unix_events_attrs: dict[str, Any] = {
+        "DefaultEventLoopPolicy": _UnixDefaultEventLoopPolicy,
+        "SelectorEventLoop": SelectorEventLoop,
+        "base_events": base_events,
+        "base_subprocess": base_subprocess,
+        "can_use_pidfd": can_use_pidfd,
+        "constants": constants,
+        "coroutines": coroutines,
+        "errno": _errno,
+        "events": events,
+        "exceptions": exceptions,
+        "futures": futures,
+        "io": _io,
+        "itertools": _itertools,
+        "logger": _logging.getLogger("asyncio"),
+        "os": _os,
+        "selector_events": selector_events,
+        "selectors": _selectors,
+        "signal": _signal,
+        "socket": _socket,
+        "stat": _stat,
+        "subprocess": _subprocess,
+        "sys": _sys,
+        "tasks": tasks,
+        "threading": _threading,
+        "transports": transports,
+        "waitstatus_to_exitcode": waitstatus_to_exitcode,
+        "warnings": _warnings,
+    }
+    if _EXPOSE_CHILD_WATCHERS:
+        _unix_events_attrs.update(
+            {
+                "__all__": (
+                    "SelectorEventLoop",
+                    "AbstractChildWatcher",
+                    "SafeChildWatcher",
+                    "FastChildWatcher",
+                    "PidfdChildWatcher",
+                    "MultiLoopChildWatcher",
+                    "ThreadedChildWatcher",
+                    "DefaultEventLoopPolicy",
+                ),
+                "AbstractChildWatcher": AbstractChildWatcher,
+                "BaseChildWatcher": BaseChildWatcher,
+                "FastChildWatcher": FastChildWatcher,
+                "MultiLoopChildWatcher": MultiLoopChildWatcher,
+                "PidfdChildWatcher": PidfdChildWatcher,
+                "SafeChildWatcher": SafeChildWatcher,
+                "ThreadedChildWatcher": ThreadedChildWatcher,
+            }
+        )
+    else:
+        _unix_events_attrs["__all__"] = (
+            "SelectorEventLoop",
+            "DefaultEventLoopPolicy",
+        )
+    unix_events = _module("asyncio.unix_events", _unix_events_attrs)
     if _EXPOSE_EVENT_LOOP:
         setattr(unix_events, "EventLoop", SelectorEventLoop)
 
