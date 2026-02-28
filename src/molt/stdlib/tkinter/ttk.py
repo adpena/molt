@@ -302,16 +302,16 @@ def _call_with_options(
 
 
 def _event_int(tk, value):
-    try:
-        return tk.getint(value)
-    except Exception:  # noqa: BLE001
+    if isinstance(value, int):
         return value
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return tk.getint(value)
+    return value
 
 
 def _event_from_subst_args(widget, event_args):
-    try:
-        args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
-    except Exception:  # noqa: BLE001
+    args = _MOLT_TK_EVENT_SUBST_PARSE(getattr(widget, "_w", ""), event_args)
+    if args is None:
         return None
 
     if isinstance(args, list):
@@ -344,10 +344,10 @@ def _event_from_subst_args(widget, event_args):
     event = _tkinter.Event()
     event.serial = _event_int(widget.tk, nsign)
     event.num = _event_int(widget.tk, b)
-    try:
-        event.focus = widget.tk.getboolean(f)
-    except Exception:  # noqa: BLE001
-        pass
+    if f not in ("", None):
+        getboolean = getattr(widget.tk, "getboolean", None)
+        if callable(getboolean):
+            event.focus = getboolean(f)
     event.height = _event_int(widget.tk, h)
     event.keycode = _event_int(widget.tk, k)
     event.state = _event_int(widget.tk, s)
@@ -356,10 +356,10 @@ def _event_from_subst_args(widget, event_args):
     event.x = _event_int(widget.tk, x)
     event.y = _event_int(widget.tk, y)
     event.char = a
-    try:
-        event.send_event = widget.tk.getboolean(e_send)
-    except Exception:  # noqa: BLE001
-        pass
+    if e_send not in ("", None):
+        getboolean = getattr(widget.tk, "getboolean", None)
+        if callable(getboolean):
+            event.send_event = getboolean(e_send)
     event.keysym = keysym
     event.keysym_num = _event_int(widget.tk, keysym_num)
     event.type = ev_type
@@ -369,10 +369,10 @@ def _event_from_subst_args(widget, event_args):
         event.widget = widget
     event.x_root = _event_int(widget.tk, x_root)
     event.y_root = _event_int(widget.tk, y_root)
-    try:
-        event.delta = widget.tk.getint(delta)
-    except Exception:  # noqa: BLE001
-        event.delta = 0 if delta in ("", None) else delta
+    if delta in ("", None):
+        event.delta = 0
+    else:
+        event.delta = _event_int(widget.tk, delta)
     return event
 
 
@@ -392,11 +392,11 @@ def _split_pairs_to_dict(tk, value):
 
 def _convert_stringval(value):
     text = str(value)
-    for converter in (int, float):
-        try:
-            return converter(text)
-        except (TypeError, ValueError):
-            pass
+    if text.lstrip("-").isdigit():
+        return int(text)
+    stripped = text.lstrip("-")
+    if stripped and stripped.replace(".", "", 1).isdigit():
+        return float(text)
     return text
 
 
@@ -597,14 +597,10 @@ class OptionMenu(Menubutton):
             set_value(default)
 
     def destroy(self):
-        try:
+        if hasattr(self, "_variable"):
             del self._variable
-        except AttributeError:
-            pass
-        try:
+        if hasattr(self, "variable"):
             del self.variable
-        except AttributeError:
-            pass
         super().destroy()
 
 

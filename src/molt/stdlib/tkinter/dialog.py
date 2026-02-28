@@ -44,9 +44,11 @@ class Dialog:
             self.default,
             list(self.strings),
         )
-        try:
+        if isinstance(result, int):
+            self.num = result
+        elif isinstance(result, str) and result.lstrip("-").isdigit():
             self.num = int(result)
-        except Exception:  # noqa: BLE001
+        else:
             self.num = result
         return self.num
 

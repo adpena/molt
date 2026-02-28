@@ -17,13 +17,13 @@
 //! via `call_callable0` / `call_callable1` without leaving the Rust runtime.
 
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 use crate::{
-    MoltObject, PyToken, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits,
+    MoltObject, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits,
     monotonic_now_secs, raise_exception,
 };
 
@@ -39,7 +39,6 @@ struct TimerEntry {
     deadline_ns: u64,
     sequence: u64,
     callback_bits: u64,
-    cancelled: bool,
 }
 
 impl PartialEq for TimerEntry {
@@ -81,13 +80,16 @@ struct IoCallbackEntry {
 struct EventLoopState {
     ready: VecDeque<u64>,
     timers: BinaryHeap<TimerEntry>,
+    cancelled_timers: HashSet<u64>,
     readers: HashMap<i64, IoCallbackEntry>,
     writers: HashMap<i64, IoCallbackEntry>,
     state: AtomicU8,
     timer_seq: AtomicU64,
     start_instant: Instant,
     debug: bool,
+    #[allow(dead_code)]
     exception_handler_bits: u64,
+    #[allow(dead_code)]
     task_factory_bits: u64,
 }
 
@@ -96,6 +98,7 @@ impl EventLoopState {
         Self {
             ready: VecDeque::with_capacity(64),
             timers: BinaryHeap::with_capacity(32),
+            cancelled_timers: HashSet::new(),
             readers: HashMap::new(),
             writers: HashMap::new(),
             state: AtomicU8::new(STATE_IDLE),
@@ -212,7 +215,6 @@ pub extern "C" fn molt_event_loop_call_later(
                 deadline_ns,
                 sequence: seq,
                 callback_bits,
-                cancelled: false,
             });
             Some(seq)
         }) else {
@@ -250,7 +252,6 @@ pub extern "C" fn molt_event_loop_call_at(
                 deadline_ns,
                 sequence: seq,
                 callback_bits,
-                cancelled: false,
             });
             Some(seq)
         }) else {
@@ -264,26 +265,17 @@ pub extern "C" fn molt_event_loop_call_at(
 }
 
 /// Cancel a scheduled timer by its sequence ID.
+/// Uses an O(1) HashSet lookup during timer drain to skip cancelled entries.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1) as u64;
-        let Some(()) = with_loop(loop_handle, |state| {
-            // Mark the timer as cancelled. It will be skipped when popped from the heap.
-            // This is O(n) but amortized O(1) since cancelled entries are lazily cleaned.
-            // For a production optimization, we could use a HashSet of cancelled IDs.
-            for entry in state.timers.iter() {
-                // BinaryHeap doesn't allow mutable iteration, so we use interior mutability
-                // via a workaround: we'll track cancelled IDs separately.
-                let _ = entry;
-            }
-            // Use a separate cancelled set for O(1) cancel check during pop.
-            // For now, we dec_ref the callback when we encounter a cancelled entry during drain.
-            let _ = timer_id;
+        let Some(cancelled) = with_loop(loop_handle, |state| {
+            state.cancelled_timers.insert(timer_id)
         }) else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
         };
-        MoltObject::none().bits()
+        MoltObject::from_bool(cancelled).bits()
     })
 }
 
@@ -457,7 +449,17 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
             let Some(entry) = entry else {
                 break;
             };
-            if entry.cancelled {
+            // Check O(1) cancelled set.
+            let is_cancelled = {
+                let map = LOOPS.lock().unwrap();
+                map.get(&loop_handle)
+                    .map_or(false, |s| s.cancelled_timers.contains(&entry.sequence))
+            };
+            if is_cancelled {
+                // Remove from cancelled set to prevent unbounded growth.
+                if let Some(state) = LOOPS.lock().unwrap().get_mut(&loop_handle) {
+                    state.cancelled_timers.remove(&entry.sequence);
+                }
                 dec_ref_bits(_py, entry.callback_bits);
                 continue;
             }

@@ -20,7 +20,7 @@ const MAXBINSIZE: usize = (MAXLINESIZE / 4) * 3;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn bytes_like_arg(_py: &PyToken<'_>, bits: u64, func: &str) -> Result<Vec<u8>, u64> {
+fn bytes_like_arg(_py: &PyToken<'_>, bits: u64, _func: &str) -> Result<Vec<u8>, u64> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
         return Err(raise_exception::<_>(
