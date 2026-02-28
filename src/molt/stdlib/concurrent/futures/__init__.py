@@ -88,7 +88,7 @@ class _WorkItem:
 
 class Future:
     def __init__(self) -> None:
-        self._condition = threading.Condition()
+        self._condition = _threading.Condition()
         self._state = _PENDING
         self._result: Any | None = None
         self._exception: BaseException | None = None
@@ -125,9 +125,9 @@ class Future:
             while self._state not in _DONE_STATES:
                 self._condition.wait()
             return True
-        end = time.monotonic() + float(timeout)
+        end = _time.monotonic() + float(timeout)
         while self._state not in _DONE_STATES:
-            remaining = end - time.monotonic()
+            remaining = end - _time.monotonic()
             if remaining <= 0:
                 return False
             self._condition.wait(remaining)
@@ -234,12 +234,12 @@ class Executor:
 
         args_iter = iter(zip(*iterables))
         pending: list[Future] = []
-        deadline = None if timeout is None else (time.monotonic() + float(timeout))
+        deadline = None if timeout is None else (_time.monotonic() + float(timeout))
 
         def _remaining() -> float | None:
             if deadline is None:
                 return None
-            rem = deadline - time.monotonic()
+            rem = deadline - _time.monotonic()
             if rem <= 0:
                 raise TimeoutError()
             return rem
@@ -271,7 +271,7 @@ class ThreadPoolExecutor(Executor):
         initargs: tuple[Any, ...] | list[Any] = (),
     ) -> None:
         if max_workers is None:
-            max_workers = min(32, (os.cpu_count() or 1) + 4)
+            max_workers = min(32, (_os.cpu_count() or 1) + 4)
         if max_workers <= 0:
             raise ValueError("max_workers must be greater than 0")
         if initializer is not None and not callable(initializer):
@@ -289,15 +289,15 @@ class ThreadPoolExecutor(Executor):
         self._molt_cancel_futures = False
         self._molt_inflight = 0
         self._molt_running = 0
-        self._molt_lock = threading.Lock()
-        self._molt_done = threading.Condition(self._molt_lock)
-        self._molt_queue: deque[_WorkItem] = deque()
+        self._molt_lock = _threading.Lock()
+        self._molt_done = _threading.Condition(self._molt_lock)
+        self._molt_queue: deque[_WorkItem] = _deque()
         self._molt_futures: set[Future] = set()
 
         self._threads: list[threading.Thread] = []
-        self._queue: deque[_WorkItem] = deque()
-        self._lock = threading.Lock()
-        self._work_ready = threading.Condition(self._lock)
+        self._queue: deque[_WorkItem] = _deque()
+        self._lock = _threading.Lock()
+        self._work_ready = _threading.Condition(self._lock)
         self._shutdown = False
 
         if not self._molt_enabled:
@@ -308,7 +308,7 @@ class ThreadPoolExecutor(Executor):
             name = f"ThreadPoolExecutor-{idx}"
             if self._thread_name_prefix:
                 name = f"{self._thread_name_prefix}_{idx}"
-            thread = threading.Thread(
+            thread = _threading.Thread(
                 target=_threadpool_worker_bootstrap,
                 args=(self,),
                 name=name,
@@ -502,7 +502,7 @@ class ProcessPoolExecutor(ThreadPoolExecutor):
         # max_tasks_per_child is not meaningful in thread-based execution; ignore.
 
         if max_workers is None:
-            max_workers = os.cpu_count() or 1
+            max_workers = _os.cpu_count() or 1
 
         super().__init__(
             max_workers=max_workers,
@@ -559,7 +559,7 @@ def wait(
     if return_when == ALL_COMPLETED and not pending:
         return _DoneAndNotDone(done, pending)
 
-    notifier = threading.Condition()
+    notifier = _threading.Condition()
 
     def _notify(_: Future) -> None:
         with notifier:
@@ -568,7 +568,7 @@ def wait(
     for fut in pending:
         fut.add_done_callback(_notify)
 
-    deadline = None if timeout is None else (time.monotonic() + float(timeout))
+    deadline = None if timeout is None else (_time.monotonic() + float(timeout))
     while pending:
         if return_when == FIRST_COMPLETED and done:
             break
@@ -581,7 +581,7 @@ def wait(
 
         remaining = None
         if deadline is not None:
-            remaining = deadline - time.monotonic()
+            remaining = deadline - _time.monotonic()
             if remaining <= 0:
                 break
         with notifier:
@@ -600,12 +600,12 @@ def as_completed(
     if not futures:
         return iter(())
     pending = set(futures)
-    deadline = None if timeout is None else (time.monotonic() + float(timeout))
+    deadline = None if timeout is None else (_time.monotonic() + float(timeout))
 
     while pending:
         remaining = None
         if deadline is not None:
-            remaining = deadline - time.monotonic()
+            remaining = deadline - _time.monotonic()
             if remaining <= 0:
                 raise TimeoutError()
         done, not_done = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
@@ -633,3 +633,29 @@ __all__ = [
     "as_completed",
     "wait",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's
+# concurrent.futures public API.  These are import-time helpers, typing
+# aliases, or exception subclasses that CPython keeps in submodules.
+# ---------------------------------------------------------------------------
+# Preserve runtime-accessible aliases before removing public names.
+_deque = deque
+_threading = threading
+_time = time
+_os = os
+for _name in (
+    "deque",
+    "namedtuple",
+    "Callable",
+    "Iterable",
+    "Iterator",
+    "Any",
+    "TYPE_CHECKING",
+    "dataclass",
+    "os",
+    "threading",
+    "time",
+):
+    globals().pop(_name, None)

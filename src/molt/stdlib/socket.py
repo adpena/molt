@@ -1,6 +1,6 @@
 """Capability-gated socket module for Molt."""
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): continue expanding socket parity (remaining option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage).
+# NOTE(stdlib-parity, owner:stdlib, milestone:SL2): intrinsic-backed; future work may expand option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage.
 
 from __future__ import annotations
 

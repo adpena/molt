@@ -399,6 +399,17 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     return None
 
 
+def _molt_build_cmd() -> list[str]:
+    """Return the command prefix for invoking the Molt compiler.
+
+    Uses ``uv run --python 3.12 python3`` so the subprocess gets a
+    proper virtualenv with ``packaging`` and other build-time
+    dependencies, regardless of how the benchmark harness itself was
+    launched.
+    """
+    return ["uv", "run", "--python", "3.12", "python3"]
+
+
 def prepare_molt_binary(
     script: str, extra_args: list[str] | None = None, env: dict[str, str] | None = None
 ) -> MoltBinary | None:
@@ -407,7 +418,7 @@ def prepare_molt_binary(
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
     out_dir = Path(temp_dir.name)
     args = [
-        sys.executable,
+        *_molt_build_cmd(),
         "-m",
         "molt.cli",
         "build",

@@ -7644,10 +7644,12 @@ impl SimpleBackend {
                     let pending_path = builder.create_block();
                     let ready_path = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(ready_path, current_block);
+                        builder.insert_block_after(pending_path, current_block);
+                        builder.insert_block_after(ready_path, pending_path);
                     }
                     reachable_blocks.insert(pending_path);
                     reachable_blocks.insert(ready_path);
+                    reachable_blocks.insert(next_block);
                     builder
                         .ins()
                         .brif(is_pending, pending_path, &[], ready_path, &[]);
@@ -7690,14 +7692,9 @@ impl SimpleBackend {
                     if args.len() <= 1 {
                         def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
-                    reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
 
-                    if reachable_blocks.contains(&next_block) {
-                        switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
-                    } else {
-                        is_block_filled = true;
-                    }
+                    switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
                 }
                 "state_yield" => {
                     let args = op.args.as_ref().unwrap();

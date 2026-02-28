@@ -1420,3 +1420,19 @@ def scandir(path: Any = ".") -> list:
             )
         )
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Namespace cleanup — remove names that are not part of CPython's os public API.
+# These are needed for type annotations and internal helpers but must not appear
+# in the module __dict__ as non-underscore public names.
+# ---------------------------------------------------------------------------
+for _name in (
+    "TYPE_CHECKING",
+    "Any",
+    "Iterator",
+    "ItemsView",
+    "KeysView",
+    "ValuesView",
+):
+    globals().pop(_name, None)
