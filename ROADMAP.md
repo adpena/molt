@@ -63,8 +63,25 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - targeted correctness gates are green (`cargo check -p molt-runtime`; `tests/test_tkinter_phase0_wrappers.py` -> `2 passed`).
   - Wave 0 benchmark harness interpreter mismatch (`packaging.markers` missing in uv-only lane) is resolved: `tools/bench.py` and `tools/bench_wasm.py` now invoke Molt builds via `uv run --python 3.12 python3` instead of bare `sys.executable`, matching the pattern already used in `tools/compile_progress.py`. Remaining Wave 0 blocker is release-runtime compile churn; canonical tracking is in `docs/benchmarks/optimization_progress.md`.
 
-## Stdlib Intrinsics Program (2026-02-25)
+## Stdlib Intrinsics Program (2026-02-28)
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+
+### Asyncio & Tkinter Parity Sprint (2026-02-28)
+- Completed: asyncio pipe transports (`connect_read_pipe`/`connect_write_pipe`)
+  with 11 new pipe transport Rust intrinsics.
+- Completed: 42 new Rust intrinsics for asyncio Future/Event/Lock/Semaphore/Queue
+  state machines; all 97 bare `except` blocks eliminated from asyncio shim.
+- Completed: WASM capability gating for 6 asyncio I/O operations.
+- Completed: Transport/Protocol base classes added to asyncio surface.
+- Completed: asyncio 3.13 version-gated APIs (`as_completed` async iter,
+  `Queue.shutdown`) and 3.14 version-gated APIs (`get_event_loop` `RuntimeError`,
+  child watcher removal, policy deprecation).
+- Completed: tkinter 10 Rust intrinsics wired (event parsing, Tcl list/dict
+  conversion, hex color validation, option normalization).
+- Completed: all tkinter strict mode violations resolved.
+- Completed: tkinter 3.13 (`tk_busy_*`, `PhotoImage.copy_replace`) and 3.14
+  (`trace_variable` deprecation) version-specific APIs added.
+- Completed: tkinter 100% submodule coverage achieved.
 
 ### Stdlib Intrinsics Sprint (2026-02-25)
 - Completed: major 5-track sprint adding ~85 new Rust intrinsics, ~1,250 LOC
@@ -112,6 +129,11 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   `molt_tk_*` intrinsics (Tkapp shell, call/event helpers, var helpers,
   conversion helpers, and config helpers) and retains deterministic unsupported
   behavior.
+- Implemented (2026-02-28): 10 Rust intrinsics wired for tkinter (event
+  parsing, Tcl list/dict conversion, hex color validation, option
+  normalization); all strict mode violations resolved; 3.13 (`tk_busy_*`,
+  `PhotoImage.copy_replace`) and 3.14 (`trace_variable` deprecation)
+  version-gated APIs added; 100% submodule coverage achieved.
 - Implemented: headless Rust Tk command lowering now covers major
   `tkinter.ttk` execution families (Treeview, `ttk::style`,
   notebook/panedwindow/container/widget subcommands, and
@@ -358,8 +380,8 @@ Plan (parity-first, comprehensive):
 - Current: runtime mutation is serialized by a GIL-like lock in the global runtime state; see [docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md](docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md).
 
 Planned milestones:
-- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:planned): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P0, status:planned): full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop.
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:partial): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core. Pipe transports (`connect_read_pipe`/`connect_write_pipe`) now implemented with 11 new intrinsics; 42 new Rust intrinsics for Future/Event/Lock/Semaphore/Queue state machines landed; WASM capability gating for 6 I/O operations complete; Transport/Protocol base classes added; 3.13/3.14 version-specific APIs gated.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P0, status:partial): full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop. Pipe transports, synchronization primitives, and version-gated APIs now implemented; remaining: full executor semantics and advanced loop APIs.
 - TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define the per-runtime GIL strategy, runtime instance ownership model, and allowed cross-thread object sharing rules (see [docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md](docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md)).
 - Implemented: explicit `PyToken` GIL token API and `with_gil`/`with_gil_entry` enforcement on runtime mutation entrypoints (see [docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md](docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md)).
 - TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors, explicit message passing, and capability-gated shared-memory primitives.
@@ -484,7 +506,7 @@ Sign-off criteria:
 ## Stdlib
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
-- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `wait`/`wait_for`/`shield` + basic `gather` supported; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
+- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `wait`/`wait_for`/`shield` + basic `gather` supported; `set_event_loop`/`new_event_loop` stubs); pipe transports (`connect_read_pipe`/`connect_write_pipe`) implemented with 11 new pipe transport intrinsics; 42 new Rust intrinsics for Future/Event/Lock/Semaphore/Queue state machines; all 97 bare `except` blocks eliminated; WASM capability gating for 6 I/O ops; Transport/Protocol base classes added; 3.13 (`as_completed` async iter, `Queue.shutdown`) and 3.14 (`get_event_loop` `RuntimeError`, child watcher removal, policy deprecation) version-gated APIs added (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
 - Implemented: asyncio TaskGroup/Runner cancellation fanout lowered through
   intrinsic batch cancellation (`molt_asyncio_cancel_pending`) plus intrinsic
   gather-based drain paths.
@@ -525,6 +547,12 @@ Sign-off criteria:
   intrinsics; `signal` module expanded with 17 new intrinsics (see sprint Track C).
 - Implemented (2026-02-25): `_asyncio` expanded with 4 new C-accelerated
   task-state intrinsics (see sprint Track D).
+- Implemented (2026-02-28): asyncio pipe transports, 42 new Future/Event/Lock/
+  Semaphore/Queue intrinsics, Transport/Protocol base classes, WASM I/O gating,
+  and 3.13/3.14 version-specific APIs (see Asyncio & Tkinter Parity Sprint).
+- Implemented (2026-02-28): tkinter 10 Rust intrinsics wired, all strict mode
+  violations resolved, 3.13/3.14 version-gated APIs, 100% submodule coverage
+  (see Asyncio & Tkinter Parity Sprint).
 - Implemented (2026-02-25): `subprocess` expanded with `molt_process_spawn_ex`
   intrinsic and broader Popen surface (see sprint Track E);
   `concurrent.futures` verified intrinsic-complete.

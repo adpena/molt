@@ -52,8 +52,13 @@ _BASE_ALL = [
     "AbstractEventLoopPolicy",
     "AbstractServer",
     "BaseEventLoop",
+    "BaseProtocol",
+    "BaseTransport",
+    "BufferedProtocol",
     "CancelledError",
     "Condition",
+    "DatagramProtocol",
+    "DatagramTransport",
     "DefaultEventLoopPolicy",
     "Event",
     "Future",
@@ -64,6 +69,7 @@ _BASE_ALL = [
     "LimitOverrunError",
     "Lock",
     "PriorityQueue",
+    "Protocol",
     "FIRST_COMPLETED",
     "FIRST_EXCEPTION",
     "ALL_COMPLETED",
@@ -72,6 +78,7 @@ _BASE_ALL = [
     "QueueFull",
     "BrokenBarrierError",
     "Barrier",
+    "ReadTransport",
     "Runner",
     "SelectorEventLoop",
     "Semaphore",
@@ -80,10 +87,13 @@ _BASE_ALL = [
     "Server",
     "StreamReader",
     "StreamWriter",
+    "SubprocessProtocol",
+    "SubprocessTransport",
     "Task",
     "TaskGroup",
     "TimerHandle",
     "TimeoutError",
+    "Transport",
     "create_eager_task_factory",
     "eager_task_factory",
     "all_tasks",
@@ -115,6 +125,7 @@ _BASE_ALL = [
     "timeout",
     "timeout_at",
     "to_thread",
+    "WriteTransport",
     "wrap_future",
     "wait",
     "wait_for",
@@ -455,6 +466,83 @@ if TYPE_CHECKING:
 
     def molt_inspect_iscoroutinefunction(_obj: Any) -> bool: ...
 
+    # Handle-based state machine intrinsics -- Future
+    def molt_asyncio_future_new() -> int: ...
+
+    def molt_asyncio_future_result(_handle: int) -> Any: ...
+
+    def molt_asyncio_future_exception(_handle: int) -> Any: ...
+
+    def molt_asyncio_future_set_result_fast(_handle: int, _result: Any) -> int: ...
+
+    def molt_asyncio_future_set_exception_fast(_handle: int, _exc: Any) -> int: ...
+
+    def molt_asyncio_future_cancel_fast(_handle: int, _msg: Any) -> bool: ...
+
+    def molt_asyncio_future_done(_handle: int) -> bool: ...
+
+    def molt_asyncio_future_cancelled(_handle: int) -> bool: ...
+
+    def molt_asyncio_future_add_done_callback_fast(_handle: int, _cb: Any) -> bool: ...
+
+    def molt_asyncio_future_drop(_handle: int) -> None: ...
+
+    # Handle-based state machine intrinsics -- Event
+    def molt_asyncio_event_new() -> int: ...
+
+    def molt_asyncio_event_is_set(_handle: int) -> bool: ...
+
+    def molt_asyncio_event_set_fast(_handle: int) -> int: ...
+
+    def molt_asyncio_event_clear_handle(_handle: int) -> None: ...
+
+    def molt_asyncio_event_drop(_handle: int) -> None: ...
+
+    # Handle-based state machine intrinsics -- Lock
+    def molt_asyncio_lock_new() -> int: ...
+
+    def molt_asyncio_lock_locked(_handle: int) -> bool: ...
+
+    def molt_asyncio_lock_acquire_fast(_handle: int) -> bool: ...
+
+    def molt_asyncio_lock_release_fast(_handle: int) -> int: ...
+
+    def molt_asyncio_lock_drop(_handle: int) -> None: ...
+
+    # Handle-based state machine intrinsics -- Semaphore
+    def molt_asyncio_semaphore_new(_value: int) -> int: ...
+
+    def molt_asyncio_semaphore_acquire_fast(_handle: int) -> bool: ...
+
+    def molt_asyncio_semaphore_release_fast(_handle: int, _max_value: int) -> int: ...
+
+    def molt_asyncio_semaphore_drop(_handle: int) -> None: ...
+
+    # Handle-based state machine intrinsics -- Queue
+    def molt_asyncio_queue_new(_maxsize: int, _queue_type: int) -> int: ...
+
+    def molt_asyncio_queue_put_nowait(_handle: int, _item: Any) -> None: ...
+
+    def molt_asyncio_queue_get_nowait(_handle: int) -> Any: ...
+
+    def molt_asyncio_queue_qsize(_handle: int) -> int: ...
+
+    def molt_asyncio_queue_maxsize(_handle: int) -> int: ...
+
+    def molt_asyncio_queue_empty(_handle: int) -> bool: ...
+
+    def molt_asyncio_queue_full(_handle: int) -> bool: ...
+
+    def molt_asyncio_queue_task_done(_handle: int) -> None: ...
+
+    def molt_asyncio_queue_unfinished_tasks(_handle: int) -> int: ...
+
+    def molt_asyncio_queue_shutdown(_handle: int, _immediate: bool) -> None: ...
+
+    def molt_asyncio_queue_is_shutdown(_handle: int) -> bool: ...
+
+    def molt_asyncio_queue_drop(_handle: int) -> None: ...
+
 
 def _mark_builtin(fn: Any) -> None:
     func = _require_asyncio_intrinsic(
@@ -539,8 +627,7 @@ class Future:
         )
 
     def __init__(self) -> None:
-        self._done = False
-        self._cancelled = False
+        self._fut_handle: int = molt_asyncio_future_new()
         self._result: Any = None
         self._exception: BaseException | None = None
         self._cancel_message: Any | None = None
@@ -550,6 +637,7 @@ class Future:
             self._asyncio_awaited_by: set["Future"] | None = None
         self._callbacks: list[tuple[Callable[["Future"], Any], Any | None]] = []
         self._molt_promise: Any | None = molt_promise_new()
+        self._loop: Any = molt_asyncio_running_loop_get()
         if _DEBUG_ASYNCIO_PROMISE:
             _debug_write(
                 "asyncio_promise_new ok={ok} promise={promise}".format(
@@ -559,7 +647,7 @@ class Future:
             )
 
     def cancel(self, msg: Any | None = None) -> bool:
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             return False
         if _DEBUG_TASKS:
             _debug_write(
@@ -574,7 +662,7 @@ class Future:
             _require_asyncio_intrinsic(_molt_future_cancel_msg, "future_cancel_msg")(
                 promise, msg
             )
-        self._cancelled = True
+        molt_asyncio_future_cancel_fast(self._fut_handle, msg)
         self._exception = None
         self._cancel_message = None
         if msg is not None:
@@ -583,20 +671,19 @@ class Future:
             else:
                 self._exception = CancelledError()
             self._cancel_message = msg
-        self._done = True
         self._invoke_callbacks()
         return True
 
     def cancelled(self) -> bool:
-        return self._cancelled
+        return bool(molt_asyncio_future_cancelled(self._fut_handle))
 
     def done(self) -> bool:
-        return self._done
+        return bool(molt_asyncio_future_done(self._fut_handle))
 
     def result(self) -> Any:
-        if not self._done:
+        if not molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Result is not ready")
-        if self._cancelled:
+        if molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
             raise CancelledError
@@ -610,9 +697,9 @@ class Future:
         return self._result
 
     def exception(self) -> BaseException | None:
-        if not self._done:
+        if not molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Result is not ready")
-        if self._cancelled:
+        if molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
             raise CancelledError
@@ -627,28 +714,38 @@ class Future:
                 context = copy_ctx()
             else:
                 context = None
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             self._run_callback(fn, context)
             return None
         self._callbacks.append((fn, context))
         return None
 
+    def remove_done_callback(self, fn: Callable[["Future"], Any]) -> int:
+        filtered = [(f, ctx) for f, ctx in self._callbacks if f is not fn]
+        removed = len(self._callbacks) - len(filtered)
+        self._callbacks[:] = filtered
+        return removed
+
+    def get_loop(self) -> Any:
+        return self._loop
+
     def set_result(self, result: Any) -> None:
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Result is already set")
         self._result = result
-        self._done = True
+        molt_asyncio_future_set_result_fast(self._fut_handle, result)
         if self._molt_promise is not None:
             molt_promise_set_result(self._molt_promise, result)
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException) -> None:
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Result is already set")
         self._exception = exception
         if _is_cancelled_exc(exception):
-            self._cancelled = True
-        self._done = True
+            molt_asyncio_future_cancel_fast(self._fut_handle, None)
+        else:
+            molt_asyncio_future_set_exception_fast(self._fut_handle, exception)
         if self._molt_promise is not None:
             molt_promise_set_exception(self._molt_promise, exception)
         self._invoke_callbacks()
@@ -667,7 +764,7 @@ class Future:
             fn(self)
 
     async def _wait(self) -> Any:
-        while not self._done:
+        while not molt_asyncio_future_done(self._fut_handle):
             await _async_yield_once()
         return self.result()
 
@@ -689,13 +786,18 @@ class Future:
         return _wrapped().__await__()
 
     def __repr__(self) -> str:
-        if self._cancelled:
+        if molt_asyncio_future_cancelled(self._fut_handle):
             state = "cancelled"
-        elif self._done:
+        elif molt_asyncio_future_done(self._fut_handle):
             state = "finished"
         else:
             state = "pending"
         return f"<Future {state}>"
+
+    def __del__(self) -> None:
+        handle = getattr(self, "_fut_handle", None)
+        if handle is not None:
+            molt_asyncio_future_drop(handle)
 
 
 def future_add_to_awaited_by(fut: Any, waiter: Any) -> None:
@@ -1360,6 +1462,90 @@ _molt_inspect_iscoroutinefunction = _intrinsic_require(
     "molt_inspect_iscoroutinefunction", globals()
 )
 
+# Handle-based state machine intrinsics -- Future
+molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
+molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result", globals())
+molt_asyncio_future_exception = _intrinsic_require(
+    "molt_asyncio_future_exception", globals()
+)
+molt_asyncio_future_set_result_fast = _intrinsic_require(
+    "molt_asyncio_future_set_result_fast", globals()
+)
+molt_asyncio_future_set_exception_fast = _intrinsic_require(
+    "molt_asyncio_future_set_exception_fast", globals()
+)
+molt_asyncio_future_cancel_fast = _intrinsic_require(
+    "molt_asyncio_future_cancel_fast", globals()
+)
+molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
+molt_asyncio_future_cancelled = _intrinsic_require(
+    "molt_asyncio_future_cancelled", globals()
+)
+molt_asyncio_future_add_done_callback_fast = _intrinsic_require(
+    "molt_asyncio_future_add_done_callback_fast", globals()
+)
+molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
+
+# Handle-based state machine intrinsics -- Event
+molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new", globals())
+molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set", globals())
+molt_asyncio_event_set_fast = _intrinsic_require(
+    "molt_asyncio_event_set_fast", globals()
+)
+molt_asyncio_event_clear_handle = _intrinsic_require(
+    "molt_asyncio_event_clear", globals()
+)
+molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop", globals())
+
+# Handle-based state machine intrinsics -- Lock
+molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new", globals())
+molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked", globals())
+molt_asyncio_lock_acquire_fast = _intrinsic_require(
+    "molt_asyncio_lock_acquire_fast", globals()
+)
+molt_asyncio_lock_release_fast = _intrinsic_require(
+    "molt_asyncio_lock_release_fast", globals()
+)
+molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop", globals())
+
+# Handle-based state machine intrinsics -- Semaphore
+molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new", globals())
+molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
+    "molt_asyncio_semaphore_acquire_fast", globals()
+)
+molt_asyncio_semaphore_release_fast = _intrinsic_require(
+    "molt_asyncio_semaphore_release_fast", globals()
+)
+molt_asyncio_semaphore_drop = _intrinsic_require(
+    "molt_asyncio_semaphore_drop", globals()
+)
+
+# Handle-based state machine intrinsics -- Queue
+molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new", globals())
+molt_asyncio_queue_put_nowait = _intrinsic_require(
+    "molt_asyncio_queue_put_nowait", globals()
+)
+molt_asyncio_queue_get_nowait = _intrinsic_require(
+    "molt_asyncio_queue_get_nowait", globals()
+)
+molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize", globals())
+molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize", globals())
+molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty", globals())
+molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full", globals())
+molt_asyncio_queue_task_done = _intrinsic_require(
+    "molt_asyncio_queue_task_done", globals()
+)
+molt_asyncio_queue_unfinished_tasks = _intrinsic_require(
+    "molt_asyncio_queue_unfinished_tasks", globals()
+)
+molt_asyncio_queue_shutdown = _intrinsic_require(
+    "molt_asyncio_queue_shutdown", globals()
+)
+molt_asyncio_queue_is_shutdown = _intrinsic_require(
+    "molt_asyncio_queue_is_shutdown", globals()
+)
+molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
+
 _PENDING_SENTINEL: Any | None = None
 
 
@@ -1566,7 +1752,7 @@ def _debug_write(message: str) -> None:
 
 def _future_done(task: Any) -> bool:
     if isinstance(task, Future):
-        return task._done
+        return bool(molt_asyncio_future_done(task._fut_handle))
     done_fn = getattr(task, "done", None)
     if callable(done_fn):
         return done_fn()
@@ -1575,7 +1761,7 @@ def _future_done(task: Any) -> bool:
 
 def _future_cancelled(task: Any) -> bool:
     if isinstance(task, Future):
-        return task._cancelled
+        return bool(molt_asyncio_future_cancelled(task._fut_handle))
     cancelled_fn = getattr(task, "cancelled", None)
     if callable(cancelled_fn):
         return cancelled_fn()
@@ -1639,7 +1825,8 @@ class Task(Future):
             task_dict["_coro"] = coro
         self._runner_task: Any | None = None
         self._token = CancellationToken()
-        self._loop = loop
+        if loop is not None:
+            self._loop = loop
         self._name = name or _next_task_name()
         self._cancel_requested = 0
         self._cancel_message: Any | None = None
@@ -1687,7 +1874,7 @@ class Task(Future):
             _clear_ctx(old_id)
 
     def cancel(self, msg: Any | None = None) -> bool:
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             return False
         self._cancel_requested += 1
         if msg is None:
@@ -1772,13 +1959,13 @@ class Task(Future):
                     )
                 )
         if exc is None:
-            if not self._done:
+            if not molt_asyncio_future_done(self._fut_handle):
                 self.set_result(result)
                 if _DEBUG_TASKS:
                     token_id = self._token.token_id()
                     _debug_write(f"asyncio_task_done token={token_id}")
         else:
-            if not self._done:
+            if not molt_asyncio_future_done(self._fut_handle):
                 self.set_exception(exc)
         _cleanup_event_waiters_for_token(self._token.token_id())
         _task_registry_pop(self._token.token_id())
@@ -1789,16 +1976,16 @@ class Task(Future):
         )
 
     def __repr__(self) -> str:
-        if self._cancelled:
+        if molt_asyncio_future_cancelled(self._fut_handle):
             state = "cancelled"
-        elif self._done:
+        elif molt_asyncio_future_done(self._fut_handle):
             state = "finished"
         else:
             state = "pending"
         return f"<Task {self._name} {state}>"
 
     def __await__(self) -> Any:
-        if self._done:
+        if molt_asyncio_future_done(self._fut_handle):
             return self._wait().__await__()
         waiter = Future()
 
@@ -1827,16 +2014,16 @@ class Task(Future):
 
 class Event:
     def __init__(self) -> None:
-        self._flag = False
+        self._evt_handle: int = molt_asyncio_event_new()
         self._waiters: list[Future] = []
 
     def is_set(self) -> bool:
-        return self._flag
+        return bool(molt_asyncio_event_is_set(self._evt_handle))
 
     def set(self) -> None:
-        if self._flag:
+        if molt_asyncio_event_is_set(self._evt_handle):
             return None
-        self._flag = True
+        molt_asyncio_event_set_fast(self._evt_handle)
         waiters = self._waiters
         self._waiters = []
         _require_asyncio_intrinsic(
@@ -1845,10 +2032,10 @@ class Event:
         return None
 
     def clear(self) -> None:
-        self._flag = False
+        molt_asyncio_event_clear_handle(self._evt_handle)
 
     async def wait(self) -> bool:
-        if self._flag:
+        if molt_asyncio_event_is_set(self._evt_handle):
             return True
         fut = Future()
         fut._molt_event_owner = self
@@ -1864,18 +2051,22 @@ class Event:
                 _asyncio_waiters_remove(self._waiters, fut)
             raise
 
+    def __del__(self) -> None:
+        handle = getattr(self, "_evt_handle", None)
+        if handle is not None:
+            molt_asyncio_event_drop(handle)
+
 
 class Lock:
     def __init__(self) -> None:
-        self._locked = False
+        self._lock_handle: int = molt_asyncio_lock_new()
         self._waiters: _deque[Future] = _deque()
 
     def locked(self) -> bool:
-        return self._locked
+        return bool(molt_asyncio_lock_locked(self._lock_handle))
 
     async def acquire(self) -> bool:
-        if not self._locked:
-            self._locked = True
+        if molt_asyncio_lock_acquire_fast(self._lock_handle):
             return True
         fut = Future()
         self._waiters.append(fut)
@@ -1885,16 +2076,15 @@ class Lock:
             if _is_cancelled_exc(exc):
                 _asyncio_waiters_remove(self._waiters, fut)
             raise
-        self._locked = True
+        molt_asyncio_lock_acquire_fast(self._lock_handle)
         return True
 
     def release(self) -> None:
-        if not self._locked:
+        if not molt_asyncio_lock_locked(self._lock_handle):
             raise RuntimeError("Lock is not acquired")
+        molt_asyncio_lock_release_fast(self._lock_handle)
         if self._waiters:
             _asyncio_waiters_notify(self._waiters, 1, True)
-        else:
-            self._locked = False
 
     async def __aenter__(self) -> "Lock":
         await self.acquire()
@@ -1902,6 +2092,11 @@ class Lock:
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.release()
+
+    def __del__(self) -> None:
+        handle = getattr(self, "_lock_handle", None)
+        if handle is not None:
+            molt_asyncio_lock_drop(handle)
 
 
 class Condition:
@@ -1962,13 +2157,14 @@ class Semaphore:
         if value < 0:
             raise ValueError("Semaphore initial value must be >= 0")
         self._value = value
+        self._sem_handle: int = molt_asyncio_semaphore_new(value)
         self._waiters: _deque[Future] = _deque()
 
     def locked(self) -> bool:
         return self._value == 0
 
     async def acquire(self) -> bool:
-        if self._value > 0:
+        if molt_asyncio_semaphore_acquire_fast(self._sem_handle):
             self._value -= 1
             return True
         fut = Future()
@@ -1983,9 +2179,16 @@ class Semaphore:
 
     def release(self) -> None:
         if self._waiters:
+            molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
             _asyncio_waiters_notify(self._waiters, 1, True)
         else:
+            molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
             self._value += 1
+
+    def __del__(self) -> None:
+        handle = getattr(self, "_sem_handle", None)
+        if handle is not None:
+            molt_asyncio_semaphore_drop(handle)
 
 
 class BoundedSemaphore(Semaphore):
@@ -2232,6 +2435,9 @@ class StreamReader:
         )
         return self._eof and not self._buffer
 
+    def feed_eof(self) -> None:
+        self._eof = True
+
     async def read(self, n: int = -1) -> bytes:
         if n == 0:
             return b""
@@ -2324,6 +2530,7 @@ class StreamWriter:
         self._sock = sock
         self._buffer = bytearray()
         self._closed = False
+        self._transport: Any = None
         if hasattr(self._sock, "setblocking"):
             self._sock.setblocking(False)
         fileno_fn = getattr(self._sock, "fileno", None)
@@ -2339,6 +2546,10 @@ class StreamWriter:
             raise TypeError("data must be bytes-like")
         self._buffer.extend(data)
         return None
+
+    def writelines(self, data: Iterable[bytes | bytearray | memoryview]) -> None:
+        for chunk in data:
+            self.write(chunk)
 
     async def drain(self) -> None:
         if not self._buffer:
@@ -2359,6 +2570,9 @@ class StreamWriter:
         if not self._closed and hasattr(self._sock, "shutdown"):
             self._sock.shutdown(_socket.SHUT_WR)
 
+    def can_write_eof(self) -> bool:
+        return True
+
     def close(self) -> None:
         if self._closed:
             return
@@ -2366,8 +2580,23 @@ class StreamWriter:
         if hasattr(self._sock, "close"):
             self._sock.close()
 
+    def is_closing(self) -> bool:
+        return self._closed
+
     async def wait_closed(self) -> None:
         return None
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        transport = self._transport
+        if transport is not None:
+            get_info = getattr(transport, "get_extra_info", None)
+            if callable(get_info):
+                return get_info(name, default)
+        return default
+
+    @property
+    def transport(self) -> Any:
+        return self._transport
 
 
 class AbstractServer:
@@ -3910,40 +4139,177 @@ if _EXPOSE_QUEUE_SHUTDOWN:
     QueueShutDown = _QueueShutDown
 
 
-class Transport:
-    pass
+class BaseTransport:
+    """Base class for transports."""
+
+    def __init__(self, extra: dict | None = None):
+        self._extra = extra if extra is not None else {}
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        return self._extra.get(name, default)
+
+    def is_closing(self) -> bool:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def set_protocol(self, protocol: "BaseProtocol") -> None:
+        raise NotImplementedError
+
+    def get_protocol(self) -> "BaseProtocol":
+        raise NotImplementedError
 
 
-class Protocol:
-    pass
+class ReadTransport(BaseTransport):
+    """Interface for read-only transports."""
+
+    def is_reading(self) -> bool:
+        raise NotImplementedError
+
+    def pause_reading(self) -> None:
+        raise NotImplementedError
+
+    def resume_reading(self) -> None:
+        raise NotImplementedError
 
 
-class BaseProtocol(Protocol):
-    pass
+class WriteTransport(BaseTransport):
+    """Interface for write-only transports."""
+
+    def set_write_buffer_limits(
+        self, high: int | None = None, low: int | None = None
+    ) -> None:
+        raise NotImplementedError
+
+    def get_write_buffer_size(self) -> int:
+        raise NotImplementedError
+
+    def get_write_buffer_limits(self) -> tuple[int, int]:
+        raise NotImplementedError
+
+    def write(self, data: bytes) -> None:
+        raise NotImplementedError
+
+    def writelines(self, list_of_data: list[bytes]) -> None:
+        for data in list_of_data:
+            self.write(data)
+
+    def write_eof(self) -> None:
+        raise NotImplementedError
+
+    def can_write_eof(self) -> bool:
+        raise NotImplementedError
+
+    def abort(self) -> None:
+        raise NotImplementedError
 
 
-class BufferedProtocol(Protocol):
-    pass
+class Transport(ReadTransport, WriteTransport):
+    """Interface representing a bidirectional transport."""
 
 
-class DatagramProtocol(Protocol):
-    pass
+class DatagramTransport(BaseTransport):
+    """Interface for datagram (UDP) transports."""
+
+    def sendto(self, data: bytes, addr: Any = None) -> None:
+        raise NotImplementedError
+
+    def abort(self) -> None:
+        raise NotImplementedError
+
+
+class SubprocessTransport(BaseTransport):
+    """Interface for subprocess transports."""
+
+    def get_pid(self) -> int:
+        raise NotImplementedError
+
+    def get_returncode(self) -> int | None:
+        raise NotImplementedError
+
+    def get_pipe_transport(self, fd: int) -> BaseTransport | None:
+        raise NotImplementedError
+
+    def send_signal(self, signal: int) -> None:
+        raise NotImplementedError
+
+    def terminate(self) -> None:
+        raise NotImplementedError
+
+    def kill(self) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class BaseProtocol:
+    """Base class for protocols."""
+
+    def connection_made(self, transport: BaseTransport) -> None:
+        """Called when a connection is made."""
+
+    def connection_lost(self, exc: BaseException | None) -> None:
+        """Called when the connection is lost or closed."""
+
+    def pause_writing(self) -> None:
+        """Called when the transport's buffer goes over the high-water mark."""
+
+    def resume_writing(self) -> None:
+        """Called when the transport's buffer drains below the low-water mark."""
+
+
+class Protocol(BaseProtocol):
+    """Interface for stream protocol event callbacks."""
+
+    def data_received(self, data: bytes) -> None:
+        """Called when some data is received."""
+
+    def eof_received(self) -> bool | None:
+        """Called when the other end signals it won't send data anymore."""
+
+
+class BufferedProtocol(BaseProtocol):
+    """Interface for stream protocol with manual buffer control."""
+
+    def get_buffer(self, sizehint: int) -> bytearray:
+        """Called to allocate a new receive buffer."""
+        raise NotImplementedError
+
+    def buffer_updated(self, nbytes: int) -> None:
+        """Called when the buffer was updated with the received data."""
+        raise NotImplementedError
+
+    def eof_received(self) -> bool | None:
+        """Called when the other end signals it won't send data anymore."""
+
+
+class DatagramProtocol(BaseProtocol):
+    """Interface for datagram protocol event callbacks."""
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        """Called when a datagram is received."""
+
+    def error_received(self, exc: OSError) -> None:
+        """Called when a send or receive operation raises an OSError."""
+
+
+class SubprocessProtocol(BaseProtocol):
+    """Interface for subprocess event callbacks."""
+
+    def pipe_data_received(self, fd: int, data: bytes) -> None:
+        """Called when the child process writes data into its stdout or stderr pipe."""
+
+    def pipe_connection_lost(self, fd: int, exc: BaseException | None) -> None:
+        """Called when one of the pipes communicating with the child process is closed."""
+
+    def process_exited(self) -> None:
+        """Called when the child process has exited."""
 
 
 class StreamReaderProtocol(Protocol):
-    pass
-
-
-class SubprocessProtocol(Protocol):
-    pass
-
-
-class DatagramTransport(Transport):
-    pass
-
-
-class SubprocessTransport(Transport):
-    pass
+    """Stream reader protocol."""
 
 
 class _DatagramSocketTransport(DatagramTransport):
@@ -5076,10 +5442,13 @@ def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[A
 
 
 class Queue:
+    _Q_TYPE: int = 0  # FIFO
+
     def __init__(self, maxsize: int = 0) -> None:
         if maxsize < 0:
             raise ValueError("maxsize must be >= 0")
         self._maxsize = maxsize
+        self._q_handle: int = molt_asyncio_queue_new(maxsize, self._Q_TYPE)
         self._getters: _deque[Future] = _deque()
         self._putters: _deque[Future] = _deque()
         self._unfinished_tasks = 0
@@ -5092,16 +5461,19 @@ class Queue:
         self._queue: Any = _deque()
 
     def qsize(self) -> int:
-        return len(self._queue)
+        return int(molt_asyncio_queue_qsize(self._q_handle))
+
+    def _handle_maxsize(self) -> int:
+        return int(molt_asyncio_queue_maxsize(self._q_handle))
 
     def empty(self) -> bool:
-        return not self._queue
+        return bool(molt_asyncio_queue_empty(self._q_handle))
 
     def full(self) -> bool:
-        return self._maxsize > 0 and len(self._queue) >= self._maxsize
+        return bool(molt_asyncio_queue_full(self._q_handle))
 
     async def put(self, item: Any) -> None:
-        if self._shutdown:
+        if molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         while self.full():
             fut = Future()
@@ -5112,12 +5484,12 @@ class Queue:
                 if _is_cancelled_exc(exc):
                     _asyncio_waiters_remove(self._putters, fut)
                 raise
-            if self._shutdown:
+            if molt_asyncio_queue_is_shutdown(self._q_handle):
                 raise _QueueShutDown
         self._put_nowait(item)
 
     def put_nowait(self, item: Any) -> None:
-        if self._shutdown:
+        if molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         if self.full():
             raise QueueFull
@@ -5125,6 +5497,7 @@ class Queue:
 
     def _put_nowait(self, item: Any) -> None:
         self._unfinished_tasks += 1
+        molt_asyncio_queue_put_nowait(self._q_handle, item)
         if self._finished.is_set():
             self._finished.clear()
         if self._getters:
@@ -5136,9 +5509,9 @@ class Queue:
         self._queue.append(item)
 
     async def get(self) -> Any:
-        if self._queue:
+        if not molt_asyncio_queue_empty(self._q_handle):
             return self._get_nowait()
-        if self._shutdown:
+        if molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         fut = Future()
         self._getters.append(fut)
@@ -5150,14 +5523,15 @@ class Queue:
             raise
 
     def get_nowait(self) -> Any:
-        if self._queue:
+        if not molt_asyncio_queue_empty(self._q_handle):
             return self._get_nowait()
-        if self._shutdown:
+        if molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         raise QueueEmpty
 
     def _get_nowait(self) -> Any:
         item = self._get()
+        molt_asyncio_queue_get_nowait(self._q_handle)
         if self._putters:
             _asyncio_waiters_notify(self._putters, 1, True)
         return item
@@ -5169,6 +5543,7 @@ class Queue:
         if self._unfinished_tasks <= 0:
             raise ValueError("task_done() called too many times")
         self._unfinished_tasks -= 1
+        molt_asyncio_queue_task_done(self._q_handle)
         if self._unfinished_tasks == 0:
             self._finished.set()
 
@@ -5179,6 +5554,7 @@ class Queue:
 
         def shutdown(self) -> None:
             self._shutdown = True
+            molt_asyncio_queue_shutdown(self._q_handle, False)
             if self._getters:
                 _asyncio_waiters_notify_exception(
                     self._getters, len(self._getters), _QueueShutDown()
@@ -5188,8 +5564,15 @@ class Queue:
                     self._putters, len(self._putters), _QueueShutDown()
                 )
 
+    def __del__(self) -> None:
+        handle = getattr(self, "_q_handle", None)
+        if handle is not None:
+            molt_asyncio_queue_drop(handle)
+
 
 class PriorityQueue(Queue):
+    _Q_TYPE: int = 2  # Priority
+
     def _init(self) -> None:
         self._queue = []
 
@@ -5201,6 +5584,8 @@ class PriorityQueue(Queue):
 
 
 class LifoQueue(Queue):
+    _Q_TYPE: int = 1  # LIFO
+
     def _init(self) -> None:
         self._queue = []
 
