@@ -716,14 +716,9 @@ class LabeledScale(Frame):
     def destroy(self):
         trace_remove = getattr(self._variable, "trace_remove", None)
         if self.__tracecb is not None and callable(trace_remove):
-            try:
-                trace_remove("write", self.__tracecb)
-            except Exception:  # noqa: BLE001
-                pass
-        try:
+            trace_remove("write", self.__tracecb)
+        if hasattr(self, "_variable"):
             del self._variable
-        except AttributeError:
-            pass
         super().destroy()
         self.label = None
         self.scale = None
