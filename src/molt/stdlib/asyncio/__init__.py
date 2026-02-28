@@ -2594,9 +2594,50 @@ class StreamWriter:
                 return get_info(name, default)
         return default
 
+    async def start_tls(
+        self,
+        sslcontext: Any,
+        *,
+        server_hostname: str | None = None,
+        ssl_handshake_timeout: float | None = None,
+        ssl_shutdown_timeout: float | None = None,
+    ) -> None:
+        """Upgrade this stream connection to TLS."""
+        loop = get_running_loop()
+        transport = self._transport
+        if transport is None:
+            # Build a lightweight transport shim so _EventLoop.start_tls
+            # can extract _sock and mark _closed after detach.
+            transport = _StreamWriterTransportShim(self._sock)
+            self._transport = transport
+        protocol = Protocol()
+        new_transport = await loop.start_tls(
+            transport,
+            protocol,
+            sslcontext,
+            server_hostname=server_hostname,
+            ssl_handshake_timeout=ssl_handshake_timeout,
+            ssl_shutdown_timeout=ssl_shutdown_timeout,
+        )
+        if new_transport is not None:
+            self._transport = new_transport
+
     @property
     def transport(self) -> Any:
         return self._transport
+
+
+class _StreamWriterTransportShim:
+    """Minimal transport facade used by StreamWriter.start_tls.
+
+    Exposes ``_sock`` and ``_closed`` so that ``_EventLoop.start_tls`` can
+    call ``sock.detach()`` and mark the shim as closed without requiring a
+    full ``_WritePipeTransport`` instantiation.
+    """
+
+    def __init__(self, sock: Any) -> None:
+        self._sock = sock
+        self._closed = False
 
 
 class AbstractServer:
@@ -6261,7 +6302,15 @@ if _IS_WINDOWS:
     )
     if _EXPOSE_EVENT_LOOP:
         setattr(windows_events, "EventLoop", _ProactorEventLoop)
-    windows_utils = _module("asyncio.windows_utils", {})
+    windows_utils = _module(
+        "asyncio.windows_utils",
+        {
+            "BUFSIZE": 8192,
+            "PIPE": _subprocess.PIPE,
+            "STDOUT": _subprocess.STDOUT,
+            "DEVNULL": _subprocess.DEVNULL,
+        },
+    )
 
 
 def staggered_race(*args: Any, **kwargs: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -6326,6 +6375,14 @@ if _EXPOSE_GRAPH:
             "print_call_graph": print_call_graph,
             "FrameCallGraphEntry": FrameCallGraphEntry,
             "FutureCallGraph": FutureCallGraph,
+        },
+    )
+    tools = _module(
+        "asyncio.tools",
+        {
+            "capture_call_graph": capture_call_graph,
+            "format_call_graph": format_call_graph,
+            "print_call_graph": print_call_graph,
         },
     )
 
