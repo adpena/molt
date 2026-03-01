@@ -2572,6 +2572,1619 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
     })
 }
 
+// ---------------------------------------------------------------------------
+// libmolt C-API — Number Protocol
+// ---------------------------------------------------------------------------
+
+/// `PyNumber_Add(a, b)` — return `a + b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Add(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_add(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Subtract(a, b)` — return `a - b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Subtract(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_sub(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Multiply(a, b)` — return `a * b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_mul(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_TrueDivide(a, b)` — return `a / b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_div(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_FloorDivide(a, b)` — return `a // b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_FloorDivide(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_floordiv(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Remainder(a, b)` — return `a % b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_mod(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Power(a, b, mod_)` — return `pow(a, b)`.
+/// The `mod_` argument is accepted for API compatibility but only plain
+/// two-argument power is used when `mod_` is None/0.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Power(a: u64, b: u64, mod_: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = if mod_ != 0 && !obj_from_bits(mod_).is_none() {
+            molt_pow_mod(a, b, mod_)
+        } else {
+            molt_pow(a, b)
+        };
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Negative(a)` — return `-a`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Negative(a: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_operator_neg(a);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Positive(a)` — return `+a`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Positive(a: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_operator_pos(a);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Absolute(a)` — return `abs(a)`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Absolute(a: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_abs_builtin(a);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Invert(a)` — return `~a`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Invert(a: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_invert(a);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Lshift(a, b)` — return `a << b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Lshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_lshift(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Rshift(a, b)` — return `a >> b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Rshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_rshift(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_And(a, b)` — return `a & b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_And(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_bit_and(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Or(a, b)` — return `a | b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Or(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_bit_or(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Xor(a, b)` — return `a ^ b`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Xor(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_bit_xor(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Check(o)` — return 1 if `o` is a numeric type (int, float, bool), 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Check(o: u64) -> i32 {
+    let obj = obj_from_bits(o);
+    if obj.is_int() || obj.is_float() || obj.is_bool() {
+        return 1;
+    }
+    if let Some(ptr) = obj.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_BIGINT
+    {
+        return 1;
+    }
+    0
+}
+
+/// `PyNumber_Long(o)` — return `int(o)`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Long(o: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_int_from_obj(o, none_bits(), 0);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyNumber_Float(o)` — return `float(o)`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNumber_Float(o: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_float_from_obj(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Mapping Protocol
+// ---------------------------------------------------------------------------
+
+/// `PyMapping_Length(o)` — return `len(o)` for dict-like objects, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMapping_Length(o: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let len_bits = molt_len(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(len_bits).is_none() {
+                dec_ref_bits(_py, len_bits);
+            }
+            return -1;
+        }
+        let out = len_bits_to_i64(_py, len_bits);
+        dec_ref_bits(_py, len_bits);
+        out as isize
+    })
+}
+
+/// `PyMapping_Keys(o)` — return `list(o.keys())`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMapping_Keys(o: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_dict_keys(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyMapping_Values(o)` — return `list(o.values())`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMapping_Values(o: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_dict_values(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyMapping_Items(o)` — return `list(o.items())`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMapping_Items(o: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_dict_items(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyMapping_GetItemString(o, key)` — return `o[key]` where `key` is a NUL-terminated
+/// C string. Returns 0 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c_char) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if key.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "key string pointer cannot be null");
+            return 0;
+        }
+        let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
+        let key_bytes = key_cstr.to_bytes();
+        let key_ptr = alloc_string(_py, key_bytes);
+        if key_ptr.is_null() {
+            return 0;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let res = molt_getitem_method(o, key_bits);
+        dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyMapping_HasKey(o, key)` — return 1 if `key in o`, 0 otherwise.
+/// Does not raise exceptions on failure (returns 0 instead).
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_contains(o, key);
+        if exception_pending(_py) {
+            let _ = molt_exception_clear();
+            return 0;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Sequence Protocol additions
+// ---------------------------------------------------------------------------
+
+/// `PySequence_GetItem(o, i)` — return `o[i]`, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = MoltObject::from_int(i as i64).bits();
+        let res = molt_getitem_method(o, idx_bits);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PySequence_Length(o)` — return `len(o)`, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySequence_Length(o: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let len_bits = molt_len(o);
+        if exception_pending(_py) {
+            if !obj_from_bits(len_bits).is_none() {
+                dec_ref_bits(_py, len_bits);
+            }
+            return -1;
+        }
+        let out = len_bits_to_i64(_py, len_bits);
+        dec_ref_bits(_py, len_bits);
+        out as isize
+    })
+}
+
+/// `PySequence_Contains(o, value)` — return 1 if `value in o`, 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_contains(o, value);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Bytes/String Protocol
+// ---------------------------------------------------------------------------
+
+/// `PyBytes_FromStringAndSize(v, len)` — create a new bytes object from a buffer.
+/// If `v` is NULL and `len > 0`, returns 0 (error). If `len == 0`, returns an empty bytes.
+/// Returns the new bytes handle (caller owns the reference) or 0 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if len < 0 {
+            let _ = raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "negative size passed to PyBytes_FromStringAndSize",
+            );
+            return 0;
+        }
+        let data = if len == 0 {
+            &[]
+        } else if v.is_null() {
+            let _ = raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "bytes source pointer cannot be null when len > 0",
+            );
+            return 0;
+        } else {
+            unsafe { std::slice::from_raw_parts(v, len as usize) }
+        };
+        let ptr = alloc_bytes(_py, data);
+        if ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `PyBytes_AsString(o)` — return a pointer to the internal buffer of a bytes object.
+/// Returns NULL on error (e.g. not a bytes object). The pointer is borrowed and valid
+/// as long as the bytes object is alive.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(o).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+            return std::ptr::null();
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_BYTES {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+                return std::ptr::null();
+            }
+            bytes_data(ptr)
+        }
+    })
+}
+
+/// `PyBytes_Size(o)` — return the length of a bytes object, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyBytes_Size(o: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(o).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_BYTES {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+                return -1;
+            }
+            bytes_len(ptr) as isize
+        }
+    })
+}
+
+/// `PyUnicode_FromString(v)` — create a new str from a NUL-terminated UTF-8 C string.
+/// Returns the new string handle (caller owns the reference) or 0 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if v.is_null() {
+            let _ =
+                raise_exception::<u64>(_py, "TypeError", "string source pointer cannot be null");
+            return 0;
+        }
+        let cstr = unsafe { std::ffi::CStr::from_ptr(v) };
+        let bytes = cstr.to_bytes();
+        let ptr = alloc_string(_py, bytes);
+        if ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `PyUnicode_AsUTF8(o)` — return a pointer to the UTF-8 representation of a string.
+/// Returns NULL on error. The pointer is borrowed and valid as long as the string object
+/// is alive.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(o).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            return std::ptr::null();
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                return std::ptr::null();
+            }
+            string_bytes(ptr) as *const std::ffi::c_char
+        }
+    })
+}
+
+/// `PyUnicode_AsUTF8AndSize(o, size)` — return a pointer to the UTF-8 representation
+/// and write the length to `*size` (if `size` is not NULL).
+/// Returns NULL on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
+    o: u64,
+    size: *mut isize,
+) -> *const std::ffi::c_char {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(o).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            return std::ptr::null();
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                return std::ptr::null();
+            }
+            if !size.is_null() {
+                *size = string_len(ptr) as isize;
+            }
+            string_bytes(ptr) as *const std::ffi::c_char
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Memory Protocol
+// ---------------------------------------------------------------------------
+
+/// `PyMem_Malloc(size)` — allocate `size` bytes of memory.
+/// Returns a pointer to the allocated memory, or NULL on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        // CPython returns a non-NULL pointer for size 0; allocate 1 byte.
+        return unsafe { libc::malloc(1) as *mut u8 };
+    }
+    unsafe { libc::malloc(size) as *mut u8 }
+}
+
+/// `PyMem_Realloc(ptr, size)` — resize a previously allocated block.
+/// Returns a pointer to the reallocated memory, or NULL on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
+    let actual_size = if size == 0 { 1 } else { size };
+    unsafe { libc::realloc(ptr as *mut libc::c_void, actual_size) as *mut u8 }
+}
+
+/// `PyMem_Free(ptr)` — free memory allocated by `PyMem_Malloc` or `PyMem_Realloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
+    if !ptr.is_null() {
+        unsafe {
+            libc::free(ptr as *mut libc::c_void);
+        }
+    }
+}
+
+/// `PyObject_Malloc(size)` — allocate memory for an object.
+/// Currently an alias for `PyMem_Malloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Malloc(size: usize) -> *mut u8 {
+    unsafe { PyMem_Malloc(size) }
+}
+
+/// `PyObject_Realloc(ptr, size)` — reallocate memory for an object.
+/// Currently an alias for `PyMem_Realloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
+    unsafe { PyMem_Realloc(ptr, size) }
+}
+
+/// `PyObject_Free(ptr)` — free memory allocated by `PyObject_Malloc`.
+/// Currently an alias for `PyMem_Free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
+    unsafe { PyMem_Free(ptr) }
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Object Protocol (PyObject_*)
+// ---------------------------------------------------------------------------
+
+/// `PyObject_Repr(obj)` — return repr(obj), or 0 on error. Caller owns the reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_repr_from_obj(obj);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyObject_Str(obj)` — return str(obj), or 0 on error. Caller owns the reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_str_from_obj(obj);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyObject_Hash(obj)` — return the hash of obj, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_hash_builtin(obj);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        let obj_res = obj_from_bits(res);
+        if obj_res.is_none() {
+            return -1;
+        }
+        let h = to_i64(obj_res).unwrap_or(-1);
+        if obj_res.as_ptr().is_some() {
+            dec_ref_bits(_py, res);
+        }
+        h
+    })
+}
+
+/// `PyObject_IsTrue(obj)` — return 1 if obj is truthy, 0 if falsy, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_IsTrue(obj: u64) -> i32 {
+    molt_object_truthy(obj)
+}
+
+/// `PyObject_Not(obj)` — return 0 if obj is truthy, 1 if falsy, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Not(obj: u64) -> i32 {
+    let t = PyObject_IsTrue(obj);
+    match t {
+        1 => 0,
+        0 => 1,
+        _ => -1,
+    }
+}
+
+/// `PyObject_Type(obj)` — return the type of obj. Caller owns the reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_type_of(obj);
+        if exception_pending(_py) || obj_from_bits(res).is_none() {
+            return 0;
+        }
+        inc_ref_bits(_py, res);
+        res
+    })
+}
+
+/// `PyObject_Length(obj)` — return the length of obj, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Length(obj: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let res = molt_len(obj);
+        if exception_pending(_py) {
+            return -1;
+        }
+        let n = to_i64(obj_from_bits(res)).unwrap_or(-1);
+        dec_ref_bits(_py, res);
+        n as isize
+    })
+}
+
+/// `PyObject_Size(obj)` — alias for PyObject_Length.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_Size(obj: u64) -> isize {
+    PyObject_Length(obj)
+}
+
+/// `PyObject_GetAttr(obj, name)` — return obj.name, or 0 on error. Caller owns reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GetAttr(obj: u64, name: u64) -> u64 {
+    molt_object_getattr(obj, name)
+}
+
+/// `PyObject_GetAttrString(obj, name)` — return obj.name using a C string, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if name.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "attribute name cannot be null");
+            return 0;
+        }
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+        let name_bytes = name_cstr.to_bytes();
+        let name_ptr = alloc_string(_py, name_bytes);
+        if name_ptr.is_null() {
+            return 0;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let result = molt_object_getattr(obj, name_bits);
+        dec_ref_bits(_py, name_bits);
+        result
+    })
+}
+
+/// `PyObject_SetAttr(obj, name, value)` — set obj.name = value. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_object_setattr(obj, name, value);
+        if exception_pending(_py) || obj_from_bits(res).is_none() {
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyObject_SetAttrString(obj, name, value)` — set attribute using C string name.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_SetAttrString(
+    obj: u64,
+    name: *const std::ffi::c_char,
+    value: u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if name.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "attribute name cannot be null");
+            return -1;
+        }
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+        let name_bytes = name_cstr.to_bytes();
+        let name_ptr = alloc_string(_py, name_bytes);
+        if name_ptr.is_null() {
+            return -1;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let rc = PyObject_SetAttr(obj, name_bits, value);
+        dec_ref_bits(_py, name_bits);
+        rc
+    })
+}
+
+/// `PyObject_HasAttr(obj, name)` — return 1 if obj has attribute name, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_HasAttr(obj: u64, name: u64) -> i32 {
+    let r = molt_object_hasattr(obj, name);
+    if r < 0 { 0 } else { r }
+}
+
+/// `PyObject_HasAttrString(obj, name)` — return 1 if obj has attribute, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if name.is_null() {
+            return 0;
+        }
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+        let name_bytes = name_cstr.to_bytes();
+        let name_ptr = alloc_string(_py, name_bytes);
+        if name_ptr.is_null() {
+            if exception_pending(_py) {
+                let _ = molt_exception_clear();
+            }
+            return 0;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let r = molt_object_hasattr(obj, name_bits);
+        dec_ref_bits(_py, name_bits);
+        if r < 0 { 0 } else { r }
+    })
+}
+
+/// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_object_delattr(obj, name);
+        if exception_pending(_py) || obj_from_bits(res).is_none() {
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyObject_DelAttrString(obj, name)` — delete attribute by C string name.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if name.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "attribute name cannot be null");
+            return -1;
+        }
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+        let name_bytes = name_cstr.to_bytes();
+        let name_ptr = alloc_string(_py, name_bytes);
+        if name_ptr.is_null() {
+            return -1;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let rc = PyObject_DelAttr(obj, name_bits);
+        dec_ref_bits(_py, name_bits);
+        rc
+    })
+}
+
+/// `PyObject_RichCompareBool(a, b, op)` — compare two objects.
+/// op: Py_LT=0, Py_LE=1, Py_EQ=2, Py_NE=3, Py_GT=4, Py_GE=5
+/// Returns 1 if true, 0 if false, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = match op {
+            0 => molt_lt(a, b),  // Py_LT
+            1 => molt_le(a, b),  // Py_LE
+            2 => molt_eq(a, b),  // Py_EQ
+            3 => molt_ne(a, b),  // Py_NE
+            4 => molt_gt(a, b),  // Py_GT
+            5 => molt_ge(a, b),  // Py_GE
+            _ => {
+                let _ = raise_exception::<u64>(
+                    _py,
+                    "SystemError",
+                    "Bad internal call: invalid comparison op",
+                );
+                return -1;
+            }
+        };
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        let out = if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 };
+        dec_ref_bits(_py, res);
+        if exception_pending(_py) { -1 } else { out }
+    })
+}
+
+/// `PyObject_RichCompare(a, b, op)` — compare two objects, returning the result object.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = match op {
+            0 => molt_lt(a, b),
+            1 => molt_le(a, b),
+            2 => molt_eq(a, b),
+            3 => molt_ne(a, b),
+            4 => molt_gt(a, b),
+            5 => molt_ge(a, b),
+            _ => {
+                let _ = raise_exception::<u64>(
+                    _py,
+                    "SystemError",
+                    "Bad internal call: invalid comparison op",
+                );
+                return 0;
+            }
+        };
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyCallable_Check(obj)` — return 1 if obj is callable, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_callable_builtin(obj);
+        if exception_pending(_py) {
+            let _ = molt_exception_clear();
+            return 0;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+/// `PyObject_IsInstance(obj, cls)` — return 1 if isinstance(obj, cls), 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_IsInstance(obj: u64, cls: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_isinstance(obj, cls);
+        if exception_pending(_py) {
+            return -1;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+/// `PyObject_IsSubclass(sub, cls)` — return 1 if issubclass(sub, cls), 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_IsSubclass(sub: u64, cls: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_issubclass(sub, cls);
+        if exception_pending(_py) {
+            return -1;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Set Protocol
+// ---------------------------------------------------------------------------
+
+/// `PySet_New(iterable)` — create a new set, optionally from an iterable (pass 0 for empty set).
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_New(iterable: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // molt_set_new expects raw capacity u64, NOT NaN-boxed
+        let set_bits = molt_set_new(0u64);
+        if exception_pending(_py) || obj_from_bits(set_bits).is_none() {
+            return 0;
+        }
+        if iterable != 0 && !obj_from_bits(iterable).is_none() {
+            let res = molt_set_update(set_bits, iterable);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, set_bits);
+                if !obj_from_bits(res).is_none() {
+                    dec_ref_bits(_py, res);
+                }
+                return 0;
+            }
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+        }
+        set_bits
+    })
+}
+
+/// `PyFrozenSet_New(iterable)` — create a new frozenset.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // molt_frozenset_new expects raw capacity u64, NOT NaN-boxed
+        let fs_bits = molt_frozenset_new(0u64);
+        if exception_pending(_py) || obj_from_bits(fs_bits).is_none() {
+            return 0;
+        }
+        if iterable != 0 && !obj_from_bits(iterable).is_none() {
+            let res = molt_set_update(fs_bits, iterable);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, fs_bits);
+                if !obj_from_bits(res).is_none() {
+                    dec_ref_bits(_py, res);
+                }
+                return 0;
+            }
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+        }
+        fs_bits
+    })
+}
+
+/// `PySet_Size(set)` — return the number of elements in the set.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Size(set: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let res = molt_len(set);
+        if exception_pending(_py) {
+            return -1;
+        }
+        let n = to_i64(obj_from_bits(res)).unwrap_or(-1);
+        dec_ref_bits(_py, res);
+        n as isize
+    })
+}
+
+/// `PySet_Contains(set, key)` — return 1 if key is in set, 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_set_contains(set, key);
+        if exception_pending(_py) {
+            return -1;
+        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+    })
+}
+
+/// `PySet_Add(set, key)` — add key to set. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_set_add(set, key);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PySet_Discard(set, key)` — remove key from set if present. Returns 1 if found, 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_set_discard(set, key);
+        if exception_pending(_py) {
+            return -1;
+        }
+        // discard returns None on success; check if key was present by trying contains first
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        // CPython returns 1 if found, but discard doesn't tell us — return 0 (no error)
+        0
+    })
+}
+
+/// `PySet_Pop(set)` — remove and return an arbitrary element, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Pop(set: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_set_pop(set);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PySet_Clear(set)` — remove all elements. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Clear(set: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_set_clear(set);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PySet_Check(obj)` — return 1 if obj is a set, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PySet_Check(obj: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(obj).as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_SET {
+                1
+            } else {
+                0
+            }
+        }
+    })
+}
+
+/// `PyFrozenSet_Check(obj)` — return 1 if obj is a frozenset, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFrozenSet_Check(obj: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(obj).as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_FROZENSET {
+                1
+            } else {
+                0
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Unicode/String Protocol additions
+// ---------------------------------------------------------------------------
+
+/// `PyUnicode_GetLength(obj)` — return the length of the Unicode string in code points.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(obj).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                return -1;
+            }
+            string_len(ptr) as isize
+        }
+    })
+}
+
+/// `PyUnicode_Concat(left, right)` — return left + right as a new string, or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_Concat(left: u64, right: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_add(left, right);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyUnicode_Contains(container, element)` — return 1 if element in container, 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_Contains(container: u64, element: u64) -> i32 {
+    molt_object_contains(container, element)
+}
+
+/// `PyUnicode_CompareWithASCIIString(uni, string)` — compare with a C ASCII string.
+/// Returns -1, 0, or 1 for less, equal, greater.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_CompareWithASCIIString(
+    uni: u64,
+    string: *const std::ffi::c_char,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if string.is_null() {
+            return -1;
+        }
+        let cstr = unsafe { std::ffi::CStr::from_ptr(string) };
+        let rhs_bytes = cstr.to_bytes();
+        let mut out_len: u64 = 0;
+        let lhs_ptr = unsafe { molt_string_as_ptr(uni, &mut out_len as *mut u64) };
+        if lhs_ptr.is_null() {
+            if exception_pending(_py) {
+                let _ = molt_exception_clear();
+            }
+            return -1;
+        }
+        let lhs = unsafe { std::slice::from_raw_parts(lhs_ptr, out_len as usize) };
+        lhs.cmp(rhs_bytes) as i32
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Dict Protocol additions
+// ---------------------------------------------------------------------------
+
+/// `PyDict_GetItemString(dict, key)` — get item using C string key. Borrowed reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if key.is_null() {
+            return 0;
+        }
+        let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
+        let key_bytes = key_cstr.to_bytes();
+        let key_ptr = alloc_string(_py, key_bytes);
+        if key_ptr.is_null() {
+            if exception_pending(_py) {
+                let _ = molt_exception_clear();
+            }
+            return 0;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let result = PyDict_GetItem(dict, key_bits);
+        dec_ref_bits(_py, key_bits);
+        // PyDict_GetItem suppresses errors and returns NULL for missing keys
+        if exception_pending(_py) {
+            let _ = molt_exception_clear();
+            return 0;
+        }
+        result
+    })
+}
+
+/// `PyDict_DelItem(dict, key)` — delete dict[key]. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        // Use molt_dict_pop with no default — raises KeyError if missing
+        let res = molt_dict_pop(
+            dict,
+            key,
+            none_bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        // Successfully popped; discard the value
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyDict_DelItemString(dict, key)` — delete dict[key] using C string.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if key.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "key string pointer cannot be null");
+            return -1;
+        }
+        let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
+        let key_bytes = key_cstr.to_bytes();
+        let key_ptr = alloc_string(_py, key_bytes);
+        if key_ptr.is_null() {
+            return -1;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let rc = PyDict_DelItem(dict, key_bits);
+        dec_ref_bits(_py, key_bits);
+        rc
+    })
+}
+
+/// `PyDict_Keys(dict)` — return a list of all keys in the dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Keys(dict: u64) -> u64 {
+    PyMapping_Keys(dict)
+}
+
+/// `PyDict_Values(dict)` — return a list of all values in the dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Values(dict: u64) -> u64 {
+    PyMapping_Values(dict)
+}
+
+/// `PyDict_Items(dict)` — return a list of all (key, value) pairs in the dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Items(dict: u64) -> u64 {
+    PyMapping_Items(dict)
+}
+
+/// `PyDict_Update(a, b)` — merge b into a. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_dict_update(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyDict_Copy(dict)` — return a shallow copy of the dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_dict_copy(dict);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — List Protocol additions
+// ---------------------------------------------------------------------------
+
+/// `PyList_Insert(list, index, item)` — insert item at index. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Insert(list: u64, index: isize, item: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let idx_bits = MoltObject::from_int(index as i64).bits();
+        let res = molt_list_insert(list, idx_bits, item);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyList_Sort(list)` — sort the list in place. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Sort(list: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        // molt_list_sort(list, key, reverse) — pass None key, False reverse
+        let res = molt_list_sort(list, none_bits(), MoltObject::from_bool(false).bits());
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyList_Reverse(list)` — reverse the list in place. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Reverse(list: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_list_reverse(list);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return -1;
+        }
+        if !obj_from_bits(res).is_none() {
+            dec_ref_bits(_py, res);
+        }
+        0
+    })
+}
+
+/// `PyList_AsTuple(list)` — return a tuple with the same items as the list.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(list).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                return 0;
+            }
+            let elems = seq_vec_ref(ptr);
+            let tuple_ptr = alloc_tuple(_py, elems);
+            if tuple_ptr.is_null() {
+                return 0;
+            }
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Exception Protocol
+// ---------------------------------------------------------------------------
+
+/// `PyErr_SetString(type, message)` — set the current exception.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_SetString(exc_type: u64, message: *const std::ffi::c_char) {
+    crate::with_gil_entry!(_py, {
+        if message.is_null() {
+            set_exception_from_message(_py, exc_type, b"<null message>");
+            return;
+        }
+        let cstr = unsafe { std::ffi::CStr::from_ptr(message) };
+        set_exception_from_message(_py, exc_type, cstr.to_bytes());
+    })
+}
+
+/// `PyErr_SetNone(type)` — set the current exception with no message.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_SetNone(exc_type: u64) {
+    crate::with_gil_entry!(_py, {
+        set_exception_from_message(_py, exc_type, b"");
+    })
+}
+
+/// `PyErr_Occurred()` — return the current exception type bits if an exception is pending, or 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_Occurred() -> u64 {
+    crate::with_gil_entry!(_py, {
+        if exception_pending(_py) {
+            // Return a non-zero value to indicate an exception is pending.
+            // In CPython this returns the exception type; we return a sentinel.
+            1
+        } else {
+            0
+        }
+    })
+}
+
+/// `PyErr_Clear()` — clear the current exception.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_Clear() {
+    crate::with_gil_entry!(_py, {
+        if exception_pending(_py) {
+            let _ = molt_exception_clear();
+        }
+    })
+}
+
+/// `PyErr_NoMemory()` — set MemoryError and return NULL (0).
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_NoMemory() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        0
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Reference Counting
+// ---------------------------------------------------------------------------
+
+/// `Py_IncRef(obj)` — increment the reference count.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_IncRef(obj: u64) {
+    if obj == 0 {
+        return;
+    }
+    crate::with_gil_entry!(_py, {
+        if !obj_from_bits(obj).is_none() {
+            inc_ref_bits(_py, obj);
+        }
+    })
+}
+
+/// `Py_DecRef(obj)` — decrement the reference count.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_DecRef(obj: u64) {
+    if obj == 0 {
+        return;
+    }
+    crate::with_gil_entry!(_py, {
+        if !obj_from_bits(obj).is_none() {
+            dec_ref_bits(_py, obj);
+        }
+    })
+}
+
+/// `Py_XINCREF(obj)` — increment ref count if obj is non-NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_XINCREF(obj: u64) {
+    Py_IncRef(obj)
+}
+
+/// `Py_XDECREF(obj)` — decrement ref count if obj is non-NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_XDECREF(obj: u64) {
+    Py_DecRef(obj)
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API — Conversion helpers
+// ---------------------------------------------------------------------------
+
+/// `PyLong_AsLong(obj)` — return the integer value as a C long, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        match to_i64(obj_from_bits(obj)) {
+            Some(v) => v,
+            None => {
+                let _ = raise_exception::<u64>(_py, "TypeError", "an integer is required");
+                -1
+            }
+        }
+    })
+}
+
+/// `PyLong_FromLong(v)` — create a new integer from a C long.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyLong_FromLong(v: i64) -> u64 {
+    MoltObject::from_int(v).bits()
+}
+
+/// `PyFloat_AsDouble(obj)` — return the float value as a C double, or -1.0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
+    crate::with_gil_entry!(_py, {
+        match to_f64(obj_from_bits(obj)) {
+            Some(v) => v,
+            None => {
+                let _ = raise_exception::<u64>(_py, "TypeError", "must be real number, not str");
+                -1.0
+            }
+        }
+    })
+}
+
+/// `PyFloat_FromDouble(v)` — create a new float from a C double.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_FromDouble(v: f64) -> u64 {
+    MoltObject::from_float(v).bits()
+}
+
+/// `PyBool_FromLong(v)` — return Py_True if v is nonzero, Py_False otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyBool_FromLong(v: i64) -> u64 {
+    MoltObject::from_bool(v != 0).bits()
+}
+
+/// `Py_BuildNone()` — return None handle (borrowed).
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_BuildNone() -> u64 {
+    none_bits()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3870,6 +5483,1090 @@ mod tests {
             assert!(exception_pending(_py));
             let _ = molt_exception_clear();
             dec_ref_bits(_py, dict);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Number Protocol tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_number_add_int() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(10).bits();
+            let b = MoltObject::from_int(20).bits();
+            let res = PyNumber_Add(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(30));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_add_float() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_float(1.5).bits();
+            let b = MoltObject::from_float(2.5).bits();
+            let res = PyNumber_Add(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(obj_from_bits(res).as_float(), Some(4.0));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_subtract() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(50).bits();
+            let b = MoltObject::from_int(30).bits();
+            let res = PyNumber_Subtract(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(20));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_multiply() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(6).bits();
+            let b = MoltObject::from_int(7).bits();
+            let res = PyNumber_Multiply(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(42));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_truedivide() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(10).bits();
+            let b = MoltObject::from_int(4).bits();
+            let res = PyNumber_TrueDivide(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(obj_from_bits(res).as_float(), Some(2.5));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_truedivide_by_zero() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(10).bits();
+            let b = MoltObject::from_int(0).bits();
+            let res = PyNumber_TrueDivide(a, b);
+            assert_eq!(res, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_number_floordivide() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(17).bits();
+            let b = MoltObject::from_int(5).bits();
+            let res = PyNumber_FloorDivide(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(3));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_remainder() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(17).bits();
+            let b = MoltObject::from_int(5).bits();
+            let res = PyNumber_Remainder(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(2));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_power() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(2).bits();
+            let b = MoltObject::from_int(10).bits();
+            let res = PyNumber_Power(a, b, 0);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(1024));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_power_with_mod() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // pow(2, 10, 100) = 1024 % 100 = 24
+            let a = MoltObject::from_int(2).bits();
+            let b = MoltObject::from_int(10).bits();
+            let m = MoltObject::from_int(100).bits();
+            let res = PyNumber_Power(a, b, m);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(24));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_negative() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(42).bits();
+            let res = PyNumber_Negative(a);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(-42));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_positive() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(-7).bits();
+            let res = PyNumber_Positive(a);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(-7));
+            dec_ref_bits(_py, res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_absolute() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(-42).bits();
+            let res = PyNumber_Absolute(a);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(42));
+            dec_ref_bits(_py, res);
+
+            let b = MoltObject::from_float(-3.14).bits();
+            let res2 = PyNumber_Absolute(b);
+            assert_ne!(res2, 0);
+            assert_eq!(obj_from_bits(res2).as_float(), Some(3.14));
+            dec_ref_bits(_py, res2);
+        });
+    }
+
+    #[test]
+    fn c_api_number_invert() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(0).bits();
+            let res = PyNumber_Invert(a);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(-1));
+            dec_ref_bits(_py, res);
+
+            let b = MoltObject::from_int(7).bits();
+            let res2 = PyNumber_Invert(b);
+            assert_ne!(res2, 0);
+            assert_eq!(to_i64(obj_from_bits(res2)), Some(-8));
+            dec_ref_bits(_py, res2);
+        });
+    }
+
+    #[test]
+    fn c_api_number_lshift_rshift() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(1).bits();
+            let b = MoltObject::from_int(4).bits();
+            let res = PyNumber_Lshift(a, b);
+            assert_ne!(res, 0);
+            assert_eq!(to_i64(obj_from_bits(res)), Some(16));
+            dec_ref_bits(_py, res);
+
+            let c = MoltObject::from_int(32).bits();
+            let d = MoltObject::from_int(3).bits();
+            let res2 = PyNumber_Rshift(c, d);
+            assert_ne!(res2, 0);
+            assert_eq!(to_i64(obj_from_bits(res2)), Some(4));
+            dec_ref_bits(_py, res2);
+        });
+    }
+
+    #[test]
+    fn c_api_number_and_or_xor() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let a = MoltObject::from_int(0b1100).bits();
+            let b = MoltObject::from_int(0b1010).bits();
+
+            let and_res = PyNumber_And(a, b);
+            assert_ne!(and_res, 0);
+            assert_eq!(to_i64(obj_from_bits(and_res)), Some(0b1000));
+            dec_ref_bits(_py, and_res);
+
+            let or_res = PyNumber_Or(a, b);
+            assert_ne!(or_res, 0);
+            assert_eq!(to_i64(obj_from_bits(or_res)), Some(0b1110));
+            dec_ref_bits(_py, or_res);
+
+            let xor_res = PyNumber_Xor(a, b);
+            assert_ne!(xor_res, 0);
+            assert_eq!(to_i64(obj_from_bits(xor_res)), Some(0b0110));
+            dec_ref_bits(_py, xor_res);
+        });
+    }
+
+    #[test]
+    fn c_api_number_check() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            assert_eq!(PyNumber_Check(MoltObject::from_int(42).bits()), 1);
+            assert_eq!(PyNumber_Check(MoltObject::from_float(3.14).bits()), 1);
+            assert_eq!(PyNumber_Check(MoltObject::from_bool(true).bits()), 1);
+            assert_eq!(PyNumber_Check(MoltObject::none().bits()), 0);
+
+            let str_ptr = alloc_string(_py, b"hello");
+            assert!(!str_ptr.is_null());
+            let str_bits = MoltObject::from_ptr(str_ptr).bits();
+            assert_eq!(PyNumber_Check(str_bits), 0);
+            dec_ref_bits(_py, str_bits);
+
+            let list = PyList_New(0);
+            assert_ne!(list, 0);
+            assert_eq!(PyNumber_Check(list), 0);
+            dec_ref_bits(_py, list);
+        });
+    }
+
+    #[test]
+    fn c_api_number_long_and_float() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // int(3.7) == 3
+            let f = MoltObject::from_float(3.7).bits();
+            let long_res = PyNumber_Long(f);
+            assert_ne!(long_res, 0);
+            assert_eq!(to_i64(obj_from_bits(long_res)), Some(3));
+            dec_ref_bits(_py, long_res);
+
+            // float(42) == 42.0
+            let i = MoltObject::from_int(42).bits();
+            let float_res = PyNumber_Float(i);
+            assert_ne!(float_res, 0);
+            assert_eq!(obj_from_bits(float_res).as_float(), Some(42.0));
+            dec_ref_bits(_py, float_res);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Mapping Protocol tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_mapping_length() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+            assert_eq!(PyMapping_Length(dict), 0);
+
+            let key = MoltObject::from_int(1).bits();
+            let val = MoltObject::from_int(100).bits();
+            assert_eq!(PyDict_SetItem(dict, key, val), 0);
+            assert_eq!(PyMapping_Length(dict), 1);
+
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_mapping_keys_values_items() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+
+            let k1 = MoltObject::from_int(1).bits();
+            let v1 = MoltObject::from_int(10).bits();
+            let k2 = MoltObject::from_int(2).bits();
+            let v2 = MoltObject::from_int(20).bits();
+            assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
+            assert_eq!(PyDict_SetItem(dict, k2, v2), 0);
+
+            let keys = PyMapping_Keys(dict);
+            assert_ne!(keys, 0);
+            assert_eq!(PySequence_Length(keys), 2);
+            dec_ref_bits(_py, keys);
+
+            let values = PyMapping_Values(dict);
+            assert_ne!(values, 0);
+            assert_eq!(PySequence_Length(values), 2);
+            dec_ref_bits(_py, values);
+
+            let items = PyMapping_Items(dict);
+            assert_ne!(items, 0);
+            assert_eq!(PySequence_Length(items), 2);
+            dec_ref_bits(_py, items);
+
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_mapping_getitemstring() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+
+            let key_ptr = alloc_string(_py, b"hello");
+            assert!(!key_ptr.is_null());
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let val = MoltObject::from_int(99).bits();
+            assert_eq!(PyDict_SetItem(dict, key_bits, val), 0);
+
+            let got = unsafe { PyMapping_GetItemString(dict, b"hello\0".as_ptr() as *const _) };
+            assert_ne!(got, 0);
+            assert_eq!(to_i64(obj_from_bits(got)), Some(99));
+            dec_ref_bits(_py, got);
+
+            // Missing key should fail.
+            let missing =
+                unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
+            assert_eq!(missing, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            // NULL key should fail.
+            let null_key = unsafe { PyMapping_GetItemString(dict, std::ptr::null()) };
+            assert_eq!(null_key, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_mapping_haskey() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+
+            let key = MoltObject::from_int(42).bits();
+            let val = MoltObject::from_int(1).bits();
+            assert_eq!(PyDict_SetItem(dict, key, val), 0);
+
+            assert_eq!(PyMapping_HasKey(dict, key), 1);
+            assert_eq!(PyMapping_HasKey(dict, MoltObject::from_int(999).bits()), 0);
+
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Sequence Protocol addition tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_sequence_getitem() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let list_ptr = alloc_list(
+                _py,
+                &[
+                    MoltObject::from_int(10).bits(),
+                    MoltObject::from_int(20).bits(),
+                    MoltObject::from_int(30).bits(),
+                ],
+            );
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+
+            let item = PySequence_GetItem(list_bits, 1);
+            assert_ne!(item, 0);
+            assert_eq!(to_i64(obj_from_bits(item)), Some(20));
+            dec_ref_bits(_py, item);
+
+            // Negative index: -1 should get last element.
+            let last = PySequence_GetItem(list_bits, -1);
+            assert_ne!(last, 0);
+            assert_eq!(to_i64(obj_from_bits(last)), Some(30));
+            dec_ref_bits(_py, last);
+
+            // Out-of-bounds.
+            let bad = PySequence_GetItem(list_bits, 100);
+            assert_eq!(bad, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, list_bits);
+        });
+    }
+
+    #[test]
+    fn c_api_sequence_length() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let list_ptr = alloc_list(
+                _py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
+            );
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            assert_eq!(PySequence_Length(list_bits), 2);
+
+            let tuple = PyTuple_New(5);
+            assert_ne!(tuple, 0);
+            assert_eq!(PySequence_Length(tuple), 5);
+
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, tuple);
+        });
+    }
+
+    #[test]
+    fn c_api_sequence_contains() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let list_ptr = alloc_list(
+                _py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                    MoltObject::from_int(3).bits(),
+                ],
+            );
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+
+            assert_eq!(
+                PySequence_Contains(list_bits, MoltObject::from_int(2).bits()),
+                1
+            );
+            assert_eq!(
+                PySequence_Contains(list_bits, MoltObject::from_int(9).bits()),
+                0
+            );
+
+            dec_ref_bits(_py, list_bits);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Bytes/String Protocol tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_bytes_from_string_and_size() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let data = b"hello bytes";
+            let bytes = unsafe { PyBytes_FromStringAndSize(data.as_ptr(), data.len() as isize) };
+            assert_ne!(bytes, 0);
+
+            let size = PyBytes_Size(bytes);
+            assert_eq!(size, data.len() as isize);
+
+            let ptr = PyBytes_AsString(bytes);
+            assert!(!ptr.is_null());
+            let observed = unsafe { std::slice::from_raw_parts(ptr, size as usize) };
+            assert_eq!(observed, data);
+
+            dec_ref_bits(_py, bytes);
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_empty() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let bytes = unsafe { PyBytes_FromStringAndSize(std::ptr::null(), 0) };
+            assert_ne!(bytes, 0);
+            assert_eq!(PyBytes_Size(bytes), 0);
+            dec_ref_bits(_py, bytes);
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_null_with_nonzero_len_fails() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let bytes = unsafe { PyBytes_FromStringAndSize(std::ptr::null(), 5) };
+            assert_eq!(bytes, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_negative_len_fails() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let bytes = unsafe { PyBytes_FromStringAndSize(b"abc".as_ptr(), -1) };
+            assert_eq!(bytes, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_asstring_type_error() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let int_val = MoltObject::from_int(42).bits();
+            let ptr = PyBytes_AsString(int_val);
+            assert!(ptr.is_null());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_size_type_error() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let int_val = MoltObject::from_int(42).bits();
+            let size = PyBytes_Size(int_val);
+            assert_eq!(size, -1);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_unicode_from_string() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let str_bits =
+                unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
+            assert_ne!(str_bits, 0);
+            assert_eq!(PyUnicode_Check(str_bits), 1);
+
+            let utf8_ptr = PyUnicode_AsUTF8(str_bits);
+            assert!(!utf8_ptr.is_null());
+            let observed = unsafe {
+                std::ffi::CStr::from_ptr(utf8_ptr)
+                    .to_bytes()
+            };
+            // The string content might not be NUL-terminated in molt's internal
+            // storage, so compare the known length.
+            let mut out_size: isize = 0;
+            let utf8_ptr2 =
+                unsafe { PyUnicode_AsUTF8AndSize(str_bits, &mut out_size as *mut isize) };
+            assert!(!utf8_ptr2.is_null());
+            assert_eq!(out_size, 11); // "hello world" is 11 bytes
+            let observed2 =
+                unsafe { std::slice::from_raw_parts(utf8_ptr2 as *const u8, out_size as usize) };
+            assert_eq!(observed2, b"hello world");
+
+            dec_ref_bits(_py, str_bits);
+        });
+    }
+
+    #[test]
+    fn c_api_unicode_from_string_null_fails() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let str_bits = unsafe { PyUnicode_FromString(std::ptr::null()) };
+            assert_eq!(str_bits, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_unicode_asutf8_type_error() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let int_val = MoltObject::from_int(42).bits();
+            let ptr = PyUnicode_AsUTF8(int_val);
+            assert!(ptr.is_null());
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_unicode_asutf8andsize_null_size_ok() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let str_bits = unsafe { PyUnicode_FromString(b"abc\0".as_ptr() as *const _) };
+            assert_ne!(str_bits, 0);
+            // Pass NULL for size — should not crash.
+            let ptr = unsafe { PyUnicode_AsUTF8AndSize(str_bits, std::ptr::null_mut()) };
+            assert!(!ptr.is_null());
+            dec_ref_bits(_py, str_bits);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory Protocol tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_pymem_malloc_realloc_free() {
+        let ptr = unsafe { PyMem_Malloc(64) };
+        assert!(!ptr.is_null());
+        // Write to the allocated memory to verify it is usable.
+        unsafe {
+            std::ptr::write_bytes(ptr, 0xAB, 64);
+            assert_eq!(*ptr, 0xAB);
+        }
+        let ptr2 = unsafe { PyMem_Realloc(ptr, 128) };
+        assert!(!ptr2.is_null());
+        // Original content should be preserved.
+        unsafe {
+            assert_eq!(*ptr2, 0xAB);
+        }
+        unsafe {
+            PyMem_Free(ptr2);
+        }
+    }
+
+    #[test]
+    fn c_api_pymem_malloc_zero_size() {
+        // CPython returns a non-NULL pointer for size 0.
+        let ptr = unsafe { PyMem_Malloc(0) };
+        assert!(!ptr.is_null());
+        unsafe {
+            PyMem_Free(ptr);
+        }
+    }
+
+    #[test]
+    fn c_api_pymem_free_null_is_safe() {
+        // Freeing NULL should be a no-op.
+        unsafe {
+            PyMem_Free(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn c_api_pyobject_malloc_realloc_free() {
+        let ptr = unsafe { PyObject_Malloc(32) };
+        assert!(!ptr.is_null());
+        unsafe {
+            std::ptr::write_bytes(ptr, 0xCD, 32);
+        }
+        let ptr2 = unsafe { PyObject_Realloc(ptr, 64) };
+        assert!(!ptr2.is_null());
+        unsafe {
+            assert_eq!(*ptr2, 0xCD);
+        }
+        unsafe {
+            PyObject_Free(ptr2);
+        }
+    }
+
+    #[test]
+    fn c_api_pyobject_free_null_is_safe() {
+        // PyObject_Free delegates to PyMem_Free; NULL should be safe.
+        unsafe {
+            PyObject_Free(std::ptr::null_mut());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-protocol integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_number_mixed_int_float_arithmetic() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // int + float -> float
+            let a = MoltObject::from_int(3).bits();
+            let b = MoltObject::from_float(0.14).bits();
+            let res = PyNumber_Add(a, b);
+            assert_ne!(res, 0);
+            let val = obj_from_bits(res).as_float().unwrap();
+            assert!((val - 3.14).abs() < 1e-10);
+            dec_ref_bits(_py, res);
+
+            // float * int -> float
+            let c = MoltObject::from_float(2.5).bits();
+            let d = MoltObject::from_int(4).bits();
+            let res2 = PyNumber_Multiply(c, d);
+            assert_ne!(res2, 0);
+            assert_eq!(obj_from_bits(res2).as_float(), Some(10.0));
+            dec_ref_bits(_py, res2);
+        });
+    }
+
+    #[test]
+    fn c_api_sequence_and_mapping_on_dict() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+
+            let k1 = MoltObject::from_int(1).bits();
+            let v1 = MoltObject::from_int(100).bits();
+            let k2 = MoltObject::from_int(2).bits();
+            let v2 = MoltObject::from_int(200).bits();
+            assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
+            assert_eq!(PyDict_SetItem(dict, k2, v2), 0);
+
+            // PyMapping_Length works on dict.
+            assert_eq!(PyMapping_Length(dict), 2);
+
+            // PyMapping_HasKey works.
+            assert_eq!(PyMapping_HasKey(dict, k1), 1);
+            assert_eq!(PyMapping_HasKey(dict, MoltObject::from_int(999).bits()), 0);
+
+            // PySequence_Contains also works on dict (checks keys).
+            assert_eq!(PySequence_Contains(dict, k2), 1);
+            assert_eq!(
+                PySequence_Contains(dict, MoltObject::from_int(999).bits()),
+                0
+            );
+
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_bytes_roundtrip_via_protocol() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let data = b"\x00\x01\x02\xff";
+            let bytes = unsafe { PyBytes_FromStringAndSize(data.as_ptr(), data.len() as isize) };
+            assert_ne!(bytes, 0);
+            assert_eq!(PyBytes_Size(bytes), 4);
+            let ptr = PyBytes_AsString(bytes);
+            assert!(!ptr.is_null());
+            let observed = unsafe { std::slice::from_raw_parts(ptr, 4) };
+            assert_eq!(observed, data);
+            dec_ref_bits(_py, bytes);
+        });
+    }
+
+    #[test]
+    fn c_api_object_protocol_repr_str_hash_truthy() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let int_val = MoltObject::from_int(42).bits();
+
+            // PyObject_Repr — re-entrant GIL acquisition
+            let repr = PyObject_Repr(int_val);
+            assert_ne!(repr, 0);
+            dec_ref_bits(_py, repr);
+
+            // PyObject_Str
+            let str_val = PyObject_Str(int_val);
+            assert_ne!(str_val, 0);
+            dec_ref_bits(_py, str_val);
+
+            // PyObject_Hash
+            let hash = PyObject_Hash(int_val);
+            assert_ne!(hash, -1);
+
+            // PyObject_IsTrue / PyObject_Not
+            assert_eq!(PyObject_IsTrue(int_val), 1);
+            assert_eq!(PyObject_Not(int_val), 0);
+            assert_eq!(PyObject_IsTrue(MoltObject::from_int(0).bits()), 0);
+            assert_eq!(PyObject_Not(MoltObject::from_int(0).bits()), 1);
+            assert_eq!(PyObject_IsTrue(MoltObject::from_bool(true).bits()), 1);
+            assert_eq!(PyObject_IsTrue(MoltObject::from_bool(false).bits()), 0);
+        });
+    }
+
+    #[test]
+    fn c_api_object_type_and_length() {
+        let _ = molt_runtime_init();
+        // C-API functions acquire GIL internally — don't nest
+        let list = PyList_New(3);
+        assert_ne!(list, 0);
+
+        let ty = PyObject_Type(list);
+        assert_ne!(ty, 0);
+        crate::with_gil_entry!(_py, { dec_ref_bits(_py, ty) });
+
+        assert_eq!(PyObject_Length(list), 3);
+        assert_eq!(PyObject_Size(list), 3);
+
+        crate::with_gil_entry!(_py, { dec_ref_bits(_py, list) });
+    }
+
+    #[test]
+    fn c_api_rich_compare() {
+        let _ = molt_runtime_init();
+        let a = MoltObject::from_int(10).bits();
+        let b = MoltObject::from_int(20).bits();
+
+        assert_eq!(PyObject_RichCompareBool(a, b, 0), 1);  // 10 < 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 1), 1);  // 10 <= 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 2), 0);  // 10 == 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 3), 1);  // 10 != 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 4), 0);  // 10 > 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 5), 0);  // 10 >= 20
+
+        // Invalid op
+        assert_eq!(PyObject_RichCompareBool(a, b, 99), -1);
+        crate::with_gil_entry!(_py, {
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+
+        let cmp = PyObject_RichCompare(a, b, 2);
+        assert_ne!(cmp, 0);
+        crate::with_gil_entry!(_py, { dec_ref_bits(_py, cmp) });
+    }
+
+    #[test]
+    fn c_api_callable_check_and_isinstance() {
+        let _ = molt_runtime_init();
+        let int_val = MoltObject::from_int(5).bits();
+        assert_eq!(PyCallable_Check(int_val), 0);
+
+        crate::with_gil_entry!(_py, {
+            let builtins = builtin_classes(_py);
+            let int_type = builtins.int;
+            let result = PyObject_IsInstance(int_val, int_type);
+            assert_eq!(result, 1);
+
+            let none_val = none_bits();
+            let result2 = PyObject_IsInstance(none_val, int_type);
+            assert_eq!(result2, 0);
+        });
+    }
+
+    #[test]
+    fn c_api_set_protocol() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // Create empty set — capacity is raw u64, NOT NaN-boxed
+            let set = molt_set_new(0u64);
+            assert!(!obj_from_bits(set).is_none());
+
+            // PySet_Check / PyFrozenSet_Check
+            assert_eq!(PySet_Check(set), 1);
+            assert_eq!(PyFrozenSet_Check(set), 0);
+
+            // Add elements via runtime directly
+            let k1 = MoltObject::from_int(10).bits();
+            let k2 = MoltObject::from_int(20).bits();
+            let add_res1 = molt_set_add(set, k1);
+            assert!(!exception_pending(_py));
+            if !obj_from_bits(add_res1).is_none() {
+                dec_ref_bits(_py, add_res1);
+            }
+            let add_res2 = molt_set_add(set, k2);
+            if !obj_from_bits(add_res2).is_none() {
+                dec_ref_bits(_py, add_res2);
+            }
+
+            // PySet_Size
+            assert_eq!(PySet_Size(set), 2);
+
+            // PySet_Contains
+            assert_eq!(PySet_Contains(set, k1), 1);
+            assert_eq!(PySet_Contains(set, MoltObject::from_int(99).bits()), 0);
+
+            // Discard
+            let disc_res = molt_set_discard(set, k1);
+            if !obj_from_bits(disc_res).is_none() {
+                dec_ref_bits(_py, disc_res);
+            }
+            assert_eq!(PySet_Contains(set, k1), 0);
+
+            // Pop
+            let popped = PySet_Pop(set);
+            assert_ne!(popped, 0);
+            assert_eq!(PySet_Size(set), 0);
+            dec_ref_bits(_py, popped);
+
+            // Clear
+            let add_res3 = molt_set_add(set, k1);
+            if !obj_from_bits(add_res3).is_none() {
+                dec_ref_bits(_py, add_res3);
+            }
+            assert_eq!(PySet_Clear(set), 0);
+            assert_eq!(PySet_Size(set), 0);
+
+            dec_ref_bits(_py, set);
+        });
+    }
+
+    #[test]
+    fn c_api_dict_extended_operations() {
+        let _ = molt_runtime_init();
+        let dict = PyDict_New();
+        assert_ne!(dict, 0);
+
+        crate::with_gil_entry!(_py, {
+            let k1_ptr = alloc_string(_py, b"hello");
+            assert!(!k1_ptr.is_null());
+            let k1 = MoltObject::from_ptr(k1_ptr).bits();
+            let v1 = MoltObject::from_int(100).bits();
+            assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
+
+            let got = unsafe {
+                PyDict_GetItemString(
+                    dict,
+                    b"hello\0".as_ptr() as *const std::ffi::c_char,
+                )
+            };
+            assert_ne!(got, 0);
+
+            assert_eq!(PyDict_DelItem(dict, k1), 0);
+            assert_eq!(PyDict_Size(dict), 0);
+
+            let rc = PyDict_DelItem(dict, k1);
+            assert_eq!(rc, -1);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
+            let keys = PyDict_Keys(dict);
+            assert_ne!(keys, 0);
+            dec_ref_bits(_py, keys);
+            let vals = PyDict_Values(dict);
+            assert_ne!(vals, 0);
+            dec_ref_bits(_py, vals);
+            let items = PyDict_Items(dict);
+            assert_ne!(items, 0);
+            dec_ref_bits(_py, items);
+
+            let copy = PyDict_Copy(dict);
+            assert_ne!(copy, 0);
+            assert_eq!(PyDict_Size(copy), 1);
+            dec_ref_bits(_py, copy);
+
+            dec_ref_bits(_py, k1);
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_list_extended_operations() {
+        let _ = molt_runtime_init();
+        let list = PyList_New(0);
+        assert_ne!(list, 0);
+
+        assert_eq!(PyList_Append(list, MoltObject::from_int(3).bits()), 0);
+        assert_eq!(PyList_Append(list, MoltObject::from_int(1).bits()), 0);
+        assert_eq!(PyList_Append(list, MoltObject::from_int(2).bits()), 0);
+        assert_eq!(PyList_Size(list), 3);
+
+        assert_eq!(PyList_Insert(list, 0, MoltObject::from_int(0).bits()), 0);
+        assert_eq!(PyList_Size(list), 4);
+
+        assert_eq!(PyList_Reverse(list), 0);
+        assert_eq!(PyList_Sort(list), 0);
+
+        let tup = PyList_AsTuple(list);
+        assert_ne!(tup, 0);
+        assert_eq!(PyTuple_Size(tup), 4);
+        crate::with_gil_entry!(_py, {
+            dec_ref_bits(_py, tup);
+            dec_ref_bits(_py, list);
+        });
+    }
+
+    #[test]
+    fn c_api_exception_protocol() {
+        let _ = molt_runtime_init();
+        assert_eq!(PyErr_Occurred(), 0);
+
+        unsafe {
+            PyErr_SetString(
+                0,
+                b"test error\0".as_ptr() as *const std::ffi::c_char,
+            );
+        }
+        assert_ne!(PyErr_Occurred(), 0);
+
+        PyErr_Clear();
+        assert_eq!(PyErr_Occurred(), 0);
+
+        let _ = PyErr_NoMemory();
+        assert_ne!(PyErr_Occurred(), 0);
+        PyErr_Clear();
+    }
+
+    #[test]
+    fn c_api_refcount_and_conversions() {
+        let _ = molt_runtime_init();
+        // PyLong_FromLong / PyLong_AsLong — inline NaN-boxed, no GIL needed
+        let long = PyLong_FromLong(42);
+        assert_ne!(long, 0);
+        assert_eq!(PyLong_AsLong(long), 42);
+
+        let float = PyFloat_FromDouble(3.14);
+        let val = PyFloat_AsDouble(float);
+        assert!((val - 3.14).abs() < 0.001);
+
+        let t = PyBool_FromLong(1);
+        assert_eq!(PyObject_IsTrue(t), 1);
+        let f = PyBool_FromLong(0);
+        assert_eq!(PyObject_IsTrue(f), 0);
+
+        let n = Py_BuildNone();
+        assert!(obj_from_bits(n).is_none());
+
+        crate::with_gil_entry!(_py, {
+            let s_ptr = alloc_string(_py, b"refcount_test");
+            assert!(!s_ptr.is_null());
+            let s = MoltObject::from_ptr(s_ptr).bits();
+            Py_IncRef(s);
+            Py_DecRef(s);
+            Py_XINCREF(s);
+            Py_XDECREF(s);
+            dec_ref_bits(_py, s);
+        });
+    }
+
+    #[test]
+    fn c_api_unicode_extended() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let s_ptr = alloc_string(_py, b"hello");
+            assert!(!s_ptr.is_null());
+            let s = MoltObject::from_ptr(s_ptr).bits();
+
+            assert_eq!(PyUnicode_GetLength(s), 5);
+
+            let sub_ptr = alloc_string(_py, b"ell");
+            assert!(!sub_ptr.is_null());
+            let sub = MoltObject::from_ptr(sub_ptr).bits();
+            assert_eq!(PyUnicode_Contains(s, sub), 1);
+
+            let s2_ptr = alloc_string(_py, b" world");
+            assert!(!s2_ptr.is_null());
+            let s2 = MoltObject::from_ptr(s2_ptr).bits();
+            let concat = PyUnicode_Concat(s, s2);
+            assert_ne!(concat, 0);
+            assert_eq!(PyUnicode_GetLength(concat), 11);
+            dec_ref_bits(_py, concat);
+
+            let cmp = unsafe {
+                PyUnicode_CompareWithASCIIString(
+                    s,
+                    b"hello\0".as_ptr() as *const std::ffi::c_char,
+                )
+            };
+            assert_eq!(cmp, 0);
+
+            dec_ref_bits(_py, s2);
+            dec_ref_bits(_py, sub);
+            dec_ref_bits(_py, s);
         });
     }
 }

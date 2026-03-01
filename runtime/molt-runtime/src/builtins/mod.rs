@@ -72,6 +72,7 @@ pub(crate) mod signal_ext;
 pub(crate) mod sitebuiltins;
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
+pub(crate) mod stringprep;
 pub(crate) mod strings;
 pub(crate) mod structs;
 pub(crate) mod subprocess_ext;
