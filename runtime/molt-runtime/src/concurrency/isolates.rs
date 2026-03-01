@@ -1117,7 +1117,9 @@ pub extern "C" fn molt_thread_native_id(_handle_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_current_ident() -> u64 {
-    MoltObject::from_int(0).bits()
+    // WASM is single-threaded; return 1 (the main thread ident convention).
+    // CPython always returns a non-zero integer for the main thread.
+    MoltObject::from_int(1).bits()
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -80,6 +80,10 @@ class _StreamIter:
         return chunk
 
 
+SEEK_SET = 0
+SEEK_CUR = 1
+SEEK_END = 2
+
 DEFAULT_BUFFER_SIZE = 8192
 
 IOBase = _io_class("IOBase")
@@ -95,6 +99,9 @@ BytesIO = _io_class("BytesIO")
 StringIO = _io_class("StringIO")
 
 __all__ = [
+    "SEEK_SET",
+    "SEEK_CUR",
+    "SEEK_END",
     "DEFAULT_BUFFER_SIZE",
     "IOBase",
     "RawIOBase",
