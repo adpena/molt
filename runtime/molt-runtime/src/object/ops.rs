@@ -4293,25 +4293,27 @@ fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
 /// Returns `len` if the prefixes are identical.
 #[inline]
 unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> usize {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return simd_find_first_byte_diff_avx2(a, b, len);
-        }
-        return simd_find_first_byte_diff_sse2(a, b, len);
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        return simd_find_first_byte_diff_neon(a, b, len);
-    }
-    #[allow(unreachable_code)]
-    {
-        for i in 0..len {
-            if *a.add(i) != *b.add(i) {
-                return i;
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                return simd_find_first_byte_diff_avx2(a, b, len);
             }
+            return simd_find_first_byte_diff_sse2(a, b, len);
         }
-        len
+        #[cfg(target_arch = "aarch64")]
+        {
+            return simd_find_first_byte_diff_neon(a, b, len);
+        }
+        #[allow(unreachable_code)]
+        {
+            for i in 0..len {
+                if *a.add(i) != *b.add(i) {
+                    return i;
+                }
+            }
+            len
+        }
     }
 }
 
@@ -4386,7 +4388,7 @@ unsafe fn simd_find_first_byte_diff_neon(a: *const u8, b: *const u8, len: usize)
             if vminvq_u8(cmp) != 0xFF {
                 // Find the exact byte — check 8-byte halves first
                 let low = vget_low_u8(cmp);
-                let high = vget_high_u8(cmp);
+                let _high = vget_high_u8(cmp);
                 if vminv_u8(low) != 0xFF {
                     for j in 0..8 {
                         if *a.add(i + j) != *b.add(i + j) {
@@ -21286,6 +21288,15 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
+            // ASCII fast path: if all bytes < 0x80, use SIMD-accelerated bytes_ascii_title
+            if hay_bytes.iter().all(|&b| b < 0x80) {
+                let titled = bytes_ascii_title(hay_bytes);
+                let ptr = alloc_string(_py, &titled);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
             let mut out = String::with_capacity(hay_str.len());
             let mut prev_cased = false;
             for ch in hay_str.chars() {
@@ -23326,12 +23337,69 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
     }
     let hex_len = bytes.len() * 2;
     let Some(sep_str) = sep else {
-        let mut out = String::with_capacity(hex_len);
-        for &b in bytes {
-            out.push(char::from(HEX[(b >> 4) as usize]));
-            out.push(char::from(HEX[(b & 0xF) as usize]));
+        // SIMD fast path for no-separator hex encoding
+        let mut raw: Vec<u8> = Vec::with_capacity(hex_len);
+        let mut i = 0usize;
+        #[cfg(target_arch = "aarch64")]
+        {
+            if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let hex_lut = vld1q_u8(b"0123456789abcdef".as_ptr());
+                    let mask_lo = vdupq_n_u8(0x0F);
+                    while i + 16 <= bytes.len() {
+                        let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                        let hi_nibbles = vshrq_n_u8(chunk, 4);
+                        let lo_nibbles = vandq_u8(chunk, mask_lo);
+                        let hi_hex = vqtbl1q_u8(hex_lut, hi_nibbles);
+                        let lo_hex = vqtbl1q_u8(hex_lut, lo_nibbles);
+                        let zipped_lo = vzip1q_u8(hi_hex, lo_hex);
+                        let zipped_hi = vzip2q_u8(hi_hex, lo_hex);
+                        let len = raw.len();
+                        raw.set_len(len + 32);
+                        vst1q_u8(raw.as_mut_ptr().add(len), zipped_lo);
+                        vst1q_u8(raw.as_mut_ptr().add(len + 16), zipped_hi);
+                        i += 16;
+                    }
+                }
+            }
         }
-        return out;
+        #[cfg(target_arch = "x86_64")]
+        {
+            if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("ssse3") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let mask_lo = _mm_set1_epi8(0x0F);
+                    let hex_lut = _mm_setr_epi8(
+                        b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                        b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                        b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                        b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
+                    );
+                    while i + 16 <= bytes.len() {
+                        let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                        let hi_nibbles = _mm_and_si128(_mm_srli_epi16(chunk, 4), mask_lo);
+                        let lo_nibbles = _mm_and_si128(chunk, mask_lo);
+                        let hi_hex = _mm_shuffle_epi8(hex_lut, hi_nibbles);
+                        let lo_hex = _mm_shuffle_epi8(hex_lut, lo_nibbles);
+                        let interleaved_lo = _mm_unpacklo_epi8(hi_hex, lo_hex);
+                        let interleaved_hi = _mm_unpackhi_epi8(hi_hex, lo_hex);
+                        let len = raw.len();
+                        raw.set_len(len + 32);
+                        _mm_storeu_si128(raw.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
+                        _mm_storeu_si128(raw.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                        i += 16;
+                    }
+                }
+            }
+        }
+        // Scalar tail
+        for &b in &bytes[i..] {
+            raw.push(HEX[(b >> 4) as usize]);
+            raw.push(HEX[(b & 0xF) as usize]);
+        }
+        // SAFETY: all bytes are valid ASCII hex characters
+        return unsafe { String::from_utf8_unchecked(raw) };
     };
     let group = bytes_per_sep.unsigned_abs() as usize;
     let separators = if group == 0 {
@@ -23841,16 +23909,6 @@ fn simd_has_any_ascii_lower(bytes: &[u8]) -> bool {
 }
 
 #[inline]
-fn bytes_ascii_alpha(b: u8) -> bool {
-    b.is_ascii_alphabetic()
-}
-
-#[inline]
-fn bytes_ascii_alnum(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-}
-
-#[inline]
 fn alloc_bytes_like_for_type(_py: &PyToken<'_>, type_id: u32, bytes: &[u8]) -> *mut u8 {
     if type_id == TYPE_ID_BYTEARRAY {
         alloc_bytearray(_py, bytes)
@@ -24024,18 +24082,113 @@ fn bytes_ascii_swapcase(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn bytes_ascii_title(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
+    let mut out = vec![0u8; bytes.len()];
+    let mut i = 0usize;
     let mut at_word_start = true;
-    for &b in bytes {
+
+    // SIMD fast path: process 16 bytes at a time.
+    // For each chunk, classify bytes as alpha/non-alpha, then compute word-start
+    // boundaries based on the at_word_start carry from the previous chunk.
+    // Title case = uppercase at word start, lowercase otherwise, for alpha bytes.
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    let is_alpha = vorrq_u8(is_lower, is_upper);
+
+                    // Extract alpha mask to do sequential word-boundary tracking
+                    let mut alpha_bytes = [0u8; 16];
+                    vst1q_u8(alpha_bytes.as_mut_ptr(), is_alpha);
+                    let mut src_bytes = [0u8; 16];
+                    vst1q_u8(src_bytes.as_mut_ptr(), v);
+                    let mut result_bytes = [0u8; 16];
+
+                    for j in 0..16 {
+                        let b = src_bytes[j];
+                        if alpha_bytes[j] != 0 {
+                            if at_word_start {
+                                result_bytes[j] = b & !0x20; // to_ascii_uppercase
+                                at_word_start = false;
+                            } else {
+                                result_bytes[j] = b | 0x20; // to_ascii_lowercase
+                            }
+                        } else {
+                            result_bytes[j] = b;
+                            at_word_start = true;
+                        }
+                    }
+
+                    let result = vld1q_u8(result_bytes.as_ptr());
+                    vst1q_u8(out.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    let shifted = _mm_or_si128(v, case_bit);
+                    let ge_a = _mm_cmpgt_epi8(shifted, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), shifted);
+                    let is_alpha = _mm_and_si128(ge_a, le_z);
+                    let alpha_mask = _mm_movemask_epi8(is_alpha) as u32;
+
+                    let mut src_bytes = [0u8; 16];
+                    _mm_storeu_si128(src_bytes.as_mut_ptr() as *mut __m128i, v);
+                    let mut result_bytes = [0u8; 16];
+
+                    for j in 0..16 {
+                        let b = src_bytes[j];
+                        if alpha_mask & (1 << j) != 0 {
+                            if at_word_start {
+                                result_bytes[j] = b & !0x20;
+                                at_word_start = false;
+                            } else {
+                                result_bytes[j] = b | 0x20;
+                            }
+                        } else {
+                            result_bytes[j] = b;
+                            at_word_start = true;
+                        }
+                    }
+
+                    let result = _mm_loadu_si128(result_bytes.as_ptr() as *const __m128i);
+                    _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+
+    // Scalar tail
+    for j in i..bytes.len() {
+        let b = bytes[j];
         if b.is_ascii_alphabetic() {
             if at_word_start {
-                out.push(b.to_ascii_uppercase());
+                out[j] = b.to_ascii_uppercase();
                 at_word_start = false;
             } else {
-                out.push(b.to_ascii_lowercase());
+                out[j] = b.to_ascii_lowercase();
             }
         } else {
-            out.push(b);
+            out[j] = b;
             at_word_start = true;
         }
     }
