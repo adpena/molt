@@ -12,6 +12,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_SUBPROCESS_RUNTIME_READY = _require_intrinsic(
     "molt_subprocess_runtime_ready", globals()
 )
+_MOLT_SUBPROCESS_RUN = _require_intrinsic("molt_subprocess_run", globals())
+_MOLT_SUBPROCESS_CHECK_CALL = _require_intrinsic(
+    "molt_subprocess_check_call", globals()
+)
+_MOLT_SUBPROCESS_CHECK_OUTPUT = _require_intrinsic(
+    "molt_subprocess_check_output", globals()
+)
 _MOLT_PROCESS_SPAWN = _require_intrinsic("molt_process_spawn", globals())
 _MOLT_PROCESS_SPAWN_EX = _require_intrinsic("molt_process_spawn_ex", globals())
 _MOLT_PROCESS_PID = _require_intrinsic("molt_process_pid", globals())
@@ -664,6 +671,33 @@ class Popen:
             pass
 
 
+def _run_needs_popen(
+    shell: bool,
+    text: bool,
+    encoding: str | None,
+    errors: str | None,
+    stdin: Any | None,
+    stdout: Any | None,
+    stderr: Any | None,
+    start_new_session: bool,
+    process_group: int | None,
+) -> bool:
+    """Return True when args require the full Popen path."""
+    if shell:
+        return True
+    if text or encoding is not None or errors is not None:
+        return True
+    if stdin is not None:
+        return True
+    if stdout is not None and stdout != PIPE:
+        return True
+    if stderr is not None and stderr != PIPE:
+        return True
+    if start_new_session or process_group is not None:
+        return True
+    return False
+
+
 def run(
     args: Any,
     *,
@@ -688,10 +722,47 @@ def run(
             raise ValueError(
                 "stdout and stderr arguments may not be used with capture_output."
             )
-        stdout = PIPE
-        stderr = PIPE
     if input is not None and stdin is not None:
         raise ValueError("stdin and input arguments may not both be used.")
+
+    # Fast path: delegate to the Rust intrinsic when no Popen-only features
+    # are needed (no shell, no text mode, no custom stdio redirection, no
+    # session/process-group control).
+    if not _run_needs_popen(
+        shell,
+        text,
+        encoding,
+        errors,
+        stdin,
+        stdout,
+        stderr,
+        start_new_session,
+        process_group,
+    ):
+        _capture = bool(capture_output) or stdout == PIPE
+        argv = _coerce_argv(args, False)
+        env_map = _coerce_env(env)
+        raw = _MOLT_SUBPROCESS_RUN(
+            argv,
+            _capture,
+            timeout,
+            bool(check),
+            input,
+            cwd,
+            env_map,
+        )
+        # Intrinsic returns a (returncode, stdout_bytes, stderr_bytes) tuple.
+        returncode = int(raw[0])
+        out_bytes = raw[1]
+        err_bytes = raw[2]
+        stdout_val = bytes(out_bytes) if out_bytes is not None else None
+        stderr_val = bytes(err_bytes) if err_bytes is not None else None
+        return CompletedProcess(args, returncode, stdout=stdout_val, stderr=stderr_val)
+
+    # Slow path: full Popen for shell=True, text mode, custom stdio, etc.
+    if capture_output:
+        stdout = PIPE
+        stderr = PIPE
     if input is not None and stdin is None:
         stdin = PIPE
 
@@ -739,11 +810,42 @@ def check_output(args: Any, *, timeout: float | None = None, **kwargs: Any) -> A
         raise ValueError("stdout argument not allowed, it will be overridden.")
     if "check" in kwargs:
         raise ValueError("check argument not allowed, it will be overridden.")
-    if "input" in kwargs and kwargs["input"] is None:
-        if kwargs.get("text") or kwargs.get("encoding") or kwargs.get("errors"):
-            kwargs["input"] = ""
+
+    # Fast path via Rust intrinsic when no Popen-only kwargs are present.
+    _shell = bool(kwargs.get("shell", False))
+    _text = bool(kwargs.get("text", False))
+    _encoding = kwargs.get("encoding", None)
+    _errors = kwargs.get("errors", None)
+    _stdin = kwargs.get("stdin", None)
+    _start_new_session = bool(kwargs.get("start_new_session", False))
+    _process_group = kwargs.get("process_group", None)
+    _input = kwargs.get("input", None)
+    _cwd = kwargs.get("cwd", None)
+    _env = kwargs.get("env", None)
+
+    if _input is None:
+        if _text or _encoding or _errors:
+            _input = ""
         else:
-            kwargs["input"] = b""
+            _input = b""
+
+    if not _run_needs_popen(
+        _shell,
+        _text,
+        _encoding,
+        _errors,
+        _stdin,
+        None,
+        None,
+        _start_new_session,
+        _process_group,
+    ):
+        argv = _coerce_argv(args, False)
+        env_map = _coerce_env(_env)
+        raw = _MOLT_SUBPROCESS_CHECK_OUTPUT(argv, timeout, _input, _cwd, env_map)
+        return bytes(raw) if raw is not None else b""
+
+    # Slow path: delegate through run() for complex cases.
     kwargs["stdout"] = PIPE
     kwargs["check"] = True
     result = run(args, timeout=timeout, **kwargs)
@@ -760,6 +862,37 @@ def check_call(args: Any, *, timeout: float | None = None, **kwargs: Any) -> int
             raise TypeError(
                 f"Popen.__init__() got an unexpected keyword argument '{key}'"
             )
+
+    # Fast path via Rust intrinsic when no Popen-only kwargs are present.
+    _shell = bool(kwargs.get("shell", False))
+    _text = bool(kwargs.get("text", False))
+    _encoding = kwargs.get("encoding", None)
+    _errors = kwargs.get("errors", None)
+    _stdin = kwargs.get("stdin", None)
+    _stdout = kwargs.get("stdout", None)
+    _stderr = kwargs.get("stderr", None)
+    _start_new_session = bool(kwargs.get("start_new_session", False))
+    _process_group = kwargs.get("process_group", None)
+    _cwd = kwargs.get("cwd", None)
+    _env = kwargs.get("env", None)
+
+    if not _run_needs_popen(
+        _shell,
+        _text,
+        _encoding,
+        _errors,
+        _stdin,
+        _stdout,
+        _stderr,
+        _start_new_session,
+        _process_group,
+    ):
+        argv = _coerce_argv(args, False)
+        env_map = _coerce_env(_env)
+        rc = _MOLT_SUBPROCESS_CHECK_CALL(argv, timeout, _cwd, env_map)
+        return int(rc)
+
+    # Slow path: delegate through run() for complex cases.
     result = run(args, timeout=timeout, check=True, **kwargs)
     return result.returncode
 
