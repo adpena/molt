@@ -528,14 +528,16 @@ class Popen:
             return None
         chunks = bytearray()
         while True:
-            out = _MOLT_STREAM_READER_READ(reader, -1)
+            out = _MOLT_STREAM_READER_READ(reader, 65536)
             if _is_pending(out):
                 self._sleep()
                 continue
             if out is None:
                 break
-            chunks.extend(bytes(out))
-            break
+            chunk = bytes(out)
+            if not chunk:
+                break
+            chunks.extend(chunk)
         return bytes(chunks)
 
     def _read_available_stream(self, reader: Any | None) -> bytes | None:
@@ -601,14 +603,26 @@ class Popen:
             self._write_input(input)
         if self.stdin is not None:
             self.stdin.close()
+        # Read stdout and stderr BEFORE waiting for the process to exit.
+        # Reading blocks until the child closes its write end of each pipe
+        # (which happens when the child exits or closes the fd explicitly).
+        # This prevents the classic pipe-buffer deadlock where:
+        #   - child fills its stdout/stderr pipe buffer (typically 64 KB) and
+        #     blocks waiting for the parent to drain it, while
+        #   - parent is blocked in wait() waiting for the child to exit.
+        # By draining the pipes first, the child is never blocked on a full
+        # buffer, so it can exit, and the subsequent wait() returns immediately.
+        out = self._read_stream(self._stdout_reader)
+        err = self._read_stream(self._stderr_reader)
+        # The child should already be done since it closed its pipe ends, but
+        # we still need to reap the exit code.  Apply any caller-supplied
+        # timeout here (only to the wait, not to the reads above).
         try:
             self.wait(limit)
         except TimeoutExpired as exc:
-            exc.output = self._read_available_stream(self._stdout_reader)
-            exc.stderr = self._read_available_stream(self._stderr_reader)
+            exc.output = out
+            exc.stderr = err
             raise
-        out = self._read_stream(self._stdout_reader)
-        err = self._read_stream(self._stderr_reader)
         return self._finalize_text(out), self._finalize_text(err)
 
     def kill(self) -> None:

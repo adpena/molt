@@ -1607,6 +1607,7 @@ tests/differential/stdlib/re_conditional_groups.py
 tests/differential/stdlib/re_flags_basic.py
 tests/differential/stdlib/re_flags_groups.py
 tests/differential/stdlib/re_flags_groups_errors.py
+tests/differential/stdlib/re_verbose_flag.py
 tests/differential/stdlib/re_fullmatch_finditer.py
 tests/differential/stdlib/re_groupdict_defaults.py
 tests/differential/stdlib/re_internal_shims_importable.py

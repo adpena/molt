@@ -208,28 +208,75 @@ class _Conditional:
 
 
 class _Parser:
-    def __init__(self, pattern: str) -> None:
+    def __init__(self, pattern: str, flags: int = 0) -> None:
         self.pattern = pattern
         self.pos = 0
         self.group_count = 0
         self.group_names: dict[str, int] = {}
         self.group_widths: dict[int, int | None] = {}
         self.open_group_names: set[str] = set()
+        self.flags = flags
         self.inline_flags = 0
         self.nested_set_warning_pos: int | None = None
+        self._in_class = False  # True while inside [...] — verbose skipping is disabled
 
     def parse(self) -> tuple[Any, int, dict[str, int], int]:
         node = self._parse_expr()
+        # In verbose mode, trailing whitespace/comments are not significant.
+        self._skip_verbose_whitespace()
         if self.pos != len(self.pattern):
             raise error("unexpected pattern text")
         return node, self.group_count, dict(self.group_names), self.inline_flags
 
+    def _is_verbose(self) -> bool:
+        return bool((self.flags | self.inline_flags) & VERBOSE)
+
+    def _skip_verbose_whitespace(self) -> None:
+        """Skip whitespace and # comments when VERBOSE flag is active.
+
+        Must not be called while inside a character class [...] — use the
+        _in_class guard to avoid that.  Also must not be called from within
+        escape sequences (i.e. _parse_escape / _class_item).
+        """
+        if self._in_class or not self._is_verbose():
+            return
+        while self.pos < len(self.pattern):
+            ch = self.pattern[self.pos]
+            if ch == "#":
+                # Skip everything through end-of-line or end-of-string
+                self.pos += 1
+                while self.pos < len(self.pattern) and self.pattern[self.pos] != "\n":
+                    self.pos += 1
+                # skip the newline itself if present
+                if self.pos < len(self.pattern):
+                    self.pos += 1
+            elif ch in " \t\n\r\f\v":
+                self.pos += 1
+            else:
+                break
+
     def _peek(self) -> str | None:
+        self._skip_verbose_whitespace()
         if self.pos >= len(self.pattern):
             return None
         return self.pattern[self.pos]
 
     def _next(self) -> str:
+        self._skip_verbose_whitespace()
+        if self.pos >= len(self.pattern):
+            raise error("unexpected end of pattern")
+        ch = self.pattern[self.pos]
+        self.pos += 1
+        return ch
+
+    def _raw_peek(self) -> str | None:
+        """Peek at next character without any verbose whitespace skipping."""
+        if self.pos >= len(self.pattern):
+            return None
+        return self.pattern[self.pos]
+
+    def _raw_next(self) -> str:
+        """Consume next character without any verbose whitespace skipping."""
         if self.pos >= len(self.pattern):
             raise error("unexpected end of pattern")
         ch = self.pattern[self.pos]
@@ -516,7 +563,9 @@ class _Parser:
         return _Literal(ch)
 
     def _parse_escape(self) -> Any:
-        ch = self._next()
+        # Use _raw_next so that escaped whitespace (e.g. "\ " in verbose mode)
+        # is read literally and not silently consumed by verbose skipping.
+        ch = self._raw_next()
         if ch in "dDsSwW":
             negated = "A" <= ch <= "Z"
             if negated:
@@ -552,21 +601,25 @@ class _Parser:
         return _Literal(ch)
 
     def _parse_class(self) -> Any:
+        # Disable verbose whitespace skipping inside [...] — whitespace and #
+        # are literal characters inside character classes.
+        self._in_class = True
         negated = False
         chars: list[str] = []
         ranges: list[tuple[str, str]] = []
         categories: list[str] = []
-        if self._peek() == "^":
-            self._next()
+        if self._raw_peek() == "^":
+            self._raw_next()
             negated = True
-        if self._peek() == "]":
-            chars.append(self._next())
+        if self._raw_peek() == "]":
+            chars.append(self._raw_next())
         while True:
-            ch = self._peek()
+            ch = self._raw_peek()
             if ch is None:
+                self._in_class = False
                 raise error("unterminated character class")
             if ch == "]":
-                self._next()
+                self._raw_next()
                 break
             item = self._class_item()
             if isinstance(item, tuple) and item[0] == "range":
@@ -576,12 +629,14 @@ class _Parser:
                 categories.append(item[1])
                 continue
             chars.append(item)
+        self._in_class = False
         return _CharClass(negated, tuple(ranges), tuple(chars), tuple(categories))
 
     def _class_item(self) -> Any:
-        ch = self._next()
+        # All reads here are raw — we are inside [...] and must not skip whitespace.
+        ch = self._raw_next()
         if ch == "\\":
-            esc = self._next()
+            esc = self._raw_next()
             if esc in "dDsSwW":
                 if "A" <= esc <= "Z":
                     esc = chr(ord(esc) + 32)
@@ -599,36 +654,36 @@ class _Parser:
                 # Inside character classes, \N is an octal escape, not a backref
                 digits_oct = [esc]
                 while len(digits_oct) < 3:
-                    nxt = self._peek()
+                    nxt = self._raw_peek()
                     if nxt is None or not ("0" <= nxt <= "7"):
                         break
-                    digits_oct.append(self._next())
+                    digits_oct.append(self._raw_next())
                 return chr(int("".join(digits_oct), 8))
             return esc
-        if ch == "[" and self._peek() == ":":
+        if ch == "[" and self._raw_peek() == ":":
             if self.nested_set_warning_pos is None:
                 self.nested_set_warning_pos = self.pos - 1
-            self._next()
+            self._raw_next()
             name_chars: list[str] = []
             while True:
-                token = self._peek()
+                token = self._raw_peek()
                 if token is None:
                     raise error("unterminated character class")
                 if token == ":":
-                    self._next()
-                    if self._peek() != "]":
+                    self._raw_next()
+                    if self._raw_peek() != "]":
                         name_chars.append(":")
                         continue
-                    self._next()
+                    self._raw_next()
                     break
-                name_chars.append(self._next())
+                name_chars.append(self._raw_next())
             return ("category", "posix:" + "".join(name_chars))
         if ch == "-" or ch == "]":
             return ch
-        if self._peek() == "-":
+        if self._raw_peek() == "-":
             start_pos = self.pos
-            self._next()
-            next_ch = self._peek()
+            self._raw_next()
+            next_ch = self._raw_peek()
             if next_ch is None or next_ch == "]":
                 self.pos = start_pos
                 return ch
@@ -1212,7 +1267,7 @@ def _compile_native(pattern: str, flags: int) -> Pattern:
         raise ValueError("ASCII and UNICODE flags are incompatible")
     if not (flags & ASCII):
         flags |= UNICODE
-    parser = _Parser(pattern)
+    parser = _Parser(pattern, flags)
     node, groups, group_names, inline_flags = parser.parse()
     effective_flags = (flags | inline_flags) & ~(LOCALE)
     if parser.nested_set_warning_pos is not None:
