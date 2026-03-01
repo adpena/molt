@@ -66,6 +66,16 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 ## Stdlib Intrinsics Program (2026-02-28)
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
+### Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
+- Completed: guard_tag_for_hint extended (set/frozenset/intarray type tags).
+- Completed: 6 WASM silent-divergence fixes (os.getppid ENOSYS, HTTP Date UTC,
+  datetime.now OSError, select.select break-not-spin, thread.ident=1, utcoffset OSError).
+- Completed: orphaned complex_core.rs deleted (26 dead intrinsics).
+- Completed: `re` anchors (\b, \B, \A, \Z) implemented in NFA engine.
+- Completed: `collections.ChainMap` (11 intrinsics), `io.SEEK_*` constants,
+  `os.DirEntry.stat()/inode()`, `datetime` timedelta arithmetic + combine/fromisocalendar,
+  `typing` 7 new APIs, `pathlib.Path.walk()`, `functools.cached_property`.
+
 ### Asyncio & Tkinter Parity Sprint (2026-02-28)
 - Completed: asyncio pipe transports (`connect_read_pipe`/`connect_write_pipe`)
   with 11 new pipe transport Rust intrinsics.
