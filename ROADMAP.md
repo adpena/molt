@@ -71,6 +71,11 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   (36+ slow paths + exception handlers), MemFlags::trusted() (34 load/store sites), alias analysis, CFG metadata,
   colocated libcalls, CPU feature auto-detection (AVX2/NEON/CRC), inline stack probing, Spectre mitigations off,
   frame pointer omission in release.
+- Completed: **SIMD Phase 5–7** — title case (NEON/SSE2), bytes.hex() SIMD, base64_mod SIMD parity
+  (b16_encode, b64_encode unrolled, b64_decode filter), qp_encode/decode SIMD, hardware CRC32
+  (aarch64 __crc32d, x86 SSE4.2), optimized Adler-32 (chunked NMAX + 16× unrolled), JSON
+  scanstring_decode SIMD, JSON ensure_ascii SIMD, memchr2-based splitlines, SIMD whitespace
+  split helpers, array byte search (memchr), HTML tokenizer memchr2 scanning.
 - Completed: **SIMD Phase 3+4** — string/bytes predicate SIMD (isdigit, isalpha, isalnum, islower, isupper,
   isprintable), str.swapcase/capitalize ASCII fast paths, ascii() SIMD scan, JSON SIMD safe-char scan.
 - Completed: **SIMD Phase 2** — hex encode/decode (NEON/SSE2 lookup-table), base64 whitespace stripping,
