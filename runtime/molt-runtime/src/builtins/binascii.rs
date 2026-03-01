@@ -2,6 +2,33 @@ use crate::*;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// Hardware-accelerated CRC32 on AArch64 using the CRC extension instructions.
+/// Apple Silicon (M1/M2/M3/M4) always supports these. Processes 8 bytes per
+/// iteration using `__crc32d`, falling back to per-byte `__crc32b` for remainder.
+#[cfg(target_arch = "aarch64")]
+unsafe fn crc32_hw_aarch64(data: &[u8]) -> u32 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut crc = 0xFFFF_FFFFu32;
+        let mut i = 0usize;
+        // Process 8 bytes at a time using CRC32 doubleword instruction
+        while i + 8 <= data.len() {
+            let chunk = u64::from_le_bytes([
+                data[i], data[i + 1], data[i + 2], data[i + 3],
+                data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+            ]);
+            crc = __crc32d(crc, chunk);
+            i += 8;
+        }
+        // Process remaining bytes one at a time
+        while i < data.len() {
+            crc = __crc32b(crc, data[i]);
+            i += 1;
+        }
+        crc ^ 0xFFFF_FFFF
+    }
+}
+
 fn bytes_like_arg(_py: &PyToken<'_>, bits: u64, func: &str) -> Result<Vec<u8>, u64> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
@@ -393,6 +420,29 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
     })
 }
 
+/// CRC32 lookup table (IEEE polynomial 0xEDB88320). 256 entries, generated at
+/// compile time. Each entry[i] = CRC32 of byte i, allowing single-lookup per byte
+/// instead of 8 conditional branch iterations.
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0u32;
+    while i < 256 {
+        let mut crc = i;
+        let mut j = 0;
+        while j < 8 {
+            if (crc & 1) != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+            j += 1;
+        }
+        table[i as usize] = crc;
+        i += 1;
+    }
+    table
+};
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_crc32(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -400,16 +450,19 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64) -> u64 {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let mut crc = 0xFFFF_FFFFu32;
-        for byte in raw {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                if (crc & 1) != 0 {
-                    crc = (crc >> 1) ^ 0xEDB8_8320;
-                } else {
-                    crc >>= 1;
-                }
+        // Hardware CRC32 on AArch64 (Apple Silicon M1+ always has CRC32 extension)
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("crc") {
+                let crc = unsafe { crc32_hw_aarch64(&raw) };
+                return MoltObject::from_int(i64::from(crc)).bits();
             }
+        }
+        // Table-driven CRC32: 1 lookup per byte instead of 8 branches.
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in &raw {
+            let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+            crc = (crc >> 8) ^ CRC32_TABLE[idx];
         }
         crc ^= 0xFFFF_FFFF;
         MoltObject::from_int(i64::from(crc)).bits()
