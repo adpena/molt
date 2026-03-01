@@ -49,6 +49,18 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   intrinsics. Flag.__or__/__and__/__xor__/__invert__/__contains__ delegate to Rust.
   Added StrEnum class, @unique decorator, @verify decorator, flag_decompose for
   Flag iteration, FlagBoundary sentinels (CONFORM/EJECT/KEEP/STRICT/NAMED_FLAGS/UNIQUE).
+- Completed: `warnings` — wired 8 `molt_warnings_*` intrinsics. `formatwarning`/
+  `showwarning` delegate to Rust. `warn`/`warn_explicit` fast-path to Rust when no
+  record/capture hooks. Eliminated dead inline regex engine (`_SimpleRegex`,
+  `_simple_regex_match`, `_tokenize_pattern` — ~70 lines of dead code).
+- Assessed: `logging` — acceptable Python pattern. Class hierarchy IS the API (users
+  subclass Handler/Logger/Formatter, access LogRecord attributes directly). The one
+  computational piece (`%`-style formatting) is already in Rust.
+- Blocker: `string` Template/Formatter — ~350 lines of pure-Python string parsing
+  with no Rust intrinsics. Need: `molt_string_template_substitute`,
+  `molt_string_formatter_parse`, `molt_string_formatter_vformat`.
+- Blocker: `encodings/punycode.py` (~210 lines RFC 3492), `encodings/idna.py` (~280
+  lines RFC 3490), `encodings/uu_codec.py` (~55 lines) — zero Rust intrinsics exist.
 
 ## Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: frontend `_guard_tag_for_hint` extended with `set` (17), `frozenset` (18),
