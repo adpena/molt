@@ -5577,6 +5577,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.current_func_name != "molt_main"
                         or self.module_name in self.stdlib_allowlist
                     ):
+                        if node.id in self.stable_module_funcs:
+                            return self._emit_module_attr_get(node.id)
                         return self._emit_global_get(node.id)
                 if node.id in {"globals", "locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
@@ -5600,6 +5602,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return self._emit_global_get(node.id)
             if self.current_func_name == "molt_main":
                 return global_val
+            if node.id in self.stable_module_funcs:
+                return self._emit_module_attr_get(node.id)
             return self._emit_global_get(node.id)
         return node.id
 
