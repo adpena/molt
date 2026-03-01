@@ -345,17 +345,7 @@ def _int_from_bytes(data: _builtins.bytes | bytearray) -> Int:
 def _int_to_bytes(value: int, length: int) -> bytes:
     if value < 0:
         raise ValueError("value must be non-negative")
-    width = length * 2
-    hex_text = _builtins.format(value, "x")
-    if len(hex_text) > width:
-        hex_text = hex_text[-width:]
-    if len(hex_text) < width:
-        hex_text = ("0" * (width - len(hex_text))) + hex_text
-    out = _builtins.bytearray(length)
-    for idx in _builtins.range(length):
-        start = idx * 2
-        out[idx] = _builtins.int(hex_text[start : start + 2], 16)
-    return _builtins.bytes(out)
+    return _builtins.int(value).to_bytes(length, "big")
 
 
 def _bytes_le_to_bytes(data: bytes) -> bytes:
@@ -367,10 +357,7 @@ def _bytes_to_bytes_le(data: bytes) -> bytes:
 
 
 def _bytes_to_hex(data: bytes) -> str:
-    chars = []
-    for byte in data:
-        chars.append(_builtins.format(_builtins.int(byte), "02x"))
-    return "".join(chars)
+    return data.hex()
 
 
 def _fields_from_bytes(data: bytes) -> tuple[int, int, int, int, int, int]:
