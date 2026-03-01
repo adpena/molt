@@ -53,9 +53,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `showwarning` delegate to Rust. `warn`/`warn_explicit` fast-path to Rust when no
   record/capture hooks. Eliminated dead inline regex engine (`_SimpleRegex`,
   `_simple_regex_match`, `_tokenize_pattern` — ~70 lines of dead code).
-- Assessed: `logging` — acceptable Python pattern. Class hierarchy IS the API (users
-  subclass Handler/Logger/Formatter, access LogRecord attributes directly). The one
-  computational piece (`%`-style formatting) is already in Rust.
+- Completed: `logging` — wired 31 Rust intrinsics (up from 1). LogRecord, Formatter,
+  Handler, StreamHandler, Logger now use Rust handle-based pattern. Record creation,
+  message formatting, handler emit/flush/close, logger level checks, effective level,
+  basicConfig, shutdown, level name mapping all delegate to Rust. Python class interfaces
+  preserved for subclassing compatibility. Remaining: FileHandler I/O path integration,
+  QueueHandler/QueueListener (depend on queue intrinsics).
 - Completed: `string` Template/Formatter — 5 new Rust intrinsics in `string_ext.rs`:
   `molt_string_template_scan`, `molt_string_template_is_valid`,
   `molt_string_template_get_identifiers`, `molt_string_formatter_parse`,
