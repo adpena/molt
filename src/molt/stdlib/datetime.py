@@ -40,6 +40,12 @@ _MOLT_DT_FORMAT_ISODATETIME = _require_intrinsic(
 _MOLT_DT_PARSE_ISOFORMAT = _require_intrinsic(
     "molt_datetime_parse_isoformat", globals()
 )
+_MOLT_DT_PARSE_ISOFORMAT_DATE = _require_intrinsic(
+    "molt_datetime_parse_isoformat_date", globals()
+)
+_MOLT_DT_PARSE_ISOFORMAT_TIME = _require_intrinsic(
+    "molt_datetime_parse_isoformat_time", globals()
+)
 _MOLT_DT_HASH_DATE = _require_intrinsic("molt_datetime_hash_date", globals())
 _MOLT_DT_HASH_TIME = _require_intrinsic("molt_datetime_hash_time", globals())
 _MOLT_DT_HASH_DATETIME = _require_intrinsic("molt_datetime_hash_datetime", globals())
@@ -426,6 +432,15 @@ class date:
         y, m, d = _MOLT_DATE_FROMISOCALENDAR(year, week, day)
         return cls(int(y), int(m), int(d))
 
+    @classmethod
+    def fromisoformat(cls, value: str) -> date:
+        if not isinstance(value, str):
+            raise TypeError("fromisoformat: argument must be str")
+        result = _MOLT_DT_PARSE_ISOFORMAT_DATE(value)
+        if not isinstance(result, (list, tuple)) or len(result) < 3:
+            raise ValueError(f"Invalid isoformat string: {value!r}")
+        return cls(int(result[0]), int(result[1]), int(result[2]))
+
     def replace(
         self,
         year: int | None = None,
@@ -522,6 +537,20 @@ class time:
             tzinfo=tzinfo if tzinfo is not _UNSET else self.tzinfo,
             fold=fold if fold is not None else self.fold,
         )
+
+    @classmethod
+    def fromisoformat(cls, value: str) -> time:
+        if not isinstance(value, str):
+            raise TypeError("fromisoformat: argument must be str")
+        result = _MOLT_DT_PARSE_ISOFORMAT_TIME(value)
+        if not isinstance(result, (list, tuple)) or len(result) < 4:
+            raise ValueError(f"Invalid isoformat string: {value!r}")
+        h, mi, sec, us = (int(result[i]) for i in range(4))
+        tz: tzinfo | None = None
+        if len(result) >= 5 and result[4] is not None:
+            off_seconds = int(result[4])
+            tz = timezone(timedelta(seconds=off_seconds))
+        return cls(h, mi, sec, us, tzinfo=tz)
 
 
 class datetime:

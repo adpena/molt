@@ -10,6 +10,9 @@ from types import ModuleType as _ModuleType
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_HTTP_PARSE_HEADER_PAIRS = _require_intrinsic(
+    "molt_http_parse_header_pairs", globals()
+)
 _MOLT_HTTP_SERVER_READ_REQUEST = _require_intrinsic(
     "molt_http_server_read_request", globals()
 )
@@ -91,6 +94,22 @@ DEFAULT_ERROR_MESSAGE = """\
 </html>
 """
 DEFAULT_ERROR_CONTENT_TYPE = "text/html;charset=utf-8"
+
+
+def parse_headers(data: bytes) -> "_MoltHeaders":
+    """Parse raw HTTP header bytes into a _MoltHeaders object.
+
+    *data* should be the raw byte content of the headers section (everything
+    after the request/status line up to and including the blank line that ends
+    the header block).  Returns a ``_MoltHeaders`` instance backed by the
+    Rust intrinsic parser.
+    """
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError(
+            f"parse_headers: expected bytes or bytearray, got {type(data).__name__}"
+        )
+    pairs = _MOLT_HTTP_PARSE_HEADER_PAIRS(bytes(data))
+    return _MoltHeaders(pairs)
 
 
 class _MoltHeaders:
