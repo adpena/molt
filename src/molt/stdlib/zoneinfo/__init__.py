@@ -1,4 +1,4 @@
-"""Minimal intrinsic-gated `zoneinfo` subset for Molt."""
+"""Rust-intrinsic-backed zoneinfo for Molt."""
 
 from __future__ import annotations
 
@@ -6,24 +6,37 @@ import datetime as _datetime
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_ZONEINFO_RUNTIME_READY = _require_intrinsic(
+_molt_zoneinfo_runtime_ready = _require_intrinsic(
     "molt_zoneinfo_runtime_ready", globals()
 )
-
-# TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): replace the minimal built-in timezone table with a full IANA tzdb-backed ZoneInfo implementation in Rust intrinsics.
-_SUPPORTED_ZONE_KEYS = {"UTC", "America/New_York"}
+_molt_zoneinfo_new = _require_intrinsic("molt_zoneinfo_new", globals())
+_molt_zoneinfo_drop = _require_intrinsic("molt_zoneinfo_drop", globals())
+_molt_zoneinfo_key = _require_intrinsic("molt_zoneinfo_key", globals())
+_molt_zoneinfo_utcoffset = _require_intrinsic("molt_zoneinfo_utcoffset", globals())
+_molt_zoneinfo_dst = _require_intrinsic("molt_zoneinfo_dst", globals())
+_molt_zoneinfo_tzname = _require_intrinsic("molt_zoneinfo_tzname", globals())
+_molt_zoneinfo_available_timezones = _require_intrinsic(
+    "molt_zoneinfo_available_timezones", globals()
+)
 
 
 class ZoneInfoNotFoundError(KeyError):
     pass
 
 
+def _dt_to_components(dt: _datetime.datetime | None) -> tuple[int, ...] | None:
+    if dt is None:
+        return None
+    return (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+
+
 class ZoneInfo(_datetime.tzinfo):
     def __init__(self, key: str) -> None:
-        normalized = str(key)
-        if normalized not in _SUPPORTED_ZONE_KEYS:
-            raise ZoneInfoNotFoundError(normalized)
-        self.key = normalized
+        self._handle = _molt_zoneinfo_new(str(key))
+
+    @property
+    def key(self) -> str:
+        return str(_molt_zoneinfo_key(self._handle))
 
     def __repr__(self) -> str:
         return f"zoneinfo.ZoneInfo(key={self.key!r})"
@@ -34,36 +47,16 @@ class ZoneInfo(_datetime.tzinfo):
     def __eq__(self, other: object) -> bool:
         return isinstance(other, ZoneInfo) and self.key == other.key
 
-    def _ny_offset(self, dt: _datetime.datetime | None) -> _datetime.timedelta:
-        if dt is None:
-            return _datetime.timedelta(hours=-5)
-        if (
-            dt.year == 2023
-            and dt.month == 11
-            and dt.day == 5
-            and dt.hour == 1
-            and getattr(dt, "fold", 0) == 0
-        ):
-            return _datetime.timedelta(hours=-4)
-        if 4 <= dt.month <= 10:
-            return _datetime.timedelta(hours=-4)
-        return _datetime.timedelta(hours=-5)
-
     def utcoffset(self, dt: _datetime.datetime | None) -> _datetime.timedelta | None:
-        if self.key == "UTC":
-            return _datetime.timedelta(seconds=0)
-        return self._ny_offset(dt)
+        secs = int(_molt_zoneinfo_utcoffset(self._handle, _dt_to_components(dt)))
+        return _datetime.timedelta(seconds=secs)
 
     def dst(self, dt: _datetime.datetime | None) -> _datetime.timedelta | None:
-        if self.key == "UTC":
-            return _datetime.timedelta(seconds=0)
-        offset = self._ny_offset(dt)
-        return offset - _datetime.timedelta(hours=-5)
+        secs = int(_molt_zoneinfo_dst(self._handle, _dt_to_components(dt)))
+        return _datetime.timedelta(seconds=secs)
 
     def tzname(self, dt: _datetime.datetime | None) -> str | None:
-        if self.key == "UTC":
-            return "UTC"
-        return "EDT" if self._ny_offset(dt) == _datetime.timedelta(hours=-4) else "EST"
+        return str(_molt_zoneinfo_tzname(self._handle, _dt_to_components(dt)))
 
     def fromutc(self, dt: _datetime.datetime) -> _datetime.datetime:
         if dt.tzinfo is not self:
@@ -73,5 +66,17 @@ class ZoneInfo(_datetime.tzinfo):
             return dt
         return dt + offset
 
+    def __del__(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _molt_zoneinfo_drop(handle)
+            except Exception:
+                pass
 
-__all__ = ["ZoneInfo", "ZoneInfoNotFoundError"]
+
+def available_timezones() -> set[str]:
+    return _molt_zoneinfo_available_timezones()
+
+
+__all__ = ["ZoneInfo", "ZoneInfoNotFoundError", "available_timezones"]
