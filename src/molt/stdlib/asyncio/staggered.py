@@ -13,9 +13,8 @@ import asyncio.exceptions as exceptions_mod
 import asyncio.locks as locks
 import asyncio.tasks as tasks
 
-
-def staggered_race(*args, **kwargs):
-    return args, kwargs
+# Re-export the canonical implementation from asyncio.__init__.
+from asyncio import staggered_race  # noqa: E402
 
 
 __all__ = [

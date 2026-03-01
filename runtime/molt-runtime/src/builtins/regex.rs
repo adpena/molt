@@ -28,9 +28,9 @@
 use molt_obj_model::MoltObject;
 
 use crate::{
-    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_string, dec_ref_bits, exception_pending,
-    is_truthy, obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64,
+    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_string, alloc_tuple,
+    dec_ref_bits, exception_pending, is_truthy, obj_from_bits, object_type_id, raise_exception,
+    seq_vec_ref, string_obj_to_owned, to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -937,6 +937,1113 @@ pub extern "C" fn molt_re_named_backref_advance(
 }
 
 // ---------------------------------------------------------------------------
+// Phase-1 regex compiler: IR parser + compiled-pattern registry
+// ---------------------------------------------------------------------------
+//
+// This section implements the Rust-side `molt_re_compile` / `molt_re_pattern_info`
+// intrinsics (Phase 1).  The match engine (`molt_re_execute` /
+// `molt_re_finditer_collect`) is a Phase-1b stub that always returns None /
+// empty list, signalling Python to fall back to its own match engine.
+//
+// Design notes:
+// * No `regex` crate — backreferences are required and not supported there.
+// * Hand-rolled recursive-descent parser that mirrors the Python `_Parser` class
+//   in `src/molt/stdlib/re/__init__.py` exactly (same quirks, same IR shape).
+// * Global registry uses `LazyLock<Mutex<…>>` (not thread_local!) so that
+//   compiled patterns are visible across threads.
+// * Handle allocation starts at 1 so that 0 can serve as "invalid".
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, atomic::{AtomicI64, Ordering}};
+
+// ---------------------------------------------------------------------------
+// Re-use the flag constants already defined at the top of this file.
+// (RE_IGNORECASE = 2, RE_VERBOSE = 64, RE_ASCII = 256)
+// Additional flags:
+const RE_MULTILINE: i64 = 8;
+const RE_DOTALL: i64 = 16;
+const RE_UNICODE: i64 = 32;
+const RE_LOCALE: i64 = 4;
+
+// ---------------------------------------------------------------------------
+// IR node enum — mirrors the Python dataclasses in re/__init__.py
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) enum ReNode {
+    Empty,
+    Literal(String),
+    Any,
+    Anchor(String),
+    CharClass {
+        negated: bool,
+        ranges: Vec<(String, String)>,
+        chars: Vec<String>,
+        categories: Vec<String>,
+    },
+    Concat(Vec<ReNode>),
+    Alt(Vec<ReNode>),
+    Repeat {
+        node: Box<ReNode>,
+        min_count: u64,
+        max_count: Option<u64>,
+        greedy: bool,
+    },
+    Group {
+        node: Box<ReNode>,
+        index: u32,
+    },
+    Backref(u32),
+    Look {
+        node: Box<ReNode>,
+        behind: bool,
+        positive: bool,
+        width: Option<u64>,
+    },
+    ScopedFlags {
+        node: Box<ReNode>,
+        add_flags: i64,
+        clear_flags: i64,
+    },
+    Conditional {
+        group_index: u32,
+        yes: Box<ReNode>,
+        no: Box<ReNode>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Compiled pattern — stored in the global registry
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(crate) struct CompiledPattern {
+    pub root: ReNode,
+    pub group_count: u32,
+    pub group_names: HashMap<String, u32>,
+    pub flags: i64,
+    /// Position (char index) of a nested-set-in-charclass warning, or None.
+    pub warn_pos: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// Global pattern registry
+// ---------------------------------------------------------------------------
+
+static RE_NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
+static RE_PATTERNS: LazyLock<Mutex<HashMap<i64, CompiledPattern>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn re_alloc_handle() -> i64 {
+    RE_NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+fn re_store_pattern(handle: i64, pattern: CompiledPattern) {
+    let mut guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(handle, pattern);
+}
+
+// ---------------------------------------------------------------------------
+// Parser state — mirrors _Parser in re/__init__.py
+// ---------------------------------------------------------------------------
+
+struct ReParser {
+    chars: Vec<char>,
+    pos: usize,
+    group_count: u32,
+    group_names: HashMap<String, u32>,
+    /// Fixed widths keyed by group index — used for look-behind validation.
+    group_widths: HashMap<u32, Option<u64>>,
+    open_group_names: std::collections::HashSet<String>,
+    flags: i64,
+    inline_flags: i64,
+    nested_set_warning_pos: Option<i64>,
+    in_class: bool,
+}
+
+impl ReParser {
+    fn new(pattern: &str, flags: i64) -> Self {
+        Self {
+            chars: pattern.chars().collect(),
+            pos: 0,
+            group_count: 0,
+            group_names: HashMap::new(),
+            group_widths: HashMap::new(),
+            open_group_names: std::collections::HashSet::new(),
+            flags,
+            inline_flags: 0,
+            nested_set_warning_pos: None,
+            in_class: false,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.chars.len()
+    }
+
+    fn is_verbose(&self) -> bool {
+        (self.flags | self.inline_flags) & RE_VERBOSE != 0
+    }
+
+    fn skip_verbose_whitespace(&mut self) {
+        if self.in_class || !self.is_verbose() {
+            return;
+        }
+        while self.pos < self.len() {
+            let ch = self.chars[self.pos];
+            if ch == '#' {
+                self.pos += 1;
+                while self.pos < self.len() && self.chars[self.pos] != '\n' {
+                    self.pos += 1;
+                }
+                if self.pos < self.len() {
+                    self.pos += 1; // consume '\n'
+                }
+            } else if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0C' | '\x0B') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.skip_verbose_whitespace();
+        self.chars.get(self.pos).copied()
+    }
+
+    fn next_ch(&mut self) -> Result<char, String> {
+        self.skip_verbose_whitespace();
+        if self.pos >= self.len() {
+            return Err("unexpected end of pattern".to_string());
+        }
+        let ch = self.chars[self.pos];
+        self.pos += 1;
+        Ok(ch)
+    }
+
+    fn raw_peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn raw_next(&mut self) -> Result<char, String> {
+        if self.pos >= self.len() {
+            return Err("unexpected end of pattern".to_string());
+        }
+        let ch = self.chars[self.pos];
+        self.pos += 1;
+        Ok(ch)
+    }
+
+    // -----------------------------------------------------------------------
+    // Top-level parse entry
+    // -----------------------------------------------------------------------
+
+    fn parse(&mut self) -> Result<ReNode, String> {
+        let node = self.parse_expr()?;
+        self.skip_verbose_whitespace();
+        if self.pos != self.len() {
+            return Err("unexpected pattern text".to_string());
+        }
+        Ok(node)
+    }
+
+    // -----------------------------------------------------------------------
+    // Expression = alternation
+    // -----------------------------------------------------------------------
+
+    fn parse_expr(&mut self) -> Result<ReNode, String> {
+        let mut terms = vec![self.parse_term()?];
+        while self.peek() == Some('|') {
+            self.next_ch()?;
+            terms.push(self.parse_term()?);
+        }
+        if terms.len() == 1 {
+            Ok(terms.remove(0))
+        } else {
+            Ok(ReNode::Alt(terms))
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Term = sequence of factors
+    // -----------------------------------------------------------------------
+
+    fn parse_term(&mut self) -> Result<ReNode, String> {
+        let mut nodes: Vec<ReNode> = Vec::new();
+        loop {
+            let ch = self.peek();
+            if ch.is_none() || ch == Some(')') || ch == Some('|') {
+                break;
+            }
+            let node = self.parse_factor()?;
+            // Coalesce adjacent literals.
+            if let ReNode::Literal(ref new_text) = node {
+                if let Some(ReNode::Literal(prev_text)) = nodes.last_mut() {
+                    let combined = prev_text.clone() + new_text;
+                    *prev_text = combined;
+                    continue;
+                }
+            }
+            nodes.push(node);
+        }
+        if nodes.is_empty() {
+            return Ok(ReNode::Empty);
+        }
+        if nodes.len() == 1 {
+            return Ok(nodes.remove(0));
+        }
+        Ok(ReNode::Concat(nodes))
+    }
+
+    // -----------------------------------------------------------------------
+    // Factor = atom + optional quantifier
+    // -----------------------------------------------------------------------
+
+    fn parse_factor(&mut self) -> Result<ReNode, String> {
+        let node = self.parse_atom()?;
+        let ch = self.peek();
+        if ch.is_none() {
+            return Ok(node);
+        }
+        match ch.unwrap() {
+            '*' | '+' | '?' => {
+                let quant = self.next_ch()?;
+                let (min_count, max_count) = match quant {
+                    '*' => (0, None),
+                    '+' => (1, None),
+                    '?' => (0, Some(1)),
+                    _ => unreachable!(),
+                };
+                let greedy = if self.peek() == Some('?') {
+                    self.next_ch()?;
+                    false
+                } else {
+                    true
+                };
+                Ok(ReNode::Repeat {
+                    node: Box::new(node),
+                    min_count,
+                    max_count,
+                    greedy,
+                })
+            }
+            '{' => {
+                let start_pos = self.pos;
+                self.next_ch()?; // consume '{'
+                let min_res = self.parse_number();
+                if min_res.is_err() {
+                    // Not a valid quantifier — backtrack.
+                    self.pos = start_pos;
+                    return Ok(node);
+                }
+                let min_count = min_res.unwrap();
+                let max_count = if self.peek() == Some(',') {
+                    self.next_ch()?; // consume ','
+                    if self.peek() == Some('}') {
+                        None // {n,} — unbounded
+                    } else {
+                        let max_res = self.parse_number();
+                        if max_res.is_err() {
+                            self.pos = start_pos;
+                            return Ok(node);
+                        }
+                        Some(max_res.unwrap())
+                    }
+                } else {
+                    Some(min_count)
+                };
+                if self.peek() != Some('}') {
+                    // Backtrack — not a valid quantifier.
+                    self.pos = start_pos;
+                    return Ok(node);
+                }
+                self.next_ch()?; // consume '}'
+                if let Some(max) = max_count {
+                    if max < min_count {
+                        return Err("invalid quantifier range".to_string());
+                    }
+                }
+                let greedy = if self.peek() == Some('?') {
+                    self.next_ch()?;
+                    false
+                } else {
+                    true
+                };
+                Ok(ReNode::Repeat {
+                    node: Box::new(node),
+                    min_count,
+                    max_count,
+                    greedy,
+                })
+            }
+            _ => Ok(node),
+        }
+    }
+
+    fn parse_number(&mut self) -> Result<u64, String> {
+        let mut digits = String::new();
+        loop {
+            match self.peek() {
+                Some(c) if c.is_ascii_digit() => {
+                    self.next_ch()?;
+                    digits.push(c);
+                }
+                _ => break,
+            }
+        }
+        if digits.is_empty() {
+            return Err("expected number".to_string());
+        }
+        digits.parse::<u64>().map_err(|_| "number overflow".to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // Atom
+    // -----------------------------------------------------------------------
+
+    fn parse_atom(&mut self) -> Result<ReNode, String> {
+        let ch = self.next_ch()?;
+        match ch {
+            '.' => Ok(ReNode::Any),
+            '^' => Ok(ReNode::Anchor("start".to_string())),
+            '$' => Ok(ReNode::Anchor("end".to_string())),
+            '(' => self.parse_group(),
+            '[' => self.parse_class(),
+            '\\' => self.parse_escape(),
+            c if ")*+?{}|".contains(c) => {
+                Err(format!("unexpected character '{c}'"))
+            }
+            c => Ok(ReNode::Literal(c.to_string())),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Group: (...) and (?...)
+    // -----------------------------------------------------------------------
+
+    fn parse_group(&mut self) -> Result<ReNode, String> {
+        if self.peek() == Some('?') {
+            self.next_ch()?; // consume '?'
+            return self.parse_extension_group();
+        }
+        // Capturing group.
+        let node = self.parse_expr()?;
+        if self.peek() != Some(')') {
+            return Err("missing )".to_string());
+        }
+        self.next_ch()?;
+        self.group_count += 1;
+        let idx = self.group_count;
+        let width = fixed_width(&node, Some(&self.group_widths));
+        self.group_widths.insert(idx, width);
+        Ok(ReNode::Group {
+            node: Box::new(node),
+            index: idx,
+        })
+    }
+
+    fn parse_extension_group(&mut self) -> Result<ReNode, String> {
+        let marker = self.peek();
+        match marker {
+            Some('=') => {
+                self.next_ch()?;
+                let node = self.parse_expr()?;
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.next_ch()?;
+                Ok(ReNode::Look {
+                    node: Box::new(node),
+                    behind: false,
+                    positive: true,
+                    width: None,
+                })
+            }
+            Some('!') => {
+                self.next_ch()?;
+                let node = self.parse_expr()?;
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.next_ch()?;
+                Ok(ReNode::Look {
+                    node: Box::new(node),
+                    behind: false,
+                    positive: false,
+                    width: None,
+                })
+            }
+            Some('<') => {
+                self.next_ch()?; // consume '<'
+                let look_kind = self.peek();
+                match look_kind {
+                    Some('=') => {
+                        self.next_ch()?;
+                        let node = self.parse_expr()?;
+                        if self.peek() != Some(')') {
+                            return Err("missing )".to_string());
+                        }
+                        self.next_ch()?;
+                        let width = fixed_width(&node, Some(&self.group_widths))
+                            .ok_or_else(|| "look-behind requires fixed-width pattern".to_string())?;
+                        Ok(ReNode::Look {
+                            node: Box::new(node),
+                            behind: true,
+                            positive: true,
+                            width: Some(width),
+                        })
+                    }
+                    Some('!') => {
+                        self.next_ch()?;
+                        let node = self.parse_expr()?;
+                        if self.peek() != Some(')') {
+                            return Err("missing )".to_string());
+                        }
+                        self.next_ch()?;
+                        let width = fixed_width(&node, Some(&self.group_widths))
+                            .ok_or_else(|| "look-behind requires fixed-width pattern".to_string())?;
+                        Ok(ReNode::Look {
+                            node: Box::new(node),
+                            behind: true,
+                            positive: false,
+                            width: Some(width),
+                        })
+                    }
+                    _ => {
+                        // Named group: (?P<name>...) already consumed '<', so
+                        // this is a raw (?<name>...) style from parse_extension_group.
+                        // Actually we get here only when parse_extension_group sees
+                        // marker=='<' and dispatches here.  We have already consumed '<'.
+                        // So we must handle the named-group body:
+                        self.parse_named_group_body()
+                    }
+                }
+            }
+            Some('(') => {
+                // Conditional: (?(id)yes|no)
+                self.next_ch()?; // consume '('
+                let mut digits = String::new();
+                loop {
+                    match self.peek() {
+                        Some(c) if c.is_ascii_digit() => {
+                            self.next_ch()?;
+                            digits.push(c);
+                        }
+                        _ => break,
+                    }
+                }
+                if digits.is_empty() || self.peek() != Some(')') {
+                    return Err("bad character in group name".to_string());
+                }
+                self.next_ch()?; // consume ')'
+                let group_index = digits.parse::<u32>().map_err(|_| "group index overflow".to_string())?;
+                let yes_node = self.parse_term()?;
+                let no_node = if self.peek() == Some('|') {
+                    self.next_ch()?;
+                    self.parse_term()?
+                } else {
+                    ReNode::Empty
+                };
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.next_ch()?;
+                Ok(ReNode::Conditional {
+                    group_index,
+                    yes: Box::new(yes_node),
+                    no: Box::new(no_node),
+                })
+            }
+            Some(':') => {
+                // Non-capturing group.
+                self.next_ch()?;
+                let node = self.parse_expr()?;
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.next_ch()?;
+                Ok(node)
+            }
+            Some('P') => {
+                self.next_ch()?; // consume 'P'
+                let name_marker = self.peek();
+                match name_marker {
+                    Some('=') => {
+                        // Named back-reference: (?P=name)
+                        self.next_ch()?;
+                        let name = self.read_until_close_paren()?;
+                        if name.is_empty() {
+                            return Err("missing group name".to_string());
+                        }
+                        if self.open_group_names.contains(&name) {
+                            return Err("cannot refer to an open group".to_string());
+                        }
+                        let idx = self.group_names.get(&name)
+                            .copied()
+                            .ok_or_else(|| format!("unknown group name '{name}'"))?;
+                        Ok(ReNode::Backref(idx))
+                    }
+                    Some('<') => {
+                        // Named capturing group: (?P<name>...)
+                        self.next_ch()?; // consume '<'
+                        self.parse_named_group_body()
+                    }
+                    _ => Err("bad character in group name".to_string()),
+                }
+            }
+            // Inline flags: (?imsxauL) or (?i:...) or (?-i:...)
+            Some(c) if "imsxaLu-".contains(c) || c == ')' => {
+                self.parse_inline_flags()
+            }
+            _ => Err("unknown extension".to_string()),
+        }
+    }
+
+    /// Read a group name terminated by ')'.  Consumes characters but NOT the ')'.
+    fn read_until_close_paren(&mut self) -> Result<String, String> {
+        let mut name = String::new();
+        loop {
+            match self.peek() {
+                None => return Err("missing )".to_string()),
+                Some(')') => {
+                    self.next_ch()?;
+                    break;
+                }
+                Some(c) if is_meta_char(c) || c == '<' || c == '>' => {
+                    return Err("bad character in group name".to_string());
+                }
+                Some(c) => {
+                    self.next_ch()?;
+                    name.push(c);
+                }
+            }
+        }
+        Ok(name)
+    }
+
+    /// Parse the body of a named group after '<' has been consumed.
+    fn parse_named_group_body(&mut self) -> Result<ReNode, String> {
+        let mut name = String::new();
+        loop {
+            match self.peek() {
+                None => return Err("unterminated group name".to_string()),
+                Some('>') => {
+                    self.next_ch()?;
+                    break;
+                }
+                Some(c) if is_meta_char(c) || c == '<' || c == '>' => {
+                    return Err("bad character in group name".to_string());
+                }
+                Some(c) => {
+                    self.next_ch()?;
+                    name.push(c);
+                }
+            }
+        }
+        if name.is_empty() {
+            return Err("missing group name".to_string());
+        }
+        if self.group_names.contains_key(&name) || self.open_group_names.contains(&name) {
+            return Err("redefinition of group name".to_string());
+        }
+        self.open_group_names.insert(name.clone());
+        let parse_result = self.parse_expr();
+        let node = match parse_result {
+            Ok(n) => {
+                self.open_group_names.remove(&name);
+                n
+            }
+            Err(e) => {
+                self.open_group_names.remove(&name);
+                return Err(e);
+            }
+        };
+        if self.peek() != Some(')') {
+            return Err("missing )".to_string());
+        }
+        self.next_ch()?;
+        self.group_count += 1;
+        let idx = self.group_count;
+        self.group_names.insert(name, idx);
+        let width = fixed_width(&node, Some(&self.group_widths));
+        self.group_widths.insert(idx, width);
+        Ok(ReNode::Group {
+            node: Box::new(node),
+            index: idx,
+        })
+    }
+
+    /// Parse inline flags (?imsxauL) or (?i:...) or (?-i:...)
+    fn parse_inline_flags(&mut self) -> Result<ReNode, String> {
+        let mut add_flags: i64 = 0;
+        let mut clear_flags: i64 = 0;
+        let mut seen_minus = false;
+        loop {
+            match self.peek() {
+                None => return Err("unterminated inline flag".to_string()),
+                Some('-') => {
+                    self.next_ch()?;
+                    seen_minus = true;
+                }
+                Some(c @ ('i' | 'm' | 's' | 'x' | 'a' | 'L' | 'u' | 'I' | 'M' | 'S' | 'X' | 'A' | 'U')) => {
+                    self.next_ch()?;
+                    let bit = flag_char_to_bit(c);
+                    if seen_minus {
+                        clear_flags |= bit;
+                    } else {
+                        add_flags |= bit;
+                    }
+                }
+                _ => break,
+            }
+        }
+        match self.peek() {
+            Some(')') => {
+                self.next_ch()?;
+                self.inline_flags |= add_flags;
+                self.inline_flags &= !clear_flags;
+                Ok(ReNode::Empty)
+            }
+            Some(':') => {
+                self.next_ch()?;
+                let node = self.parse_expr()?;
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.next_ch()?;
+                Ok(ReNode::ScopedFlags {
+                    node: Box::new(node),
+                    add_flags,
+                    clear_flags,
+                })
+            }
+            _ => Err("unsupported group extension syntax".to_string()),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Escape sequence
+    // -----------------------------------------------------------------------
+
+    fn parse_escape(&mut self) -> Result<ReNode, String> {
+        let ch = self.raw_next()?;
+        match ch {
+            'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
+                let negated = ch.is_ascii_uppercase();
+                let category = if negated {
+                    ((ch as u8) + 32) as char
+                } else {
+                    ch
+                };
+                Ok(ReNode::CharClass {
+                    negated,
+                    ranges: vec![],
+                    chars: vec![],
+                    categories: vec![category.to_string()],
+                })
+            }
+            'n' => Ok(ReNode::Literal("\n".to_string())),
+            't' => Ok(ReNode::Literal("\t".to_string())),
+            'r' => Ok(ReNode::Literal("\r".to_string())),
+            'f' => Ok(ReNode::Literal("\x0C".to_string())),
+            'v' => Ok(ReNode::Literal("\x0B".to_string())),
+            c @ '0'..='9' => {
+                let mut digits = String::from(c);
+                loop {
+                    match self.peek() {
+                        Some(d) if d.is_ascii_digit() => {
+                            self.next_ch()?;
+                            digits.push(d);
+                        }
+                        _ => break,
+                    }
+                }
+                let idx = digits.parse::<u32>().map_err(|_| "backref index overflow".to_string())?;
+                Ok(ReNode::Backref(idx))
+            }
+            'A' => Ok(ReNode::Anchor("start_abs".to_string())),
+            'Z' => Ok(ReNode::Anchor("end_abs".to_string())),
+            'b' => Ok(ReNode::Anchor("word_boundary".to_string())),
+            'B' => Ok(ReNode::Anchor("word_boundary_not".to_string())),
+            other => Ok(ReNode::Literal(other.to_string())),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Character class: [...]
+    // -----------------------------------------------------------------------
+
+    fn parse_class(&mut self) -> Result<ReNode, String> {
+        self.in_class = true;
+        let mut negated = false;
+        let mut chars: Vec<String> = Vec::new();
+        let mut ranges: Vec<(String, String)> = Vec::new();
+        let mut categories: Vec<String> = Vec::new();
+
+        if self.raw_peek() == Some('^') {
+            self.raw_next()?;
+            negated = true;
+        }
+        // A ']' immediately after '[' or '[^' is a literal ']'.
+        if self.raw_peek() == Some(']') {
+            let c = self.raw_next()?;
+            chars.push(c.to_string());
+        }
+
+        loop {
+            match self.raw_peek() {
+                None => {
+                    self.in_class = false;
+                    return Err("unterminated character class".to_string());
+                }
+                Some(']') => {
+                    self.raw_next()?;
+                    break;
+                }
+                _ => {}
+            }
+            match self.class_item()? {
+                ClassItem::Range(s, e) => ranges.push((s, e)),
+                ClassItem::Category(cat) => categories.push(cat),
+                ClassItem::Char(c) => chars.push(c),
+            }
+        }
+        self.in_class = false;
+        Ok(ReNode::CharClass {
+            negated,
+            ranges,
+            chars,
+            categories,
+        })
+    }
+
+    fn class_item(&mut self) -> Result<ClassItem, String> {
+        let ch = self.raw_next()?;
+        match ch {
+            '\\' => {
+                let esc = self.raw_next()?;
+                match esc {
+                    'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
+                        let category = if esc.is_ascii_uppercase() {
+                            ((esc as u8) + 32) as char
+                        } else {
+                            esc
+                        };
+                        Ok(ClassItem::Category(category.to_string()))
+                    }
+                    'n' => Ok(ClassItem::Char("\n".to_string())),
+                    't' => Ok(ClassItem::Char("\t".to_string())),
+                    'r' => Ok(ClassItem::Char("\r".to_string())),
+                    'f' => Ok(ClassItem::Char("\x0C".to_string())),
+                    'v' => Ok(ClassItem::Char("\x0B".to_string())),
+                    c if c.is_ascii_digit() => {
+                        // Octal escape inside character classes.
+                        let mut oct = String::from(c);
+                        while oct.len() < 3 {
+                            match self.raw_peek() {
+                                Some(d) if ('0'..='7').contains(&d) => {
+                                    self.raw_next()?;
+                                    oct.push(d);
+                                }
+                                _ => break,
+                            }
+                        }
+                        let code = u32::from_str_radix(&oct, 8)
+                            .map_err(|_| "invalid octal escape".to_string())?;
+                        let c = char::from_u32(code).unwrap_or('\u{FFFD}');
+                        Ok(ClassItem::Char(c.to_string()))
+                    }
+                    other => Ok(ClassItem::Char(other.to_string())),
+                }
+            }
+            '[' if self.raw_peek() == Some(':') => {
+                // POSIX class: [:alpha:]
+                if self.nested_set_warning_pos.is_none() {
+                    self.nested_set_warning_pos = Some((self.pos as i64) - 1);
+                }
+                self.raw_next()?; // consume ':'
+                let mut name = String::new();
+                loop {
+                    match self.raw_peek() {
+                        None => return Err("unterminated character class".to_string()),
+                        Some(':') => {
+                            self.raw_next()?;
+                            if self.raw_peek() == Some(']') {
+                                self.raw_next()?;
+                                break;
+                            }
+                            name.push(':');
+                        }
+                        Some(c) => {
+                            self.raw_next()?;
+                            name.push(c);
+                        }
+                    }
+                }
+                Ok(ClassItem::Category(format!("posix:{name}")))
+            }
+            '-' | ']' => Ok(ClassItem::Char(ch.to_string())),
+            _ => {
+                // Maybe a range: X-Y
+                if self.raw_peek() == Some('-') {
+                    let saved_pos = self.pos;
+                    self.raw_next()?; // consume '-'
+                    match self.raw_peek() {
+                        None | Some(']') => {
+                            // Not a range — backtrack the '-'.
+                            self.pos = saved_pos;
+                            Ok(ClassItem::Char(ch.to_string()))
+                        }
+                        _ => {
+                            let end_item = self.class_item()?;
+                            match end_item {
+                                ClassItem::Char(end) => Ok(ClassItem::Range(ch.to_string(), end)),
+                                _ => Err("ranges over categories are not supported".to_string()),
+                            }
+                        }
+                    }
+                } else {
+                    Ok(ClassItem::Char(ch.to_string()))
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClassItem helper enum (only used inside parser)
+// ---------------------------------------------------------------------------
+
+enum ClassItem {
+    Char(String),
+    Range(String, String),
+    Category(String),
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const META_CHARS: &str = ".^$*+?{}[]\\|()";
+
+fn is_meta_char(c: char) -> bool {
+    META_CHARS.contains(c)
+}
+
+fn flag_char_to_bit(c: char) -> i64 {
+    match c {
+        'i' | 'I' => RE_IGNORECASE,
+        'm' | 'M' => RE_MULTILINE,
+        's' | 'S' => RE_DOTALL,
+        'x' | 'X' => RE_VERBOSE,
+        'a' | 'A' => RE_ASCII,
+        'u' | 'U' => RE_UNICODE,
+        'L' | 'l' => RE_LOCALE,
+        _ => 0,
+    }
+}
+
+/// Compute the fixed character-width of a regex node, analogous to
+/// `_fixed_width()` in re/__init__.py.  Returns `None` for variable-width
+/// nodes.
+fn fixed_width(node: &ReNode, group_widths: Option<&HashMap<u32, Option<u64>>>) -> Option<u64> {
+    match node {
+        ReNode::Empty => Some(0),
+        ReNode::Literal(s) => Some(s.chars().count() as u64),
+        ReNode::Any => Some(1),
+        ReNode::Anchor(_) => Some(0),
+        ReNode::CharClass { .. } => Some(1),
+        ReNode::Backref(idx) => {
+            group_widths?.get(idx).copied().flatten()
+        }
+        ReNode::Group { node, .. } => fixed_width(node, group_widths),
+        ReNode::Look { .. } => Some(0),
+        ReNode::ScopedFlags { node, .. } => fixed_width(node, group_widths),
+        ReNode::Conditional { yes, no, .. } => {
+            let yw = fixed_width(yes, group_widths)?;
+            let nw = fixed_width(no, group_widths)?;
+            if yw != nw { None } else { Some(yw) }
+        }
+        ReNode::Concat(nodes) => {
+            let mut total = 0u64;
+            for n in nodes {
+                total += fixed_width(n, group_widths)?;
+            }
+            Some(total)
+        }
+        ReNode::Alt(options) => {
+            if options.is_empty() {
+                return Some(0);
+            }
+            let first = fixed_width(&options[0], group_widths)?;
+            for opt in &options[1..] {
+                let w = fixed_width(opt, group_widths)?;
+                if w != first {
+                    return None;
+                }
+            }
+            Some(first)
+        }
+        ReNode::Repeat { node, min_count, max_count, .. } => {
+            let w = fixed_width(node, group_widths)?;
+            let max = (*max_count)?;
+            if *min_count != max {
+                return None;
+            }
+            Some(w * max)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// parse_pattern: top-level entry point
+// ---------------------------------------------------------------------------
+
+fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
+    let mut parser = ReParser::new(pattern, flags);
+    let root = parser.parse()?;
+    let group_count = parser.group_count;
+    let group_names = parser.group_names;
+    let inline_flags = parser.inline_flags;
+    let warn_pos = parser.nested_set_warning_pos;
+    Ok(CompiledPattern {
+        root,
+        group_count,
+        group_names,
+        flags: flags | inline_flags,
+        warn_pos,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_compile intrinsic
+// ---------------------------------------------------------------------------
+
+/// `molt_re_compile(pattern: str, flags: int) -> int`
+///
+/// Parse a regex pattern string and return an opaque integer handle.  The
+/// compiled `CompiledPattern` is stored in the global `RE_PATTERNS` registry.
+/// Returns -1 and raises `re.error` on parse failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        match parse_pattern(&pattern, flags) {
+            Ok(compiled) => {
+                let handle = re_alloc_handle();
+                re_store_pattern(handle, compiled);
+                MoltObject::from_int(handle).bits()
+            }
+            Err(msg) => {
+                raise_exception::<_>(_py, "ValueError", &msg)
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_pattern_info intrinsic
+// ---------------------------------------------------------------------------
+
+/// `molt_re_pattern_info(handle: int) -> (groups, group_names_dict, flags, warn_pos)`
+///
+/// Returns a 4-tuple:
+///   0: groups      — int,   number of capturing groups
+///   1: group_names — dict,  {name: index}
+///   2: flags       — int,   effective flags (pattern flags | inline flags)
+///   3: warn_pos    — int or None,  char position of nested-set warning (or None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "handle must be int");
+        };
+        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(compiled) = guard.get(&handle) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+        };
+        // Build group_names dict.
+        let mut pairs: Vec<u64> = Vec::with_capacity(compiled.group_names.len() * 2);
+        for (name, &idx) in &compiled.group_names {
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let idx_bits = MoltObject::from_int(idx as i64).bits();
+            pairs.push(name_bits);
+            pairs.push(idx_bits);
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        if dict_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+
+        let groups_bits = MoltObject::from_int(compiled.group_count as i64).bits();
+        let flags_bits_out = MoltObject::from_int(compiled.flags).bits();
+        let warn_bits = match compiled.warn_pos {
+            Some(pos) => MoltObject::from_int(pos).bits(),
+            None => MoltObject::none().bits(),
+        };
+
+        let tuple_ptr = alloc_tuple(_py, &[groups_bits, dict_bits, flags_bits_out, warn_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_execute stub (Phase-1b placeholder)
+// ---------------------------------------------------------------------------
+
+/// `molt_re_execute(handle, text, pos, end, mode) -> None`
+///
+/// Phase-1b stub.  Always returns None, signalling Python to fall back to its
+/// own match engine.  The full Rust NFA/backtracking engine will replace this
+/// in a future phase.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_execute(
+    _handle_bits: u64,
+    _text_bits: u64,
+    _pos_bits: u64,
+    _end_bits: u64,
+    _mode_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::none().bits()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_finditer_collect stub (Phase-1b placeholder)
+// ---------------------------------------------------------------------------
+
+/// `molt_re_finditer_collect(handle, text, pos, end) -> None`
+///
+/// Phase-1b stub.  Always returns None, signalling Python to fall back to its
+/// own finditer engine.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_finditer_collect(
+    _handle_bits: u64,
+    _text_bits: u64,
+    _pos_bits: u64,
+    _end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::none().bits()
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -1103,5 +2210,377 @@ mod tests {
         let names: Vec<(String, i64)> = vec![("word".to_string(), 1)];
         let result = re_named_backref_advance_impl("abcd", 2, 4, &spans, "word", &names);
         assert_eq!(result, -1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase-1 parser tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_empty_pattern() {
+        let cp = parse_pattern("", 0).unwrap();
+        assert!(matches!(cp.root, ReNode::Empty));
+        assert_eq!(cp.group_count, 0);
+    }
+
+    #[test]
+    fn test_parse_literal() {
+        let cp = parse_pattern("hello", 0).unwrap();
+        match &cp.root {
+            ReNode::Literal(s) => assert_eq!(s, "hello"),
+            other => panic!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_any() {
+        let cp = parse_pattern(".", 0).unwrap();
+        assert!(matches!(cp.root, ReNode::Any));
+    }
+
+    #[test]
+    fn test_parse_anchor_start() {
+        let cp = parse_pattern("^", 0).unwrap();
+        match &cp.root {
+            ReNode::Anchor(k) => assert_eq!(k, "start"),
+            other => panic!("expected Anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_anchor_end() {
+        let cp = parse_pattern("$", 0).unwrap();
+        match &cp.root {
+            ReNode::Anchor(k) => assert_eq!(k, "end"),
+            other => panic!("expected Anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_alternation() {
+        let cp = parse_pattern("a|b", 0).unwrap();
+        match &cp.root {
+            ReNode::Alt(opts) => assert_eq!(opts.len(), 2),
+            other => panic!("expected Alt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_capturing_group() {
+        let cp = parse_pattern("(abc)", 0).unwrap();
+        assert_eq!(cp.group_count, 1);
+        match &cp.root {
+            ReNode::Group { index, .. } => assert_eq!(*index, 1),
+            other => panic!("expected Group, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_named_group() {
+        let cp = parse_pattern("(?P<word>\\w+)", 0).unwrap();
+        assert_eq!(cp.group_count, 1);
+        assert_eq!(cp.group_names.get("word"), Some(&1u32));
+    }
+
+    #[test]
+    fn test_parse_non_capturing_group() {
+        let cp = parse_pattern("(?:abc)", 0).unwrap();
+        assert_eq!(cp.group_count, 0);
+        match &cp.root {
+            ReNode::Literal(s) => assert_eq!(s, "abc"),
+            other => panic!("expected Literal (collapsed non-capturing group), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_repeat_star() {
+        let cp = parse_pattern("a*", 0).unwrap();
+        match &cp.root {
+            ReNode::Repeat { min_count, max_count, greedy, .. } => {
+                assert_eq!(*min_count, 0);
+                assert!(max_count.is_none());
+                assert!(*greedy);
+            }
+            other => panic!("expected Repeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_repeat_lazy() {
+        let cp = parse_pattern("a+?", 0).unwrap();
+        match &cp.root {
+            ReNode::Repeat { min_count, max_count, greedy, .. } => {
+                assert_eq!(*min_count, 1);
+                assert!(max_count.is_none());
+                assert!(!(*greedy));
+            }
+            other => panic!("expected Repeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_repeat_counted() {
+        let cp = parse_pattern("a{2,5}", 0).unwrap();
+        match &cp.root {
+            ReNode::Repeat { min_count, max_count, .. } => {
+                assert_eq!(*min_count, 2);
+                assert_eq!(*max_count, Some(5));
+            }
+            other => panic!("expected Repeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_charclass() {
+        let cp = parse_pattern("[abc]", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { negated, chars, .. } => {
+                assert!(!negated);
+                assert!(chars.contains(&"a".to_string()));
+            }
+            other => panic!("expected CharClass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_negated_charclass() {
+        let cp = parse_pattern("[^abc]", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { negated, .. } => {
+                assert!(*negated);
+            }
+            other => panic!("expected CharClass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_charclass_range() {
+        let cp = parse_pattern("[a-z]", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { ranges, .. } => {
+                assert!(!ranges.is_empty());
+                let (s, e) = &ranges[0];
+                assert_eq!(s, "a");
+                assert_eq!(e, "z");
+            }
+            other => panic!("expected CharClass with range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_backslash_d() {
+        let cp = parse_pattern("\\d", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { negated, categories, .. } => {
+                assert!(!negated);
+                assert!(categories.contains(&"d".to_string()));
+            }
+            other => panic!("expected CharClass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_parse_backslash_D() {
+        let cp = parse_pattern("\\D", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { negated, categories, .. } => {
+                assert!(*negated);
+                assert!(categories.contains(&"d".to_string()));
+            }
+            other => panic!("expected CharClass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lookahead_positive() {
+        let cp = parse_pattern("(?=abc)", 0).unwrap();
+        match &cp.root {
+            ReNode::Look { behind, positive, .. } => {
+                assert!(!behind);
+                assert!(*positive);
+            }
+            other => panic!("expected Look, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lookahead_negative() {
+        let cp = parse_pattern("(?!abc)", 0).unwrap();
+        match &cp.root {
+            ReNode::Look { behind, positive, .. } => {
+                assert!(!behind);
+                assert!(!positive);
+            }
+            other => panic!("expected Look, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lookbehind_positive() {
+        let cp = parse_pattern("(?<=ab)", 0).unwrap();
+        match &cp.root {
+            ReNode::Look { behind, positive, width, .. } => {
+                assert!(*behind);
+                assert!(*positive);
+                assert_eq!(*width, Some(2));
+            }
+            other => panic!("expected Look, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lookbehind_negative() {
+        let cp = parse_pattern("(?<!ab)", 0).unwrap();
+        match &cp.root {
+            ReNode::Look { behind, positive, width, .. } => {
+                assert!(*behind);
+                assert!(!positive);
+                assert_eq!(*width, Some(2));
+            }
+            other => panic!("expected Look, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scoped_flags() {
+        let cp = parse_pattern("(?i:abc)", 0).unwrap();
+        match &cp.root {
+            ReNode::ScopedFlags { add_flags, clear_flags, .. } => {
+                assert_eq!(*add_flags & RE_IGNORECASE, RE_IGNORECASE);
+                assert_eq!(*clear_flags, 0);
+            }
+            other => panic!("expected ScopedFlags, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_inline_flags_global() {
+        let cp = parse_pattern("(?i)abc", 0).unwrap();
+        assert_eq!(cp.flags & RE_IGNORECASE, RE_IGNORECASE);
+    }
+
+    #[test]
+    fn test_parse_backref() {
+        let cp = parse_pattern("(a)\\1", 0).unwrap();
+        match &cp.root {
+            ReNode::Concat(nodes) => {
+                assert_eq!(nodes.len(), 2);
+                assert!(matches!(&nodes[0], ReNode::Group { index: 1, .. }));
+                assert!(matches!(&nodes[1], ReNode::Backref(1)));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_conditional() {
+        let cp = parse_pattern("(?(1)yes|no)", 0).unwrap();
+        match &cp.root {
+            ReNode::Conditional { group_index, .. } => assert_eq!(*group_index, 1),
+            other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_named_backref() {
+        let cp = parse_pattern("(?P<w>a)(?P=w)", 0).unwrap();
+        assert_eq!(cp.group_count, 1);
+        match &cp.root {
+            ReNode::Concat(nodes) => {
+                assert!(matches!(&nodes[1], ReNode::Backref(1)));
+            }
+            other => panic!("expected Concat with named backref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bad_quantifier_range() {
+        let err = parse_pattern("a{5,3}", 0).unwrap_err();
+        assert!(err.contains("invalid quantifier range"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_missing_close_paren() {
+        parse_pattern("(abc", 0).unwrap_err();
+    }
+
+    #[test]
+    fn test_parse_verbose_whitespace_stripped() {
+        // In verbose mode, whitespace between atoms is ignored.
+        let cp = parse_pattern("a b c", RE_VERBOSE).unwrap();
+        match &cp.root {
+            ReNode::Literal(s) => assert_eq!(s, "abc"),
+            other => panic!("expected Literal 'abc', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_anchor_abs() {
+        let cp = parse_pattern("\\A\\Z", 0).unwrap();
+        match &cp.root {
+            ReNode::Concat(nodes) => {
+                assert!(matches!(&nodes[0], ReNode::Anchor(k) if k == "start_abs"));
+                assert!(matches!(&nodes[1], ReNode::Anchor(k) if k == "end_abs"));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_word_boundary() {
+        let cp = parse_pattern("\\b\\B", 0).unwrap();
+        match &cp.root {
+            ReNode::Concat(nodes) => {
+                assert!(matches!(&nodes[0], ReNode::Anchor(k) if k == "word_boundary"));
+                assert!(matches!(&nodes[1], ReNode::Anchor(k) if k == "word_boundary_not"));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fixed_width_literal() {
+        assert_eq!(fixed_width(&ReNode::Literal("hello".to_string()), None), Some(5));
+    }
+
+    #[test]
+    fn test_fixed_width_repeat_exact() {
+        let node = ReNode::Repeat {
+            node: Box::new(ReNode::Any),
+            min_count: 3,
+            max_count: Some(3),
+            greedy: true,
+        };
+        assert_eq!(fixed_width(&node, None), Some(3));
+    }
+
+    #[test]
+    fn test_fixed_width_repeat_variable() {
+        let node = ReNode::Repeat {
+            node: Box::new(ReNode::Any),
+            min_count: 1,
+            max_count: Some(3),
+            greedy: true,
+        };
+        assert_eq!(fixed_width(&node, None), None);
+    }
+
+    #[test]
+    fn test_parse_group_count_multiple() {
+        let cp = parse_pattern("(a)(b)(c)", 0).unwrap();
+        assert_eq!(cp.group_count, 3);
+    }
+
+    #[test]
+    fn test_parse_octal_escape_in_class() {
+        // \101 octal = 'A'
+        let cp = parse_pattern("[\\101]", 0).unwrap();
+        match &cp.root {
+            ReNode::CharClass { chars, .. } => {
+                assert!(chars.contains(&"A".to_string()), "expected 'A' in chars, got {chars:?}");
+            }
+            other => panic!("expected CharClass, got {other:?}"),
+        }
     }
 }
