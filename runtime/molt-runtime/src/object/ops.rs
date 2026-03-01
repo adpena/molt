@@ -5152,8 +5152,54 @@ pub extern "C" fn molt_repr_from_obj(val_bits: u64) -> u64 {
 }
 
 fn ascii_escape(text: &str) -> String {
+    let bytes = text.as_bytes();
+    // SIMD fast path: if entire string is ASCII, return as-is (common case)
+    if bytes.is_ascii() {
+        return text.to_string();
+    }
+    // Find the first non-ASCII byte using SIMD scan, copy the safe prefix in bulk
+    let mut first_non_ascii = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let high_bit = vdupq_n_u8(0x80);
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(first_non_ascii));
+                let is_non_ascii = vandq_u8(chunk, high_bit);
+                if vmaxvq_u8(is_non_ascii) != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(first_non_ascii) as *const __m128i);
+                let mask = _mm_movemask_epi8(chunk) as u32; // high bit of each byte
+                if mask != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
+    while first_non_ascii < bytes.len() && bytes[first_non_ascii].is_ascii() {
+        first_non_ascii += 1;
+    }
+
     let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
+    // Copy the all-ASCII prefix in bulk
+    out.push_str(&text[..first_non_ascii]);
+    // Process remaining characters
+    for ch in text[first_non_ascii..].chars() {
         if ch.is_ascii() {
             out.push(ch);
         } else {
@@ -21122,6 +21168,10 @@ pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: for ASCII, printable is [0x20..0x7E]
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_printable(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -21147,6 +21197,16 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII strings use bulk XOR bit-5 swapcase
+            if hay_bytes.is_ascii() {
+                let mut buf = hay_bytes.to_vec();
+                bytes_ascii_swapcase(&mut buf);
+                let ptr = alloc_string(_py, &buf);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
@@ -21181,6 +21241,16 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII capitalize uses bytes_ascii_capitalize
+            if hay_bytes.is_ascii() {
+                let mut buf = hay_bytes.to_vec();
+                bytes_ascii_capitalize(&mut buf);
+                let ptr = alloc_string(_py, &buf);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
@@ -23620,6 +23690,55 @@ fn simd_is_all_ascii_alnum(bytes: &[u8]) -> bool {
 
     while i < bytes.len() {
         if !bytes[i].is_ascii_alphanumeric() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// SIMD-accelerated check: are ALL bytes ASCII printable [0x20..0x7E]?
+fn simd_is_all_ascii_printable(bytes: &[u8]) -> bool {
+    // Empty string is "printable" per Python semantics
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let lo = vdupq_n_u8(0x20);
+            let hi = vdupq_n_u8(0x7E);
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                let is_print = vandq_u8(vcgeq_u8(chunk, lo), vcleq_u8(chunk, hi));
+                if vminvq_u8(is_print) == 0 {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let ge_lo = _mm_cmpgt_epi8(chunk, _mm_set1_epi8(0x1F));
+                let le_hi = _mm_cmpgt_epi8(_mm_set1_epi8(0x7F_u8 as i8), chunk);
+                let is_print = _mm_and_si128(ge_lo, le_hi);
+                if _mm_movemask_epi8(is_print) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x20 || b > 0x7E {
             return false;
         }
         i += 1;
