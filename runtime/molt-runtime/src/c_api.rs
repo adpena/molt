@@ -2012,6 +2012,566 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
     })
 }
 
+// ---------------------------------------------------------------------------
+// libmolt C-API Phase 1 — Iterator protocol
+// ---------------------------------------------------------------------------
+
+/// `PyObject_GetIter(obj)` — call `__iter__` on `obj`.
+/// Returns a new iterator handle (caller owns the reference) or NULL (0) on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GetIter(obj: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_iter(obj);
+        if obj_from_bits(res).is_none() {
+            if !exception_pending(_py) {
+                let _: u64 = raise_not_iterable(_py, obj);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
+/// `PyIter_Next(iter)` — advance iterator and return the next value.
+/// Returns the next value handle (caller owns the reference), or 0 (NULL) when
+/// the iterator is exhausted (no exception set) or on error (exception set).
+#[unsafe(no_mangle)]
+pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let pair_bits = molt_iter_next(iter);
+        if exception_pending(_py) {
+            if !obj_from_bits(pair_bits).is_none() {
+                dec_ref_bits(_py, pair_bits);
+            }
+            return 0;
+        }
+        let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            let done = is_truthy(_py, obj_from_bits(done_bits));
+            if done {
+                // StopIteration — no exception, just return NULL.
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            inc_ref_bits(_py, val_bits);
+            dec_ref_bits(_py, pair_bits);
+            val_bits
+        }
+    })
+}
+
+/// `PyIter_Check(obj)` — return 1 if `obj` is an iterator, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if unsafe { is_iterator_bits(_py, obj) } {
+            1
+        } else {
+            0
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API Phase 1 — Type check macros
+// ---------------------------------------------------------------------------
+
+/// `PyList_Check(obj)` — return 1 if obj is a list, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Check(obj: u64) -> i32 {
+    if let Some(ptr) = obj_from_bits(obj).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_LIST
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// `PyDict_Check(obj)` — return 1 if obj is a dict, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
+    if let Some(ptr) = obj_from_bits(obj).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// `PyTuple_Check(obj)` — return 1 if obj is a tuple, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTuple_Check(obj: u64) -> i32 {
+    if let Some(ptr) = obj_from_bits(obj).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// `PyFloat_Check(obj)` — return 1 if obj is a float, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_Check(obj: u64) -> i32 {
+    if obj_from_bits(obj).is_float() { 1 } else { 0 }
+}
+
+/// `PyLong_Check(obj)` — return 1 if obj is an int, 0 otherwise.
+/// Covers both inline NaN-boxed ints and heap-allocated bigints.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyLong_Check(obj: u64) -> i32 {
+    let obj_mo = obj_from_bits(obj);
+    if obj_mo.is_int() {
+        return 1;
+    }
+    if let Some(ptr) = obj_mo.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_BIGINT
+    {
+        return 1;
+    }
+    0
+}
+
+/// `PyUnicode_Check(obj)` — return 1 if obj is a str, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_Check(obj: u64) -> i32 {
+    if let Some(ptr) = obj_from_bits(obj).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// `PyBool_Check(obj)` — return 1 if obj is a bool, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyBool_Check(obj: u64) -> i32 {
+    if obj_from_bits(obj).is_bool() { 1 } else { 0 }
+}
+
+/// `PyNone_Check(obj)` — return 1 if obj is None, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
+    if obj_from_bits(obj).is_none() { 1 } else { 0 }
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API Phase 1 — List direct access
+// ---------------------------------------------------------------------------
+
+/// `PyList_New(size)` — create a new list of length `size` filled with None values.
+/// Returns the new list handle (caller owns the reference) or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_New(size: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if size < 0 {
+            let _ =
+                raise_exception::<u64>(_py, "SystemError", "negative size passed to PyList_New");
+            return 0;
+        }
+        let n = size as usize;
+        let none = none_bits();
+        let elems: Vec<u64> = vec![none; n];
+        let ptr = alloc_list(_py, &elems);
+        if ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `PyList_Size(list)` — return the length of the list, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Size(list: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(list).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                return -1;
+            }
+            list_len(ptr) as isize
+        }
+    })
+}
+
+/// `PyList_GetItem(list, index)` — return a **borrowed** reference to list[index].
+/// Returns 0 on error. The caller must NOT decref the returned handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(list).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                return 0;
+            }
+            let elems = seq_vec_ref(ptr);
+            let len = elems.len();
+            let actual_idx = if index < 0 {
+                let adjusted = (len as isize) + index;
+                if adjusted < 0 {
+                    let _ = raise_exception::<u64>(_py, "IndexError", "list index out of range");
+                    return 0;
+                }
+                adjusted as usize
+            } else {
+                index as usize
+            };
+            if actual_idx >= len {
+                let _ = raise_exception::<u64>(_py, "IndexError", "list index out of range");
+                return 0;
+            }
+            // Borrowed reference — do not inc_ref.
+            elems[actual_idx]
+        }
+    })
+}
+
+/// `PyList_SetItem(list, index, item)` — set list[index] to `item`.
+/// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(list).as_ptr() else {
+            // Steal the reference even on failure (CPython semantics).
+            dec_ref_bits(_py, item);
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                dec_ref_bits(_py, item);
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                return -1;
+            }
+            let elems = seq_vec(ptr);
+            let len = elems.len();
+            let actual_idx = if index < 0 {
+                let adjusted = (len as isize) + index;
+                if adjusted < 0 {
+                    dec_ref_bits(_py, item);
+                    let _ = raise_exception::<u64>(
+                        _py,
+                        "IndexError",
+                        "list assignment index out of range",
+                    );
+                    return -1;
+                }
+                adjusted as usize
+            } else {
+                index as usize
+            };
+            if actual_idx >= len {
+                dec_ref_bits(_py, item);
+                let _ =
+                    raise_exception::<u64>(_py, "IndexError", "list assignment index out of range");
+                return -1;
+            }
+            let old = elems[actual_idx];
+            // Item reference is stolen (not inc_ref'd), just place it.
+            elems[actual_idx] = item;
+            dec_ref_bits(_py, old);
+            0
+        }
+    })
+}
+
+/// `PyList_Append(list, item)` — append `item` to `list`.
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(list).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                return -1;
+            }
+            let elems = seq_vec(ptr);
+            inc_ref_bits(_py, item);
+            elems.push(item);
+            0
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API Phase 1 — Dict direct access
+// ---------------------------------------------------------------------------
+
+/// `PyDict_New()` — create a new empty dict.
+/// Returns the new dict handle (caller owns the reference) or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_New() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = alloc_dict_with_pairs(_py, &[]);
+        if ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `PyDict_SetItem(dict, key, val)` — insert key/value pair into dict.
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_DICT {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+                return -1;
+            }
+            dict_set_in_place(_py, ptr, key, val);
+            if exception_pending(_py) { -1 } else { 0 }
+        }
+    })
+}
+
+/// `PyDict_GetItem(dict, key)` — return a **borrowed** reference to dict[key],
+/// or 0 (NULL) if the key is not present (no exception set for missing key).
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_DICT {
+                return 0;
+            }
+            match dict_get_in_place(_py, ptr, key) {
+                Some(val_bits) => {
+                    // Clear any exception that dict_get_in_place might have set
+                    // due to unhashable key (CPython PyDict_GetItem suppresses errors).
+                    if exception_pending(_py) {
+                        let _ = molt_exception_clear();
+                    }
+                    // Borrowed reference.
+                    val_bits
+                }
+                None => {
+                    // Suppress exceptions (CPython semantics for PyDict_GetItem).
+                    if exception_pending(_py) {
+                        let _ = molt_exception_clear();
+                    }
+                    0
+                }
+            }
+        }
+    })
+}
+
+/// `PyDict_SetItemString(dict, key, val)` — insert string key/value into dict.
+/// The key is a C string (null-terminated). Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_SetItemString(
+    dict: u64,
+    key: *const std::ffi::c_char,
+    val: u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if key.is_null() {
+            let _ = raise_exception::<u64>(_py, "TypeError", "key string pointer cannot be null");
+            return -1;
+        }
+        let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
+        let key_bytes = key_cstr.to_bytes();
+        let key_ptr = alloc_string(_py, key_bytes);
+        if key_ptr.is_null() {
+            return -1;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let rc = PyDict_SetItem(dict, key_bits, val);
+        dec_ref_bits(_py, key_bits);
+        rc
+    })
+}
+
+/// `PyDict_Size(dict)` — return the number of items in the dict, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Size(dict: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_DICT {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+                return -1;
+            }
+            dict_len(ptr) as isize
+        }
+    })
+}
+
+/// `PyDict_Contains(dict, key)` — return 1 if key is in dict, 0 if not, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_DICT {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+                return -1;
+            }
+            match dict_get_in_place(_py, ptr, key) {
+                Some(_) => {
+                    if exception_pending(_py) {
+                        -1
+                    } else {
+                        1
+                    }
+                }
+                None => {
+                    if exception_pending(_py) {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libmolt C-API Phase 1 — Tuple direct access
+// ---------------------------------------------------------------------------
+
+/// `PyTuple_New(size)` — create a new tuple of length `size` filled with None values.
+/// Returns the new tuple handle (caller owns the reference) or 0 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTuple_New(size: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if size < 0 {
+            let _ =
+                raise_exception::<u64>(_py, "SystemError", "negative size passed to PyTuple_New");
+            return 0;
+        }
+        let n = size as usize;
+        let none = none_bits();
+        let elems: Vec<u64> = vec![none; n];
+        let ptr = alloc_tuple(_py, &elems);
+        if ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `PyTuple_Size(tuple)` — return the length of the tuple, or -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TUPLE {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                return -1;
+            }
+            tuple_len(ptr) as isize
+        }
+    })
+}
+
+/// `PyTuple_GetItem(tuple, index)` — return a **borrowed** reference to tuple[index].
+/// Returns 0 on error. The caller must NOT decref the returned handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TUPLE {
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                return 0;
+            }
+            let elems = seq_vec_ref(ptr);
+            let len = elems.len();
+            if index < 0 || (index as usize) >= len {
+                let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
+                return 0;
+            }
+            // Borrowed reference — do not inc_ref.
+            elems[index as usize]
+        }
+    })
+}
+
+/// `PyTuple_SetItem(tuple, index, item)` — set tuple[index] to `item`.
+/// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
+/// Intended for filling newly-created tuples before they are exposed to other code.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
+            dec_ref_bits(_py, item);
+            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            return -1;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, item);
+                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                return -1;
+            }
+            let elems = seq_vec(ptr);
+            let len = elems.len();
+            if index < 0 || (index as usize) >= len {
+                dec_ref_bits(_py, item);
+                let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
+                return -1;
+            }
+            let actual_idx = index as usize;
+            let old = elems[actual_idx];
+            // Item reference is stolen (not inc_ref'd), just place it.
+            elems[actual_idx] = item;
+            dec_ref_bits(_py, old);
+            0
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3018,6 +3578,298 @@ mod tests {
             dec_ref_bits(_py, args_bad_bits);
             dec_ref_bits(_py, args_empty_bits);
             dec_ref_bits(_py, static_noargs_bits);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1 C-API tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c_api_list_new_size_getitem_setitem() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let list = PyList_New(3);
+            assert_ne!(list, 0);
+            assert_eq!(PyList_Size(list), 3);
+
+            // All slots default to None.
+            let item0 = PyList_GetItem(list, 0);
+            assert!(obj_from_bits(item0).is_none());
+
+            // SetItem steals the ref, so we inc_ref first for the value we're inserting.
+            let val = MoltObject::from_int(42).bits();
+            inc_ref_bits(_py, val);
+            assert_eq!(PyList_SetItem(list, 1, val), 0);
+            let got = PyList_GetItem(list, 1);
+            assert_eq!(to_i64(obj_from_bits(got)), Some(42));
+
+            // Append
+            let extra = MoltObject::from_int(99).bits();
+            assert_eq!(PyList_Append(list, extra), 0);
+            assert_eq!(PyList_Size(list), 4);
+            let got_last = PyList_GetItem(list, 3);
+            assert_eq!(to_i64(obj_from_bits(got_last)), Some(99));
+
+            // Negative index
+            let got_neg = PyList_GetItem(list, -1);
+            assert_eq!(to_i64(obj_from_bits(got_neg)), Some(99));
+
+            // Out-of-bounds
+            let bad = PyList_GetItem(list, 100);
+            assert_eq!(bad, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, list);
+        });
+    }
+
+    #[test]
+    fn c_api_list_new_negative_size_fails() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let list = PyList_New(-1);
+            assert_eq!(list, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_dict_new_setitem_getitem_contains_size() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+            assert_eq!(PyDict_Size(dict), 0);
+
+            let key = MoltObject::from_int(10).bits();
+            let val = MoltObject::from_int(20).bits();
+            assert_eq!(PyDict_SetItem(dict, key, val), 0);
+            assert_eq!(PyDict_Size(dict), 1);
+            assert_eq!(PyDict_Contains(dict, key), 1);
+
+            let got = PyDict_GetItem(dict, key);
+            assert_ne!(got, 0);
+            assert_eq!(to_i64(obj_from_bits(got)), Some(20));
+
+            // Missing key returns 0 (no exception).
+            let missing_key = MoltObject::from_int(999).bits();
+            let missing = PyDict_GetItem(dict, missing_key);
+            assert_eq!(missing, 0);
+            assert!(!exception_pending(_py));
+
+            assert_eq!(PyDict_Contains(dict, missing_key), 0);
+
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_dict_set_item_string() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+
+            let val = MoltObject::from_int(42).bits();
+            let rc = unsafe {
+                PyDict_SetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char, val)
+            };
+            assert_eq!(rc, 0);
+            assert_eq!(PyDict_Size(dict), 1);
+
+            // Verify we can retrieve by constructing a matching key.
+            let key_ptr = alloc_string(_py, b"hello");
+            assert!(!key_ptr.is_null());
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let got = PyDict_GetItem(dict, key_bits);
+            assert_eq!(to_i64(obj_from_bits(got)), Some(42));
+
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, dict);
+        });
+    }
+
+    #[test]
+    fn c_api_tuple_new_size_getitem_setitem() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let tuple = PyTuple_New(3);
+            assert_ne!(tuple, 0);
+            assert_eq!(PyTuple_Size(tuple), 3);
+
+            // All slots default to None.
+            let item0 = PyTuple_GetItem(tuple, 0);
+            assert!(obj_from_bits(item0).is_none());
+
+            // SetItem steals the ref, so inc_ref the value first.
+            let val = MoltObject::from_int(77).bits();
+            inc_ref_bits(_py, val);
+            assert_eq!(PyTuple_SetItem(tuple, 2, val), 0);
+            let got = PyTuple_GetItem(tuple, 2);
+            assert_eq!(to_i64(obj_from_bits(got)), Some(77));
+
+            // Out-of-bounds
+            let bad = PyTuple_GetItem(tuple, 5);
+            assert_eq!(bad, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            // Negative index in SetItem should fail (CPython tuple uses non-negative only).
+            let steal_val = MoltObject::from_int(1).bits();
+            inc_ref_bits(_py, steal_val);
+            let rc = PyTuple_SetItem(tuple, -1, steal_val);
+            assert_eq!(rc, -1);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+
+            dec_ref_bits(_py, tuple);
+        });
+    }
+
+    #[test]
+    fn c_api_type_checks() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // Int
+            let int_val = MoltObject::from_int(42).bits();
+            assert_eq!(PyLong_Check(int_val), 1);
+            assert_eq!(PyFloat_Check(int_val), 0);
+            assert_eq!(PyBool_Check(int_val), 0);
+            assert_eq!(PyNone_Check(int_val), 0);
+            assert_eq!(PyUnicode_Check(int_val), 0);
+            assert_eq!(PyList_Check(int_val), 0);
+            assert_eq!(PyDict_Check(int_val), 0);
+            assert_eq!(PyTuple_Check(int_val), 0);
+
+            // Float
+            let float_val = MoltObject::from_float(3.14).bits();
+            assert_eq!(PyFloat_Check(float_val), 1);
+            assert_eq!(PyLong_Check(float_val), 0);
+
+            // Bool
+            let bool_val = MoltObject::from_bool(true).bits();
+            assert_eq!(PyBool_Check(bool_val), 1);
+
+            // None
+            let none_val = MoltObject::none().bits();
+            assert_eq!(PyNone_Check(none_val), 1);
+            assert_eq!(PyBool_Check(none_val), 0);
+
+            // String
+            let str_ptr = alloc_string(_py, b"hello");
+            assert!(!str_ptr.is_null());
+            let str_bits = MoltObject::from_ptr(str_ptr).bits();
+            assert_eq!(PyUnicode_Check(str_bits), 1);
+            assert_eq!(PyLong_Check(str_bits), 0);
+            dec_ref_bits(_py, str_bits);
+
+            // List
+            let list = PyList_New(0);
+            assert_ne!(list, 0);
+            assert_eq!(PyList_Check(list), 1);
+            assert_eq!(PyTuple_Check(list), 0);
+            assert_eq!(PyDict_Check(list), 0);
+            dec_ref_bits(_py, list);
+
+            // Dict
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+            assert_eq!(PyDict_Check(dict), 1);
+            assert_eq!(PyList_Check(dict), 0);
+            dec_ref_bits(_py, dict);
+
+            // Tuple
+            let tuple = PyTuple_New(0);
+            assert_ne!(tuple, 0);
+            assert_eq!(PyTuple_Check(tuple), 1);
+            assert_eq!(PyList_Check(tuple), 0);
+            dec_ref_bits(_py, tuple);
+        });
+    }
+
+    #[test]
+    fn c_api_iter_protocol_on_list() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            // Build a list [10, 20, 30]
+            let list_ptr = alloc_list(
+                _py,
+                &[
+                    MoltObject::from_int(10).bits(),
+                    MoltObject::from_int(20).bits(),
+                    MoltObject::from_int(30).bits(),
+                ],
+            );
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+
+            // Check PyIter_Check on the list (not an iterator itself).
+            assert_eq!(PyIter_Check(list_bits), 0);
+
+            // Get an iterator.
+            let iter = PyObject_GetIter(list_bits);
+            assert_ne!(iter, 0);
+            assert!(!exception_pending(_py));
+
+            // The iterator should pass PyIter_Check.
+            assert_eq!(PyIter_Check(iter), 1);
+
+            // Iterate: 10, 20, 30, then NULL.
+            let v1 = PyIter_Next(iter);
+            assert_ne!(v1, 0);
+            assert_eq!(to_i64(obj_from_bits(v1)), Some(10));
+            dec_ref_bits(_py, v1);
+
+            let v2 = PyIter_Next(iter);
+            assert_ne!(v2, 0);
+            assert_eq!(to_i64(obj_from_bits(v2)), Some(20));
+            dec_ref_bits(_py, v2);
+
+            let v3 = PyIter_Next(iter);
+            assert_ne!(v3, 0);
+            assert_eq!(to_i64(obj_from_bits(v3)), Some(30));
+            dec_ref_bits(_py, v3);
+
+            // Exhausted — returns 0 with no exception.
+            let v4 = PyIter_Next(iter);
+            assert_eq!(v4, 0);
+            assert!(!exception_pending(_py));
+
+            dec_ref_bits(_py, iter);
+            dec_ref_bits(_py, list_bits);
+        });
+    }
+
+    #[test]
+    fn c_api_get_iter_on_non_iterable_fails() {
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let int_val = MoltObject::from_int(42).bits();
+            let iter = PyObject_GetIter(int_val);
+            assert_eq!(iter, 0);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+        });
+    }
+
+    #[test]
+    fn c_api_list_setitem_steals_ref_on_error() {
+        // Verify that PyList_SetItem steals the reference even when the call fails.
+        let _ = molt_runtime_init();
+        crate::with_gil_entry!(_py, {
+            let dict = PyDict_New();
+            assert_ne!(dict, 0);
+            // Try to SetItem on a dict (not a list) — should fail and steal the ref.
+            let val = MoltObject::from_int(1).bits();
+            inc_ref_bits(_py, val);
+            let rc = PyList_SetItem(dict, 0, val);
+            assert_eq!(rc, -1);
+            assert!(exception_pending(_py));
+            let _ = molt_exception_clear();
+            dec_ref_bits(_py, dict);
         });
     }
 }
