@@ -162,6 +162,14 @@ class Message:
         self.defects = []
         # Default content type
         self._default_type = "text/plain"
+        # Rust-side handle for intrinsic-backed operations.
+        self._handle = _MOLT_EMAIL_MESSAGE_NEW()
+
+    def __del__(self):
+        """Release the Rust-side message handle."""
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _MOLT_EMAIL_MESSAGE_DROP(handle)
 
     def __str__(self):
         """Return the entire formatted message as a string."""
@@ -446,6 +454,8 @@ class Message:
                             )
                         )
         self._headers.append(self.policy.header_store_parse(name, val))
+        # Propagate to Rust-side handle for intrinsic-backed operations.
+        _MOLT_EMAIL_MESSAGE_SET(self._handle, str(name), str(val))
 
     def __delitem__(self, name):
         """Delete all occurrences of a header, if present.
@@ -523,6 +533,8 @@ class Message:
         This is an "internal" API, intended only for use by a parser.
         """
         self._headers.append((name, value))
+        # Propagate to Rust-side handle.
+        _MOLT_EMAIL_MESSAGE_SET(self._handle, str(name), str(value))
 
     def raw_items(self):
         """Return the (name, value) header pairs without modification.
@@ -1149,6 +1161,9 @@ class MIMEPart(Message):
         if content_manager is None:
             content_manager = self.policy.content_manager
         content_manager.set_content(self, *args, **kw)
+        # Propagate text content to Rust-side handle.
+        if args and isinstance(args[0], str):
+            _MOLT_EMAIL_MESSAGE_SET_CONTENT(self._handle, args[0])
 
     def _make_multipart(self, subtype, disallowed_subtypes, boundary):
         if self.get_content_maintype() == "multipart":
@@ -1204,9 +1219,22 @@ class MIMEPart(Message):
 
     def add_alternative(self, *args, **kw):
         self._add_multipart("alternative", *args, **kw)
+        # Propagate text alternative to Rust-side handle.
+        if args and isinstance(args[0], str):
+            subtype = kw.get("subtype", "plain")
+            _MOLT_EMAIL_MESSAGE_ADD_ALTERNATIVE(self._handle, args[0], subtype)
 
     def add_attachment(self, *args, **kw):
         self._add_multipart("mixed", *args, _disp="attachment", **kw)
+        # Propagate attachment to Rust-side handle.
+        if args:
+            data = args[0]
+            maintype = kw.get("maintype", "application")
+            subtype = kw.get("subtype", "octet-stream")
+            filename = kw.get("filename", None)
+            _MOLT_EMAIL_MESSAGE_ADD_ATTACHMENT(
+                self._handle, data, maintype, subtype, filename
+            )
 
     def clear(self):
         self._headers = []
@@ -1229,3 +1257,38 @@ class EmailMessage(MIMEPart):
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_EMAIL_MESSAGE_NEW = _require_intrinsic("molt_email_message_new", globals())
+_MOLT_EMAIL_MESSAGE_FROM_BYTES = _require_intrinsic(
+    "molt_email_message_from_bytes", globals()
+)
+_MOLT_EMAIL_MESSAGE_SET = _require_intrinsic("molt_email_message_set", globals())
+_MOLT_EMAIL_MESSAGE_GET = _require_intrinsic("molt_email_message_get", globals())
+_MOLT_EMAIL_MESSAGE_SET_CONTENT = _require_intrinsic(
+    "molt_email_message_set_content", globals()
+)
+_MOLT_EMAIL_MESSAGE_ADD_ALTERNATIVE = _require_intrinsic(
+    "molt_email_message_add_alternative", globals()
+)
+_MOLT_EMAIL_MESSAGE_ADD_ATTACHMENT = _require_intrinsic(
+    "molt_email_message_add_attachment", globals()
+)
+_MOLT_EMAIL_MESSAGE_IS_MULTIPART = _require_intrinsic(
+    "molt_email_message_is_multipart", globals()
+)
+_MOLT_EMAIL_MESSAGE_PAYLOAD = _require_intrinsic(
+    "molt_email_message_payload", globals()
+)
+_MOLT_EMAIL_MESSAGE_CONTENT = _require_intrinsic(
+    "molt_email_message_content", globals()
+)
+_MOLT_EMAIL_MESSAGE_CONTENT_TYPE = _require_intrinsic(
+    "molt_email_message_content_type", globals()
+)
+_MOLT_EMAIL_MESSAGE_FILENAME = _require_intrinsic(
+    "molt_email_message_filename", globals()
+)
+_MOLT_EMAIL_MESSAGE_AS_STRING = _require_intrinsic(
+    "molt_email_message_as_string", globals()
+)
+_MOLT_EMAIL_MESSAGE_ITEMS = _require_intrinsic("molt_email_message_items", globals())
+_MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop", globals())

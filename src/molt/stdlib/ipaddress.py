@@ -107,6 +107,13 @@ class IPv4Address:
     def __init__(self, addr: str | int | bytes) -> None:
         self._handle = _molt_ipaddress_v4_new(addr)
 
+    @classmethod
+    def _from_handle(cls, handle: object) -> "IPv4Address":
+        """Wrap a pre-existing Rust Ipv4Handle without re-parsing."""
+        obj = object.__new__(cls)
+        obj._handle = handle
+        return obj
+
     @property
     def version(self) -> int:
         return int(_molt_ipaddress_v4_version(self._handle))
@@ -270,15 +277,16 @@ class IPv4Network:
 
     @property
     def broadcast_address(self) -> IPv4Address:
-        bcast_str = str(_molt_ipaddress_v4_network_broadcast(self._handle))
-        return IPv4Address(bcast_str)
+        return IPv4Address._from_handle(
+            _molt_ipaddress_v4_network_broadcast(self._handle)
+        )
 
     def hosts(self) -> list[IPv4Address]:
         raw = _molt_ipaddress_v4_network_hosts(self._handle)
-        # The intrinsic returns a sequence of string or integer addresses.
-        result = []
-        for item in raw:
-            result.append(IPv4Address(item))
+        # The intrinsic returns a list of Ipv4Handle bits; wrap each directly.
+        result: list[IPv4Address] = []
+        for handle in raw:
+            result.append(IPv4Address._from_handle(handle))
         return result
 
     def __contains__(self, addr: object) -> bool:

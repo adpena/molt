@@ -8,6 +8,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_EMAIL_HEADER_ENCODE_WORD = _require_intrinsic(
+    "molt_email_header_encode_word", globals()
+)
 
 
 def decode_q(encoded: bytes) -> bytes:
@@ -46,5 +49,4 @@ def decode(ew: str):
 
 def encode(text: str, charset: str = "utf-8", encoding: str | None = None):
     del encoding
-    payload = text.encode(charset, "replace")
-    return f"=?{charset}?b?{base64.b64encode(payload).decode('ascii')}?="
+    return _MOLT_EMAIL_HEADER_ENCODE_WORD(text, charset)
