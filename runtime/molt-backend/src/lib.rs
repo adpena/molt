@@ -540,6 +540,214 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Function inlining pass.
+// Inlines small internal functions (<= INLINE_OP_LIMIT ops) at call_internal
+// sites. This eliminates call overhead, enables further optimizations (CSE,
+// DCE, constant folding across call boundaries), and improves cache locality.
+// Only inlines leaf functions (no calls to other internal functions) to avoid
+// code size explosion. Controlled by MOLT_INLINE_LIMIT env var.
+// ---------------------------------------------------------------------------
+
+const INLINE_OP_LIMIT: usize = 30;
+
+/// Returns true if a function is safe to inline: no control flow (loops,
+/// try/except, generators), no nested internal calls, small op count.
+fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSet<&str>) -> bool {
+    if func.ops.len() > INLINE_OP_LIMIT {
+        return false;
+    }
+    for op in &func.ops {
+        match op.kind.as_str() {
+            // Control flow that creates complexity for inlining
+            "loop_index_start" | "loop_index_end" | "loop_start" | "loop_end"
+            | "for_iter_start" | "for_iter_end" | "while_start" | "while_end"
+            | "try_start" | "try_end" | "except" | "finally"
+            | "yield" | "yield_from" | "await" | "async_for_start"
+            | "ASYNCGEN_NEW" | "GENERATOR_NEW" | "COROUTINE_NEW" => {
+                return false;
+            }
+            // Nested internal calls would cause recursive inlining
+            "call_internal" => {
+                if let Some(target) = op.s_value.as_deref() {
+                    if defined_functions.contains(target) {
+                        return false;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+pub(crate) fn inline_functions(ir: &mut SimpleIR) {
+    if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
+        return;
+    }
+    let limit: usize = std::env::var("MOLT_INLINE_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(INLINE_OP_LIMIT);
+
+    // Build lookup of inlineable function bodies (immutable snapshot)
+    let defined_functions: std::collections::HashSet<&str> =
+        ir.functions.iter().map(|f| f.name.as_str()).collect();
+
+    // Collect inlineable function data (name → (params, ops))
+    let mut inlineable: std::collections::HashMap<String, (Vec<String>, Vec<OpIR>)> =
+        std::collections::HashMap::new();
+    for func in &ir.functions {
+        let mut func_copy = FunctionIR {
+            name: func.name.clone(),
+            params: func.params.clone(),
+            ops: func.ops.clone(),
+        };
+        // Check with possibly overridden limit
+        if func_copy.ops.len() <= limit && is_inlineable(&func_copy, &defined_functions) {
+            inlineable.insert(
+                func_copy.name.clone(),
+                (func_copy.params.clone(), func_copy.ops),
+            );
+        }
+    }
+
+    if inlineable.is_empty() {
+        return;
+    }
+
+    let mut inline_counter = 0u64;
+
+    for func_ir in &mut ir.functions {
+        let mut new_ops: Vec<OpIR> = Vec::with_capacity(func_ir.ops.len());
+        let mut changed = false;
+
+        for op in &func_ir.ops {
+            if op.kind != "call_internal" {
+                new_ops.push(op.clone());
+                continue;
+            }
+            let target_name = match op.s_value.as_deref() {
+                Some(name) => name,
+                None => {
+                    new_ops.push(op.clone());
+                    continue;
+                }
+            };
+            let Some((callee_params, callee_ops)) = inlineable.get(target_name) else {
+                new_ops.push(op.clone());
+                continue;
+            };
+            let call_args = match op.args.as_ref() {
+                Some(args) => args,
+                None => {
+                    new_ops.push(op.clone());
+                    continue;
+                }
+            };
+            let call_out = match op.out.as_deref() {
+                Some(out) => out.to_string(),
+                None => {
+                    new_ops.push(op.clone());
+                    continue;
+                }
+            };
+
+            // Perform inlining: generate unique prefix for all callee variables
+            inline_counter += 1;
+            let prefix = format!("_inl{}_{}_", inline_counter, target_name.replace(|c: char| !c.is_alphanumeric(), "_"));
+
+            // Build param → arg mapping
+            let mut rename_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for (i, param) in callee_params.iter().enumerate() {
+                if i < call_args.len() {
+                    rename_map.insert(param.clone(), call_args[i].clone());
+                }
+            }
+
+            // Inline callee ops with variable renaming
+            for callee_op in callee_ops {
+                if callee_op.kind == "ret" || callee_op.kind == "ret_void" {
+                    // Replace return with assignment to call output variable
+                    if callee_op.kind == "ret" {
+                        if let Some(ret_var) = callee_op.var.as_deref() {
+                            let renamed = rename_map
+                                .get(ret_var)
+                                .cloned()
+                                .unwrap_or_else(|| format!("{prefix}{ret_var}"));
+                            // Emit a copy: out = ret_var
+                            new_ops.push(OpIR {
+                                kind: "copy".to_string(),
+                                value: None,
+                                f_value: None,
+                                s_value: None,
+                                bytes: None,
+                                var: None,
+                                args: Some(vec![renamed]),
+                                out: Some(call_out.clone()),
+                                fast_int: None,
+                                task_kind: None,
+                                container_type: None,
+                            });
+                        }
+                    }
+                    // Skip the ret op itself (don't emit it into the caller)
+                    continue;
+                }
+
+                // Clone and rename variables
+                let mut inlined_op = callee_op.clone();
+
+                // Rename output variable
+                if let Some(out) = inlined_op.out.clone() {
+                    let renamed = rename_map
+                        .get(&out)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{prefix}{out}"));
+                    inlined_op.out = Some(renamed.clone());
+                    // Also add to rename_map for subsequent ops
+                    if !rename_map.contains_key(&out) {
+                        rename_map.insert(out, renamed);
+                    }
+                }
+
+                // Rename args
+                if let Some(ref args) = inlined_op.args {
+                    inlined_op.args = Some(
+                        args.iter()
+                            .map(|a| {
+                                rename_map
+                                    .get(a)
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("{prefix}{a}"))
+                            })
+                            .collect(),
+                    );
+                }
+
+                // Rename var field (used by loop ops, ret, etc.)
+                if let Some(ref var) = inlined_op.var {
+                    inlined_op.var = Some(
+                        rename_map
+                            .get(var)
+                            .cloned()
+                            .unwrap_or_else(|| format!("{prefix}{var}")),
+                    );
+                }
+
+                new_ops.push(inlined_op);
+            }
+
+            changed = true;
+        }
+
+        if changed {
+            func_ir.ops = new_ops;
+        }
+    }
+}
+
 pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
@@ -906,6 +1114,7 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
         }
+        inline_functions(&mut ir);
         let defined_functions: HashSet<String> =
             ir.functions.iter().map(|func| func.name.clone()).collect();
         let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
