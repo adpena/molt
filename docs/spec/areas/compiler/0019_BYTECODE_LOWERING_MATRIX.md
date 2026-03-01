@@ -41,7 +41,7 @@
 | `UNARY_NOT` | not x | Supported | T0 | `Not` IR (bool). |
 | `UNARY_INVERT` | ~x | Supported | T0/T1 | `BitNot` IR. |
 | `COMPARE_OP` | ==, !=, <, etc. | Supported | T0/T1 | `Cmp` IR. |
-| `CONTAINS_OP` | in / not in | Partial | T1 | `Call(contains)` or specialized. |
+| `CONTAINS_OP` | in / not in | Partial | T2 | Always runtime `molt_contains` call; TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:planned): type-specialized fast paths for `set`/`dict`/`list`/`str`. |
 | `IS_OP` | is / is not | Supported | T0 | `PtrEq` IR. |
 
 ### 2.4 Attributes & Items
@@ -93,13 +93,13 @@
 | `RERAISE` | raise (re) | Supported | T0 | Exception stack handling. |
 | `PUSH_EXC_INFO` | except ... | Supported | T1 | Exception stack handling. |
 | `POP_EXCEPT` | Exit except | Supported | T1 | Cleanup. |
-| `SETUP_WITH` | with ... | Supported | T2 | `__enter__`/`__exit__` calls (contextlib.contextmanager still unsupported; TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): contextmanager lowering). |
-| `WITH_EXCEPT_START` | with err | Supported | T2 | `__exit__` with exc (contextlib.contextmanager still unsupported; TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): contextmanager lowering). |
+| `SETUP_WITH` | with ... | Supported | T2 | `__enter__`/`__exit__` calls; `contextlib.contextmanager` works via stdlib wrapper + Rust intrinsics (generic with-block path). |
+| `WITH_EXCEPT_START` | with err | Supported | T2 | `__exit__` with exc; `contextlib.contextmanager` works via stdlib wrapper + Rust intrinsics. |
 
 ### 2.9 Async
 | Opcode | Semantics | Status | Tier | Notes |
 | --- | --- | --- | --- | --- |
-| `GET_AITER` | async for | Partial | T2 | `__aiter__` (awaitable `__aiter__` pending; TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:missing): awaitable `__aiter__` support). |
+| `GET_AITER` | async for | Supported | T2 | `__aiter__` called synchronously; awaitable `__aiter__` is a CPython 3.12 TypeError (removed in PEP 525 finalization), so this matches CPython 3.12+ semantics. |
 | `GET_ANEXT` | async next | Partial | T2 | `__anext__` and `anext` lowering. |
 | `END_ASYNC_FOR` | end loop | Partial | T2 | StopAsyncIteration handling. |
 | `SEND` | await/gen send | Partial | T2 | Coroutine lowering; async generators pending (TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator op coverage). |
