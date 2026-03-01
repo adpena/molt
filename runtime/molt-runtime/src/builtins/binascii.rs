@@ -216,8 +216,26 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
 }
 
 fn base64_encode(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4 + 1);
+    let mut out: Vec<u8> = Vec::with_capacity(input.len().div_ceil(3) * 4 + 1);
     let mut idx = 0usize;
+
+    // 4× unrolled encode loop: process 12 bytes → 16 base64 chars per iteration.
+    // Unrolling helps LLVM auto-vectorize on both aarch64 (NEON) and x86_64 (AVX2).
+    while idx + 12 <= input.len() {
+        for _ in 0..4 {
+            let b0 = input[idx] as u32;
+            let b1 = input[idx + 1] as u32;
+            let b2 = input[idx + 2] as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(BASE64_TABLE[((n >> 18) & 0x3f) as usize]);
+            out.push(BASE64_TABLE[((n >> 12) & 0x3f) as usize]);
+            out.push(BASE64_TABLE[((n >> 6) & 0x3f) as usize]);
+            out.push(BASE64_TABLE[(n & 0x3f) as usize]);
+            idx += 3;
+        }
+    }
+
+    // Scalar tail (handles remaining bytes + padding)
     while idx < input.len() {
         let b0 = input[idx];
         let b1 = if idx + 1 < input.len() {
@@ -615,8 +633,85 @@ fn qp_decode(input: &[u8]) -> Vec<u8> {
 
 fn qp_encode(input: &[u8]) -> Vec<u8> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = Vec::with_capacity(input.len() * 3 / 2);
-    for &b in input {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3 / 2);
+    let mut i = 0usize;
+
+    // SIMD fast path: scan 16 bytes at a time for passthrough characters.
+    // QP passthrough: ' '..='~' (except '='), '\n', '\r'
+    #[cfg(target_arch = "aarch64")]
+    {
+        if input.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let space = vdupq_n_u8(b' ');
+                let tilde = vdupq_n_u8(b'~');
+                let eq_char = vdupq_n_u8(b'=');
+                let nl = vdupq_n_u8(b'\n');
+                let cr = vdupq_n_u8(b'\r');
+
+                while i + 16 <= input.len() {
+                    let v = vld1q_u8(input.as_ptr().add(i));
+                    // Printable range: space <= v <= tilde
+                    let is_printable = vandq_u8(vcgeq_u8(v, space), vcleq_u8(v, tilde));
+                    let is_not_eq = vmvnq_u8(vceqq_u8(v, eq_char));
+                    let is_safe_printable = vandq_u8(is_printable, is_not_eq);
+                    let is_nl = vceqq_u8(v, nl);
+                    let is_cr = vceqq_u8(v, cr);
+                    let is_passthrough = vorrq_u8(is_safe_printable, vorrq_u8(is_nl, is_cr));
+
+                    // If all 16 bytes are passthrough, bulk copy
+                    if vminvq_u8(is_passthrough) == 0xFF {
+                        let len = out.len();
+                        out.set_len(len + 16);
+                        vst1q_u8(out.as_mut_ptr().add(len), v);
+                        i += 16;
+                    } else {
+                        // Fall back to scalar for this chunk
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if input.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let space = _mm_set1_epi8(b' ' as i8);
+                let tilde = _mm_set1_epi8(b'~' as i8);
+                let eq_char = _mm_set1_epi8(b'=' as i8);
+                let nl = _mm_set1_epi8(b'\n' as i8);
+                let cr = _mm_set1_epi8(b'\r' as i8);
+
+                while i + 16 <= input.len() {
+                    let v = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
+                    // Printable: space-1 < v < tilde+1 (signed comparison)
+                    let ge_space = _mm_cmpgt_epi8(v, _mm_set1_epi8(b' ' as i8 - 1));
+                    let le_tilde = _mm_cmpgt_epi8(_mm_set1_epi8(b'~' as i8 + 1), v);
+                    let is_printable = _mm_and_si128(ge_space, le_tilde);
+                    // Not '='
+                    let not_eq = _mm_andnot_si128(_mm_cmpeq_epi8(v, eq_char), _mm_set1_epi8(-1));
+                    let safe_print = _mm_and_si128(is_printable, not_eq);
+                    let is_nl = _mm_cmpeq_epi8(v, nl);
+                    let is_cr = _mm_cmpeq_epi8(v, cr);
+                    let passthrough = _mm_or_si128(safe_print, _mm_or_si128(is_nl, is_cr));
+
+                    if _mm_movemask_epi8(passthrough) == 0xFFFF {
+                        let len = out.len();
+                        out.set_len(len + 16);
+                        _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, v);
+                        i += 16;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Scalar path for remaining bytes
+    for &b in &input[i..] {
         if b == b'\n' || b == b'\r' || (b' '..=b'~').contains(&b) && b != b'=' {
             out.push(b);
         } else {

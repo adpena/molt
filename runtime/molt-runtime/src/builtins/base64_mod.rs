@@ -123,6 +123,24 @@ fn b64_encode(input: &[u8], alphabet: &[u8; 64]) -> Vec<u8> {
     }
     let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
     let mut idx = 0usize;
+
+    // 4× unrolled encode loop: process 12 bytes → 16 base64 chars per iteration.
+    // Unrolling helps LLVM auto-vectorize on both aarch64 (NEON) and x86_64 (AVX2).
+    while idx + 12 <= input.len() {
+        for _ in 0..4 {
+            let b0 = input[idx] as u32;
+            let b1 = input[idx + 1] as u32;
+            let b2 = input[idx + 2] as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(alphabet[((n >> 18) & 0x3f) as usize]);
+            out.push(alphabet[((n >> 12) & 0x3f) as usize]);
+            out.push(alphabet[((n >> 6) & 0x3f) as usize]);
+            out.push(alphabet[(n & 0x3f) as usize]);
+            idx += 3;
+        }
+    }
+
+    // Scalar tail (handles remaining bytes + padding)
     while idx < input.len() {
         let b0 = input[idx];
         let b1 = if idx + 1 < input.len() {
@@ -180,12 +198,95 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
         }
         input.to_vec()
     } else {
-        // Non-validate mode: strip non-alphabet chars except = and whitespace
-        input
-            .iter()
-            .copied()
-            .filter(|&b| table[b as usize].is_some() || b == b'=')
-            .collect()
+        // Non-validate mode: strip non-alphabet chars except = and whitespace.
+        // SIMD fast path: scan 16 bytes at a time for valid base64 chars.
+        let mut filtered_out: Vec<u8> = Vec::with_capacity(input.len());
+        let mut fi = 0usize;
+        #[cfg(target_arch = "aarch64")]
+        {
+            if input.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+                unsafe {
+                    use std::arch::aarch64::*;
+                    // Base64 valid chars: A-Z, a-z, 0-9, +, /, =
+                    let upper_a = vdupq_n_u8(b'A');
+                    let upper_z = vdupq_n_u8(b'Z');
+                    let lower_a = vdupq_n_u8(b'a');
+                    let lower_z = vdupq_n_u8(b'z');
+                    let digit_0 = vdupq_n_u8(b'0');
+                    let digit_9 = vdupq_n_u8(b'9');
+                    let plus = vdupq_n_u8(b'+');
+                    let slash = vdupq_n_u8(b'/');
+                    let eq = vdupq_n_u8(b'=');
+
+                    while fi + 16 <= input.len() {
+                        let v = vld1q_u8(input.as_ptr().add(fi));
+                        let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                        let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                        let is_digit = vandq_u8(vcgeq_u8(v, digit_0), vcleq_u8(v, digit_9));
+                        let is_plus = vceqq_u8(v, plus);
+                        let is_slash = vceqq_u8(v, slash);
+                        let is_eq = vceqq_u8(v, eq);
+                        let valid = vorrq_u8(vorrq_u8(vorrq_u8(is_upper, is_lower), vorrq_u8(is_digit, is_plus)), vorrq_u8(is_slash, is_eq));
+
+                        // Check if all bytes are valid (fast path: copy entire chunk)
+                        if vminvq_u8(valid) == 0xFF {
+                            let len = filtered_out.len();
+                            filtered_out.set_len(len + 16);
+                            vst1q_u8(filtered_out.as_mut_ptr().add(len), v);
+                        } else {
+                            // Slow path: per-byte filter
+                            let mut valid_bytes = [0u8; 16];
+                            vst1q_u8(valid_bytes.as_mut_ptr(), valid);
+                            for j in 0..16 {
+                                if valid_bytes[j] != 0 {
+                                    filtered_out.push(input[fi + j]);
+                                }
+                            }
+                        }
+                        fi += 16;
+                    }
+                }
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if input.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    while fi + 16 <= input.len() {
+                        let v = _mm_loadu_si128(input.as_ptr().add(fi) as *const __m128i);
+                        // Check each byte against the table
+                        let mut all_valid = true;
+                        let src = std::slice::from_raw_parts(input.as_ptr().add(fi), 16);
+                        for &b in src {
+                            if table[b as usize].is_none() && b != b'=' {
+                                all_valid = false;
+                                break;
+                            }
+                        }
+                        if all_valid {
+                            let len = filtered_out.len();
+                            filtered_out.set_len(len + 16);
+                            _mm_storeu_si128(filtered_out.as_mut_ptr().add(len) as *mut __m128i, v);
+                        } else {
+                            for &b in src {
+                                if table[b as usize].is_some() || b == b'=' {
+                                    filtered_out.push(b);
+                                }
+                            }
+                        }
+                        fi += 16;
+                    }
+                }
+            }
+        }
+        // Scalar tail
+        for &b in &input[fi..] {
+            if table[b as usize].is_some() || b == b'=' {
+                filtered_out.push(b);
+            }
+        }
+        filtered_out
     };
 
     if filtered.is_empty() {
@@ -386,8 +487,66 @@ fn b32_decode(
 
 fn b16_encode(input: &[u8]) -> Vec<u8> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = Vec::with_capacity(input.len() * 2);
-    for &byte in input {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 2);
+    let mut i = 0usize;
+
+    // SIMD fast path: 16 input bytes → 32 hex chars per iteration (uppercase)
+    #[cfg(target_arch = "aarch64")]
+    {
+        if input.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let hex_lut = vld1q_u8(b"0123456789ABCDEF".as_ptr());
+                let mask_lo = vdupq_n_u8(0x0F);
+                while i + 16 <= input.len() {
+                    let chunk = vld1q_u8(input.as_ptr().add(i));
+                    let hi_nibbles = vshrq_n_u8(chunk, 4);
+                    let lo_nibbles = vandq_u8(chunk, mask_lo);
+                    let hi_hex = vqtbl1q_u8(hex_lut, hi_nibbles);
+                    let lo_hex = vqtbl1q_u8(hex_lut, lo_nibbles);
+                    let zipped_lo = vzip1q_u8(hi_hex, lo_hex);
+                    let zipped_hi = vzip2q_u8(hi_hex, lo_hex);
+                    let len = out.len();
+                    out.set_len(len + 32);
+                    vst1q_u8(out.as_mut_ptr().add(len), zipped_lo);
+                    vst1q_u8(out.as_mut_ptr().add(len + 16), zipped_hi);
+                    i += 16;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if input.len() >= 16 && std::arch::is_x86_feature_detected!("ssse3") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let mask_lo = _mm_set1_epi8(0x0F);
+                let hex_lut = _mm_setr_epi8(
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
+                );
+                while i + 16 <= input.len() {
+                    let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
+                    let hi_nibbles = _mm_and_si128(_mm_srli_epi16(chunk, 4), mask_lo);
+                    let lo_nibbles = _mm_and_si128(chunk, mask_lo);
+                    let hi_hex = _mm_shuffle_epi8(hex_lut, hi_nibbles);
+                    let lo_hex = _mm_shuffle_epi8(hex_lut, lo_nibbles);
+                    let interleaved_lo = _mm_unpacklo_epi8(hi_hex, lo_hex);
+                    let interleaved_hi = _mm_unpackhi_epi8(hi_hex, lo_hex);
+                    let len = out.len();
+                    out.set_len(len + 32);
+                    _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
+                    _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                    i += 16;
+                }
+            }
+        }
+    }
+
+    // Scalar tail
+    for &byte in &input[i..] {
         out.push(HEX[(byte >> 4) as usize]);
         out.push(HEX[(byte & 0x0f) as usize]);
     }

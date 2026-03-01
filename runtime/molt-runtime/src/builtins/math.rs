@@ -2295,18 +2295,16 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             #[cfg(target_arch = "aarch64")]
             {
                 if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
-                    unsafe {
-                        use std::arch::aarch64::*;
-                        let mut vec_sum = vdupq_n_f64(0.0);
-                        while i + 2 <= n {
-                            let v = vld1q_f64(vals.as_ptr().add(i));
-                            vec_sum = vfmaq_f64(vec_sum, v, v);
-                            i += 2;
-                        }
-                        let mut lanes = [0.0f64; 2];
-                        vst1q_f64(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1];
+                    use std::arch::aarch64::*;
+                    let mut vec_sum = vdupq_n_f64(0.0);
+                    while i + 2 <= n {
+                        let v = vld1q_f64(vals.as_ptr().add(i));
+                        vec_sum = vfmaq_f64(vec_sum, v, v);
+                        i += 2;
                     }
+                    let mut lanes = [0.0f64; 2];
+                    vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1];
                 }
             }
             #[cfg(target_arch = "x86_64")]
