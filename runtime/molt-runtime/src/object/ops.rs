@@ -5225,6 +5225,22 @@ fn ascii_escape(text: &str) -> String {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let high_bit = u8x16_splat(0x80);
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(first_non_ascii) as *const v128);
+                let has_high = v128_and(chunk, high_bit);
+                if u8x16_bitmask(has_high) != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
     while first_non_ascii < bytes.len() && bytes[first_non_ascii].is_ascii() {
         first_non_ascii += 1;
     }
@@ -7040,7 +7056,37 @@ fn simd_find_first_mismatch(lhs: &[u64], rhs: &[u64]) -> usize {
             return unsafe { find_first_mismatch_neon(lhs, rhs, len) };
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { find_first_mismatch_wasm32(lhs, rhs, len) };
+    }
     find_first_mismatch_scalar(lhs, rhs, len)
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn find_first_mismatch_wasm32(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        while i + 2 <= len {
+            let l_vec = v128_load(lhs.as_ptr().add(i) as *const v128);
+            let r_vec = v128_load(rhs.as_ptr().add(i) as *const v128);
+            let cmp = u8x16_eq(l_vec, r_vec);
+            if u8x16_bitmask(cmp) != 0xFFFF {
+                if lhs[i] != rhs[i] {
+                    return i;
+                }
+                return i + 1;
+            }
+            i += 2;
+        }
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
+        }
+        len
+    }
 }
 
 fn find_first_mismatch_scalar(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
@@ -7305,6 +7351,32 @@ unsafe fn sum_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = i64x2_splat(0);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let arr = [v0, v1];
+            let vec = v128_load(arr.as_ptr() as *const v128);
+            vec_sum = i64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + i64x2_extract_lane::<0>(vec_sum) + i64x2_extract_lane::<1>(vec_sum);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            sum += val;
+        }
+        Some(sum)
+    }
+}
+
 fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7320,6 +7392,10 @@ fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { sum_ints_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { sum_ints_simd_wasm32(elems, acc) };
     }
     sum_ints_scalar(elems, acc)
 }
@@ -7530,6 +7606,19 @@ unsafe fn min_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
 fn min_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7545,6 +7634,10 @@ fn min_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { min_ints_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { min_ints_simd_wasm32(elems, acc) };
     }
     min_ints_scalar(elems, acc)
 }
@@ -7663,6 +7756,19 @@ unsafe fn max_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
 fn max_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7678,6 +7784,10 @@ fn max_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { max_ints_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { max_ints_simd_wasm32(elems, acc) };
     }
     max_ints_scalar(elems, acc)
 }
@@ -7770,6 +7880,28 @@ unsafe fn sum_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = i64x2_splat(0);
+        while i + 2 <= elems.len() {
+            let v0 = MoltObject::from_bits(elems[i]).as_int_unchecked();
+            let v1 = MoltObject::from_bits(elems[i + 1]).as_int_unchecked();
+            let arr = [v0, v1];
+            let vec = v128_load(arr.as_ptr() as *const v128);
+            vec_sum = i64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + i64x2_extract_lane::<0>(vec_sum) + i64x2_extract_lane::<1>(vec_sum);
+        for &bits in &elems[i..] {
+            sum += MoltObject::from_bits(bits).as_int_unchecked();
+        }
+        sum
+    }
+}
+
 fn sum_ints_trusted(elems: &[u64], acc: i64) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7785,6 +7917,10 @@ fn sum_ints_trusted(elems: &[u64], acc: i64) -> i64 {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { sum_ints_trusted_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { sum_ints_trusted_simd_wasm32(elems, acc) };
     }
     sum_ints_trusted_scalar(elems, acc)
 }
@@ -7931,6 +8067,18 @@ unsafe fn min_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn min_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    let mut min_val = acc;
+    for &bits in elems {
+        let val = MoltObject::from_bits(bits).as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
 fn min_ints_trusted(elems: &[u64], acc: i64) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7946,6 +8094,10 @@ fn min_ints_trusted(elems: &[u64], acc: i64) -> i64 {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { min_ints_trusted_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { min_ints_trusted_simd_wasm32(elems, acc) };
     }
     min_ints_trusted_scalar(elems, acc)
 }
@@ -8061,6 +8213,18 @@ unsafe fn max_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn max_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    let mut max_val = acc;
+    for &bits in elems {
+        let val = MoltObject::from_bits(bits).as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
 fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -8076,6 +8240,10 @@ fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { max_ints_trusted_simd_aarch64(elems, acc) };
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { max_ints_trusted_simd_wasm32(elems, acc) };
     }
     max_ints_trusted_scalar(elems, acc)
 }
@@ -23247,6 +23415,25 @@ fn bytes_ascii_upper(bytes: &[u8]) -> Vec<u8> {
             }
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let lower_a = u8x16_splat(b'a');
+            let lower_z = u8x16_splat(b'z');
+            let case_bit = u8x16_splat(0x20);
+            while i + 16 <= bytes.len() {
+                let v = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let ge_a = u8x16_ge(v, lower_a);
+                let le_z = u8x16_le(v, lower_z);
+                let is_lower = v128_and(ge_a, le_z);
+                let clear = v128_and(is_lower, case_bit);
+                let result = v128_xor(v, clear);
+                v128_store(out.as_mut_ptr().add(i) as *mut v128, result);
+                i += 16;
+            }
+        }
+    }
     for j in i..bytes.len() {
         out[j] = if bytes[j].is_ascii_lowercase() {
             bytes[j].to_ascii_uppercase()
@@ -23297,6 +23484,25 @@ fn bytes_ascii_lower(bytes: &[u8]) -> Vec<u8> {
                     _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, result);
                     i += 16;
                 }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let upper_a = u8x16_splat(b'A');
+            let upper_z = u8x16_splat(b'Z');
+            let case_bit = u8x16_splat(0x20);
+            while i + 16 <= bytes.len() {
+                let v = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let ge_a = u8x16_ge(v, upper_a);
+                let le_z = u8x16_le(v, upper_z);
+                let is_upper = v128_and(ge_a, le_z);
+                let to_lower = v128_and(is_upper, case_bit);
+                let result = v128_or(v, to_lower);
+                v128_store(out.as_mut_ptr().add(i) as *mut v128, result);
+                i += 16;
             }
         }
     }
@@ -35599,6 +35805,46 @@ unsafe fn find_ascii_split_whitespace_neon(bytes: &[u8], start: usize) -> usize 
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn find_ascii_split_whitespace_wasm32(bytes: &[u8], start: usize) -> usize {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = start;
+        let len = bytes.len();
+        let sp = u8x16_splat(b' ');
+        let nl = u8x16_splat(b'\n');
+        let cr = u8x16_splat(b'\r');
+        let tab = u8x16_splat(b'\t');
+        let vt = u8x16_splat(0x0b);
+        let ff = u8x16_splat(0x0c);
+        while i + 16 <= len {
+            let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+            let is_ws = v128_or(
+                v128_or(
+                    v128_or(u8x16_eq(chunk, sp), u8x16_eq(chunk, nl)),
+                    u8x16_eq(chunk, cr),
+                ),
+                v128_or(
+                    u8x16_eq(chunk, tab),
+                    v128_or(u8x16_eq(chunk, vt), u8x16_eq(chunk, ff)),
+                ),
+            );
+            let mask = u8x16_bitmask(is_ws);
+            if mask != 0 {
+                return i + mask.trailing_zeros() as usize;
+            }
+            i += 16;
+        }
+        while i < len {
+            if is_ascii_split_whitespace_byte(bytes[i]) {
+                return i;
+            }
+            i += 1;
+        }
+        len
+    }
+}
+
 fn find_ascii_split_whitespace(bytes: &[u8], start: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     {
@@ -35609,6 +35855,10 @@ fn find_ascii_split_whitespace(bytes: &[u8], start: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         return unsafe { find_ascii_split_whitespace_neon(bytes, start) };
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { find_ascii_split_whitespace_wasm32(bytes, start) };
     }
     #[allow(unreachable_code)]
     {
@@ -43776,6 +44026,12 @@ fn simd_max_byte_value(bytes: &[u8]) -> u32 {
             return unsafe { simd_max_byte_neon(bytes) };
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if bytes.len() >= 16 {
+            return unsafe { simd_max_byte_wasm32(bytes) };
+        }
+    }
     // Scalar fallback — also handles short strings and decodes actual codepoints
     let mut max = 0u32;
     if let Ok(text) = std::str::from_utf8(bytes) {
@@ -43880,6 +44136,43 @@ unsafe fn simd_max_byte_neon(bytes: &[u8]) -> u32 {
             i += 16;
         }
         let mut max = vmaxvq_u8(vmax) as u32;
+        for &b in &bytes[i..] {
+            max = max.max(b as u32);
+        }
+        if max >= 0x80 {
+            let mut cp_max = 0u32;
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                for ch in text.chars() {
+                    cp_max = cp_max.max(ch as u32);
+                }
+            }
+            return cp_max;
+        }
+        max
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vmax = u8x16_splat(0);
+        while i + 16 <= bytes.len() {
+            let v = v128_load(bytes.as_ptr().add(i) as *const v128);
+            vmax = u8x16_max(vmax, v);
+            i += 16;
+        }
+        // Horizontal max: fold 128 bits down to single byte
+        let hi64 = u8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        vmax = u8x16_max(vmax, hi64);
+        let hi32 = u8x16_shuffle::<4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        vmax = u8x16_max(vmax, hi32);
+        let hi16 = u8x16_shuffle::<2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        vmax = u8x16_max(vmax, hi16);
+        let hi8 = u8x16_shuffle::<1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        vmax = u8x16_max(vmax, hi8);
+        let mut max = u8x16_extract_lane::<0>(vmax) as u32;
         for &b in &bytes[i..] {
             max = max.max(b as u32);
         }
@@ -44733,10 +45026,33 @@ unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
         {
             return simd_bytes_eq_neon(a, b, len);
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return simd_bytes_eq_wasm32(a, b, len);
+        }
         #[allow(unreachable_code)]
         {
             std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len)
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+unsafe fn simd_bytes_eq_wasm32(a: *const u8, b: *const u8, len: usize) -> bool {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = v128_load(a.add(i) as *const v128);
+            let vb = v128_load(b.add(i) as *const v128);
+            let cmp = u8x16_eq(va, vb);
+            if u8x16_bitmask(cmp) != 0xFFFF {
+                return false;
+            }
+            i += 16;
+        }
+        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
     }
 }
 
