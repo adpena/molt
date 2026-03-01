@@ -64,6 +64,8 @@ _molt_re_negative_lookbehind = (
     _optional_look_intrinsic("molt_re_negative_lookbehind")
     or _look_intrinsic_unavailable
 )
+_molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose", globals())
+_molt_re_fullmatch_check = _require_intrinsic("molt_re_fullmatch_check", globals())
 
 
 __all__ = [
@@ -1267,6 +1269,8 @@ def _compile_native(pattern: str, flags: int) -> Pattern:
         raise ValueError("ASCII and UNICODE flags are incompatible")
     if not (flags & ASCII):
         flags |= UNICODE
+    if flags & VERBOSE:
+        pattern = _molt_re_strip_verbose(pattern, flags)
     parser = _Parser(pattern, flags)
     node, groups, group_names, inline_flags = parser.parse()
     effective_flags = (flags | inline_flags) & ~(LOCALE)
@@ -1330,7 +1334,7 @@ def _fullmatch(
     for new_pos, new_groups in _match_node(
         pattern._node, text, start, end, start, groups, flags
     ):
-        if new_pos != end:
+        if not _molt_re_fullmatch_check(text, new_pos, end):
             continue
         updated = list(new_groups)
         updated[0] = (start, new_pos)
