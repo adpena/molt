@@ -77,6 +77,15 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   Removed ~350 lines of Python dispatch/traversal.
 - Completed: `pprint` — wired to `molt_pprint_pformat`/`molt_pprint_safe_repr`/etc.
 - Completed: `uuid` byte-loop cleanup, `json` dead code removal.
+- Completed: `zlib` — all 27 intrinsics wired (compress/decompress/crc32/adler32 +
+  Compress/Decompress handle classes + 14 constants).
+- Completed: `ipaddress` — 30 intrinsics wired (IPv4/IPv6 address + network handle
+  classes; eliminated pure-Python parse/compress implementations).
+- Completed: `shutil` — 9 additional intrinsics wired (copy/copy2/copytree/move/etc.).
+- Completed: `subprocess` — 3 convenience intrinsics wired (run/check_call/check_output).
+- Completed: `enum` — all 10 Flag/auto/StrEnum/unique/verify intrinsics wired.
+  Added StrEnum class, @unique/@verify decorators, Flag iteration via flag_decompose,
+  FlagBoundary sentinels.
 
 ### Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: guard_tag_for_hint extended (set/frozenset/intarray type tags).
