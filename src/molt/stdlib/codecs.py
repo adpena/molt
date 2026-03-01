@@ -8,7 +8,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode", globals())
 _MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode", globals())
-_MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name", globals())
 _molt_codecs_normalize_encoding = _require_intrinsic(
     "molt_codecs_normalize_encoding", globals()
 )
@@ -137,15 +136,6 @@ else:
     BOM_LE = BOM_UTF16_LE
     BOM_BE = BOM_UTF16_BE
     BOM_UTF32 = BOM_UTF32_BE
-
-
-def _lookup_builtin_name(encoding: str) -> str | None:
-    name = _MOLT_CODECS_LOOKUP_NAME(encoding)
-    if name is None:
-        return None
-    if not isinstance(name, str):
-        raise RuntimeError("invalid codec lookup payload: expected str|None")
-    return name
 
 
 def _normalize_search_name(encoding: object) -> str:
@@ -337,38 +327,38 @@ def _coerce_codec_entry(search_name: str, entry: object) -> CodecInfo:
 
 
 def lookup(encoding: object) -> CodecInfo:
-    search_name = _normalize_search_name(encoding)
-    cached = _CODECS_CACHE.get(search_name)
-    if cached is not None:
-        return cached
-
+    # Fast path: Rust normalize+validate for known encodings (avoids
+    # Python char-by-char _normalize_search_name loop).
     try:
-        name = _lookup_builtin_name(search_name)
-    except LookupError:
-        name = None
+        canonical = str(_molt_codecs_normalize_encoding(encoding))
+    except (LookupError, TypeError):
+        canonical = None
 
-    if name is not None:
-        cached = _CODECS_CACHE.get(name)
+    if canonical is not None:
+        cached = _CODECS_CACHE.get(canonical)
         if cached is not None:
-            _CODECS_CACHE[search_name] = cached
             return cached
-
         info = CodecInfo(
-            encode=lambda obj, errors="strict": _encode_with_consumed(
-                obj, name, errors
+            encode=lambda obj, errors="strict", _enc=canonical: _encode_with_consumed(
+                obj, _enc, errors
             ),
-            decode=lambda obj, errors="strict": _decode_with_consumed(
-                obj, name, errors
+            decode=lambda obj, errors="strict", _enc=canonical: _decode_with_consumed(
+                obj, _enc, errors
             ),
             incrementalencoder=IncrementalEncoder,
             incrementaldecoder=IncrementalDecoder,
             streamwriter=StreamWriter,
             streamreader=StreamReader,
-            name=name,
+            name=canonical,
         )
-        _CODECS_CACHE[name] = info
-        _CODECS_CACHE[search_name] = info
+        _CODECS_CACHE[canonical] = info
         return info
+
+    # Slow path: Python normalize + custom search functions for unknown codecs.
+    search_name = _normalize_search_name(encoding)
+    cached = _CODECS_CACHE.get(search_name)
+    if cached is not None:
+        return cached
 
     for fn in _SEARCH_FUNCTIONS:
         entry = fn(search_name)
