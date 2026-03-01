@@ -2128,11 +2128,11 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     asyncgen_clear_running_bits(_py, asyncgen_ptr);
                 }
                 (*header).state = 0;
+                let exc_bits = molt_exception_last();
+                let kind_bits = molt_exception_kind(exc_bits);
+                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+                dec_ref_bits(_py, kind_bits);
                 if op == ASYNCGEN_OP_ACLOSE {
-                    let exc_bits = molt_exception_last();
-                    let kind_bits = molt_exception_kind(exc_bits);
-                    let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                    dec_ref_bits(_py, kind_bits);
                     if matches!(
                         kind.as_deref(),
                         Some("GeneratorExit" | "StopAsyncIteration")
@@ -2144,8 +2144,23 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                         asyncgen_registry_remove(_py, asyncgen_ptr);
                         return MoltObject::none().bits() as i64;
                     }
-                    dec_ref_bits(_py, exc_bits);
+                } else if matches!(op, ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND) {
+                    // PEP 479 analog for async generators: StopAsyncIteration
+                    // raised inside the body must be converted to RuntimeError.
+                    if matches!(kind.as_deref(), Some("StopAsyncIteration")) {
+                        exception_clear_reason_set(
+                            "asyncgen_poll_stop_async_iter_convert",
+                        );
+                        molt_exception_clear();
+                        dec_ref_bits(_py, exc_bits);
+                        return raise_exception::<i64>(
+                            _py,
+                            "RuntimeError",
+                            "async generator raised StopAsyncIteration",
+                        );
+                    }
                 }
+                dec_ref_bits(_py, exc_bits);
                 return res_bits as i64;
             }
 

@@ -258,6 +258,7 @@ pub(crate) use crate::builtins::strings::{
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
 pub use crate::builtins::string_ext::*;
+pub use crate::builtins::stringprep::*;
 pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
