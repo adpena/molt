@@ -690,6 +690,18 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
     })
 }
 
+/// Query the current counter value of a semaphore.
+/// Returns the value as NaN-boxed integer bits, or -1 if the handle is not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle = handle_from_bits(handle_bits);
+        let map = SEMAPHORES.lock().unwrap();
+        let value = map.get(&handle).map_or(0, |s| s.value);
+        MoltObject::from_int(value).bits()
+    })
+}
+
 /// Drop a semaphore handle. Dec-refs all stored waiter bits and removes from registry.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) {

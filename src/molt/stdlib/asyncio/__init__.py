@@ -516,6 +516,8 @@ if TYPE_CHECKING:
 
     def molt_asyncio_semaphore_release_fast(_handle: int, _max_value: int) -> int: ...
 
+    def molt_asyncio_semaphore_value(_handle: int) -> int: ...
+
     def molt_asyncio_semaphore_drop(_handle: int) -> None: ...
 
     # Handle-based state machine intrinsics -- Queue
@@ -1648,6 +1650,9 @@ molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
 molt_asyncio_semaphore_release_fast = _intrinsic_require(
     "molt_asyncio_semaphore_release_fast", globals()
 )
+molt_asyncio_semaphore_value = _intrinsic_require(
+    "molt_asyncio_semaphore_value", globals()
+)
 molt_asyncio_semaphore_drop = _intrinsic_require(
     "molt_asyncio_semaphore_drop", globals()
 )
@@ -2306,16 +2311,14 @@ class Semaphore:
     def __init__(self, value: int = 1) -> None:
         if value < 0:
             raise ValueError("Semaphore initial value must be >= 0")
-        self._value = value
         self._sem_handle: int = molt_asyncio_semaphore_new(value)
         self._waiters: _deque[Future] = _deque()
 
     def locked(self) -> bool:
-        return self._value == 0
+        return molt_asyncio_semaphore_value(self._sem_handle) == 0
 
     async def acquire(self) -> bool:
         if molt_asyncio_semaphore_acquire_fast(self._sem_handle):
-            self._value -= 1
             return True
         fut = Future()
         self._waiters.append(fut)
@@ -2328,12 +2331,9 @@ class Semaphore:
         return True
 
     def release(self) -> None:
+        molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
         if self._waiters:
-            molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
             _asyncio_waiters_notify(self._waiters, 1, True)
-        else:
-            molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
-            self._value += 1
 
     def __del__(self) -> None:
         handle = getattr(self, "_sem_handle", None)
@@ -2347,9 +2347,9 @@ class BoundedSemaphore(Semaphore):
         self._initial_value = value
 
     def release(self) -> None:
-        if not self._waiters and self._value >= self._initial_value:
-            raise ValueError("BoundedSemaphore released too many times")
-        super().release()
+        molt_asyncio_semaphore_release_fast(self._sem_handle, self._initial_value)
+        if self._waiters:
+            _asyncio_waiters_notify(self._waiters, 1, True)
 
 
 class Barrier:

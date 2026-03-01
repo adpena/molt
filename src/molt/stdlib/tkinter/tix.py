@@ -1,7 +1,15 @@
 """Intrinsic-backed `tkinter.tix` wrappers."""
 
+import warnings
+
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+warnings.warn(
+    "tkinter.tix is deprecated since Python 3.6 and will be removed in Python 3.13. Use tkinter.ttk instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
 
