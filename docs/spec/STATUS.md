@@ -14,6 +14,13 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: `stringprep` module — new 719-line Rust module (`stringprep.rs`) with all 17
+  RFC 3454 table membership intrinsics (a1, b1, c11-c9, d1, d2) as code point range checks,
+  `map_table_b3` with 47 exception entries for case folding. 13 unit tests. Intrinsic-backed
+  Python wrapper (122 lines). 2 new manifest intrinsics.
+- Fixed: Async generator StopAsyncIteration → RuntimeError conversion (PEP 479 analog) —
+  StopAsyncIteration raised inside async gen body was propagating as-is (wrong); now
+  correctly converts to RuntimeError with informative message.
 - Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent regex parser in
   `regex.rs` with CompiledPattern, ReNode enum (13 variants), global handle registry.
   4 new intrinsics (`molt_re_compile`, `molt_re_execute`, `molt_re_finditer_collect`,
@@ -25,11 +32,21 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   lookahead/lookbehind, anchors, word boundaries. `molt_re_execute` and
   `molt_re_finditer_collect` now fully implemented (no longer stubs). 60/60 tests pass.
   Fixed `strip_verbose` to respect VERBOSE flag.
-- Completed: libmolt C-API Phase 1 — PyList (New/Size/GetItem/SetItem/Append/Check),
-  PyDict (New/SetItem/GetItem/SetItemString/Size/Contains/Check), PyTuple (New/Size/
-  GetItem/SetItem/Check), PyObject_GetIter, PyIter_Next, PyIter_Check, type checks
-  (PyFloat/Long/Unicode/Bool/None_Check). 27 C-API tests, all passing. Total c_api.rs
-  now at 3,870 lines.
+- Completed: libmolt C-API Phase 1+2 — 117 CPython C-API functions, 80 tests, all passing.
+  Phase 1: PyList, PyDict, PyTuple, iterator protocol, type checks.
+  Phase 2: Object Protocol (Repr/Str/Hash/IsTrue/Not/Type/Length/GetAttr/SetAttr/DelAttr/
+  HasAttr/RichCompare/RichCompareBool/IsInstance/IsSubclass/CallableCheck), Number Protocol
+  (Add/Sub/Mul/TrueDivide/FloorDivide/Remainder/Power/Neg/Pos/Abs/Invert/Lshift/Rshift/
+  And/Or/Xor/Check/Long/Float), Mapping Protocol (Length/Keys/Values/Items/GetItemString/
+  HasKey), Set Protocol (New/FrozenSetNew/Size/Contains/Add/Discard/Pop/Clear/Check/
+  FrozenSetCheck), Sequence Protocol (GetItem/Length/Contains), Bytes/String
+  (FromStringAndSize/AsString/Size/FromString/AsUTF8/AsUTF8AndSize), Unicode additions
+  (GetLength/Concat/Contains/CompareWithASCIIString), Dict additions
+  (GetItemString/DelItem/DelItemString/Keys/Values/Items/Update/Copy), List additions
+  (Insert/Sort/Reverse/AsTuple), Exception Protocol (SetString/SetNone/Occurred/Clear/
+  NoMemory), RefCount (IncRef/DecRef/XINCREF/XDECREF), Conversions
+  (Long_AsLong/FromLong/Float_AsDouble/FromDouble/Bool_FromLong/BuildNone), Memory
+  (PyMem_Malloc/Realloc/Free, PyObject_Malloc/Realloc/Free). Total c_api.rs: 6,561 lines.
 - Completed: asyncio Barrier rewrite (wait returns index 0..parties-1, abort, reset wakes
   with BrokenBarrierError, parties/n_waiting properties, async context manager),
   Semaphore __aenter__/__aexit__, Server methods (is_serving, start_serving, serve_forever,
@@ -658,8 +675,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(perf, owner:runtime, milestone:TC1, priority:P2, status:planned): avoid list_snapshot allocations in membership/count/index by using a list mutation version or iterator guard.)
 - `range()` lowering defers to runtime for non-int-like arguments and raises on step==0 before loop execution.
 - Implemented: f-string conversion flags (`!r`, `!s`, `!a`) are supported in format placeholders, including nested format specs and debug expressions.
-- Async generators (`async def` with `yield`) are not supported.
-  (TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): implement async generator lowering and runtime parity.)
+- Async generators (`async def` with `yield`) are fully supported at all layers (frontend
+  visit_AsyncFunctionDef, backend ASYNCGEN_NEW/TrampolineKind::AsyncGen, runtime
+  molt_asyncgen_poll/molt_asyncgen_new/molt_asyncgen_close). PEP 479 analog: StopAsyncIteration
+  raised inside async gen body is now correctly converted to RuntimeError.
 - `contextlib` is intrinsic-backed for `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`,
   `asynccontextmanager`/`aclosing`, `suppress`, `redirect_stdout`/`redirect_stderr`, `nullcontext`,
   `closing`, `AbstractContextManager`, `AbstractAsyncContextManager`, and `chdir`
@@ -1128,7 +1147,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 
 ## TODO Mirror Ledger (Auto-Generated)
 <!-- BEGIN TODO MIRROR LEDGER -->
-- TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): async generator lowering and runtime parity (`async def` with `yield`).
+- DONE(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:done): async generator lowering and runtime parity (`async def` with `yield`) — fully implemented at all layers. PEP 479 analog StopAsyncIteration→RuntimeError conversion fixed 2026-03-01.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:planned): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): cancellation injection on await).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
