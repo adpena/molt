@@ -237,6 +237,8 @@ pub struct OpIR {
     pub fast_int: Option<bool>,
     #[serde(default)]
     pub task_kind: Option<String>,
+    #[serde(default)]
+    pub container_type: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -7271,13 +7273,20 @@ impl SimpleBackend {
                     let container =
                         var_get(&mut builder, &vars, &args[0]).expect("Container not found");
                     let item = var_get(&mut builder, &vars, &args[1]).expect("Item not found");
+                    let func_name = match op.container_type.as_deref() {
+                        Some("set") | Some("frozenset") => "molt_set_contains",
+                        Some("dict") => "molt_dict_contains",
+                        Some("list") => "molt_list_contains",
+                        Some("str") => "molt_str_contains",
+                        _ => "molt_contains",
+                    };
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_contains", Linkage::Import, &sig)
+                        .declare_function(func_name, Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*container, *item]);
