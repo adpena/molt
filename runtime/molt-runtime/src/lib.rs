@@ -240,6 +240,7 @@ pub use crate::builtins::os_ext::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
+pub use crate::builtins::random_mod::*;
 pub use crate::builtins::regex::*;
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;

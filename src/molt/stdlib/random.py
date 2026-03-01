@@ -4,27 +4,48 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
 from bisect import bisect as _bisect
 from collections.abc import Sequence as _Sequence
-from itertools import accumulate as _accumulate, repeat as _repeat
-import math as _math
+from itertools import accumulate as _accumulate
 import os as _os
-from typing import SupportsInt, cast
 
-_MOLT_MATH_LOG = _require_intrinsic("molt_math_log", globals())
-_MOLT_MATH_EXP = _require_intrinsic("molt_math_exp", globals())
-_MOLT_MATH_CEIL = _require_intrinsic("molt_math_ceil", globals())
-_MOLT_MATH_SQRT = _require_intrinsic("molt_math_sqrt", globals())
-_MOLT_MATH_ACOS = _require_intrinsic("molt_math_acos", globals())
-_MOLT_MATH_COS = _require_intrinsic("molt_math_cos", globals())
-_MOLT_MATH_SIN = _require_intrinsic("molt_math_sin", globals())
-_MOLT_MATH_FLOOR = _require_intrinsic("molt_math_floor", globals())
-_MOLT_MATH_ISFINITE = _require_intrinsic("molt_math_isfinite", globals())
-_MOLT_MATH_LGAMMA = _require_intrinsic("molt_math_lgamma", globals())
-_MOLT_MATH_FABS = _require_intrinsic("molt_math_fabs", globals())
-_MOLT_MATH_LOG2 = _require_intrinsic("molt_math_log2", globals())
+_molt_random_new = _require_intrinsic("molt_random_new", globals())
+_molt_random_seed = _require_intrinsic("molt_random_seed", globals())
+_molt_random_random = _require_intrinsic("molt_random_random", globals())
+_molt_random_getrandbits = _require_intrinsic("molt_random_getrandbits", globals())
+_molt_random_randbelow = _require_intrinsic("molt_random_randbelow", globals())
+_molt_random_getstate = _require_intrinsic("molt_random_getstate", globals())
+_molt_random_setstate = _require_intrinsic("molt_random_setstate", globals())
+_molt_random_shuffle = _require_intrinsic("molt_random_shuffle", globals())
+_molt_random_gauss = _require_intrinsic("molt_random_gauss", globals())
+_molt_random_uniform = _require_intrinsic("molt_random_uniform", globals())
+_molt_random_triangular = _require_intrinsic("molt_random_triangular", globals())
+_molt_random_expovariate = _require_intrinsic("molt_random_expovariate", globals())
+_molt_random_normalvariate = _require_intrinsic("molt_random_normalvariate", globals())
+_molt_random_lognormvariate = _require_intrinsic(
+    "molt_random_lognormvariate", globals()
+)
+_molt_random_vonmisesvariate = _require_intrinsic(
+    "molt_random_vonmisesvariate", globals()
+)
+_molt_random_paretovariate = _require_intrinsic("molt_random_paretovariate", globals())
+_molt_random_weibullvariate = _require_intrinsic(
+    "molt_random_weibullvariate", globals()
+)
+_molt_random_gammavariate = _require_intrinsic("molt_random_gammavariate", globals())
+_molt_random_betavariate = _require_intrinsic("molt_random_betavariate", globals())
+_molt_random_choices = _require_intrinsic("molt_random_choices", globals())
+_molt_random_sample = _require_intrinsic("molt_random_sample", globals())
 
+_molt_math_log2 = _require_intrinsic("molt_math_log2", globals())
+_molt_math_floor = _require_intrinsic("molt_math_floor", globals())
+_molt_math_fabs = _require_intrinsic("molt_math_fabs", globals())
+_molt_math_sqrt = _require_intrinsic("molt_math_sqrt", globals())
+_molt_math_lgamma = _require_intrinsic("molt_math_lgamma", globals())
+_molt_math_log = _require_intrinsic("molt_math_log", globals())
+_molt_math_isfinite = _require_intrinsic("molt_math_isfinite", globals())
+
+_urandom = _os.urandom
 
 __all__ = [
     "Random",
@@ -55,37 +76,9 @@ __all__ = [
     "weibullvariate",
 ]
 
-_N = 624
-_M = 397
-_MATRIX_A = 0x9908B0DF
-_UPPER_MASK = 0x80000000
-_LOWER_MASK = 0x7FFFFFFF
-_MASK_32 = 0xFFFFFFFF
-_MASK_64 = (1 << 64) - 1
-_ONE = 1
 BPF = 53
 RECIP_BPF = 2**-BPF
-_sha512 = None
-_urandom = _os.urandom
-_log = _MOLT_MATH_LOG
-_exp = _MOLT_MATH_EXP
-_pi = _math.pi
-_e = _math.e
-_ceil = _MOLT_MATH_CEIL
-_sqrt = _MOLT_MATH_SQRT
-_acos = _MOLT_MATH_ACOS
-_cos = _MOLT_MATH_COS
-_sin = _MOLT_MATH_SIN
-TWOPI = _math.tau
-_floor = _MOLT_MATH_FLOOR
-_isfinite = _MOLT_MATH_ISFINITE
-_lgamma = _MOLT_MATH_LGAMMA
-_fabs = _MOLT_MATH_FABS
-_log2 = _MOLT_MATH_LOG2
-
-NV_MAGICCONST = 4 * _exp(-0.5) / _sqrt(2.0)
-LOG4 = _log(4.0)
-SG_MAGICCONST = 1.0 + _log(4.5)
+_ONE = 1
 
 
 def _index(value) -> int:
@@ -102,351 +95,61 @@ def _index(value) -> int:
     return int(result)
 
 
-def _next_power_of_four(value: int) -> int:
-    size = 1
-    while size < value:
-        size *= 4
-    return size
-
-
-def _gammavariate_alpha_gt1(random_fn, alpha: float, beta: float) -> float:
-    ainv = _sqrt(2.0 * alpha - 1.0)
-    bbb = alpha - LOG4
-    ccc = alpha + ainv
-    while True:
-        u1 = random_fn()
-        if not 1e-7 < u1 < 0.9999999:
-            continue
-        u2 = 1.0 - random_fn()
-        v = _log(u1 / (1.0 - u1)) / ainv
-        x = alpha * _exp(v)
-        z = u1 * u1 * u2
-        r = bbb + ccc * v - x
-        if r + SG_MAGICCONST - 4.5 * z >= 0.0 or r >= _log(z):
-            return x * beta
-
-
-def _gammavariate_alpha_lt1(random_fn, alpha: float, beta: float) -> float:
-    while True:
-        u = random_fn()
-        b = (_e + alpha) / _e
-        p = b * u
-        if p <= 1.0:
-            x = p ** (1.0 / alpha)
-        else:
-            x = -_log((b - p) / alpha)
-        u1 = random_fn()
-        if p > 1.0:
-            if u1 <= x ** (alpha - 1.0):
-                break
-        elif u1 == 0.0 or _log(u1) <= 0.0 - x:
-            break
-    return x * beta
-
-
 class Random:
     VERSION = 3
 
     def __init__(self, seed_value: int | None = None) -> None:
-        self._mt = [0] * _N
-        self._index = _N
-        self.gauss_next = None
-        self.seed(seed_value)
+        self._handle = _molt_random_new()
+        if seed_value is not None:
+            _molt_random_seed(self._handle, seed_value, 2)
 
     def seed(self, a: object | None = None, version: int = 2) -> None:
-        if a is None:
-            a = 0
-
-        if version == 1 and isinstance(a, (str, bytes)):
-            a = a.decode("latin-1") if isinstance(a, bytes) else a
-            x = ord(a[0]) << 7 if a else 0
-            for c in map(ord, a):
-                x = ((1000003 * x) ^ c) & _MASK_64
-            x ^= len(a)
-            a = -2 if x == -1 else x
-
-        elif version == 2 and isinstance(a, (str, bytes, bytearray)):
-            global _sha512
-            if _sha512 is None:
-                import hashlib as _hashlib
-
-                _sha512 = _hashlib.sha512
-            if isinstance(a, str):
-                a = a.encode()
-            a = int.from_bytes(a + _sha512(a).digest(), "big")
-
-        elif not isinstance(a, (int, float, str, bytes, bytearray)):
-            raise TypeError(
-                "The only supported seed types are:\n"
-                "None, int, float, str, bytes, and bytearray."
-            )
-
-        seed_int = self._coerce_seed(a)
-        self._init_by_array(_int_to_key(seed_int))
-        self._index = _N
-        self.gauss_next = None
-
-    def _coerce_seed(self, a: object) -> int:
-        if isinstance(a, int):
-            return abs(a)
-        if isinstance(a, float):
-            return hash(a) & _MASK_64
-        if isinstance(a, (str, bytes, bytearray)):
-            return hash(a) & _MASK_64
-        return abs(int(cast(SupportsInt, a)))
-
-    def _init_genrand(self, seed: int) -> None:
-        self._mt[0] = seed & _MASK_32
-        for i in range(1, _N):
-            prev = self._mt[i - 1]
-            self._mt[i] = (1812433253 * (prev ^ (prev >> 30)) + i) & _MASK_32
-
-    def _init_by_array(self, init_key: list[int]) -> None:
-        self._init_genrand(19650218)
-        i = 1
-        j = 0
-        key_length = len(init_key)
-        k = _N if _N > key_length else key_length
-        for _ in range(k):
-            prev = self._mt[i - 1]
-            self._mt[i] = (
-                (self._mt[i] ^ ((prev ^ (prev >> 30)) * 1664525)) + init_key[j] + j
-            ) & _MASK_32
-            i += 1
-            j += 1
-            if i >= _N:
-                self._mt[0] = self._mt[_N - 1]
-                i = 1
-            if j >= key_length:
-                j = 0
-        for _ in range(_N - 1):
-            prev = self._mt[i - 1]
-            self._mt[i] = (
-                (self._mt[i] ^ ((prev ^ (prev >> 30)) * 1566083941)) - i
-            ) & _MASK_32
-            i += 1
-            if i >= _N:
-                self._mt[0] = self._mt[_N - 1]
-                i = 1
-        self._mt[0] = _UPPER_MASK
-
-    def _twist(self) -> None:
-        for i in range(_N):
-            y = (self._mt[i] & _UPPER_MASK) | (self._mt[(i + 1) % _N] & _LOWER_MASK)
-            self._mt[i] = self._mt[(i + _M) % _N] ^ (y >> 1)
-            if y & 1:
-                self._mt[i] ^= _MATRIX_A
-        self._index = 0
-
-    def _rand_u32(self) -> int:
-        if self._index >= _N:
-            self._twist()
-        y = self._mt[self._index]
-        self._index += 1
-        y ^= (y >> 11) & _MASK_32
-        y ^= (y << 7) & 0x9D2C5680
-        y ^= (y << 15) & 0xEFC60000
-        y ^= y >> 18
-        return y & _MASK_32
+        _molt_random_seed(self._handle, a, version)
 
     def random(self) -> float:
-        a = self._rand_u32() >> 5
-        b = self._rand_u32() >> 6
-        return (a * 67108864.0 + b) / 9007199254740992.0
+        return _molt_random_random(self._handle)
 
     def uniform(self, a, b):
-        """Get a random number in the range [a, b) or [a, b] depending on rounding."""
-
-        return a + (b - a) * self.random()
+        return _molt_random_uniform(self._handle, a, b)
 
     def triangular(self, low=0.0, high=1.0, mode=None):
-        """Triangular distribution."""
-        u = self.random()
-        try:
-            c = 0.5 if mode is None else (mode - low) / (high - low)
-        except ZeroDivisionError:
-            return low
-        if u > c:
-            u = 1.0 - u
-            c = 1.0 - c
-            low, high = high, low
-        return low + (high - low) * _sqrt(u * c)
+        return _molt_random_triangular(self._handle, low, high, mode)
 
     def normalvariate(self, mu=0.0, sigma=1.0):
-        """Normal distribution."""
-        random = self.random
-        while True:
-            u1 = random()
-            u2 = 1.0 - random()
-            z = NV_MAGICCONST * (u1 - 0.5) / u2
-            zz = z * z / 4.0
-            if zz <= -_log(u2):
-                break
-        return mu + z * sigma
+        return _molt_random_normalvariate(self._handle, mu, sigma)
 
     def gauss(self, mu=0.0, sigma=1.0):
-        """Gaussian distribution (faster than normalvariate)."""
-        random = self.random
-        z = self.gauss_next
-        self.gauss_next = None
-        if z is None:
-            x2pi = random() * TWOPI
-            g2rad = _sqrt(-2.0 * _log(1.0 - random()))
-            z = _cos(x2pi) * g2rad
-            self.gauss_next = _sin(x2pi) * g2rad
-        return mu + z * sigma
+        return _molt_random_gauss(self._handle, mu, sigma)
 
     def lognormvariate(self, mu, sigma):
-        """Log normal distribution."""
-        return _exp(self.normalvariate(mu, sigma))
+        return _molt_random_lognormvariate(self._handle, mu, sigma)
 
     def expovariate(self, lambd=1.0):
-        """Exponential distribution."""
-        return -_log(1.0 - self.random()) / lambd
+        return _molt_random_expovariate(self._handle, lambd)
 
     def vonmisesvariate(self, mu, kappa):
-        """Circular data distribution."""
-        random = self.random
-        if kappa <= 1e-6:
-            return TWOPI * random()
-
-        s = 0.5 / kappa
-        r = s + _sqrt(1.0 + s * s)
-
-        while True:
-            u1 = random()
-            z = _cos(_pi * u1)
-
-            d = z / (r + z)
-            u2 = random()
-            if u2 < 1.0 - d * d or u2 <= (1.0 - d) * _exp(d):
-                break
-
-        q = 1.0 / r
-        f = (q + z) / (1.0 + q * z)
-        u3 = random()
-        if u3 > 0.5:
-            theta = (mu + _acos(f)) % TWOPI
-        else:
-            theta = (mu - _acos(f)) % TWOPI
-
-        return theta
+        return _molt_random_vonmisesvariate(self._handle, mu, kappa)
 
     def gammavariate(self, alpha, beta):
-        """Gamma distribution (not the gamma function)."""
-        if alpha <= 0.0 or beta <= 0.0:
-            raise ValueError("gammavariate: alpha and beta must be > 0.0")
-
-        random_fn = self.random
-        if alpha > 1.0:
-            return _gammavariate_alpha_gt1(random_fn, alpha, beta)
-        elif alpha == 1.0:
-            return -_log(1.0 - random_fn()) * beta
-        return _gammavariate_alpha_lt1(random_fn, alpha, beta)
+        return _molt_random_gammavariate(self._handle, alpha, beta)
 
     def betavariate(self, alpha, beta):
-        """Beta distribution."""
-        y = self.gammavariate(alpha, 1.0)
-        if y:
-            return y / (y + self.gammavariate(beta, 1.0))
-        return 0.0
+        return _molt_random_betavariate(self._handle, alpha, beta)
 
     def paretovariate(self, alpha):
-        """Pareto distribution."""
-        u = 1.0 - self.random()
-        return u ** (-1.0 / alpha)
+        return _molt_random_paretovariate(self._handle, alpha)
 
     def weibullvariate(self, alpha, beta):
-        """Weibull distribution."""
-        u = 1.0 - self.random()
-        return alpha * (-_log(u)) ** (1.0 / beta)
-
-    def binomialvariate(self, n=1, p=0.5):
-        """Binomial random variable."""
-        if n < 0:
-            raise ValueError("n must be non-negative")
-        if p <= 0.0 or p >= 1.0:
-            if p == 0.0:
-                return 0
-            if p == 1.0:
-                return n
-            raise ValueError("p must be in the range 0.0 <= p <= 1.0")
-
-        random = self.random
-
-        if n == 1:
-            return _index(random() < p)
-
-        if p > 0.5:
-            return n - self.binomialvariate(n, 1.0 - p)
-
-        if n * p < 10.0:
-            x = y = 0
-            c = _log2(1.0 - p)
-            if not c:
-                return x
-            while True:
-                y += _floor(_log2(random()) / c) + 1
-                if y > n:
-                    return x
-                x += 1
-
-        setup_complete = False
-
-        spq = _sqrt(n * p * (1.0 - p))
-        b = 1.15 + 2.53 * spq
-        a = -0.0873 + 0.0248 * b + 0.01 * p
-        c = n * p + 0.5
-        vr = 0.92 - 4.2 / b
-
-        while True:
-            u = random()
-            u -= 0.5
-            us = 0.5 - _fabs(u)
-            k = _floor((2.0 * a / us + b) * u + c)
-            if k < 0 or k > n:
-                continue
-
-            v = random()
-            if us >= 0.07 and v <= vr:
-                return k
-
-            if not setup_complete:
-                alpha = (2.83 + 5.1 / b) * spq
-                lpq = _log(p / (1.0 - p))
-                m = _floor((n + 1) * p)
-                h = _lgamma(m + 1) + _lgamma(n - m + 1)
-                setup_complete = True
-            v *= alpha / (a / (us * us) + b)
-            if _log(v) <= h - _lgamma(k + 1) - _lgamma(n - k + 1) + (k - m) * lpq:
-                return k
+        return _molt_random_weibullvariate(self._handle, alpha, beta)
 
     def getrandbits(self, k: int) -> int:
-        if k < 0:
-            raise ValueError("Cannot convert negative int")
-        if k == 0:
-            return 0
-        words = (k - 1) // 32 + 1
-        out = 0
-        top_bits = k & 31
-        for i in range(words):
-            r = self._rand_u32()
-            if i == words - 1 and top_bits:
-                r >>= 32 - top_bits
-            out |= r << (i * 32)
-        return out
+        return _molt_random_getrandbits(self._handle, k)
 
     def randbytes(self, n: int) -> bytes:
         return self.getrandbits(n * 8).to_bytes(n, "little")
 
     def _randbelow(self, n: int) -> int:
-        if n <= 0:
-            raise ValueError("empty range for randrange()")
-        k = n.bit_length()
-        while True:
-            r = self.getrandbits(k)
-            if r < n:
-                return r
+        return _molt_random_randbelow(self._handle, n)
 
     def randrange(self, start, stop=None, step=_ONE) -> int:
         istart = _index(start)
@@ -484,15 +187,10 @@ class Random:
         return seq[self._randbelow(len(seq))]
 
     def choices(self, population, weights=None, *, cum_weights=None, k=1):
-        random = self.random
         n = len(population)
         if cum_weights is None:
             if weights is None:
-                n += 0.0
-                result = []
-                for _ in _repeat(None, k):
-                    result.append(population[_floor(random() * n)])
-                return result
+                return _molt_random_choices(self._handle, population, None, k)
             try:
                 cum_weights = list(_accumulate(weights))
             except TypeError:
@@ -509,13 +207,9 @@ class Random:
         total = cum_weights[-1] + 0.0
         if total <= 0.0:
             raise ValueError("Total of weights must be greater than zero")
-        if not _isfinite(total):
+        if not _molt_math_isfinite(total):
             raise ValueError("Total of weights must be finite")
-        hi = n - 1
-        result = []
-        for _ in _repeat(None, k):
-            result.append(population[_bisect(cum_weights, random() * total, 0, hi)])
-        return result
+        return _molt_random_choices(self._handle, population, cum_weights, k)
 
     def sample(self, population, k, *, counts=None):
         if not hasattr(population, "__len__") or not hasattr(population, "__getitem__"):
@@ -537,59 +231,80 @@ class Random:
             for s in selections:
                 result.append(population[_bisect(cum_counts, s)])
             return result
-
-        randbelow = self._randbelow
         if not 0 <= k <= n:
             raise ValueError("Sample larger than population or is negative")
-        result = [None] * k
-        setsize = 21
-        if k > 5:
-            setsize += _next_power_of_four(k * 3)
-        if n <= setsize:
-            pool = [population[i] for i in range(n)]
-            for i in range(k):
-                j = randbelow(n - i)
-                result[i] = pool[j]
-                pool[j] = pool[n - i - 1]
-        else:
-            selected: set[int] = set()
-            selected_add = selected.add
-            for i in range(k):
-                j = randbelow(n)
-                while j in selected:
-                    j = randbelow(n)
-                selected_add(j)
-                result[i] = population[j]
-        return result
+        return _molt_random_sample(self._handle, list(population), k)
 
     def shuffle(self, x: list[object]) -> None:
-        randbelow = self._randbelow
-        for i in reversed(range(1, len(x))):
-            j = randbelow(i + 1)
-            x[i], x[j] = x[j], x[i]
+        _molt_random_shuffle(self._handle, x)
 
     def getstate(self):
-        return self.VERSION, tuple(self._mt) + (self._index,), self.gauss_next
+        return _molt_random_getstate(self._handle)
 
     def setstate(self, state) -> None:
-        version = state[0]
-        if version == 3:
-            _, internalstate, self.gauss_next = state
-        elif version == 2:
-            _, internalstate, self.gauss_next = state
-            try:
-                internalstate = tuple(x % (2**32) for x in internalstate)
-            except ValueError as exc:
-                raise TypeError from exc
-        else:
-            raise ValueError(
-                f"state with version {version} passed to Random.setstate() "
-                f"of version {self.VERSION}"
-            )
-        if len(internalstate) != _N + 1:
-            raise ValueError("state vector has incorrect size")
-        self._mt = list(internalstate[:-1])
-        self._index = int(internalstate[-1])
+        _molt_random_setstate(self._handle, state)
+
+    def binomialvariate(self, n=1, p=0.5):
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        if p <= 0.0 or p >= 1.0:
+            if p == 0.0:
+                return 0
+            if p == 1.0:
+                return n
+            raise ValueError("p must be in the range 0.0 <= p <= 1.0")
+
+        if n == 1:
+            return _index(self.random() < p)
+
+        if p > 0.5:
+            return n - self.binomialvariate(n, 1.0 - p)
+
+        if n * p < 10.0:
+            x = y = 0
+            c = _molt_math_log2(1.0 - p)
+            if not c:
+                return x
+            while True:
+                y += _molt_math_floor(_molt_math_log2(self.random()) / c) + 1
+                if y > n:
+                    return x
+                x += 1
+
+        setup_complete = False
+        spq = _molt_math_sqrt(n * p * (1.0 - p))
+        b = 1.15 + 2.53 * spq
+        a = -0.0873 + 0.0248 * b + 0.01 * p
+        c = n * p + 0.5
+        vr = 0.92 - 4.2 / b
+
+        while True:
+            u = self.random()
+            u -= 0.5
+            us = 0.5 - _molt_math_fabs(u)
+            k = _molt_math_floor((2.0 * a / us + b) * u + c)
+            if k < 0 or k > n:
+                continue
+
+            v = self.random()
+            if us >= 0.07 and v <= vr:
+                return k
+
+            if not setup_complete:
+                alpha = (2.83 + 5.1 / b) * spq
+                lpq = _molt_math_log(p / (1.0 - p))
+                m = _molt_math_floor((n + 1) * p)
+                h = _molt_math_lgamma(m + 1) + _molt_math_lgamma(n - m + 1)
+                setup_complete = True
+            v *= alpha / (a / (us * us) + b)
+            if (
+                _molt_math_log(v)
+                <= h
+                - _molt_math_lgamma(k + 1)
+                - _molt_math_lgamma(n - k + 1)
+                + (k - m) * lpq
+            ):
+                return k
 
     def __getstate__(self):
         return self.getstate()
@@ -603,6 +318,9 @@ class Random:
 
 class SystemRandom(Random):
     """Alternate random number generator using OS entropy."""
+
+    def __init__(self, seed_value: int | None = None) -> None:
+        self._handle = _molt_random_new()
 
     def random(self) -> float:
         return (int.from_bytes(_urandom(7), "big") >> 3) * RECIP_BPF
@@ -624,17 +342,6 @@ class SystemRandom(Random):
         raise NotImplementedError("System entropy source does not have state.")
 
     getstate = setstate = _notimplemented
-
-
-def _int_to_key(value: int) -> list[int]:
-    value = abs(int(value))
-    key: list[int] = []
-    while value:
-        key.append(value & _MASK_32)
-        value >>= 32
-    if not key:
-        key = [0]
-    return key
 
 
 _global = Random()
