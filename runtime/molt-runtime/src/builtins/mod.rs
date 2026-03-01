@@ -62,6 +62,7 @@ pub(crate) mod os_ext;
 pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
+pub(crate) mod punycode;
 pub(crate) mod random_mod;
 pub(crate) mod regex;
 pub(crate) mod secrets;
