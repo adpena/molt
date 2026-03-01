@@ -34,9 +34,12 @@ import collections as _collections
 import importlib.util as _importlib_util
 import sys as _sys
 import types as _types
-from io import StringIO as _StringIO
 
 _MOLT_REPR_FROM_OBJ = _require_intrinsic("molt_repr_from_obj", globals())
+_MOLT_PPRINT_SAFE_REPR = _require_intrinsic("molt_pprint_safe_repr", globals())
+_MOLT_PPRINT_PFORMAT = _require_intrinsic("molt_pprint_pformat", globals())
+_MOLT_PPRINT_ISREADABLE = _require_intrinsic("molt_pprint_isreadable", globals())
+_MOLT_PPRINT_ISRECURSIVE = _require_intrinsic("molt_pprint_isrecursive", globals())
 
 
 __all__ = [
@@ -62,16 +65,13 @@ def pprint(
     underscore_numbers: bool = False,
 ) -> None:
     """Pretty-print a Python object to a stream [default is sys.stdout]."""
-    printer = PrettyPrinter(
-        stream=stream,
-        indent=indent,
-        width=width,
-        depth=depth,
-        compact=compact,
-        sort_dicts=sort_dicts,
-        underscore_numbers=underscore_numbers,
+    text = _MOLT_PPRINT_PFORMAT(
+        object, indent, width, depth, compact, sort_dicts, underscore_numbers
     )
-    printer.pprint(object)
+    if stream is None:
+        stream = _sys.stdout
+    stream.write(text)
+    stream.write("\n")
 
 
 def pformat(
@@ -85,14 +85,9 @@ def pformat(
     underscore_numbers: bool = False,
 ) -> str:
     """Format a Python object into a pretty-printed representation."""
-    return PrettyPrinter(
-        indent=indent,
-        width=width,
-        depth=depth,
-        compact=compact,
-        sort_dicts=sort_dicts,
-        underscore_numbers=underscore_numbers,
-    ).pformat(object)
+    return _MOLT_PPRINT_PFORMAT(
+        object, indent, width, depth, compact, sort_dicts, underscore_numbers
+    )
 
 
 def pp(object: object, *args, sort_dicts: bool = False, **kwargs) -> None:
@@ -102,17 +97,17 @@ def pp(object: object, *args, sort_dicts: bool = False, **kwargs) -> None:
 
 def saferepr(object: object) -> str:
     """Version of repr() which can handle recursive data structures."""
-    return PrettyPrinter()._safe_repr(object, {}, None, 0)[0]
+    return _MOLT_PPRINT_SAFE_REPR(object, None, None)
 
 
 def isreadable(object: object) -> bool:
     """Determine if saferepr(object) is readable by eval()."""
-    return PrettyPrinter()._safe_repr(object, {}, None, 0)[1]
+    return bool(_MOLT_PPRINT_ISREADABLE(object))
 
 
 def isrecursive(object: object) -> bool:
     """Determine if object requires a recursive representation."""
-    return PrettyPrinter()._safe_repr(object, {}, None, 0)[2]
+    return bool(_MOLT_PPRINT_ISRECURSIVE(object))
 
 
 def _repr_from_obj(value: object) -> str:
@@ -261,14 +256,28 @@ class PrettyPrinter:
         self._recursive = False
 
     def pprint(self, object: object) -> None:
-        if self._stream is not None:
-            self._format(object, self._stream, 0, 0, {}, 0)
-            self._stream.write("\n")
+        text = _MOLT_PPRINT_PFORMAT(
+            object,
+            self._indent_per_level,
+            self._width,
+            self._depth,
+            self._compact,
+            self._sort_dicts,
+            self._underscore_numbers,
+        )
+        self._stream.write(text)
+        self._stream.write("\n")
 
     def pformat(self, object: object) -> str:
-        sio = _StringIO()
-        self._format(object, sio, 0, 0, {}, 0)
-        return sio.getvalue()
+        return _MOLT_PPRINT_PFORMAT(
+            object,
+            self._indent_per_level,
+            self._width,
+            self._depth,
+            self._compact,
+            self._sort_dicts,
+            self._underscore_numbers,
+        )
 
     def isrecursive(self, object: object) -> bool:
         return self.format(object, {}, 0, 0)[2]
