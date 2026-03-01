@@ -5796,6 +5796,12 @@ def _ensure_runtime_wasm(
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
+    # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
+    # All modern WASM runtimes support simd128: Node.js >=16, wasmtime,
+    # Chrome/Firefox/Safari since 2021. This dramatically speeds up
+    # string search, hex encode, base64, and whitespace scanning.
+    if "-C target-feature" not in rustflags:
+        rustflags = f"{rustflags} -C target-feature=+simd128".strip()
     fingerprint = _runtime_fingerprint(
         root,
         cargo_profile=cargo_profile,

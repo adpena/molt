@@ -4305,6 +4305,12 @@ unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> u
         {
             return simd_find_first_byte_diff_neon(a, b, len);
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") {
+                return simd_find_first_byte_diff_wasm(a, b, len);
+            }
+        }
         #[allow(unreachable_code)]
         {
             for i in 0..len {
@@ -4315,6 +4321,32 @@ unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> u
             len
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::wasm32::*;
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let va = v128_load(a.add(i) as *const v128);
+        let vb = v128_load(b.add(i) as *const v128);
+        let eq = u8x16_eq(va, vb);
+        let mask = u8x16_bitmask(eq) as u32;
+        if mask != 0xFFFF {
+            // Not all equal — find first differing byte
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    // Scalar tail
+    while i < len {
+        if *a.add(i) != *b.add(i) {
+            return i;
+        }
+        i += 1;
+    }
+    len
 }
 
 #[cfg(target_arch = "x86_64")]

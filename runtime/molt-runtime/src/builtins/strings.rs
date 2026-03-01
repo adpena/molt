@@ -235,6 +235,25 @@ fn simd_replace_byte(buf: &mut [u8], needle: u8, repl: u8) {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        if cfg!(target_feature = "simd128") {
+            unsafe {
+                use std::arch::wasm32::*;
+                let needle_vec = u8x16_splat(needle);
+                let repl_vec = u8x16_splat(repl);
+                while i + 16 <= len {
+                    let chunk = v128_load(ptr.add(i) as *const v128);
+                    let mask = u8x16_eq(chunk, needle_vec);
+                    // bitselect: where mask=0xFF pick repl, else chunk
+                    let result = v128_bitselect(repl_vec, chunk, mask);
+                    v128_store(ptr.add(i) as *mut v128, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+
     // Scalar tail
     while i < len {
         unsafe {
@@ -255,7 +274,7 @@ fn memchr_fast(needle: u8, hay: &[u8]) -> Option<usize> {
     memchr(needle, hay)
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
     if !cfg!(target_feature = "simd128") {
         return (false, None);
@@ -280,11 +299,6 @@ fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
         }
     }
     (true, None)
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
-fn memchr_simd128(_needle: u8, _hay: &[u8]) -> (bool, Option<usize>) {
-    (false, None)
 }
 
 pub(crate) fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
@@ -1087,6 +1101,35 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
             }
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if cfg!(target_feature = "simd128") && hay.len() - i >= 16 {
+            unsafe {
+                use std::arch::wasm32::*;
+                let ws_space = u8x16_splat(b' ');
+                let ws_tab = u8x16_splat(b'\t');
+                let ws_nl = u8x16_splat(b'\n');
+                let ws_cr = u8x16_splat(b'\r');
+                let ws_vt = u8x16_splat(0x0B);
+                let ws_ff = u8x16_splat(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = v128_load(hay.as_ptr().add(i) as *const v128);
+                    let is_ws = v128_or(
+                        v128_or(
+                            v128_or(u8x16_eq(v, ws_space), u8x16_eq(v, ws_tab)),
+                            v128_or(u8x16_eq(v, ws_nl), u8x16_eq(v, ws_cr)),
+                        ),
+                        v128_or(u8x16_eq(v, ws_vt), u8x16_eq(v, ws_ff)),
+                    );
+                    let mask = u8x16_bitmask(is_ws) as u32;
+                    if mask != 0 {
+                        return Some(i + mask.trailing_zeros() as usize);
+                    }
+                    i += 16;
+                }
+            }
+        }
+    }
     // Scalar tail
     for j in i..hay.len() {
         if hay[j].is_ascii_whitespace() {
@@ -1163,6 +1206,36 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
                         continue;
                     }
                     // Find first non-whitespace (first zero bit)
+                    return i + (!mask).trailing_zeros() as usize;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if cfg!(target_feature = "simd128") && hay.len() - i >= 16 {
+            unsafe {
+                use std::arch::wasm32::*;
+                let ws_space = u8x16_splat(b' ');
+                let ws_tab = u8x16_splat(b'\t');
+                let ws_nl = u8x16_splat(b'\n');
+                let ws_cr = u8x16_splat(b'\r');
+                let ws_vt = u8x16_splat(0x0B);
+                let ws_ff = u8x16_splat(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = v128_load(hay.as_ptr().add(i) as *const v128);
+                    let is_ws = v128_or(
+                        v128_or(
+                            v128_or(u8x16_eq(v, ws_space), u8x16_eq(v, ws_tab)),
+                            v128_or(u8x16_eq(v, ws_nl), u8x16_eq(v, ws_cr)),
+                        ),
+                        v128_or(u8x16_eq(v, ws_vt), u8x16_eq(v, ws_ff)),
+                    );
+                    let mask = u8x16_bitmask(is_ws) as u32;
+                    if mask == 0xFFFF {
+                        i += 16;
+                        continue;
+                    }
                     return i + (!mask).trailing_zeros() as usize;
                 }
             }
