@@ -99,31 +99,6 @@ def _raise_json_decode_from_value_error(exc: ValueError, doc: str) -> None:
     raise JSONDecodeError(msg, doc, pos) from None
 
 
-def _walk_circular_markers(obj: Any, markers: set[int]) -> None:
-    if isinstance(obj, dict):
-        marker = id(obj)
-        if marker in markers:
-            raise ValueError("Circular reference detected")
-        markers.add(marker)
-        for key, value in obj.items():
-            _walk_circular_markers(key, markers)
-            _walk_circular_markers(value, markers)
-        markers.remove(marker)
-        return
-    if isinstance(obj, (list, tuple)):
-        marker = id(obj)
-        if marker in markers:
-            raise ValueError("Circular reference detected")
-        markers.add(marker)
-        for item in obj:
-            _walk_circular_markers(item, markers)
-        markers.remove(marker)
-
-
-def _validate_no_circular_references(obj: Any) -> None:
-    _walk_circular_markers(obj, set())
-
-
 def _try_intrinsic_dumps(
     obj: Any,
     *,
