@@ -2277,7 +2277,8 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             if elems.is_empty() {
                 return MoltObject::from_float(0.0).bits();
             }
-            let mut total = 0.0_f64;
+            // Pre-extract all f64 values for SIMD processing
+            let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
             for &val_bits in elems {
                 let Some(value) = coerce_real_named(_py, val_bits, "hypot") else {
                     return MoltObject::none().bits();
@@ -2285,9 +2286,71 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
                 let Some(f) = coerce_to_f64(_py, value) else {
                     return MoltObject::none().bits();
                 };
-                total = math_hypot(total, f);
+                vals.push(f);
             }
-            MoltObject::from_float(total).bits()
+            // SIMD-accelerated sum-of-squares with sqrt
+            let n = vals.len();
+            let mut sum_sq = 0.0_f64;
+            let mut i = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            {
+                if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let mut vec_sum = vdupq_n_f64(0.0);
+                        while i + 2 <= n {
+                            let v = vld1q_f64(vals.as_ptr().add(i));
+                            vec_sum = vfmaq_f64(vec_sum, v, v);
+                            i += 2;
+                        }
+                        let mut lanes = [0.0f64; 2];
+                        vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+                        sum_sq = lanes[0] + lanes[1];
+                    }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut vec_sum = _mm256_setzero_pd();
+                        while i + 4 <= n {
+                            let v = _mm256_loadu_pd(vals.as_ptr().add(i));
+                            vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
+                            i += 4;
+                        }
+                        let mut lanes = [0.0f64; 4];
+                        _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                        sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+                    }
+                } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        let mut vec_sum = _mm_setzero_pd();
+                        while i + 2 <= n {
+                            let v = _mm_loadu_pd(vals.as_ptr().add(i));
+                            vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
+                            i += 2;
+                        }
+                        let mut lanes = [0.0f64; 2];
+                        _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                        sum_sq = lanes[0] + lanes[1];
+                    }
+                }
+            }
+            for j in i..n {
+                sum_sq += vals[j] * vals[j];
+            }
+            if !sum_sq.is_finite() {
+                // Fallback to iterative hypot for numerical stability
+                let mut total = 0.0_f64;
+                for &f in &vals {
+                    total = math_hypot(total, f);
+                }
+                return MoltObject::from_float(total).bits();
+            }
+            MoltObject::from_float(sum_sq.sqrt()).bits()
         }
     })
 }
@@ -2308,11 +2371,79 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
                 "both points must have the same number of dimensions",
             );
         }
-        let mut total = 0.0_f64;
-        for (lhs, rhs) in p_vals.iter().zip(q_vals.iter()) {
-            total = math_hypot(total, lhs - rhs);
+        // SIMD-accelerated squared-difference sum for Euclidean distance.
+        // For numerical stability, we use the sqrt(sum-of-squares) approach
+        // which is safe when values are finite and not near overflow/underflow.
+        let n = p_vals.len();
+        let mut sum_sq = 0.0_f64;
+        let mut i = 0usize;
+        #[cfg(target_arch = "aarch64")]
+        {
+            if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let mut vec_sum = vdupq_n_f64(0.0);
+                    while i + 2 <= n {
+                        let vp = vld1q_f64([p_vals[i], p_vals[i + 1]].as_ptr());
+                        let vq = vld1q_f64([q_vals[i], q_vals[i + 1]].as_ptr());
+                        let diff = vsubq_f64(vp, vq);
+                        vec_sum = vfmaq_f64(vec_sum, diff, diff);
+                        i += 2;
+                    }
+                    let mut lanes = [0.0f64; 2];
+                    vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1];
+                }
+            }
         }
-        MoltObject::from_float(total).bits()
+        #[cfg(target_arch = "x86_64")]
+        {
+            if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm256_setzero_pd();
+                    while i + 4 <= n {
+                        let vp = _mm256_loadu_pd([p_vals[i], p_vals[i+1], p_vals[i+2], p_vals[i+3]].as_ptr());
+                        let vq = _mm256_loadu_pd([q_vals[i], q_vals[i+1], q_vals[i+2], q_vals[i+3]].as_ptr());
+                        let diff = _mm256_sub_pd(vp, vq);
+                        vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(diff, diff));
+                        i += 4;
+                    }
+                    let mut lanes = [0.0f64; 4];
+                    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+                }
+            } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm_setzero_pd();
+                    while i + 2 <= n {
+                        let vp = _mm_loadu_pd([p_vals[i], p_vals[i+1]].as_ptr());
+                        let vq = _mm_loadu_pd([q_vals[i], q_vals[i+1]].as_ptr());
+                        let diff = _mm_sub_pd(vp, vq);
+                        vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(diff, diff));
+                        i += 2;
+                    }
+                    let mut lanes = [0.0f64; 2];
+                    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1];
+                }
+            }
+        }
+        // Scalar tail
+        for j in i..n {
+            let d = p_vals[j] - q_vals[j];
+            sum_sq += d * d;
+        }
+        // Check for inf/nan: if overflow happened, fall back to iterative hypot
+        if !sum_sq.is_finite() {
+            let mut total = 0.0_f64;
+            for (lhs, rhs) in p_vals.iter().zip(q_vals.iter()) {
+                total = math_hypot(total, lhs - rhs);
+            }
+            return MoltObject::from_float(total).bits();
+        }
+        MoltObject::from_float(sum_sq.sqrt()).bits()
     })
 }
 
