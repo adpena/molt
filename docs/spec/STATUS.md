@@ -36,6 +36,31 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   - `math.hypot` (multi-arg): SIMD sum-of-squares (NEON fmaq, AVX2/SSE2 mul+add)
   - `.cargo/config.toml`: `target-cpu=native` for non-WASM targets enables full Apple
     Silicon NEON and x86-64 AVX2/AVX-512 auto-vectorization
+- Completed: **Cranelift Codegen Optimization** — full Cranelift 0.128 feature exploitation:
+  - Cold block marking: 36 slow-path blocks + exception handlers marked cold for better
+    i-cache/branch-prediction layout
+  - MemFlags::trusted(): 34 load/store sites upgraded from MemFlags::new() to trusted()
+    (notrap + aligned), allowing Cranelift to elide redundant trap checks
+  - Alias analysis enabled: redundant-load elimination across basic blocks
+  - CFG metadata emission: enables downstream profilers/tools
+  - Colocated libcalls: skip GOT/PLT indirection for direct PC-relative calls
+  - CPU feature auto-detection: `builder_with_options(true)` enables AVX2/SSE4.2/BMI2/
+    POPCNT on x86, NEON/AES/CRC on aarch64 for Cranelift-generated code
+  - Inline stack probing: avoids function call overhead for stack probes
+  - Spectre mitigations disabled: trusted-code compilation, no sandbox overhead
+  - Frame pointer omission in release builds: frees rbp/x29 register
+- Completed: **SIMD Phase 2 Expansion** — additional SIMD-accelerated operations:
+  - Hex encode/decode: NEON vqtbl1q_u8 / SSE2 _mm_shuffle_epi8 lookup-table hex conversion
+    (16 bytes → 32 hex chars per iteration) in binascii
+  - Hex decode: NEON/SSE2 parallel nibble validation + conversion (32 hex chars → 16 bytes)
+  - Base64 whitespace stripping: SIMD bulk whitespace classification (5-way compare) for
+    base64 decode preprocessing
+  - Single-byte replace: NEON vbslq_u8 / AVX2 _mm256_blendv_epi8 / SSE2 _mm_blendv_epi8
+    conditional byte replacement (16-32 bytes per iteration)
+  - ASCII whitespace detection: SIMD `simd_is_all_ascii_whitespace` for bytes.isspace(),
+    bytearray.isspace(), str.isspace() (ASCII fast path)
+  - Whitespace split: NEON variant added to `find_ascii_split_whitespace` (was SSE2-only)
+  - Strip fast-skip: SIMD left-strip 16-byte chunk skipping for bytes.strip()
 - Completed: `stringprep` module — new 719-line Rust module (`stringprep.rs`) with all 17
   RFC 3454 table membership intrinsics (a1, b1, c11-c9, d1, d2) as code point range checks,
   `map_table_b3` with 47 exception entries for case folding. 13 unit tests. Intrinsic-backed
