@@ -90,7 +90,9 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   Fast-path to Rust for common warn/warn_explicit calls.
 - Assessed: `logging` — acceptable Python (class hierarchy is the API). `%`-format
   already in Rust.
-- Blocker: `string` Template/Formatter needs new Rust intrinsics (~350 lines Python).
+- Completed: `string` Template/Formatter — 5 new Rust intrinsics (template_scan,
+  template_is_valid, template_get_identifiers, formatter_parse, field_name_split).
+  Eliminated ~290 lines Python parsing. Formatter._vformat stays as acceptable Python.
 - Blocker: `encodings` punycode/idna/uu_codec need new Rust implementations (~545
   lines Python total).
 
