@@ -178,6 +178,75 @@ fn bytes_count_short(hay: &[u8], needle: &[u8]) -> i64 {
     count
 }
 
+/// SIMD-accelerated single-byte replacement in a mutable buffer.
+/// Uses SSE2 (16B), AVX2 (32B), or NEON (16B) to process chunks, comparing
+/// and conditionally replacing bytes in bulk using vector operations.
+fn simd_replace_byte(buf: &mut [u8], needle: u8, repl: u8) {
+    let len = buf.len();
+    let ptr = buf.as_mut_ptr();
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let needle_vec = _mm256_set1_epi8(needle as i8);
+                let repl_vec = _mm256_set1_epi8(repl as i8);
+                while i + 32 <= len {
+                    let chunk = _mm256_loadu_si256(ptr.add(i) as *const __m256i);
+                    let mask = _mm256_cmpeq_epi8(chunk, needle_vec);
+                    // blend: where mask is 0xFF pick repl, else keep original
+                    let result = _mm256_blendv_epi8(chunk, repl_vec, mask);
+                    _mm256_storeu_si256(ptr.add(i) as *mut __m256i, result);
+                    i += 32;
+                }
+            }
+        } else {
+            unsafe {
+                use std::arch::x86_64::*;
+                let needle_vec = _mm_set1_epi8(needle as i8);
+                let repl_vec = _mm_set1_epi8(repl as i8);
+                while i + 16 <= len {
+                    let chunk = _mm_loadu_si128(ptr.add(i) as *const __m128i);
+                    let mask = _mm_cmpeq_epi8(chunk, needle_vec);
+                    let result = _mm_blendv_epi8(chunk, repl_vec, mask);
+                    _mm_storeu_si128(ptr.add(i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let needle_vec = vdupq_n_u8(needle);
+            let repl_vec = vdupq_n_u8(repl);
+            while i + 16 <= len {
+                let chunk = vld1q_u8(ptr.add(i));
+                let mask = vceqq_u8(chunk, needle_vec);
+                // bit-select: where mask=1 pick repl, else chunk
+                let result = vbslq_u8(mask, repl_vec, chunk);
+                vst1q_u8(ptr.add(i), result);
+                i += 16;
+            }
+        }
+    }
+
+    // Scalar tail
+    while i < len {
+        unsafe {
+            let b = ptr.add(i);
+            if *b == needle {
+                *b = repl;
+            }
+        }
+        i += 1;
+    }
+}
+
 fn memchr_fast(needle: u8, hay: &[u8]) -> Option<usize> {
     let (supported, idx) = memchr_simd128(needle, hay);
     if supported {
@@ -237,11 +306,7 @@ pub(crate) fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) 
             let mut out = hay.to_vec();
             let repl = replacement[0];
             if repl != needle_byte {
-                for byte in &mut out {
-                    if *byte == needle_byte {
-                        *byte = repl;
-                    }
-                }
+                simd_replace_byte(&mut out, needle_byte, repl);
             }
             return Some(out);
         }
@@ -668,6 +733,9 @@ pub(crate) fn bytes_strip_range(
     let mut start = 0usize;
     let mut end = hay.len();
     if left {
+        // SIMD fast skip: advance 16 bytes at a time while ALL are strip chars.
+        // Build a 256-bit bitmask for SIMD classification.
+        start = simd_skip_strip_left(hay, start, end, &table);
         while start < end && table[hay[start] as usize] {
             start += 1;
         }
@@ -678,6 +746,61 @@ pub(crate) fn bytes_strip_range(
         }
     }
     (start, end)
+}
+
+/// SIMD-accelerated left-strip: skip 16-byte chunks where ALL bytes belong
+/// to the strip set. Uses a 256-byte lookup table for validation.
+fn simd_skip_strip_left(hay: &[u8], start: usize, end: usize, table: &[bool; 256]) -> usize {
+    let mut pos = start;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            while pos + 16 <= end {
+                let chunk = vld1q_u8(hay.as_ptr().add(pos));
+                // Check each byte against the table — extract and check
+                let mut all_strip = true;
+                let mut buf = [0u8; 16];
+                vst1q_u8(buf.as_mut_ptr(), chunk);
+                for &b in &buf {
+                    if !table[b as usize] {
+                        all_strip = false;
+                        break;
+                    }
+                }
+                if !all_strip {
+                    break;
+                }
+                pos += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while pos + 16 <= end {
+                let chunk = _mm_loadu_si128(hay.as_ptr().add(pos) as *const __m128i);
+                let mut buf = [0u8; 16];
+                _mm_storeu_si128(buf.as_mut_ptr() as *mut __m128i, chunk);
+                let mut all_strip = true;
+                for &b in &buf {
+                    if !table[b as usize] {
+                        all_strip = false;
+                        break;
+                    }
+                }
+                if !all_strip {
+                    break;
+                }
+                pos += 16;
+            }
+        }
+    }
+
+    pos
 }
 
 fn split_bytes_to_list<F>(_py: &PyToken<'_>, hay: &[u8], needle: &[u8], mut alloc: F) -> Option<u64>

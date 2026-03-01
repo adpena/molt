@@ -67,6 +67,12 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
 ### Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: **Cranelift Codegen Optimization** — full Cranelift 0.128 feature exploitation: cold block marking
+  (36+ slow paths + exception handlers), MemFlags::trusted() (34 load/store sites), alias analysis, CFG metadata,
+  colocated libcalls, CPU feature auto-detection (AVX2/NEON/CRC), inline stack probing, Spectre mitigations off,
+  frame pointer omission in release.
+- Completed: **SIMD Phase 2** — hex encode/decode (NEON/SSE2 lookup-table), base64 whitespace stripping,
+  single-byte replace (AVX2/NEON/SSE2), ASCII isspace SIMD, NEON whitespace-split, strip fast-skip.
 - Completed: **SIMD Expansion** — 20+ runtime operations with SSE2/AVX2/NEON fast paths.
   String/bytes equality, lexicographic comparison, sequence comparison, float vector sum,
   ASCII case conversion, ASCII predicates, hash computation, str.lower/upper, math.dist,

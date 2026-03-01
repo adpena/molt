@@ -60,6 +60,96 @@ fn alloc_bytes_or_oom(_py: &PyToken<'_>, data: &[u8], context: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+/// SIMD-accelerated whitespace stripping: removes ASCII whitespace bytes
+/// (\t, \n, \r, \x0c, ' ') from input using NEON/SSE2 bulk classification.
+fn simd_strip_whitespace(input: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let space = vdupq_n_u8(b' ');
+            let tab = vdupq_n_u8(b'\t');
+            let nl = vdupq_n_u8(b'\n');
+            let cr = vdupq_n_u8(b'\r');
+            let ff = vdupq_n_u8(0x0C); // form feed
+            while i + 16 <= input.len() {
+                let chunk = vld1q_u8(input.as_ptr().add(i));
+                let is_ws = vorrq_u8(
+                    vorrq_u8(
+                        vorrq_u8(vceqq_u8(chunk, space), vceqq_u8(chunk, tab)),
+                        vceqq_u8(chunk, nl),
+                    ),
+                    vorrq_u8(vceqq_u8(chunk, cr), vceqq_u8(chunk, ff)),
+                );
+                // Fast path: if no whitespace in this chunk, copy all 16 bytes
+                if vmaxvq_u8(is_ws) == 0 {
+                    let len = out.len();
+                    out.set_len(len + 16);
+                    vst1q_u8(out.as_mut_ptr().add(len), chunk);
+                } else {
+                    // Slow path: copy non-whitespace bytes one by one
+                    for j in 0..16 {
+                        let b = input[i + j];
+                        if !b.is_ascii_whitespace() {
+                            out.push(b);
+                        }
+                    }
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let space = _mm_set1_epi8(b' ' as i8);
+            let tab = _mm_set1_epi8(b'\t' as i8);
+            let nl = _mm_set1_epi8(b'\n' as i8);
+            let cr = _mm_set1_epi8(b'\r' as i8);
+            let ff = _mm_set1_epi8(0x0C);
+            while i + 16 <= input.len() {
+                let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
+                let is_ws = _mm_or_si128(
+                    _mm_or_si128(
+                        _mm_or_si128(_mm_cmpeq_epi8(chunk, space), _mm_cmpeq_epi8(chunk, tab)),
+                        _mm_cmpeq_epi8(chunk, nl),
+                    ),
+                    _mm_or_si128(_mm_cmpeq_epi8(chunk, cr), _mm_cmpeq_epi8(chunk, ff)),
+                );
+                let mask = _mm_movemask_epi8(is_ws) as u32;
+                if mask == 0 {
+                    let len = out.len();
+                    out.set_len(len + 16);
+                    _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, chunk);
+                } else {
+                    for j in 0..16 {
+                        let b = input[i + j];
+                        if !b.is_ascii_whitespace() {
+                            out.push(b);
+                        }
+                    }
+                }
+                i += 16;
+            }
+        }
+    }
+
+    // Scalar tail
+    while i < input.len() {
+        let b = input[i];
+        if !b.is_ascii_whitespace() {
+            out.push(b);
+        }
+        i += 1;
+    }
+    out
+}
+
 fn base64_value(byte: u8) -> Option<u8> {
     match byte {
         b'A'..=b'Z' => Some(byte - b'A'),
@@ -72,11 +162,7 @@ fn base64_value(byte: u8) -> Option<u8> {
 }
 
 fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let compact: Vec<u8> = input
-        .iter()
-        .copied()
-        .filter(|b| !(*b as char).is_ascii_whitespace())
-        .collect();
+    let compact = simd_strip_whitespace(input);
     if compact.is_empty() {
         return Ok(Vec::new());
     }
@@ -169,6 +255,252 @@ fn hex_nibble(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+/// SIMD-accelerated hex encoding: converts bytes to hex string.
+/// Processes 16 bytes at a time on NEON (aarch64) or SSE2 (x86_64),
+/// producing 32 hex characters per iteration using vector table lookups.
+fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 2);
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            // Hex lookup table: "0123456789abcdef"
+            let hex_lut = vld1q_u8(b"0123456789abcdef".as_ptr());
+            let mask_lo = vdupq_n_u8(0x0F);
+            while i + 16 <= input.len() {
+                let chunk = vld1q_u8(input.as_ptr().add(i));
+                // Split each byte into high and low nibbles
+                let hi_nibbles = vshrq_n_u8(chunk, 4);
+                let lo_nibbles = vandq_u8(chunk, mask_lo);
+                // Table lookup to convert nibbles to hex chars
+                let hi_hex = vqtbl1q_u8(hex_lut, hi_nibbles);
+                let lo_hex = vqtbl1q_u8(hex_lut, lo_nibbles);
+                // Interleave: hi0 lo0 hi1 lo1 ...
+                let zipped_lo = vzip1q_u8(hi_hex, lo_hex);
+                let zipped_hi = vzip2q_u8(hi_hex, lo_hex);
+                // Write 32 bytes
+                let len = out.len();
+                out.set_len(len + 32);
+                vst1q_u8(out.as_mut_ptr().add(len), zipped_lo);
+                vst1q_u8(out.as_mut_ptr().add(len + 16), zipped_hi);
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let mask_lo = _mm_set1_epi8(0x0F);
+            // Build hex lookup: indices 0..15 map to '0'..'f'
+            let hex_lut = _mm_setr_epi8(
+                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
+            );
+            while i + 16 <= input.len() {
+                let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
+                let hi_nibbles = _mm_and_si128(_mm_srli_epi16(chunk, 4), mask_lo);
+                let lo_nibbles = _mm_and_si128(chunk, mask_lo);
+                let hi_hex = _mm_shuffle_epi8(hex_lut, hi_nibbles);
+                let lo_hex = _mm_shuffle_epi8(hex_lut, lo_nibbles);
+                // Interleave
+                let interleaved_lo = _mm_unpacklo_epi8(hi_hex, lo_hex);
+                let interleaved_hi = _mm_unpackhi_epi8(hi_hex, lo_hex);
+                let len = out.len();
+                out.set_len(len + 32);
+                _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
+                _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                i += 16;
+            }
+        }
+    }
+
+    // Scalar tail
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    while i < input.len() {
+        let b = input[i];
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
+        i += 1;
+    }
+    out
+}
+
+/// SIMD-accelerated hex decoding: converts hex string to bytes.
+/// Validates that all characters are valid hex digits and processes
+/// 32 hex chars (16 output bytes) per SIMD iteration.
+/// Returns None if any non-hex character is found.
+fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
+    if !input.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() / 2);
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            while i + 32 <= input.len() {
+                let lo_chars = vld1q_u8(input.as_ptr().add(i));
+                let hi_chars = vld1q_u8(input.as_ptr().add(i + 16));
+                // Deinterleave: separate hi-nibble chars and lo-nibble chars
+                let pairs = vuzpq_u8(lo_chars, hi_chars);
+                let hi_nibble_chars = pairs.0; // chars at even positions (hi nibbles)
+                let lo_nibble_chars = pairs.1; // chars at odd positions (lo nibbles)
+                // Convert ASCII hex chars to nibble values using range checks
+                let hi_vals = hex_chars_to_nibbles_neon(hi_nibble_chars);
+                let lo_vals = hex_chars_to_nibbles_neon(lo_nibble_chars);
+                // Check for invalid (0xFF sentinel)
+                let invalid_hi = vceqq_u8(hi_vals, vdupq_n_u8(0xFF));
+                let invalid_lo = vceqq_u8(lo_vals, vdupq_n_u8(0xFF));
+                let any_invalid = vorrq_u8(invalid_hi, invalid_lo);
+                if vmaxvq_u8(any_invalid) != 0 {
+                    return None; // Contains non-hex chars
+                }
+                // Combine nibbles: (hi << 4) | lo
+                let result = vorrq_u8(vshlq_n_u8(hi_vals, 4), lo_vals);
+                let len = out.len();
+                out.set_len(len + 16);
+                vst1q_u8(out.as_mut_ptr().add(len), result);
+                i += 32;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while i + 32 <= input.len() {
+                let lo_block = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
+                let hi_block = _mm_loadu_si128(input.as_ptr().add(i + 16) as *const __m128i);
+                // Deinterleave: separate hi-nibble and lo-nibble chars
+                let mask = _mm_set_epi8(14,12,10,8,6,4,2,0, 15,13,11,9,7,5,3,1);
+                let lo_shuffled = _mm_shuffle_epi8(lo_block, mask);
+                let hi_shuffled = _mm_shuffle_epi8(hi_block, mask);
+                // hi_nibble_chars = bytes at even positions from both blocks
+                let hi_nibble_chars = _mm_unpacklo_epi64(lo_shuffled, hi_shuffled);
+                let lo_nibble_chars = _mm_unpackhi_epi64(lo_shuffled, hi_shuffled);
+                let hi_vals = hex_chars_to_nibbles_sse2(hi_nibble_chars);
+                let lo_vals = hex_chars_to_nibbles_sse2(lo_nibble_chars);
+                // Check for 0xFF sentinel
+                let sentinel = _mm_set1_epi8(0xFFu8 as i8);
+                let hi_bad = _mm_cmpeq_epi8(hi_vals, sentinel);
+                let lo_bad = _mm_cmpeq_epi8(lo_vals, sentinel);
+                let any_bad = _mm_or_si128(hi_bad, lo_bad);
+                if _mm_movemask_epi8(any_bad) != 0 {
+                    return None;
+                }
+                let result = _mm_or_si128(_mm_slli_epi16(hi_vals, 4), lo_vals);
+                // Mask off the high bits that leaked from slli_epi16
+                let nibble_mask = _mm_set1_epi8(0x0F);
+                let hi_shifted = _mm_and_si128(_mm_slli_epi16(hi_vals, 4), _mm_set1_epi8(0xF0u8 as i8));
+                let lo_masked = _mm_and_si128(lo_vals, nibble_mask);
+                let result = _mm_or_si128(hi_shifted, lo_masked);
+                let len = out.len();
+                out.set_len(len + 16);
+                _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, result);
+                i += 32;
+            }
+        }
+    }
+
+    // Scalar tail
+    while i < input.len() {
+        let hi = hex_nibble(input[i])?;
+        let lo = hex_nibble(input[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// NEON helper: convert hex ASCII chars to nibble values (0-15),
+/// returning 0xFF for invalid characters.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn hex_chars_to_nibbles_neon(chars: std::arch::aarch64::uint8x16_t) -> std::arch::aarch64::uint8x16_t {
+    unsafe {
+        use std::arch::aarch64::*;
+        let zero = vdupq_n_u8(b'0');
+        let nine = vdupq_n_u8(b'9');
+        let a_lower = vdupq_n_u8(b'a');
+        let f_lower = vdupq_n_u8(b'f');
+        let a_upper = vdupq_n_u8(b'A');
+        let f_upper = vdupq_n_u8(b'F');
+        let invalid = vdupq_n_u8(0xFF);
+
+        // Check digit range: '0'-'9' → subtract '0'
+        let is_digit = vandq_u8(vcgeq_u8(chars, zero), vcleq_u8(chars, nine));
+        let digit_val = vsubq_u8(chars, zero);
+
+        // Check lowercase range: 'a'-'f' → subtract 'a' + 10
+        let is_lower = vandq_u8(vcgeq_u8(chars, a_lower), vcleq_u8(chars, f_lower));
+        let lower_val = vaddq_u8(vsubq_u8(chars, a_lower), vdupq_n_u8(10));
+
+        // Check uppercase range: 'A'-'F' → subtract 'A' + 10
+        let is_upper = vandq_u8(vcgeq_u8(chars, a_upper), vcleq_u8(chars, f_upper));
+        let upper_val = vaddq_u8(vsubq_u8(chars, a_upper), vdupq_n_u8(10));
+
+        // Select: digit → digit_val, lower → lower_val, upper → upper_val, else → 0xFF
+        let result = vbslq_u8(is_digit, digit_val, invalid);
+        let result = vbslq_u8(is_lower, lower_val, result);
+        vbslq_u8(is_upper, upper_val, result)
+    }
+}
+
+/// SSE2 helper: convert hex ASCII chars to nibble values (0-15),
+/// returning 0xFF for invalid characters.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn hex_chars_to_nibbles_sse2(chars: std::arch::x86_64::__m128i) -> std::arch::x86_64::__m128i {
+    unsafe {
+        use std::arch::x86_64::*;
+        let zero_char = _mm_set1_epi8(b'0' as i8);
+        let a_lower = _mm_set1_epi8(b'a' as i8);
+        let a_upper = _mm_set1_epi8(b'A' as i8);
+        let invalid = _mm_set1_epi8(0xFFu8 as i8);
+
+        // Digit check: chars >= '0' && chars <= '9'
+        let ge_zero = _mm_cmpgt_epi8(chars, _mm_set1_epi8((b'0' - 1) as i8));
+        let le_nine = _mm_cmpgt_epi8(_mm_set1_epi8((b'9' + 1) as i8), chars);
+        let is_digit = _mm_and_si128(ge_zero, le_nine);
+        let digit_val = _mm_sub_epi8(chars, zero_char);
+
+        // Lowercase check: 'a'-'f'
+        let ge_a = _mm_cmpgt_epi8(chars, _mm_set1_epi8((b'a' - 1) as i8));
+        let le_f = _mm_cmpgt_epi8(_mm_set1_epi8((b'f' + 1) as i8), chars);
+        let is_lower = _mm_and_si128(ge_a, le_f);
+        let lower_val = _mm_add_epi8(_mm_sub_epi8(chars, a_lower), _mm_set1_epi8(10));
+
+        // Uppercase check: 'A'-'F'
+        let ge_upper = _mm_cmpgt_epi8(chars, _mm_set1_epi8((b'A' - 1) as i8));
+        let le_upper = _mm_cmpgt_epi8(_mm_set1_epi8((b'F' + 1) as i8), chars);
+        let is_upper = _mm_and_si128(ge_upper, le_upper);
+        let upper_val = _mm_add_epi8(_mm_sub_epi8(chars, a_upper), _mm_set1_epi8(10));
+
+        // Blend: start with invalid, override with matches
+        let result = _mm_or_si128(
+            _mm_and_si128(is_digit, digit_val),
+            _mm_andnot_si128(is_digit, invalid),
+        );
+        let result = _mm_or_si128(
+            _mm_and_si128(is_lower, lower_val),
+            _mm_andnot_si128(is_lower, result),
+        );
+        _mm_or_si128(
+            _mm_and_si128(is_upper, upper_val),
+            _mm_andnot_si128(is_upper, result),
+        )
     }
 }
 
@@ -333,18 +665,13 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
         if !raw.len().is_multiple_of(2) {
             return raise_exception::<_>(_py, "ValueError", "Odd-length string");
         }
-        let mut out = Vec::with_capacity(raw.len() / 2);
-        let mut idx = 0usize;
-        while idx < raw.len() {
-            let Some(hi) = hex_nibble(raw[idx]) else {
+        // Use SIMD-accelerated hex decode (NEON/SSE2)
+        let out = match simd_hex_decode(&raw) {
+            Some(v) => v,
+            None => {
                 return raise_exception::<_>(_py, "ValueError", "Non-hexadecimal digit found");
-            };
-            let Some(lo) = hex_nibble(raw[idx + 1]) else {
-                return raise_exception::<_>(_py, "ValueError", "Non-hexadecimal digit found");
-            };
-            out.push((hi << 4) | lo);
-            idx += 2;
-        }
+            }
+        };
         alloc_bytes_or_oom(_py, &out, "a2b_hex")
     })
 }
@@ -352,16 +679,12 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         let raw = match bytes_like_arg(_py, data_bits, "b2a_hex") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let mut out = Vec::with_capacity(raw.len() * 2);
-        for byte in raw {
-            out.push(HEX[(byte >> 4) as usize]);
-            out.push(HEX[(byte & 0x0f) as usize]);
-        }
+        // Use SIMD-accelerated hex encode (NEON/SSE2)
+        let out = simd_hex_encode(&raw);
         alloc_bytes_or_oom(_py, &out, "b2a_hex")
     })
 }
