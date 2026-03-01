@@ -745,6 +745,43 @@ fn re_anchor_matches_impl(
         }
         return false;
     }
+    if kind == "start_abs" {
+        return pos == 0;
+    }
+    if kind == "end_abs" {
+        if pos == end {
+            return true;
+        }
+        return end > 0 && pos == end - 1 && re_char_at(&chars, pos) == Some('\n');
+    }
+    if kind == "word_boundary" || kind == "word_boundary_not" {
+        let prev_is_word = if pos > 0 {
+            re_char_at(&chars, pos - 1)
+                .map(|c| {
+                    let s = c.to_string();
+                    re_is_word_char(&s, flags)
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let next_is_word = if pos < text_len {
+            re_char_at(&chars, pos)
+                .map(|c| {
+                    let s = c.to_string();
+                    re_is_word_char(&s, flags)
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let at_boundary = prev_is_word != next_is_word;
+        return if kind == "word_boundary" {
+            at_boundary
+        } else {
+            !at_boundary
+        };
+    }
     if flags & RE_MULTILINE != 0 {
         if pos == end {
             return true;
