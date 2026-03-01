@@ -662,13 +662,17 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `TypeError`; TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider `__matmul__`/`__rmatmul__` fallback for custom types.
 - Roadmap focus: async runtime core (Task/Future scheduler, contextvars, cancellation injection), capability-gated async I/O,
   DB semantics expansion, WASM DB parity, framework adapters, and production hardening (see ROADMAP).
-- Numeric tower: complex supported; decimal is Rust intrinsic-backed with context (prec/rounding/traps/flags),
-  quantize/compare/compare_total/normalize/exp/div/as_tuple + `str`/`repr`/float conversions (no Python fallback path;
-  when vendored libmpdec sources are absent, runtime uses the native Rust decimal backend); `int` still missing
-  full method surface (e.g., `bit_length`, `to_bytes`, `from_bytes`).
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting
-  parity (add/sub/mul/pow/sqrt/log/ln/exp variants, quantize edge cases, to_eng_string, NaN payloads).)
-  (TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): decimal + `int` method parity.)
+- Numeric tower: complex supported with 26 runtime intrinsics (complex_core.rs: new/from_str/from_int/from_float,
+  real/imag/conjugate/abs/neg/pos/bool, add/sub/mul/div/pow, eq/ne, repr/hash, scalar ops, drop/to_tuple);
+  decimal is Rust intrinsic-backed with full arithmetic operators (add/sub/mul/truediv/floordiv/mod/pow/neg/pos/abs),
+  comparisons (eq/lt/le/gt/ge/hash/bool), conversions (int/round/trunc/floor/ceil/from_float/to_eng_string/adjusted/
+  as_integer_ratio), math methods (sqrt/ln/log10/exp/fma/max/min/remainder_near/scaleb/next_minus/next_plus/
+  number_class), predicates (is_finite/is_infinite/is_nan/is_normal/is_signed/is_subnormal/is_zero), copy operations
+  (copy_abs/copy_negate/copy_sign/same_quantum), and context management (prec/rounding/traps/flags); `int` still
+  missing full method surface (e.g., `bit_length`, `to_bytes`, `from_bytes`).
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P3, status:partial): remaining Decimal edge cases
+  (NaN payload propagation, context-aware signal routing, __format__ spec).)
+  (TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): `int` method parity.)
 - errno: basic constants + errorcode mapping to support OSError mapping; full table pending.
 - Format protocol: WASM `n` formatting uses host locale separators via
   `MOLT_WASM_LOCALE_*` (set by `run_wasm.js` when available).
@@ -1173,7 +1177,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): advance native `re` engine to full syntax/flags/groups; native engine covers core syntax (literals, `.`, classes/ranges, groups/alternation, greedy + non-greedy quantifiers) and `IGNORECASE`/`MULTILINE`/`DOTALL`; advanced features/flags raise `NotImplementedError` (no host fallback).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): close
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Decimal arithmetic + formatting parity (add/sub/mul/pow/sqrt/log/ln, quantize edge cases, NaN payloads).)
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:implemented): Decimal arithmetic + formatting parity (all operators, math methods, predicates, copy ops, conversions wired to Rust intrinsics).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Python 3.12+ statistics API/PEP parity beyond function surface lowering (for example NormalDist and remaining edge-case text parity).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` ancillary-data parity (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`) while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty control messages.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete cross-platform ancillary parity for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
@@ -1190,10 +1194,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `enum` parity (aliases, functional API, Flag/IntFlag edge cases).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` distributions + extended test vectors.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining `pathlib` parity gaps (glob edge cases, hidden/root_dir semantics, symlink nuances, and broader PurePath/PurePosixPath API surface) after intrinsic splitroot-aware `isabs`/`parts`/`parents` parity work.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining `pathlib` parity gaps (walk(), owner()/group(), hardlink_to(), is_mount()/is_block_device()/is_char_device()/is_fifo()/is_socket(), lchmod(), glob edge cases); stat()/lstat()/touch()/rename()/replace()/chmod() now wired.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining pathlib glob edge parity (`root_dir`/hidden semantics, full Windows flavor/symlink nuances) and full Path parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining pickle CPython 3.12+ parity gaps before intrinsic-backed promotion.) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete Decimal API parity (arithmetic ops, exp/log/pow/sqrt, context quantize/signals edge cases, NaN payloads, and formatting helpers).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P3, status:partial): remaining Decimal edge cases (NaN payload propagation, context-aware signal routing, __format__ spec).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete full statistics 3.12+ API/PEP parity beyond function surface lowering.) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (`timegm`) + deterministic clock policy.
@@ -1718,7 +1722,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin reductions (`sum/min/max`) and `len` parity.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): type-hint specialization policy (`--type-hints=check` with runtime guards).
-- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:missing): complex literal lowering + runtime support.
+- Implemented(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:implemented): complex type runtime intrinsics (26 ops in complex_core.rs).
+  TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): complex literal lowering + frontend dispatch to complex_core intrinsics.
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): `int()` keyword arguments (`x`, `base`) parity.
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): lower classes defining `__next__` without `__iter__` without backend panics.
