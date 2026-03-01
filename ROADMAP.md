@@ -68,14 +68,22 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 
 ### Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent parser in regex.rs.
-  CompiledPattern + ReNode enum + global handle registry. 4 new intrinsics. Phase 1b
-  match engine in progress.
-- Completed: asyncio staggered_race — full CPython 3.12 implementation replacing stub.
-- Completed: tkinter WASM import gate (emscripten/wasi → ImportError).
-- Cleanup: 26 dead intrinsics deleted, 5 singletons wired, tkinter bug fixes
-  (Image.__getitem__, ScrolledText, Font, tix), asyncio Semaphore dual-state fix.
-- In progress: re Phase 1b match engine, libmolt C-API Phase 1, asyncio/tkinter parity audits.
-- In progress: CPU kernelization loop classifier design, GPU/MLIR groundwork research.
+  CompiledPattern + ReNode enum + global handle registry. 4 new intrinsics.
+- Completed: `re` Phase 1b backtracking NFA match engine — 1,100-line continuation-passing
+  engine. Supports all ReNode variants. `molt_re_execute` and `molt_re_finditer_collect`
+  now fully implemented. 60/60 tests pass. Fixed strip_verbose VERBOSE flag check.
+- Completed: libmolt C-API Phase 1 — PyList/Dict/Tuple/Iter/type check families.
+  852 new lines in c_api.rs, 27 tests all passing.
+- Completed: asyncio Barrier rewrite + Semaphore CM + Server methods + Queue enhancements
+  + BrokenBarrierError export + __repr__ on all sync primitives. 24 parity gaps closed.
+- Completed: tkinter Toplevel+Wm mixin (P0) + _splitdict fix + Entry.bbox/validate +
+  _root() + grid_children/place_children + Font.__del__ + ttk additions. 16 parity gaps
+  closed.
+- Completed: asyncio staggered_race, tkinter WASM import gate, 26 dead intrinsics deleted,
+  5 singletons wired, tkinter/asyncio bug fixes.
+- Completed: CPU kernelization loop classifier design (5-phase plan, metadata-only initially).
+- Completed: GPU/MLIR groundwork research (melior 0.26 + cudarc 0.17 + 5-stage plan).
+- Intrinsics audit: 2,193 total, 1,838 Python-wired, 355 Rust-internal, zero unwired.
 
 ### Rust-First Stdlib Lowering Sprint (2026-02-28)
 - Completed: `base64` — all 18 functions rewired to existing Rust intrinsics.
