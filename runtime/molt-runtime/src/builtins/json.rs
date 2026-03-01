@@ -35,23 +35,105 @@ fn json_escape_codepoint(code: u32, out: &mut String) {
 }
 
 fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
+    let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len().saturating_add(8));
     out.push('"');
-    for ch in value.chars() {
-        let code = ch as u32;
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => {
-                if code < 0x20 || (ensure_ascii && code > 0x7E) {
-                    json_escape_codepoint(code, &mut out);
-                } else {
-                    out.push(ch);
+
+    if !ensure_ascii {
+        // SIMD fast path: scan for safe ASCII runs and copy them in bulk.
+        // A byte is "safe" if it's in [0x20..0x7F] and not '"' (0x22) or '\\' (0x5C).
+        let mut i = 0usize;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lo_bound = vdupq_n_u8(0x20); // space
+                let hi_bound = vdupq_n_u8(0x7E); // '~'
+                let quote = vdupq_n_u8(b'"');
+                let backslash = vdupq_n_u8(b'\\');
+                while i + 16 <= bytes.len() {
+                    let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                    let ge_lo = vcgeq_u8(chunk, lo_bound);
+                    let le_hi = vcleq_u8(chunk, hi_bound);
+                    let not_quote = vmvnq_u8(vceqq_u8(chunk, quote));
+                    let not_bs = vmvnq_u8(vceqq_u8(chunk, backslash));
+                    let safe = vandq_u8(vandq_u8(ge_lo, le_hi), vandq_u8(not_quote, not_bs));
+                    if vminvq_u8(safe) == 0xFF {
+                        // All 16 bytes are safe — copy in bulk
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                        i += 16;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe {
+                use std::arch::x86_64::*;
+                let lo_bound = _mm_set1_epi8(0x1F); // below space
+                let hi_bound = _mm_set1_epi8(0x7F_u8 as i8); // DEL
+                let quote = _mm_set1_epi8(b'"' as i8);
+                let backslash = _mm_set1_epi8(b'\\' as i8);
+                while i + 16 <= bytes.len() {
+                    let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    // Safe: > 0x1F && < 0x7F && != '"' && != '\\'
+                    let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
+                    let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    if _mm_movemask_epi8(safe) == 0xFFFF {
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                        i += 16;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Process remaining characters (including where SIMD found a special char)
+        for ch in value[i..].chars() {
+            let code = ch as u32;
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{08}' => out.push_str("\\b"),
+                '\u{0C}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                _ => {
+                    if code < 0x20 {
+                        json_escape_codepoint(code, &mut out);
+                    } else {
+                        out.push(ch);
+                    }
+                }
+            }
+        }
+    } else {
+        // ensure_ascii mode — must escape all non-ASCII, no SIMD shortcut
+        for ch in value.chars() {
+            let code = ch as u32;
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{08}' => out.push_str("\\b"),
+                '\u{0C}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                _ => {
+                    if code < 0x20 || code > 0x7E {
+                        json_escape_codepoint(code, &mut out);
+                    } else {
+                        out.push(ch);
+                    }
                 }
             }
         }
