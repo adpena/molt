@@ -191,7 +191,17 @@ def _stringify(value):
 
 
 def _splitdict(tk, v, cut_minus=True, conv=None):
-    out = _molt_tk_splitdict(v, cut_minus)
+    raw = _molt_tk_splitdict(v, cut_minus)
+    # The intrinsic returns a list of [key, value] pairs; convert to dict.
+    if isinstance(raw, dict):
+        out = raw
+    elif isinstance(raw, (list, tuple)):
+        out = {}
+        for pair in raw:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                out[pair[0]] = pair[1]
+    else:
+        out = {}
     if conv is not None:
         out = {k: conv(val) for k, val in out.items()}
     return out
@@ -1096,6 +1106,8 @@ class Misc:
             args.extend(("-column", column))
         return self.splitlist(self.call("grid", "slaves", *args))
 
+    grid_children = grid_slaves
+
     def place_configure(self, cnf=None, **kw):
         if isinstance(cnf, str):
             if kw:
@@ -1117,6 +1129,8 @@ class Misc:
 
     def place_slaves(self):
         return self.splitlist(self.call("place", "slaves", self._w))
+
+    place_children = place_slaves
 
     def lift(self, above_this=None):
         if above_this is None:
@@ -1363,6 +1377,11 @@ class Misc:
 
     def image_types(self):
         return self.splitlist(self.call("image", "types"))
+
+    def _root(self):
+        """Return the root Toplevel (Tk) widget."""
+        root = getattr(self, "tk", self)
+        return root
 
     focus = focus_set
     register = _register
@@ -1782,7 +1801,7 @@ class Tk(Wm):
 
     def _loadtk(self):
         self._tkloaded = True
-        self.call("tk", "windowingsystem")
+        self._windowingsystem = self.call("tk", "windowingsystem")
         self.createcommand("tkerror", _tkerror)
         self.createcommand("exit", _exit)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -1983,6 +2002,11 @@ class Widget(Misc):
         argv.extend(_normalize_tk_options(cnf, **kw))
         self.tk.call(*argv)
 
+    def _root(self):
+        """Return the root Toplevel (Tk) widget for this widget."""
+        root = self.tk
+        return root
+
     def destroy(self):
         try:
             super().destroy()
@@ -2029,6 +2053,12 @@ class Entry(_CoreWidget):
     xview_moveto = XView.xview_moveto
     xview_scroll = XView.xview_scroll
 
+    def bbox(self, index):
+        result = self._call_widget("bbox", index)
+        if not result:
+            return None
+        return tuple(self.getint(part) for part in self.splitlist(result))
+
     def delete(self, first, last=None):
         if last is None:
             return self._call_widget("delete", first)
@@ -2069,6 +2099,9 @@ class Entry(_CoreWidget):
 
     def selection_to(self, index):
         return self._call_widget("selection", "to", index)
+
+    def validate(self):
+        return bool(self.getboolean(self._call_widget("validate")))
 
     select_adjust = selection_adjust
     select_clear = selection_clear
@@ -2715,8 +2748,23 @@ class Text(_CoreWidget):
     window_config = window_configure
 
 
-class Toplevel(_CoreWidget):
+class Toplevel(_CoreWidget, Wm):
+    """Toplevel widget with window manager controls (title, geometry, protocol, etc.)."""
+
     _widget_command = "toplevel"
+
+    def __init__(self, master=None, cnf=None, **kw):
+        super().__init__(master, cnf, **kw)
+        self._protocol_commands = {}
+
+    def _wm_call(self, command, *args):
+        return self.call("wm", command, self._w, *args)
+
+    def destroy(self):
+        for command_name in list(getattr(self, "_protocol_commands", {}).values()):
+            self._release_command(command_name)
+        self._protocol_commands = {}
+        super().destroy()
 
 
 class Listbox(_CoreWidget):
@@ -2910,6 +2958,7 @@ class Menu(_CoreWidget):
         return self.getint(self._call_widget("yposition", index))
 
     entryconfig = entryconfigure
+    entryindex = index
 
 
 class Scrollbar(_CoreWidget):
@@ -3046,6 +3095,9 @@ class Spinbox(_CoreWidget):
 
     def selection_to(self, index):
         return self._call_widget("selection", "to", index)
+
+    def validate(self):
+        return bool(self.getboolean(self._call_widget("validate")))
 
 
 class Scale(_CoreWidget):
@@ -3264,6 +3316,15 @@ class PhotoImage(Image):
 
     def cget(self, option):
         return self.tk.call(self.name, "cget", _normalize_option_name(option))
+
+    def data(self, format=None, from_coords=None):
+        """Return the image data as a string."""
+        args = [self.name, "data"]
+        if format is not None:
+            args.extend(("-format", format))
+        if from_coords is not None:
+            args.extend(("-from", *from_coords))
+        return self.tk.call(*args)
 
     def copy(self):
         dest_image = PhotoImage(master=self.tk)
