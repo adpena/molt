@@ -96,6 +96,33 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
             }
         }
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let lo_bound = u8x16_splat(0x20); // space
+                    let hi_bound = u8x16_splat(0x7E); // '~'
+                    let quote = u8x16_splat(b'"');
+                    let backslash = u8x16_splat(b'\\');
+                    while i + 16 <= bytes.len() {
+                        let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                        let ge_lo = u8x16_ge(chunk, lo_bound);
+                        let le_hi = u8x16_le(chunk, hi_bound);
+                        let not_quote = v128_not(u8x16_eq(chunk, quote));
+                        let not_bs = v128_not(u8x16_eq(chunk, backslash));
+                        let safe = v128_and(v128_and(ge_lo, le_hi), v128_and(not_quote, not_bs));
+                        if u8x16_bitmask(safe) == 0xFFFF {
+                            out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                            i += 16;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // Process remaining characters (including where SIMD found a special char)
         for ch in value[i..].chars() {
             let code = ch as u32;
@@ -166,6 +193,32 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                         continue;
                     }
                     break;
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let lo_bound = u8x16_splat(0x20);
+                    let hi_bound = u8x16_splat(0x7E);
+                    let quote = u8x16_splat(b'"');
+                    let backslash = u8x16_splat(b'\\');
+                    while i + 16 <= bytes.len() {
+                        let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                        let ge_lo = u8x16_ge(chunk, lo_bound);
+                        let le_hi = u8x16_le(chunk, hi_bound);
+                        let not_quote = v128_not(u8x16_eq(chunk, quote));
+                        let not_bs = v128_not(u8x16_eq(chunk, backslash));
+                        let safe = v128_and(v128_and(ge_lo, le_hi), v128_and(not_quote, not_bs));
+                        if u8x16_bitmask(safe) == 0xFFFF {
+                            out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                            i += 16;
+                            continue;
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -282,6 +335,33 @@ fn json_scanstring_decode(
                         continue;
                     }
                     break;
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let lo_bound = u8x16_splat(0x20);
+                    let hi_bound = u8x16_splat(0x7E);
+                    let quote = u8x16_splat(b'"');
+                    let backslash = u8x16_splat(b'\\');
+                    while bi + 16 <= bytes.len() {
+                        let chunk = v128_load(bytes.as_ptr().add(bi) as *const v128);
+                        let ge_lo = u8x16_ge(chunk, lo_bound);
+                        let le_hi = u8x16_le(chunk, hi_bound);
+                        let not_quote = v128_not(u8x16_eq(chunk, quote));
+                        let not_bs = v128_not(u8x16_eq(chunk, backslash));
+                        let safe = v128_and(v128_and(ge_lo, le_hi), v128_and(not_quote, not_bs));
+                        if u8x16_bitmask(safe) == 0xFFFF {
+                            out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
+                            bi += 16;
+                            idx += 16;
+                            continue;
+                        }
+                        break;
+                    }
                 }
             }
         }
