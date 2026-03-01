@@ -1369,13 +1369,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest pending parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest parity that depends on dynamic execution (`eval`/`exec`/`compile`) is policy-deferred; revisit only behind explicit capability gating after utility analysis, performance evidence, and explicit user approval.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): warnings pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): argparse pending parity) |
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): argparse — 11 handle-based intrinsics wired (parser_new/add_argument/parse_args/format_help/format_usage/error/add_subparsers/add_parser/add_mutually_exclusive/group_add_argument/parser_drop). JSON monolith eliminated. |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): binascii pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.header pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.message pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.parser pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.policy pending parity) |
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.utils pending parity) |
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): email — 26 intrinsics wired across 9 submodules (message handle API, utils parsedate/getaddresses/make_msgid/format_datetime, policy_new, headerregistry address format, header encode_word). |
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): email remaining — _parseaddr Python RFC parser, charset mapping tables, feedparser stub, _header_value_parser stubs. |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): getopt pending parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): html pending parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): html.parser pending parity) |
