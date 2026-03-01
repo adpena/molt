@@ -261,7 +261,54 @@ const CRC32_TABLE: [u32; 256] = {
 
 fn crc32_compute(data: &[u8], initial: u32) -> u32 {
     let mut crc = !initial;
-    for &byte in data {
+    let mut i = 0usize;
+
+    // Hardware CRC32 acceleration on aarch64
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("crc") {
+            unsafe {
+                use std::arch::aarch64::*;
+                // Process 8 bytes at a time using hardware CRC32 instructions
+                while i + 8 <= data.len() {
+                    let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                    crc = __crc32d(crc, val);
+                    i += 8;
+                }
+                // Process remaining bytes one at a time
+                while i < data.len() {
+                    crc = __crc32b(crc, data[i]);
+                    i += 1;
+                }
+                return !crc;
+            }
+        }
+    }
+
+    // Hardware CRC32 acceleration on x86_64 (SSE4.2)
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                // Process 8 bytes at a time
+                while i + 8 <= data.len() {
+                    let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                    crc = _mm_crc32_u64(crc as u64, val) as u32;
+                    i += 8;
+                }
+                // Process remaining bytes
+                while i < data.len() {
+                    crc = _mm_crc32_u8(crc, data[i]);
+                    i += 1;
+                }
+                return !crc;
+            }
+        }
+    }
+
+    // Scalar fallback (table-based)
+    for &byte in &data[i..] {
         let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
         crc = CRC32_TABLE[idx] ^ (crc >> 8);
     }
@@ -301,10 +348,51 @@ const MOD_ADLER: u32 = 65521;
 fn adler32_compute(data: &[u8], initial: u32) -> u32 {
     let mut a = initial & 0xFFFF;
     let mut b = (initial >> 16) & 0xFFFF;
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD_ADLER;
-        b = (b + a) % MOD_ADLER;
+
+    // Process in chunks of up to NMAX bytes (5552) to defer the expensive modulo.
+    // Within each chunk, a and b cannot overflow a u32 since:
+    //   a_max = 65520 + 5552*255 = 1,481,280 < 2^32
+    //   b_max ≤ NMAX * a_max < 2^32
+    const NMAX: usize = 5552;
+
+    let mut idx = 0usize;
+    while idx < data.len() {
+        let chunk_end = (idx + NMAX).min(data.len());
+
+        // Unrolled inner loop: process 16 bytes per iteration for better ILP
+        while idx + 16 <= chunk_end {
+            // Manually unrolled — helps auto-vectorization and hides latency
+            a += data[idx] as u32; b += a;
+            a += data[idx + 1] as u32; b += a;
+            a += data[idx + 2] as u32; b += a;
+            a += data[idx + 3] as u32; b += a;
+            a += data[idx + 4] as u32; b += a;
+            a += data[idx + 5] as u32; b += a;
+            a += data[idx + 6] as u32; b += a;
+            a += data[idx + 7] as u32; b += a;
+            a += data[idx + 8] as u32; b += a;
+            a += data[idx + 9] as u32; b += a;
+            a += data[idx + 10] as u32; b += a;
+            a += data[idx + 11] as u32; b += a;
+            a += data[idx + 12] as u32; b += a;
+            a += data[idx + 13] as u32; b += a;
+            a += data[idx + 14] as u32; b += a;
+            a += data[idx + 15] as u32; b += a;
+            idx += 16;
+        }
+
+        // Scalar tail for remaining bytes in this chunk
+        while idx < chunk_end {
+            a += data[idx] as u32;
+            b += a;
+            idx += 1;
+        }
+
+        // Apply modulo only at chunk boundary (amortized cost)
+        a %= MOD_ADLER;
+        b %= MOD_ADLER;
     }
+
     (b << 16) | a
 }
 

@@ -1,5 +1,5 @@
 use crate::PyToken;
-use memchr::{memchr, memmem};
+use memchr::{memchr, memchr2, memmem};
 use molt_obj_model::MoltObject;
 
 use crate::{
@@ -1019,6 +1019,161 @@ where
     Some(list_bits)
 }
 
+/// Find the next ASCII whitespace byte starting from `start`.
+/// Uses SIMD to scan 16 bytes at a time on aarch64/x86_64.
+#[inline]
+fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    // SIMD fast path: classify 16 bytes at a time as whitespace
+    #[cfg(target_arch = "aarch64")]
+    {
+        if hay.len() - i >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let ws_space = vdupq_n_u8(b' ');
+                let ws_tab = vdupq_n_u8(b'\t');
+                let ws_nl = vdupq_n_u8(b'\n');
+                let ws_cr = vdupq_n_u8(b'\r');
+                let ws_vt = vdupq_n_u8(0x0B);
+                let ws_ff = vdupq_n_u8(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = vld1q_u8(hay.as_ptr().add(i));
+                    let is_ws = vorrq_u8(
+                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
+                        vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
+                    );
+                    if vmaxvq_u8(is_ws) != 0 {
+                        // At least one whitespace byte in this chunk — find exact position
+                        let mut ws_bytes = [0u8; 16];
+                        vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
+                        for j in 0..16 {
+                            if ws_bytes[j] != 0 {
+                                return Some(i + j);
+                            }
+                        }
+                    }
+                    i += 16;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if hay.len() - i >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let ws_space = _mm_set1_epi8(b' ' as i8);
+                let ws_tab = _mm_set1_epi8(b'\t' as i8);
+                let ws_nl = _mm_set1_epi8(b'\n' as i8);
+                let ws_cr = _mm_set1_epi8(b'\r' as i8);
+                let ws_vt = _mm_set1_epi8(0x0B);
+                let ws_ff = _mm_set1_epi8(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = _mm_loadu_si128(hay.as_ptr().add(i) as *const __m128i);
+                    let is_ws = _mm_or_si128(
+                        _mm_or_si128(
+                            _mm_or_si128(_mm_cmpeq_epi8(v, ws_space), _mm_cmpeq_epi8(v, ws_tab)),
+                            _mm_or_si128(_mm_cmpeq_epi8(v, ws_nl), _mm_cmpeq_epi8(v, ws_cr)),
+                        ),
+                        _mm_or_si128(_mm_cmpeq_epi8(v, ws_vt), _mm_cmpeq_epi8(v, ws_ff)),
+                    );
+                    let mask = _mm_movemask_epi8(is_ws) as u32;
+                    if mask != 0 {
+                        return Some(i + mask.trailing_zeros() as usize);
+                    }
+                    i += 16;
+                }
+            }
+        }
+    }
+    // Scalar tail
+    for j in i..hay.len() {
+        if hay[j].is_ascii_whitespace() {
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// Skip past ASCII whitespace bytes starting from `start`.
+/// Uses SIMD to scan 16 bytes at a time.
+#[inline]
+fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
+    let mut i = start;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if hay.len() - i >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let ws_space = vdupq_n_u8(b' ');
+                let ws_tab = vdupq_n_u8(b'\t');
+                let ws_nl = vdupq_n_u8(b'\n');
+                let ws_cr = vdupq_n_u8(b'\r');
+                let ws_vt = vdupq_n_u8(0x0B);
+                let ws_ff = vdupq_n_u8(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = vld1q_u8(hay.as_ptr().add(i));
+                    let is_ws = vorrq_u8(
+                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
+                        vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
+                    );
+                    if vminvq_u8(is_ws) == 0xFF {
+                        // Entire chunk is whitespace — skip
+                        i += 16;
+                        continue;
+                    }
+                    // Mixed — find first non-whitespace
+                    let mut ws_bytes = [0u8; 16];
+                    vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
+                    for j in 0..16 {
+                        if ws_bytes[j] == 0 {
+                            return i + j;
+                        }
+                    }
+                    return i + 16;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if hay.len() - i >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let ws_space = _mm_set1_epi8(b' ' as i8);
+                let ws_tab = _mm_set1_epi8(b'\t' as i8);
+                let ws_nl = _mm_set1_epi8(b'\n' as i8);
+                let ws_cr = _mm_set1_epi8(b'\r' as i8);
+                let ws_vt = _mm_set1_epi8(0x0B);
+                let ws_ff = _mm_set1_epi8(0x0C);
+                while i + 16 <= hay.len() {
+                    let v = _mm_loadu_si128(hay.as_ptr().add(i) as *const __m128i);
+                    let is_ws = _mm_or_si128(
+                        _mm_or_si128(
+                            _mm_or_si128(_mm_cmpeq_epi8(v, ws_space), _mm_cmpeq_epi8(v, ws_tab)),
+                            _mm_or_si128(_mm_cmpeq_epi8(v, ws_nl), _mm_cmpeq_epi8(v, ws_cr)),
+                        ),
+                        _mm_or_si128(_mm_cmpeq_epi8(v, ws_vt), _mm_cmpeq_epi8(v, ws_ff)),
+                    );
+                    let mask = _mm_movemask_epi8(is_ws) as u32;
+                    if mask == 0xFFFF {
+                        i += 16;
+                        continue;
+                    }
+                    // Find first non-whitespace (first zero bit)
+                    return i + (!mask).trailing_zeros() as usize;
+                }
+            }
+        }
+    }
+    while i < hay.len() && hay[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
 fn split_bytes_whitespace_to_list<F>(_py: &PyToken<'_>, hay: &[u8], mut alloc: F) -> Option<u64>
 where
     F: FnMut(&[u8]) -> *mut u8,
@@ -1028,27 +1183,17 @@ where
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let mut start: Option<usize> = None;
-    for (idx, byte) in hay.iter().enumerate() {
-        if byte.is_ascii_whitespace() {
-            if let Some(s) = start {
-                let part = &hay[s..idx];
-                let ptr = alloc(part);
-                if ptr.is_null() {
-                    dec_ref_bits(_py, list_bits);
-                    return None;
-                }
-                unsafe {
-                    list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-                }
-                start = None;
-            }
-        } else if start.is_none() {
-            start = Some(idx);
-        }
-    }
-    if let Some(s) = start {
-        let part = &hay[s..];
+
+    // Use SIMD-accelerated whitespace scanning
+    let mut idx = skip_ascii_whitespace(hay, 0);
+    while idx < hay.len() {
+        let word_start = idx;
+        // Find next whitespace (end of word)
+        idx = match find_next_ascii_whitespace(hay, idx) {
+            Some(ws_pos) => ws_pos,
+            None => hay.len(),
+        };
+        let part = &hay[word_start..idx];
         let ptr = alloc(part);
         if ptr.is_null() {
             dec_ref_bits(_py, list_bits);
@@ -1057,6 +1202,8 @@ where
         unsafe {
             list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
         }
+        // Skip whitespace between words
+        idx = skip_ascii_whitespace(hay, idx);
     }
     Some(list_bits)
 }
@@ -1078,10 +1225,7 @@ where
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let mut idx = 0usize;
-    while idx < hay.len() && hay[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
+    let mut idx = skip_ascii_whitespace(hay, 0);
     if idx >= hay.len() {
         return Some(list_bits);
     }
@@ -1099,9 +1243,30 @@ where
     let mut start = idx;
     let mut splits = 0i64;
     while idx < hay.len() {
-        if hay[idx].is_ascii_whitespace() {
-            let part = &hay[start..idx];
-            let ptr = alloc(part);
+        // Use SIMD-accelerated whitespace search
+        let ws_pos = match find_next_ascii_whitespace(hay, idx) {
+            Some(pos) => pos,
+            None => {
+                // No more whitespace — rest of string is the final word
+                break;
+            }
+        };
+        let part = &hay[start..ws_pos];
+        let ptr = alloc(part);
+        if ptr.is_null() {
+            dec_ref_bits(_py, list_bits);
+            return None;
+        }
+        unsafe {
+            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+        }
+        splits += 1;
+        idx = skip_ascii_whitespace(hay, ws_pos);
+        if idx >= hay.len() {
+            return Some(list_bits);
+        }
+        if splits >= maxsplit {
+            let ptr = alloc(&hay[idx..]);
             if ptr.is_null() {
                 dec_ref_bits(_py, list_bits);
                 return None;
@@ -1109,38 +1274,21 @@ where
             unsafe {
                 list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
             }
-            splits += 1;
-            idx += 1;
-            while idx < hay.len() && hay[idx].is_ascii_whitespace() {
-                idx += 1;
-            }
-            if idx >= hay.len() {
-                return Some(list_bits);
-            }
-            if splits >= maxsplit {
-                let ptr = alloc(&hay[idx..]);
-                if ptr.is_null() {
-                    dec_ref_bits(_py, list_bits);
-                    return None;
-                }
-                unsafe {
-                    list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-                }
-                return Some(list_bits);
-            }
-            start = idx;
-        } else {
-            idx += 1;
+            return Some(list_bits);
         }
+        start = idx;
     }
-    let part = &hay[start..];
-    let ptr = alloc(part);
-    if ptr.is_null() {
-        dec_ref_bits(_py, list_bits);
-        return None;
-    }
-    unsafe {
-        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+    // Last word (no trailing whitespace found)
+    if start < hay.len() {
+        let part = &hay[start..];
+        let ptr = alloc(part);
+        if ptr.is_null() {
+            dec_ref_bits(_py, list_bits);
+            return None;
+        }
+        unsafe {
+            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+        }
     }
     Some(list_bits)
 }
@@ -1227,10 +1375,6 @@ where
     Some(list_bits)
 }
 
-fn is_linebreak_byte(byte: u8) -> bool {
-    matches!(byte, b'\n' | b'\r')
-}
-
 pub(crate) fn splitlines_bytes_to_list<F>(
     _py: &PyToken<'_>,
     hay: &[u8],
@@ -1247,18 +1391,19 @@ where
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
     let mut start = 0usize;
     let mut idx = 0usize;
+    // Use memchr2 (SIMD-backed) to find '\n' or '\r' line breaks
     while idx < hay.len() {
-        let byte = hay[idx];
-        if is_linebreak_byte(byte) {
-            let mut break_end = idx + 1;
+        if let Some(break_pos) = memchr2(b'\n', b'\r', &hay[idx..]) {
+            let abs_pos = idx + break_pos;
+            let byte = hay[abs_pos];
+            let mut break_end = abs_pos + 1;
             if byte == b'\r' && break_end < hay.len() && hay[break_end] == b'\n' {
                 break_end += 1;
             }
-            let end = idx;
             let part = if keepends {
                 &hay[start..break_end]
             } else {
-                &hay[start..end]
+                &hay[start..abs_pos]
             };
             let ptr = alloc(part);
             if ptr.is_null() {
@@ -1270,9 +1415,9 @@ where
             }
             start = break_end;
             idx = break_end;
-            continue;
+        } else {
+            break;
         }
-        idx += 1;
     }
     if start < hay.len() {
         let part = &hay[start..];
