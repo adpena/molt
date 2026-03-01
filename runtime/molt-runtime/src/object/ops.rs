@@ -20874,6 +20874,10 @@ pub extern "C" fn molt_string_isspace(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII strings use bulk whitespace check
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_whitespace(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -23346,6 +23350,88 @@ fn bytes_ascii_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
+/// SIMD-accelerated check: are ALL bytes ASCII whitespace?
+/// Uses NEON/SSE2 to test 16 bytes at a time against the 6 ASCII
+/// whitespace characters (' ', '\t', '\n', '\r', 0x0b, 0x0c).
+fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+    let ptr = bytes.as_ptr();
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let space = vdupq_n_u8(b' ');
+            let tab = vdupq_n_u8(b'\t');
+            let nl = vdupq_n_u8(b'\n');
+            let cr = vdupq_n_u8(b'\r');
+            let vt = vdupq_n_u8(0x0b);
+            let ff = vdupq_n_u8(0x0c);
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(ptr.add(i));
+                let is_ws = vorrq_u8(
+                    vorrq_u8(
+                        vorrq_u8(vceqq_u8(chunk, space), vceqq_u8(chunk, tab)),
+                        vceqq_u8(chunk, nl),
+                    ),
+                    vorrq_u8(
+                        vceqq_u8(chunk, cr),
+                        vorrq_u8(vceqq_u8(chunk, vt), vceqq_u8(chunk, ff)),
+                    ),
+                );
+                // If any byte is NOT whitespace, vminvq will be 0
+                if vminvq_u8(is_ws) == 0 {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let space = _mm_set1_epi8(b' ' as i8);
+            let tab = _mm_set1_epi8(b'\t' as i8);
+            let nl = _mm_set1_epi8(b'\n' as i8);
+            let cr = _mm_set1_epi8(b'\r' as i8);
+            let vt = _mm_set1_epi8(0x0b);
+            let ff = _mm_set1_epi8(0x0c);
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(ptr.add(i) as *const __m128i);
+                let is_ws = _mm_or_si128(
+                    _mm_or_si128(
+                        _mm_or_si128(_mm_cmpeq_epi8(chunk, space), _mm_cmpeq_epi8(chunk, tab)),
+                        _mm_cmpeq_epi8(chunk, nl),
+                    ),
+                    _mm_or_si128(
+                        _mm_cmpeq_epi8(chunk, cr),
+                        _mm_or_si128(_mm_cmpeq_epi8(chunk, vt), _mm_cmpeq_epi8(chunk, ff)),
+                    ),
+                );
+                // All bytes must be whitespace → all mask bits must be set
+                if _mm_movemask_epi8(is_ws) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    // Scalar tail
+    while i < bytes.len() {
+        if !bytes_ascii_space(bytes[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 #[inline]
 fn bytes_ascii_alpha(b: u8) -> bool {
     b.is_ascii_alphabetic()
@@ -24052,18 +24138,14 @@ pub extern "C" fn molt_bytearray_isdigit(hay_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_space(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_whitespace)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_space(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_whitespace)
     })
 }
 
@@ -34864,6 +34946,53 @@ unsafe fn find_ascii_split_whitespace_sse2(bytes: &[u8], start: usize) -> usize 
     len
 }
 
+/// NEON variant: find first ASCII whitespace byte in slice starting at `start`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn find_ascii_split_whitespace_neon(bytes: &[u8], start: usize) -> usize {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = start;
+        let len = bytes.len();
+        let sp = vdupq_n_u8(b' ');
+        let nl = vdupq_n_u8(b'\n');
+        let cr = vdupq_n_u8(b'\r');
+        let tab = vdupq_n_u8(b'\t');
+        let vt = vdupq_n_u8(0x0b);
+        let ff = vdupq_n_u8(0x0c);
+        while i + 16 <= len {
+            let chunk = vld1q_u8(bytes.as_ptr().add(i));
+            let is_ws = vorrq_u8(
+                vorrq_u8(
+                    vorrq_u8(vceqq_u8(chunk, sp), vceqq_u8(chunk, nl)),
+                    vceqq_u8(chunk, cr),
+                ),
+                vorrq_u8(
+                    vceqq_u8(chunk, tab),
+                    vorrq_u8(vceqq_u8(chunk, vt), vceqq_u8(chunk, ff)),
+                ),
+            );
+            if vmaxvq_u8(is_ws) != 0 {
+                // Found whitespace in this chunk — scan for exact position
+                let mut buf = [0u8; 16];
+                vst1q_u8(buf.as_mut_ptr(), is_ws);
+                for j in 0..16 {
+                    if buf[j] != 0 {
+                        return i + j;
+                    }
+                }
+            }
+            i += 16;
+        }
+        while i < len {
+            if is_ascii_split_whitespace_byte(bytes[i]) {
+                return i;
+            }
+            i += 1;
+        }
+        len
+    }
+}
+
 fn find_ascii_split_whitespace(bytes: &[u8], start: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     {
@@ -34871,14 +35000,21 @@ fn find_ascii_split_whitespace(bytes: &[u8], start: usize) -> usize {
             return unsafe { find_ascii_split_whitespace_sse2(bytes, start) };
         }
     }
-    let mut i = start;
-    while i < bytes.len() {
-        if is_ascii_split_whitespace_byte(bytes[i]) {
-            return i;
-        }
-        i += 1;
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { find_ascii_split_whitespace_neon(bytes, start) };
     }
-    bytes.len()
+    #[allow(unreachable_code)]
+    {
+        let mut i = start;
+        while i < bytes.len() {
+            if is_ascii_split_whitespace_byte(bytes[i]) {
+                return i;
+            }
+            i += 1;
+        }
+        bytes.len()
+    }
 }
 
 unsafe fn split_ascii_whitespace_dict_inc_tokens(
