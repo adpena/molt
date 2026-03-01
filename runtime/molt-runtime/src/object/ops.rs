@@ -23425,6 +23425,31 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") && bytes.len() >= 16 {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let mask_lo = u8x16_splat(0x0F);
+                    let hex_lut = v128_load(b"0123456789abcdef".as_ptr() as *const v128);
+                    while i + 16 <= bytes.len() {
+                        let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                        let hi_nibbles = v128_and(u16x8_shr(chunk, 4), mask_lo);
+                        let lo_nibbles = v128_and(chunk, mask_lo);
+                        let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
+                        let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
+                        // Interleave hi and lo hex chars
+                        let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                        let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
+                        let len = raw.len();
+                        raw.set_len(len + 32);
+                        v128_store(raw.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
+                        v128_store(raw.as_mut_ptr().add(len + 16) as *mut v128, interleaved_hi);
+                        i += 16;
+                    }
+                }
+            }
+        }
         // Scalar tail
         for &b in &bytes[i..] {
             raw.push(HEX[(b >> 4) as usize]);
