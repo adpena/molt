@@ -801,6 +801,32 @@ pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
             Ok(e) => e,
             Err(exc) => return exc,
         };
+        // SIMD fast path for byte typecodes: use memchr for O(n/16) counting
+        if matches!(tc, Typecode::UB) {
+            if let ArrayElem::Uint(v) = target {
+                if v <= 255 {
+                    let needle = v as u8;
+                    let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
+                    return int_bits_from_i64(_py, count);
+                }
+            } else if let ArrayElem::Int(v) = target {
+                if v >= 0 && v <= 255 {
+                    let needle = v as u8;
+                    let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
+                    return int_bits_from_i64(_py, count);
+                }
+            }
+        }
+        if matches!(tc, Typecode::B) {
+            if let ArrayElem::Int(v) = target {
+                if v >= -128 && v <= 127 {
+                    let needle = v as u8; // Two's complement byte
+                    let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
+                    return int_bits_from_i64(_py, count);
+                }
+            }
+        }
+
         let mut count = 0i64;
         for i in 0..handle.len() {
             if let Some(elem) = handle.read_elem(i) {
@@ -832,6 +858,35 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
             Ok(e) => e,
             Err(exc) => return exc,
         };
+        // SIMD fast path for byte typecodes: use memchr for O(n/16) search
+        if matches!(tc, Typecode::UB) {
+            if let ArrayElem::Uint(v) = target {
+                if v <= 255 {
+                    if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
+                        return int_bits_from_i64(_py, pos as i64);
+                    }
+                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                }
+            } else if let ArrayElem::Int(v) = target {
+                if v >= 0 && v <= 255 {
+                    if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
+                        return int_bits_from_i64(_py, pos as i64);
+                    }
+                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                }
+            }
+        }
+        if matches!(tc, Typecode::B) {
+            if let ArrayElem::Int(v) = target {
+                if v >= -128 && v <= 127 {
+                    if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
+                        return int_bits_from_i64(_py, pos as i64);
+                    }
+                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                }
+            }
+        }
+
         for i in 0..handle.len() {
             if let Some(elem) = handle.read_elem(i) {
                 let matches = match (elem, target) {
