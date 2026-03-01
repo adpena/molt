@@ -33,6 +33,9 @@ __all__ = [
     "deque",
     "namedtuple",
     "OrderedDict",
+    "UserDict",
+    "UserList",
+    "UserString",
 ]
 
 _MISSING = object()
@@ -1145,3 +1148,617 @@ class ChainMap:
                 _MOLT_CHAINMAP_DROP(handle)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# UserDict — pure Python dict wrapper, designed for subclassing
+# ---------------------------------------------------------------------------
+
+
+class UserDict:
+    """A plain-dict wrapper that is safe to subclass.
+
+    Mirrors CPython's ``collections.UserDict`` (Python >= 3.12).
+    The underlying storage is ``self.data``, a plain :class:`dict`.
+    """
+
+    # No __slots__: subclasses need to be able to add instance attributes.
+
+    def __init__(self, dict=None, /, **kwargs) -> None:
+        self.data: Any = {}
+        if dict is not None:
+            self.update(dict)
+        if kwargs:
+            self.update(kwargs)
+
+    # --- Repr / equality ---
+
+    def __repr__(self) -> str:
+        return repr(self.data)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, UserDict):
+            return self.data == other.data
+        return self.data == other
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    # --- Mapping protocol ---
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, key: Any) -> Any:
+        if key in self.data:
+            return self.data[key]
+        if hasattr(self.__class__, "__missing__"):
+            return self.__class__.__missing__(self, key)
+        raise KeyError(key)
+
+    def __setitem__(self, key: Any, item: Any) -> None:
+        self.data[key] = item
+
+    def __delitem__(self, key: Any) -> None:
+        del self.data[key]
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self.data
+
+    # --- Dict views ---
+
+    def keys(self):
+        return self.data.keys()
+
+    def items(self):
+        return self.data.items()
+
+    def values(self):
+        return self.data.values()
+
+    # --- Common dict methods ---
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return self.data.get(key, default)
+
+    def pop(self, key: Any, *args) -> Any:
+        return self.data.pop(key, *args)
+
+    def popitem(self) -> tuple:
+        return self.data.popitem()
+
+    def clear(self) -> None:
+        self.data.clear()
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        if key not in self.data:
+            self.data[key] = default
+        return self.data[key]
+
+    def update(self, dict=None, /, **kwargs) -> None:  # type: ignore[override]
+        if dict is not None:
+            if isinstance(dict, UserDict):
+                self.data.update(dict.data)
+            elif hasattr(dict, "keys"):
+                for key in dict.keys():
+                    self[key] = dict[key]
+            else:
+                for key, value in dict:
+                    self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    # --- Merge operators (Python 3.9+) ---
+
+    def __or__(self, other: Any) -> "UserDict":
+        if isinstance(other, UserDict):
+            new = self.__class__(self.data)
+            new.update(other.data)
+            return new
+        if isinstance(other, dict):
+            new = self.__class__(self.data)
+            new.update(other)
+            return new
+        return NotImplemented
+
+    def __ror__(self, other: Any) -> "UserDict":
+        if isinstance(other, dict):
+            new = self.__class__(other)
+            new.update(self.data)
+            return new
+        return NotImplemented
+
+    def __ior__(self, other: Any) -> "UserDict":
+        if isinstance(other, UserDict):
+            self.update(other.data)
+        elif isinstance(other, dict):
+            self.update(other)
+        else:
+            return NotImplemented
+        return self
+
+    # --- Copy ---
+
+    def copy(self) -> "UserDict":
+        if self.__class__ is UserDict:
+            return UserDict(self.data.copy())
+        import copy as _copy
+
+        data = self.data
+        try:
+            self.data = {}
+            c = _copy.copy(self)
+        finally:
+            self.data = data
+        c.update(self)
+        return c
+
+    def __copy__(self) -> "UserDict":
+        return self.copy()
+
+    # --- Class method ---
+
+    @classmethod
+    def fromkeys(cls, iterable, value=None) -> "UserDict":
+        d = cls()
+        for key in iterable:
+            d[key] = value
+        return d
+
+    def __hash__(self):  # type: ignore[override]
+        raise TypeError("unhashable type: 'UserDict'")
+
+
+# ---------------------------------------------------------------------------
+# UserList — pure Python list wrapper, designed for subclassing
+# ---------------------------------------------------------------------------
+
+
+class UserList:
+    """A plain-list wrapper that is safe to subclass.
+
+    Mirrors CPython's ``collections.UserList`` (Python >= 3.12).
+    The underlying storage is ``self.data``, a plain :class:`list`.
+    """
+
+    def __init__(self, initlist=None) -> None:
+        self.data: Any = []
+        if initlist is not None:
+            if isinstance(initlist, list):
+                self.data = initlist[:]
+            elif isinstance(initlist, UserList):
+                self.data = initlist.data[:]
+            else:
+                self.data = list(initlist)
+
+    # --- Repr / equality / ordering ---
+
+    def __repr__(self) -> str:
+        return repr(self.data)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, UserList):
+            return self.data == other.data
+        return self.data == other
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, UserList):
+            return self.data < other.data
+        return self.data < other
+
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, UserList):
+            return self.data <= other.data
+        return self.data <= other
+
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, UserList):
+            return self.data > other.data
+        return self.data > other
+
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, UserList):
+            return self.data >= other.data
+        return self.data >= other
+
+    # --- Sequence protocol ---
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return self.__class__(self.data[i])
+        return self.data[i]
+
+    def __setitem__(self, i, item) -> None:
+        self.data[i] = item
+
+    def __delitem__(self, i) -> None:
+        del self.data[i]
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __contains__(self, item: Any) -> bool:
+        return item in self.data
+
+    def __reversed__(self):
+        return reversed(self.data)
+
+    # --- Concatenation / repetition ---
+
+    def __add__(self, other: Any) -> "UserList":
+        if isinstance(other, UserList):
+            return self.__class__(self.data + other.data)
+        if isinstance(other, list):
+            return self.__class__(self.data + other)
+        return self.__class__(self.data + list(other))
+
+    def __radd__(self, other: Any) -> "UserList":
+        if isinstance(other, UserList):
+            return self.__class__(other.data + self.data)
+        if isinstance(other, list):
+            return self.__class__(other + self.data)
+        return self.__class__(list(other) + self.data)
+
+    def __iadd__(self, other: Any) -> "UserList":
+        if isinstance(other, UserList):
+            self.data += other.data
+        else:
+            self.data += list(other)
+        return self
+
+    def __mul__(self, n: int) -> "UserList":
+        return self.__class__(self.data * n)
+
+    def __rmul__(self, n: int) -> "UserList":
+        return self.__class__(self.data * n)
+
+    def __imul__(self, n: int) -> "UserList":
+        self.data *= n
+        return self
+
+    # --- Mutable sequence methods ---
+
+    def append(self, item: Any) -> None:
+        self.data.append(item)
+
+    def insert(self, i: int, item: Any) -> None:
+        self.data.insert(i, item)
+
+    def pop(self, i: int = -1) -> Any:
+        return self.data.pop(i)
+
+    def remove(self, item: Any) -> None:
+        self.data.remove(item)
+
+    def clear(self) -> None:
+        self.data.clear()
+
+    def copy(self) -> "UserList":
+        return self.__class__(self.data.copy())
+
+    def count(self, item: Any) -> int:
+        return self.data.count(item)
+
+    def index(self, item: Any, *args) -> int:
+        return self.data.index(item, *args)
+
+    def reverse(self) -> None:
+        self.data.reverse()
+
+    def sort(self, /, *args, **kwds) -> None:
+        self.data.sort(*args, **kwds)
+
+    def extend(self, other: Any) -> None:
+        if isinstance(other, UserList):
+            self.data.extend(other.data)
+        else:
+            self.data.extend(other)
+
+    def __hash__(self):  # type: ignore[override]
+        raise TypeError("unhashable type: 'UserList'")
+
+
+# ---------------------------------------------------------------------------
+# UserString — pure Python str wrapper, designed for subclassing
+# ---------------------------------------------------------------------------
+
+
+class UserString:
+    """A plain-string wrapper that is safe to subclass.
+
+    Mirrors CPython's ``collections.UserString`` (Python >= 3.12).
+    The underlying storage is ``self.data``, a plain :class:`str`.
+    """
+
+    def __init__(self, seq: Any = "") -> None:
+        if isinstance(seq, str):
+            self.data = seq
+        elif isinstance(seq, UserString):
+            self.data = seq.data[:]
+        else:
+            self.data = str(seq)
+
+    # --- Repr / str / bytes ---
+
+    def __str__(self) -> str:
+        return self.data
+
+    def __repr__(self) -> str:
+        return repr(self.data)
+
+    def __bytes__(self) -> bytes:
+        return self.data.encode()
+
+    # --- Hashing / equality / ordering ---
+
+    def __hash__(self) -> int:
+        return hash(self.data)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, UserString):
+            return self.data == other.data
+        return self.data == other
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, UserString):
+            return self.data < other.data
+        return self.data < other
+
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, UserString):
+            return self.data <= other.data
+        return self.data <= other
+
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, UserString):
+            return self.data > other.data
+        return self.data > other
+
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, UserString):
+            return self.data >= other.data
+        return self.data >= other
+
+    # --- Sequence protocol ---
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, index) -> "UserString":
+        return self.__class__(self.data[index])
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __contains__(self, char: Any) -> bool:
+        if isinstance(char, UserString):
+            char = char.data
+        return char in self.data
+
+    # --- Concatenation / repetition ---
+
+    def __add__(self, other: Any) -> "UserString":
+        if isinstance(other, UserString):
+            return self.__class__(self.data + other.data)
+        if isinstance(other, str):
+            return self.__class__(self.data + other)
+        return NotImplemented
+
+    def __radd__(self, other: Any) -> "UserString":
+        if isinstance(other, str):
+            return self.__class__(other + self.data)
+        return NotImplemented
+
+    def __mul__(self, n: int) -> "UserString":
+        return self.__class__(self.data * n)
+
+    def __rmul__(self, n: int) -> "UserString":
+        return self.__class__(self.data * n)
+
+    def __mod__(self, args: Any) -> "UserString":
+        return self.__class__(self.data % args)
+
+    # --- Format ---
+
+    def __format__(self, format_spec: str) -> str:
+        return self.data.__format__(format_spec)
+
+    # --- String method delegations ---
+
+    def capitalize(self) -> "UserString":
+        return self.__class__(self.data.capitalize())
+
+    def casefold(self) -> "UserString":
+        return self.__class__(self.data.casefold())
+
+    def center(self, width: int, *args) -> "UserString":
+        return self.__class__(self.data.center(width, *args))
+
+    def count(self, sub: Any, *args) -> int:
+        if isinstance(sub, UserString):
+            sub = sub.data
+        return self.data.count(sub, *args)
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        return self.data.encode(encoding, errors)
+
+    def endswith(self, suffix: Any, *args) -> bool:
+        if isinstance(suffix, UserString):
+            suffix = suffix.data
+        return self.data.endswith(suffix, *args)
+
+    def expandtabs(self, tabsize: int = 8) -> "UserString":
+        return self.__class__(self.data.expandtabs(tabsize))
+
+    def find(self, sub: Any, *args) -> int:
+        if isinstance(sub, UserString):
+            sub = sub.data
+        return self.data.find(sub, *args)
+
+    def format(self, /, *args, **kwds) -> "UserString":
+        return self.__class__(self.data.format(*args, **kwds))
+
+    def format_map(self, map: Any) -> "UserString":
+        return self.__class__(self.data.format_map(map))
+
+    def index(self, sub: Any, *args) -> int:
+        if isinstance(sub, UserString):
+            sub = sub.data
+        return self.data.index(sub, *args)
+
+    def isalnum(self) -> bool:
+        return self.data.isalnum()
+
+    def isalpha(self) -> bool:
+        return self.data.isalpha()
+
+    def isascii(self) -> bool:
+        return self.data.isascii()
+
+    def isdecimal(self) -> bool:
+        return self.data.isdecimal()
+
+    def isdigit(self) -> bool:
+        return self.data.isdigit()
+
+    def isidentifier(self) -> bool:
+        return self.data.isidentifier()
+
+    def islower(self) -> bool:
+        return self.data.islower()
+
+    def isnumeric(self) -> bool:
+        return self.data.isnumeric()
+
+    def isprintable(self) -> bool:
+        return self.data.isprintable()
+
+    def isspace(self) -> bool:
+        return self.data.isspace()
+
+    def istitle(self) -> bool:
+        return self.data.istitle()
+
+    def isupper(self) -> bool:
+        return self.data.isupper()
+
+    def join(self, iterable) -> "UserString":
+        return self.__class__(self.data.join(iterable))
+
+    def ljust(self, width: int, *args) -> "UserString":
+        return self.__class__(self.data.ljust(width, *args))
+
+    def lower(self) -> "UserString":
+        return self.__class__(self.data.lower())
+
+    def lstrip(self, chars: Any = None) -> "UserString":
+        if isinstance(chars, UserString):
+            chars = chars.data
+        return self.__class__(self.data.lstrip(chars))
+
+    def maketrans(self, *args):
+        return self.data.maketrans(*args)
+
+    def partition(self, sep: Any) -> tuple:
+        if isinstance(sep, UserString):
+            sep = sep.data
+        return self.data.partition(sep)
+
+    def removeprefix(self, prefix: Any) -> "UserString":
+        if isinstance(prefix, UserString):
+            prefix = prefix.data
+        return self.__class__(self.data.removeprefix(prefix))
+
+    def removesuffix(self, suffix: Any) -> "UserString":
+        if isinstance(suffix, UserString):
+            suffix = suffix.data
+        return self.__class__(self.data.removesuffix(suffix))
+
+    def replace(self, old: Any, new: Any, *args) -> "UserString":
+        if isinstance(old, UserString):
+            old = old.data
+        if isinstance(new, UserString):
+            new = new.data
+        return self.__class__(self.data.replace(old, new, *args))
+
+    def rfind(self, sub: Any, *args) -> int:
+        if isinstance(sub, UserString):
+            sub = sub.data
+        return self.data.rfind(sub, *args)
+
+    def rindex(self, sub: Any, *args) -> int:
+        if isinstance(sub, UserString):
+            sub = sub.data
+        return self.data.rindex(sub, *args)
+
+    def rjust(self, width: int, *args) -> "UserString":
+        return self.__class__(self.data.rjust(width, *args))
+
+    def rpartition(self, sep: Any) -> tuple:
+        if isinstance(sep, UserString):
+            sep = sep.data
+        return self.data.rpartition(sep)
+
+    def rsplit(self, sep: Any = None, maxsplit: int = -1) -> list:
+        if isinstance(sep, UserString):
+            sep = sep.data
+        return self.data.rsplit(sep, maxsplit)
+
+    def rstrip(self, chars: Any = None) -> "UserString":
+        if isinstance(chars, UserString):
+            chars = chars.data
+        return self.__class__(self.data.rstrip(chars))
+
+    def split(self, sep: Any = None, maxsplit: int = -1) -> list:
+        if isinstance(sep, UserString):
+            sep = sep.data
+        return self.data.split(sep, maxsplit)
+
+    def splitlines(self, keepends: bool = False) -> list:
+        return self.data.splitlines(keepends)
+
+    def startswith(self, prefix: Any, *args) -> bool:
+        if isinstance(prefix, UserString):
+            prefix = prefix.data
+        return self.data.startswith(prefix, *args)
+
+    def strip(self, chars: Any = None) -> "UserString":
+        if isinstance(chars, UserString):
+            chars = chars.data
+        return self.__class__(self.data.strip(chars))
+
+    def swapcase(self) -> "UserString":
+        return self.__class__(self.data.swapcase())
+
+    def title(self) -> "UserString":
+        return self.__class__(self.data.title())
+
+    def translate(self, *args) -> "UserString":
+        return self.__class__(self.data.translate(*args))
+
+    def upper(self) -> "UserString":
+        return self.__class__(self.data.upper())
+
+    def zfill(self, width: int) -> "UserString":
+        return self.__class__(self.data.zfill(width))
