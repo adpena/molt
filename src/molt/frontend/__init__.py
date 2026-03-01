@@ -26613,13 +26613,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "CONTAINS":
-                json_ops.append(
-                    {
-                        "kind": "contains",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                entry: dict[str, object] = {
+                    "kind": "contains",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                container_arg = op.args[0]
+                if isinstance(container_arg, MoltValue) and container_arg.type_hint in {
+                    "set",
+                    "frozenset",
+                    "dict",
+                    "list",
+                    "str",
+                }:
+                    entry["container_type"] = container_arg.type_hint
+                json_ops.append(entry)
             elif op.kind == "IF":
                 json_ops.append({"kind": "if", "args": [op.args[0].name]})
             elif op.kind == "ELSE":
