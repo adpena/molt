@@ -632,7 +632,7 @@ Sign-off criteria:
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten `weakref.finalize` shutdown-order parity (including `atexit` edge cases) against CPython.
 - Implemented: `abc.update_abstractmethods` now uses runtime intrinsic `molt_abc_update_abstractmethods`; Python-side abstractmethod scanning logic was removed from `abc.py`.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (registry/lookup + encodings package + incremental/stream codecs + error-handler registration); base encode/decode intrinsics are present.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (full encodings import hooks + charmap codec intrinsics); incremental encoder/decoder now backed by Rust handle-based intrinsics, BOM constants from Rust, register_error/lookup_error wired.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): finish remaining `math` intrinsics (determinism policy); predicates, `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc` are now wired in Rust.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): fill out `types` shims (TracebackType, FrameType, FunctionType, coroutine/asyncgen types, etc).
@@ -975,7 +975,7 @@ Sign-off criteria:
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_asyncio` shim now uses intrinsic-backed running-loop hooks; broader C-accelerated parity remains pending.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_bz2` compression backend parity for `bz2`.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (incremental/stream codecs + full encodings import hooks + error-handler registration); base encode/decode intrinsics plus registry/lookup and minimal encodings/aliases are present.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (full encodings import hooks + charmap codec intrinsics); incremental encoder/decoder now backed by Rust handle-based intrinsics, BOM constants from Rust, register_error/lookup_error wired.
 - Implemented: `tempfile` now uses CPython-style candidate temp-dir ordering, including Windows defaults (`~\\AppData\\Local\\Temp`, `%SYSTEMROOT%\\Temp`, `c:\\temp`, `c:\\tmp`, `\\temp`, `\\tmp`) and cwd fallback.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): asyncio pending parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, and `urllib.parse`/`urllib.error`/`urllib.request` per matrix coverage.
@@ -997,7 +997,7 @@ Sign-off criteria:
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core collections.abc surfaces.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full metadata version semantics and remaining entry point selection edge cases.
 - Implemented: `tempfile` temp-dir selection now probes candidate usability with secure create/write/unlink checks and raises `FileNotFoundError` when no candidate is writable.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement incremental/stream codecs, full encodings import hooks, and error-handler registration.) |
+- Implemented: `codecs` incremental encoder/decoder now backed by Rust handle-based intrinsics (new/encode/decode/reset/drop); BOM constants from Rust; register_error/lookup_error wired to Rust error-handler registry. Remaining: full encodings import hooks + charmap codec intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib extension/sourceless execution parity beyond capability-gated restricted-source shim lanes.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib extension/sourceless execution parity) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery full extension/sourceless execution parity beyond capability-gated restricted-source shim lanes (zip source loader path is intrinsic-lowered).
