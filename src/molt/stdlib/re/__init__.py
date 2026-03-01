@@ -493,9 +493,7 @@ class _Parser:
                         raise error("missing )")
                     self._next()
                     return _ScopedFlags(node, flags, clear_flags)
-                raise NotImplementedError(
-                    "group flags and non-capturing groups unsupported"
-                )
+                raise NotImplementedError("unsupported group extension syntax")
             node = self._parse_expr()
             if self._peek() != ")":
                 raise error("missing )")
@@ -537,8 +535,14 @@ class _Parser:
                     break
                 digits.append(self._next())
             return _Backref(int("".join(digits)))
-        if ch in "AbBzZ":
-            raise NotImplementedError("escape anchors are not supported")
+        if ch == "A":
+            return _Anchor("start_abs")
+        if ch == "Z":
+            return _Anchor("end_abs")
+        if ch == "b":
+            return _Anchor("word_boundary")
+        if ch == "B":
+            return _Anchor("word_boundary_not")
         return _Literal(ch)
 
     def _parse_class(self) -> Any:
