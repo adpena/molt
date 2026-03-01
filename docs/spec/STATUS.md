@@ -14,6 +14,22 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent regex parser in
+  `regex.rs` with CompiledPattern, ReNode enum (13 variants), global handle registry.
+  4 new intrinsics (`molt_re_compile`, `molt_re_execute`, `molt_re_finditer_collect`,
+  `molt_re_pattern_info`). Execute/finditer stubs for Phase 1b match engine. Supports
+  full Python regex syntax: groups, backreferences, lookahead/lookbehind, character
+  classes, quantifiers, alternation, scoped flags.
+- Completed: asyncio `staggered_race` — full CPython 3.12-faithful implementation
+  replacing stub. Uses mutable list cells instead of nonlocal (Molt compiler constraint),
+  try/except instead of contextlib.suppress.
+- Completed: tkinter WASM import gate — `emscripten`/`wasi` platforms get `ImportError`
+  at import time, matching CPython behavior.
+- Cleanup: deleted 26 dead intrinsics (6 sys.bootstrap, 15 importlib granular, 5 dead
+  singletons). Wired 5 singleton intrinsics (copy_error, datetime isoformat date/time,
+  encodings aliases_map, http parse_header_pairs). Fixed tkinter Image.__getitem__
+  (configure→cget), ScrolledText rewrite (proper Text subclass), Font.__eq__/__hash__,
+  tix deprecation warning, asyncio Semaphore dual-state fix.
 - Completed: `concurrent.futures` — wired all 17 `molt_concurrent_*` intrinsics.
   ThreadPoolExecutor and Future now use Rust handle-based pattern. `submit()`,
   `result()`, `exception()`, `done()`, `cancel()`, `add_done_callback()`,
